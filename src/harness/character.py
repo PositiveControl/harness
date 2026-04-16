@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import frontmatter
+import yaml
+
+
+@dataclass(frozen=True)
+class Value:
+    id: str
+    rule: str
+
+
+@dataclass(frozen=True)
+class VoiceSample:
+    id: str
+    prompt: str
+    gold: str
+
+
+@dataclass(frozen=True)
+class SeedMemory:
+    id: str
+    title: str
+    principle: str
+    tags: tuple[str, ...]
+    era: str
+    body: str
+
+
+@dataclass(frozen=True)
+class Character:
+    name: str
+    pronouns: str
+    era: str
+    relationship: dict[str, str]
+    premise: str
+    self_awareness: str
+    values: tuple[Value, ...]
+    taboos: tuple[str, ...]
+    directives: tuple[str, ...]
+    deep_domains: tuple[str, ...]
+    shallow_domains: tuple[str, ...]
+    on_being_wrong: str
+    constitution: str
+    voice_samples: tuple[VoiceSample, ...]
+    seed_memories: tuple[SeedMemory, ...]
+
+    def system_prompt(self) -> str:
+        """Fallback system prompt for single-model ReAct and voice evals.
+        Richer pipelines (multi-agent roles + critic) compose their own."""
+        values = "\n".join(f"  - {v.rule}" for v in self.values)
+        taboos = "\n".join(f"  - {t}" for t in self.taboos)
+        directives = "\n".join(f"  - {d}" for d in self.directives)
+        deep = ", ".join(self.deep_domains)
+        shallow = ", ".join(self.shallow_domains)
+        return (
+            f"You are {self.name}. Pronoun: {self.pronouns}. "
+            f"Era of origin: {self.era}.\n\n"
+            f"Premise:\n{self.premise}\n\n"
+            f"Self-awareness:\n{self.self_awareness}\n\n"
+            f"Values (always defended):\n{values}\n\n"
+            f"Taboos (always refused):\n{taboos}\n\n"
+            f"Directives:\n{directives}\n\n"
+            f"Deep domains: {deep}\n"
+            f"Shallow domains: {shallow}\n\n"
+            f"On being wrong:\n{self.on_being_wrong}\n\n"
+            f"Constitution:\n{self.constitution}"
+        )
+
+
+def load_character(path: Path) -> Character:
+    core = yaml.safe_load((path / "core.yaml").read_text())
+    constitution = (path / "constitution.md").read_text().strip()
+
+    voice_doc = yaml.safe_load((path / "voice" / "canonical.yaml").read_text())
+    voice_samples = tuple(
+        VoiceSample(id=s["id"], prompt=s["prompt"], gold=s["gold"].strip())
+        for s in voice_doc["samples"]
+    )
+
+    seed_dir = path / "seed_memories"
+    seeds: list[SeedMemory] = []
+    for md_file in sorted(seed_dir.glob("*.md")):
+        post = frontmatter.load(md_file)
+        seeds.append(
+            SeedMemory(
+                id=str(post.get("id", md_file.stem)),
+                title=str(post["title"]),
+                principle=str(post["principle"]),
+                tags=tuple(post.get("tags", [])),
+                era=str(post.get("era", "")),
+                body=post.content.strip(),
+            )
+        )
+
+    values = tuple(Value(id=v["id"], rule=v["rule"]) for v in core["values"])
+
+    return Character(
+        name=core["name"],
+        pronouns=core["pronouns"],
+        era=core["era"],
+        relationship=dict(core["relationship"]),
+        premise=core["premise"].strip(),
+        self_awareness=core["self_awareness"].strip(),
+        values=values,
+        taboos=tuple(core["taboos"]),
+        directives=tuple(core.get("directives", [])),
+        deep_domains=tuple(core["deep_domains"]),
+        shallow_domains=tuple(core["shallow_domains"]),
+        on_being_wrong=core["on_being_wrong"].strip(),
+        constitution=constitution,
+        voice_samples=voice_samples,
+        seed_memories=tuple(seeds),
+    )
