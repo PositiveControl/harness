@@ -1,16 +1,92 @@
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Iterable
 from typing import Any
 
 from harness.model.adapter import ChatMessage
+from harness.tools.base import ModelReply, ToolCall, ToolSpec
 
 
 def _messages_to_dicts(messages: Iterable[ChatMessage]) -> list[dict[str, str]]:
     """Project ChatMessage records down to the {role, content} dicts that
     tokenizer.apply_chat_template expects. Tool-role messages and the
-    `name` field are ignored here — Phase 1a does not do tool-calling."""
+    `name` field are ignored here — non-tool-aware path."""
     return [{"role": m.role, "content": m.content} for m in messages]
+
+
+def _messages_to_dicts_with_tools(
+    messages: Iterable[ChatMessage],
+) -> list[dict[str, Any]]:
+    """Render messages for tool-aware chat. Assistant turns with
+    tool_calls expose them in the dict; tool-role turns carry their
+    tool_call_id. Qwen's chat template reads these correctly."""
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        d: dict[str, Any] = {"role": m.role, "content": m.content}
+        if m.tool_calls:
+            d["tool_calls"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": json.dumps(tc.arguments),
+                    },
+                }
+                for tc in m.tool_calls
+            ]
+        if m.tool_call_id is not None:
+            d["tool_call_id"] = m.tool_call_id
+        if m.role == "tool" and m.name is not None:
+            d["name"] = m.name
+        out.append(d)
+    return out
+
+
+def _tool_spec_to_schema(spec: ToolSpec) -> dict[str, Any]:
+    """Render a ToolSpec as the OpenAI-style function-calling schema
+    that modern chat templates (Qwen, Hermes, etc.) understand."""
+    return {
+        "type": "function",
+        "function": {
+            "name": spec.name,
+            "description": spec.description,
+            "parameters": spec.parameters,
+        },
+    }
+
+
+_TOOL_CALL_PATTERN = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+
+
+def _parse_qwen_tool_calls(raw: str) -> tuple[str, list[ToolCall]]:
+    """Extract <tool_call>JSON</tool_call> blocks from Qwen's output.
+    Returns (content_with_blocks_stripped, list_of_calls). Malformed
+    blocks are dropped rather than raising — the model will retry on
+    the next round if it cared."""
+    calls: list[ToolCall] = []
+    for match in _TOOL_CALL_PATTERN.finditer(raw):
+        try:
+            data = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        name = data.get("name")
+        arguments = data.get("arguments", {})
+        if not isinstance(name, str):
+            continue
+        if not isinstance(arguments, dict):
+            # Qwen sometimes emits arguments as a JSON-encoded string; try to recover.
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    arguments = {}
+            else:
+                arguments = {}
+        calls.append(ToolCall(name=name, arguments=arguments))
+    content = _TOOL_CALL_PATTERN.sub("", raw).strip()
+    return content, calls
 
 
 class MLXAdapter:
@@ -98,3 +174,42 @@ class MLXAdapter:
             max_tokens=max_tokens,
         )
         return output
+
+    def complete_with_tools(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        tools: list[ToolSpec] | None = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.5,
+    ) -> ModelReply:
+        """Generate with tool-calling awareness. If `tools` is given,
+        the model can emit <tool_call> blocks; the returned ModelReply
+        carries the parsed calls and the text content (stripped of the
+        call blocks). The orchestrator executes calls and loops back.
+
+        Temperature defaults to 0.5 — lower than chat default because
+        tool use wants deliberate, parseable output, not creativity."""
+        self._ensure_loaded()
+        from mlx_lm import generate as _generate
+        from mlx_lm.sample_utils import make_sampler
+
+        dicts = _messages_to_dicts_with_tools(messages)
+        tool_schemas = [_tool_spec_to_schema(t) for t in tools] if tools else None
+        assert self._tokenizer is not None
+        prompt = self._tokenizer.apply_chat_template(
+            dicts,
+            tokenize=False,
+            add_generation_prompt=True,
+            tools=tool_schemas,
+        )
+        sampler = make_sampler(temp=temperature, top_p=0.9)
+        raw: str = _generate(
+            self._model,
+            self._tokenizer,
+            prompt=prompt,
+            sampler=sampler,
+            max_tokens=max_tokens,
+        )
+        content, tool_calls = _parse_qwen_tool_calls(raw)
+        return ModelReply(content=content, tool_calls=tuple(tool_calls))

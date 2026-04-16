@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import Literal, Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from harness.tools.base import ToolCall
 
 Role = Literal["system", "user", "assistant", "tool"]
 
@@ -12,6 +15,11 @@ class ChatMessage:
     role: Role
     content: str
     name: str | None = None
+    # Populated on assistant messages that issued tool calls; preserved
+    # across rounds so the model's chat template can reconstruct the turn.
+    tool_calls: tuple[ToolCall, ...] = field(default_factory=tuple)
+    # Populated on tool-role messages (the result of a specific call).
+    tool_call_id: str | None = None
 
 
 @runtime_checkable

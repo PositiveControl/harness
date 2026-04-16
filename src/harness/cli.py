@@ -16,7 +16,9 @@ from harness.consolidate import run_consolidation
 from harness.evals.voice import run_voice_eval
 from harness.model import AdapterName, ChatMessage, ModelAdapter, make_adapter
 from harness.model.adapter import Role
+from harness.orchestrator import ToolLoopEvent, run_tool_loop
 from harness.persona import PersonaAdapter
+from harness.persona.rewriter import build_rewriter_messages
 from harness.retrieval import VoiceRetriever
 from harness.scribe import run_scribe
 from harness.store import (
@@ -27,6 +29,15 @@ from harness.store import (
     ensure_seeds_ingested,
 )
 from harness.store.transcript import Transcript
+from harness.tools import (
+    ReadFileTool,
+    SearchFactsTool,
+    SearchMemoryTool,
+    ShellTool,
+    ToolCall,
+    ToolRegistry,
+    WriteFileTool,
+)
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 eval_app = typer.Typer(help="Evaluations against the current character.", no_args_is_help=True)
@@ -208,12 +219,22 @@ def chat(
         help="Cosine-similarity floor for fact retrieval. Lower than the "
         "memory floor because facts are much shorter strings and score lower.",
     ),
+    tools: bool = typer.Option(
+        False,
+        "--tools/--no-tools",
+        help="Enable tool use. Registers read_file, write_file, shell, "
+        "search_memory, search_facts. Write-tier tools prompt for "
+        "confirmation the first time they're called each session.",
+    ),
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
     character = load_character(settings.character_path)
+    # When tools are active we run persona manually *after* the tool loop,
+    # so we resolve the base adapter unwrapped. Without tools, persona
+    # wraps the base adapter as before.
     adapter = _resolve_adapter(
         model,
-        persona=persona,
+        persona=persona and not tools,
         character=character,
         model_repo=model_repo,
         lora_path=lora_path,
@@ -223,12 +244,52 @@ def chat(
     semantic_store = _open_semantic_store() if facts > 0 else None
     transcript = Transcript(settings.db_path)
 
+    registry: ToolRegistry | None = None
+    approved_tools: set[str] = set()
+    if tools:
+        registry = ToolRegistry()
+        registry.register(ReadFileTool(root=settings.root))
+        registry.register(WriteFileTool(root=settings.root))
+        registry.register(ShellTool())
+        if memory_store is not None:
+            registry.register(SearchMemoryTool(store=memory_store, user_id=speaker))
+        if semantic_store is not None:
+            registry.register(SearchFactsTool(store=semantic_store, user_id=speaker))
+
+    def confirm_write_tool(call: ToolCall) -> bool:
+        if call.name in approved_tools:
+            return True
+        console.print(
+            f"[yellow]🔧 Airton wants to call [bold]{call.name}[/bold][/yellow] {call.arguments}"
+        )
+        answer = console.input("   approve? [y/N/always]: ").strip().lower()
+        if answer == "always":
+            approved_tools.add(call.name)
+            return True
+        return answer.startswith("y")
+
+    def render_tool_event(event: ToolLoopEvent) -> None:
+        if event.kind == "tool_call_start":
+            call = event.call
+            assert call is not None
+            console.print(f"[cyan]🔧 {call.name}[/cyan][dim]({call.arguments})[/dim]")
+        elif event.kind == "tool_call_end":
+            result = event.result
+            assert result is not None
+            status = "[green]✓[/green]" if result.success else "[red]✗[/red]"
+            snippet = result.output[:120].replace("\n", " ")
+            more = "…" if len(result.output) > 120 else ""
+            console.print(f"   {status} [dim]{snippet}{more}[/dim]")
+        elif event.kind == "tool_call_declined":
+            console.print("   [yellow]✗ declined[/yellow]")
+
     console.print(
         f"[bold]{character.name}[/bold] loaded. "
         f"session={session} model={adapter.id} "
         f"top_k={top_k if retriever else 0} "
         f"memories={memories if memory_store else 0} "
-        f"facts={facts if semantic_store else 0}"
+        f"facts={facts if semantic_store else 0} "
+        f"tools={'on' if registry else 'off'}"
     )
     console.print("[dim](ctrl-c to exit)[/dim]\n")
 
@@ -279,7 +340,26 @@ def chat(
                 ChatMessage(role=cast(Role, m.role), content=m.content)
                 for m in transcript.tail(session, limit=50)
             ]
-            reply = adapter.complete([system, *history])
+
+            if registry is not None:
+                # Tools active: drive the tool loop, then optionally apply
+                # the voice rewriter to the final text only.
+                loop_result = run_tool_loop(
+                    adapter,  # type: ignore[arg-type]
+                    [system, *history],
+                    registry,
+                    confirm=confirm_write_tool,
+                    observe=render_tool_event,
+                )
+                draft = loop_result.content
+                if persona:
+                    rewrite_msgs = build_rewriter_messages(character, draft)
+                    reply = adapter.complete(rewrite_msgs, temperature=0.2)
+                else:
+                    reply = draft
+            else:
+                reply = adapter.complete([system, *history])
+
             transcript.append(
                 session=session,
                 channel=channel,
