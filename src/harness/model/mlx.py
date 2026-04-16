@@ -50,8 +50,11 @@ class MLXAdapter:
         missing). Safe to call more than once; no-op after the first.
 
         When `adapter_path` is set, mlx_lm applies the LoRA weights on
-        top of the base model at load time. The result behaves like any
-        other adapter from our perspective — no changes downstream."""
+        top of the base model at load time. `adapter_path` must be a
+        DIRECTORY produced by `mlx_lm.lora` training — it should
+        contain `adapter_config.json` plus the weight files. The
+        result behaves like any other adapter from our perspective —
+        no changes downstream."""
         if self._model is not None:
             return
         from mlx_lm import load as _load

@@ -169,8 +169,9 @@ def chat(
     lora_path: str | None = typer.Option(
         None,
         "--lora-path",
-        help="Path to a LoRA adapter file (adapters.npz) to apply on top of the "
-        "base MLX model. Requires --model mlx.",
+        help="Path to a DIRECTORY produced by `mlx_lm.lora` training (contains "
+        "adapter_config.json plus weight files). Applied on top of the base MLX "
+        "model. Requires --model mlx.",
     ),
     persona: bool = typer.Option(
         False,
@@ -329,7 +330,7 @@ def eval_voice(
     lora_path: str | None = typer.Option(
         None,
         "--lora-path",
-        help="LoRA adapter path. Requires --model mlx.",
+        help="LoRA adapter directory (from `mlx_lm.lora` training). Requires --model mlx.",
     ),
     sample: list[str] | None = typer.Option(
         None, "--sample", help="Limit to a specific sample id (repeatable)"
@@ -606,7 +607,9 @@ def memory_scribe(
         None, "--model-repo", help="Override the MLX repo. Requires --model mlx."
     ),
     lora_path: str | None = typer.Option(
-        None, "--lora-path", help="LoRA adapter path. Requires --model mlx."
+        None,
+        "--lora-path",
+        help="LoRA adapter directory (from `mlx_lm.lora` training). Requires --model mlx.",
     ),
     window_size: int = typer.Option(20, help="Turns per extraction window"),
 ) -> None:
