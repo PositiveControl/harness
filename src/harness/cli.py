@@ -9,11 +9,12 @@ from rich.markdown import Markdown
 from rich.status import Status
 from rich.table import Table
 
-from harness.character import load_character
+from harness.character import Character, load_character
 from harness.config import settings
 from harness.evals.voice import run_voice_eval
 from harness.model import AdapterName, ChatMessage, ModelAdapter, make_adapter
 from harness.model.adapter import Role
+from harness.persona import PersonaAdapter
 from harness.store.transcript import Transcript
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
@@ -22,11 +23,21 @@ app.add_typer(eval_app, name="eval")
 console = Console()
 
 
-def _resolve_adapter(name: str) -> ModelAdapter:
+def _resolve_adapter(
+    name: str,
+    *,
+    persona: bool = False,
+    character: Character | None = None,
+) -> ModelAdapter:
     try:
-        adapter = make_adapter(cast(AdapterName, name))
+        adapter: ModelAdapter = make_adapter(cast(AdapterName, name))
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
+
+    if persona:
+        if character is None:
+            raise typer.BadParameter("persona=True requires a character")
+        adapter = PersonaAdapter(adapter, character)
 
     # Honor an optional eager `.load()` method without making it part of
     # the ModelAdapter Protocol — only some adapters need it.
@@ -43,10 +54,15 @@ def chat(
     channel: str = typer.Option("cli", help="Channel name"),
     speaker: str = typer.Option("mark", help="Your handle"),
     model: str = typer.Option("echo", help="Adapter: echo | mlx"),
+    persona: bool = typer.Option(
+        False,
+        "--persona/--no-persona",
+        help="Wrap the model with a voice-rewrite post-pass (Airton's register).",
+    ),
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
     character = load_character(settings.character_path)
-    adapter = _resolve_adapter(model)
+    adapter = _resolve_adapter(model, persona=persona, character=character)
     transcript = Transcript(settings.db_path)
 
     console.print(f"[bold]{character.name}[/bold] loaded. session={session} model={adapter.id}")
@@ -120,9 +136,16 @@ def eval_voice(
         help="Exclude each sample from its own few-shot examples (default on). "
         "Disable to measure the ceiling with the full example set in view.",
     ),
+    persona: bool = typer.Option(
+        False,
+        "--persona/--no-persona",
+        help="Run the voice-rewrite post-pass after the substance pass.",
+    ),
 ) -> None:
     """Run the canonical voice prompts and show model-vs-gold side by side."""
     character = load_character(settings.character_path)
+    # eval runs persona inline in run_voice_eval so both passes stay
+    # leave-one-out-consistent — do not wrap adapter here.
     adapter = _resolve_adapter(model)
 
     results = run_voice_eval(
@@ -131,6 +154,7 @@ def eval_voice(
         temperature=temperature,
         sample_ids=sample if sample else None,
         leave_one_out=leave_one_out,
+        persona=persona,
     )
 
     if as_json:
@@ -140,6 +164,7 @@ def eval_voice(
                 "prompt": r.prompt,
                 "gold": r.gold,
                 "actual": r.actual,
+                **({"draft": r.draft} if r.draft is not None else {}),
             }
             for r in results
         ]

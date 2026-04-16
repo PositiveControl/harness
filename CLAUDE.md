@@ -18,8 +18,10 @@ Environment management with `uv` (Python 3.12):
 - `uv run harness describe` — dump Airton's resolved character sheet.
 - `uv run harness chat` — CLI chat loop with the echo adapter.
 - `uv run harness chat --model mlx` — CLI chat with Qwen 2.5 32B.
-- `uv run harness eval voice --model mlx` — run the voice-drift eval; Rich table of `prompt | gold | actual` per sample.
-- `uv run harness eval voice --model mlx --sample self_reference --json` — run one sample, emit JSON.
+- `uv run harness chat --model mlx --persona` — chat with the voice-rewrite post-pass on (Airton's register enforced).
+- `uv run harness eval voice --model mlx` — run the voice-drift eval; Rich table of `prompt | gold | actual` per sample (leave-one-out by default).
+- `uv run harness eval voice --model mlx --persona` — eval with the persona post-pass active; JSON output includes a `draft` field (pass-1 substance) alongside `actual` (pass-2 voiced).
+- `uv run harness eval voice --model mlx --no-leave-one-out` — ceiling diagnostic: every sample sees the full example set.
 
 Quality gates (all four must stay green; pre-commit runs them on every commit):
 
@@ -57,7 +59,9 @@ The system is designed against these invariants — they shape almost every deci
     - `mlx.py` — MLX-backed adapter (Qwen 2.5 32B by default). Lazy load; only this file imports `mlx_lm`.
     - `factory.py` — `make_adapter(name)` resolves `"echo" | "mlx"` to an instance. MLX is imported lazily inside, so environments without MLX still work.
   - `evals/` — offline evaluations. Pure functions that take a `Character` + `ModelAdapter` and return structured results.
-    - `voice.py` — `run_voice_eval(...)` compares model output against the gold responses in `character/airton/voice/canonical.yaml`.
+    - `voice.py` — `run_voice_eval(...)` compares model output against the gold responses in `character/airton/voice/canonical.yaml`. Supports `leave_one_out` (default True) and `persona` (default False).
+  - `persona/` — voice enforcement on top of the base adapter.
+    - `rewriter.py` — `PersonaAdapter` wraps a base adapter with a two-pass flow: pass 1 produces substance via the caller's system prompt, pass 2 rewrites in the character's register using a dedicated rewriter prompt. `build_rewriter_messages(character, draft, exclude_example_ids=...)` is the pure function the eval uses inline so leave-one-out stays consistent across both passes.
   - `store/transcript.py` — append-only SQLite transcript with WAL + FTS5. All future stores (episodic, semantic, graph, procedural, affective, identity, world) follow this shape: append-first, indexed for retrieval.
   - `cli.py` — Typer app: `chat` and `describe` commands.
 - `tests/` — pytest. Tests hit real stores (SQLite in `tmp_path`) rather than mocks.
