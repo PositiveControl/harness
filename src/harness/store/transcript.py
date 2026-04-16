@@ -82,18 +82,36 @@ class Transcript:
             (session, limit),
         ).fetchall()
         rows.reverse()
-        return [
-            TranscriptMessage(
-                id=r[0],
-                session=r[1],
-                channel=r[2],
-                speaker=r[3],
-                role=r[4],
-                content=r[5],
-                created_at=datetime.fromisoformat(r[6]),
-            )
-            for r in rows
-        ]
+        return [_row_to_message(r) for r in rows]
+
+    def fetch_after(self, session: str, *, after_id: int) -> list[TranscriptMessage]:
+        """Fetch every message in `session` whose id > `after_id`, in
+        insertion order. Used by the scribe to walk unprocessed turns
+        past a watermark."""
+        rows = self._conn.execute(
+            """SELECT id, session, channel, speaker, role, content, created_at
+               FROM transcript WHERE session = ? AND id > ? ORDER BY id""",
+            (session, after_id),
+        ).fetchall()
+        return [_row_to_message(r) for r in rows]
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """Expose the underlying connection for out-of-band writes (the
+        scribe keeps its watermark table in the same SQLite file)."""
+        return self._conn
 
     def close(self) -> None:
         self._conn.close()
+
+
+def _row_to_message(row: tuple) -> TranscriptMessage:  # type: ignore[type-arg]
+    return TranscriptMessage(
+        id=row[0],
+        session=row[1],
+        channel=row[2],
+        speaker=row[3],
+        role=row[4],
+        content=row[5],
+        created_at=datetime.fromisoformat(row[6]),
+    )

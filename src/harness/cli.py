@@ -16,7 +16,14 @@ from harness.model import AdapterName, ChatMessage, ModelAdapter, make_adapter
 from harness.model.adapter import Role
 from harness.persona import PersonaAdapter
 from harness.retrieval import VoiceRetriever
-from harness.store import EpisodicRecord, EpisodicStore, ensure_seeds_ingested
+from harness.scribe import run_scribe
+from harness.store import (
+    EpisodicRecord,
+    EpisodicStore,
+    SemanticFact,
+    SemanticStore,
+    ensure_seeds_ingested,
+)
 from harness.store.transcript import Transcript
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
@@ -66,6 +73,22 @@ def _open_episodic_store(character: Character, *, ingest: bool = True) -> Episod
         if inserted > 0:
             console.print(f"[dim]seeded {inserted} episodic memories from character.[/dim]")
     return store
+
+
+def _open_semantic_store() -> SemanticStore | None:
+    embedder = _load_embedder()
+    if embedder is None:
+        return None
+    return SemanticStore(settings.db_path, embedder=embedder)  # type: ignore[arg-type]
+
+
+def _render_fact_block(facts: list[SemanticFact]) -> str:
+    """Render retrieved semantic facts as a compact block for the system
+    prompt. One line per fact — subject, predicate, object, confidence."""
+    lines = ["Relevant facts I know:"]
+    for f in facts:
+        lines.append(f"- {f.subject} {f.predicate} {f.object} (conf={f.confidence:.2f})")
+    return "\n".join(lines)
 
 
 def _render_memory_block(memories: list[EpisodicRecord]) -> str:
@@ -131,18 +154,27 @@ def chat(
         help="Number of episodic memories to retrieve per user turn "
         "(default 3). Set 0 to disable memory retrieval.",
     ),
+    facts: int = typer.Option(
+        5,
+        "--facts",
+        help="Number of semantic facts to retrieve per user turn "
+        "(default 5). Set 0 to disable fact retrieval.",
+    ),
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
     character = load_character(settings.character_path)
     adapter = _resolve_adapter(model, persona=persona, character=character)
     retriever = _maybe_retriever(character, top_k)
     memory_store = _open_episodic_store(character) if memories > 0 else None
+    semantic_store = _open_semantic_store() if facts > 0 else None
     transcript = Transcript(settings.db_path)
 
     console.print(
         f"[bold]{character.name}[/bold] loaded. "
         f"session={session} model={adapter.id} "
-        f"top_k={top_k if retriever else 0} memories={memories if memory_store else 0}"
+        f"top_k={top_k if retriever else 0} "
+        f"memories={memories if memory_store else 0} "
+        f"facts={facts if semantic_store else 0}"
     )
     console.print("[dim](ctrl-c to exit)[/dim]\n")
 
@@ -171,6 +203,12 @@ def chat(
                     recalled = [rec for rec, _score in hits]
                     system_content = f"{system_content}\n\n{_render_memory_block(recalled)}"
 
+            if semantic_store is not None:
+                fact_hits = semantic_store.search(user_input, k=facts)
+                if fact_hits:
+                    known = [f for f, _score in fact_hits]
+                    system_content = f"{system_content}\n\n{_render_fact_block(known)}"
+
             system = ChatMessage(role="system", content=system_content)
 
             history = [
@@ -194,6 +232,8 @@ def chat(
         transcript.close()
         if memory_store is not None:
             memory_store.close()
+        if semantic_store is not None:
+            semantic_store.close()
 
 
 @app.command()
@@ -377,6 +417,132 @@ def memory_search(
             console.print()
     finally:
         store.close()
+
+
+@memory_app.command("fact-list")
+def memory_fact_list(
+    tier: str | None = typer.Option(None, help="Filter by tier: seed | consolidated | working"),
+    subject: str | None = typer.Option(None, help="Filter by subject"),
+) -> None:
+    """List facts in the semantic store."""
+    store = _open_semantic_store()
+    if store is None:
+        raise typer.Exit(code=1)
+    try:
+        facts = store.all(tier=tier, subject=subject)
+        if not facts:
+            console.print("[dim](empty)[/dim]")
+            return
+        table = Table(title=f"Semantic facts ({len(facts)})", show_lines=False)
+        table.add_column("id", style="bold")
+        table.add_column("tier")
+        table.add_column("subject")
+        table.add_column("predicate")
+        table.add_column("object")
+        table.add_column("conf", style="cyan")
+        for f in facts:
+            table.add_row(
+                str(f.id), f.tier, f.subject, f.predicate, f.object, f"{f.confidence:.2f}"
+            )
+        console.print(table)
+    finally:
+        store.close()
+
+
+@memory_app.command("fact-search")
+def memory_fact_search(
+    query: str = typer.Argument(..., help="Query text"),
+    k: int = typer.Option(5, help="How many matches to return"),
+    min_confidence: float = typer.Option(0.0, help="Minimum confidence to include"),
+) -> None:
+    """Semantic-search the fact store."""
+    store = _open_semantic_store()
+    if store is None:
+        raise typer.Exit(code=1)
+    try:
+        hits = store.search(query, k=k, min_confidence=min_confidence)
+        if not hits:
+            console.print("[dim](no matches)[/dim]")
+            return
+        for fact, score in hits:
+            console.print(
+                f"[bold cyan]{score:.3f}[/bold cyan]  "
+                f"[bold]{fact.subject}[/bold] {fact.predicate} {fact.object} "
+                f"[dim](conf={fact.confidence:.2f}, tier={fact.tier})[/dim]"
+            )
+    finally:
+        store.close()
+
+
+@memory_app.command("fact-add")
+def memory_fact_add(
+    subject: str = typer.Argument(..., help="Subject of the fact"),
+    predicate: str = typer.Argument(..., help="Predicate (relation)"),
+    object_: str = typer.Argument(..., metavar="OBJECT", help="Object / value"),
+    confidence: float = typer.Option(0.9, help="Confidence 0-1"),
+    tier: str = typer.Option("working", help="Tier: seed | consolidated | working"),
+    source: str = typer.Option("user", help="Provenance label"),
+) -> None:
+    """Add a single fact to the semantic store."""
+    store = _open_semantic_store()
+    if store is None:
+        raise typer.Exit(code=1)
+    try:
+        fact = store.add(
+            subject=subject,
+            predicate=predicate,
+            object=object_,
+            confidence=confidence,
+            source=source,
+            tier=tier,
+        )
+        console.print(
+            f"[green]added[/green] id={fact.id}: "
+            f"{fact.subject} {fact.predicate} {fact.object} (conf={fact.confidence:.2f})"
+        )
+    finally:
+        store.close()
+
+
+@memory_app.command("scribe")
+def memory_scribe(
+    session: str = typer.Option("local", help="Session id to scribe"),
+    model: str = typer.Option("mlx", help="Adapter for extraction: echo | mlx"),
+    window_size: int = typer.Option(20, help="Turns per extraction window"),
+) -> None:
+    """Walk unprocessed transcript turns and extract candidate memories."""
+    character = load_character(settings.character_path)
+    adapter = _resolve_adapter(model)
+    episodic = _open_episodic_store(character)
+    semantic = _open_semantic_store()
+    if episodic is None or semantic is None:
+        raise typer.Exit(code=1)
+    transcript = Transcript(settings.db_path)
+    try:
+        with Status(f"scribe running on session={session}…", console=console):
+            summary = run_scribe(
+                adapter,
+                character,
+                transcript,
+                episodic,
+                semantic,
+                session_id=session,
+                window_size=window_size,
+            )
+        console.print(
+            f"processed [bold]{summary.turns_processed}[/bold] turns across "
+            f"[bold]{summary.windows}[/bold] window(s). "
+            f"wrote [bold]{summary.episodic_written}[/bold] episodic, "
+            f"[bold]{summary.semantic_written}[/bold] semantic."
+        )
+        if summary.parse_errors:
+            console.print(f"[yellow]{len(summary.parse_errors)} parse error(s):[/yellow]")
+            for err in summary.parse_errors:
+                console.print(f"  - {err}")
+    finally:
+        transcript.close()
+        episodic.close()
+        semantic.close()
 
 
 @memory_app.command("ingest")
