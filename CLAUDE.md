@@ -23,7 +23,12 @@ Environment management with `uv` (Python 3.12):
 - `uv run harness eval voice --model mlx --persona` — eval with the persona post-pass active; JSON output includes a `draft` field (pass-1 substance) alongside `actual` (pass-2 voiced).
 - `uv run harness eval voice --model mlx --no-leave-one-out` — ceiling diagnostic: every sample sees the full example set.
 - `uv run harness eval voice --model mlx --top-k 0` — disable retrieval, show all samples (Phase 1a.2 baseline).
-- `uv run harness eval voice --model mlx --top-k 6 --persona` — current best: retrieval-picked few-shot + voice-rewrite post-pass.
+- `uv run harness eval voice --model mlx --top-k 6 --persona` — retrieval-picked few-shot + voice-rewrite post-pass.
+- `uv run harness eval voice --model mlx --persona --chain-rewrites --judge` — adds the concrete-substitution second rewrite pass and LLM-judge scoring.
+- `uv run harness memory ingest` — seed Airton's episodic memory from the character's seed memories (idempotent).
+- `uv run harness memory list` — tabular view of every episodic record.
+- `uv run harness memory search "query"` — semantic top-K search over episodic memory.
+- `uv run harness chat --model mlx --memories 3` — chat with top-3 episodic memories retrieved each turn (default).
 
 Quality gates (all four must stay green; pre-commit runs them on every commit):
 
@@ -69,6 +74,7 @@ The system is designed against these invariants — they shape almost every deci
     - `st_embedder.py` — `SentenceTransformersEmbedder` (BAAI/bge-small-en-v1.5 by default; MPS on Mac, CPU elsewhere; lazy-loaded).
     - `voice_retriever.py` — `VoiceRetriever` embeds all sample prompts once at construction; `top_k(query, k=, exclude_ids=)` returns the most similar samples. The CLI (`chat`, `eval voice`) and the voice eval build one per character load.
   - `store/transcript.py` — append-only SQLite transcript with WAL + FTS5. All future stores (episodic, semantic, graph, procedural, affective, identity, world) follow this shape: append-first, indexed for retrieval.
+  - `store/episodic.py` — `EpisodicStore` holds narrative records (title, body, principle, tags, tier) in SQLite alongside float32-BLOB embeddings. `search(query, k)` is an in-process cosine scan — fine up to ~10k records, upgrade to LanceDB when we need more. `ensure_seeds_ingested(character, store)` is idempotent and runs on chat startup. Tier vocabulary: `seed` (loaded from character YAML) · `consolidated` (promoted from transcript by future scribe) · `working` (ad-hoc writes).
   - `cli.py` — Typer app: `chat` and `describe` commands.
 - `tests/` — pytest. Tests hit real stores (SQLite in `tmp_path`) rather than mocks.
 

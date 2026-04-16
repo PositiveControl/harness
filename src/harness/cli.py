@@ -16,12 +16,29 @@ from harness.model import AdapterName, ChatMessage, ModelAdapter, make_adapter
 from harness.model.adapter import Role
 from harness.persona import PersonaAdapter
 from harness.retrieval import VoiceRetriever
+from harness.store import EpisodicRecord, EpisodicStore, ensure_seeds_ingested
 from harness.store.transcript import Transcript
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 eval_app = typer.Typer(help="Evaluations against the current character.", no_args_is_help=True)
 app.add_typer(eval_app, name="eval")
+memory_app = typer.Typer(help="Inspect and manage episodic memory.", no_args_is_help=True)
+app.add_typer(memory_app, name="memory")
 console = Console()
+
+
+def _load_embedder() -> object | None:
+    """Lazy-import the default embedder. Returns None (with a warning)
+    if the retrieval extra isn't installed."""
+    try:
+        from harness.retrieval.st_embedder import SentenceTransformersEmbedder
+    except ImportError:
+        console.print(
+            "[yellow]retrieval extra not installed. "
+            "Run `uv sync --extra retrieval` to enable retrieval + memory.[/yellow]"
+        )
+        return None
+    return SentenceTransformersEmbedder()
 
 
 def _maybe_retriever(character: Character, top_k: int) -> VoiceRetriever | None:
@@ -30,17 +47,41 @@ def _maybe_retriever(character: Character, top_k: int) -> VoiceRetriever | None:
     caller to fall back to full-set few-shot."""
     if top_k <= 0:
         return None
-    try:
-        from harness.retrieval.st_embedder import SentenceTransformersEmbedder
-    except ImportError:
-        console.print(
-            "[yellow]retrieval extra not installed; falling back to all-samples few-shot. "
-            "Run `uv sync --extra retrieval` to enable top-K retrieval.[/yellow]"
-        )
+    embedder = _load_embedder()
+    if embedder is None:
         return None
-    embedder = SentenceTransformersEmbedder()
-    with Status(f"warming embedder ({embedder.id})…", console=console):
-        return VoiceRetriever(embedder=embedder, character=character)
+    with Status(f"warming embedder ({embedder.id})…", console=console):  # type: ignore[attr-defined]
+        return VoiceRetriever(embedder=embedder, character=character)  # type: ignore[arg-type]
+
+
+def _open_episodic_store(character: Character, *, ingest: bool = True) -> EpisodicStore | None:
+    """Open the episodic store, ingesting seeds on first run. Returns
+    None if the retrieval extra isn't installed."""
+    embedder = _load_embedder()
+    if embedder is None:
+        return None
+    store = EpisodicStore(settings.db_path, embedder=embedder)  # type: ignore[arg-type]
+    if ingest:
+        inserted = ensure_seeds_ingested(character, store)
+        if inserted > 0:
+            console.print(f"[dim]seeded {inserted} episodic memories from character.[/dim]")
+    return store
+
+
+def _render_memory_block(memories: list[EpisodicRecord]) -> str:
+    """Render retrieved memories as a section of the system prompt. One
+    block per memory, title as heading, principle italicized, body as
+    prose. Kept close to the on-disk seed format so the model sees
+    familiar shape."""
+    lines = ["Relevant past experience — things I remember from before:"]
+    for m in memories:
+        lines.append("")
+        lines.append(f"## {m.title}")
+        if m.principle:
+            lines.append(f"*Lesson: {m.principle}*")
+        lines.append("")
+        lines.append(m.body)
+    return "\n".join(lines)
 
 
 def _resolve_adapter(
@@ -84,16 +125,24 @@ def chat(
         help="Retrieve top-K voice samples by similarity to the user message "
         "(default 6). Set 0 to show every sample.",
     ),
+    memories: int = typer.Option(
+        3,
+        "--memories",
+        help="Number of episodic memories to retrieve per user turn "
+        "(default 3). Set 0 to disable memory retrieval.",
+    ),
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
     character = load_character(settings.character_path)
     adapter = _resolve_adapter(model, persona=persona, character=character)
     retriever = _maybe_retriever(character, top_k)
+    memory_store = _open_episodic_store(character) if memories > 0 else None
     transcript = Transcript(settings.db_path)
 
     console.print(
         f"[bold]{character.name}[/bold] loaded. "
-        f"session={session} model={adapter.id} top_k={top_k if retriever else 0}"
+        f"session={session} model={adapter.id} "
+        f"top_k={top_k if retriever else 0} memories={memories if memory_store else 0}"
     )
     console.print("[dim](ctrl-c to exit)[/dim]\n")
 
@@ -115,6 +164,13 @@ def chat(
                 system_content = character.system_prompt(include_samples=examples)
             else:
                 system_content = character.system_prompt()
+
+            if memory_store is not None:
+                hits = memory_store.search(user_input, k=memories)
+                if hits:
+                    recalled = [rec for rec, _score in hits]
+                    system_content = f"{system_content}\n\n{_render_memory_block(recalled)}"
+
             system = ChatMessage(role="system", content=system_content)
 
             history = [
@@ -136,6 +192,8 @@ def chat(
         console.print("\n[dim]bye.[/dim]")
     finally:
         transcript.close()
+        if memory_store is not None:
+            memory_store.close()
 
 
 @app.command()
@@ -266,6 +324,76 @@ def eval_voice(
         console.print(
             f"[bold]judge mean:[/bold] {judge_mean:.2f}/10 across {len(judge_scores)} sample(s)"
         )
+
+
+@memory_app.command("list")
+def memory_list(
+    tier: str | None = typer.Option(None, help="Filter by tier: seed | consolidated | working"),
+) -> None:
+    """List every record in the episodic store."""
+    character = load_character(settings.character_path)
+    store = _open_episodic_store(character)
+    if store is None:
+        raise typer.Exit(code=1)
+    try:
+        records = store.all(tier=tier)
+        if not records:
+            console.print("[dim](empty)[/dim]")
+            return
+        table = Table(title=f"Episodic memory ({len(records)} records)", show_lines=True)
+        table.add_column("id", style="bold")
+        table.add_column("tier")
+        table.add_column("title")
+        table.add_column("principle", style="dim")
+        for r in records:
+            table.add_row(str(r.id), r.tier, r.title, r.principle or "")
+        console.print(table)
+    finally:
+        store.close()
+
+
+@memory_app.command("search")
+def memory_search(
+    query: str = typer.Argument(..., help="What to search for"),
+    k: int = typer.Option(3, help="How many matches to return"),
+) -> None:
+    """Search episodic memory by semantic similarity."""
+    character = load_character(settings.character_path)
+    store = _open_episodic_store(character)
+    if store is None:
+        raise typer.Exit(code=1)
+    try:
+        hits = store.search(query, k=k)
+        if not hits:
+            console.print("[dim](no matches — store empty?)[/dim]")
+            return
+        for record, score in hits:
+            console.print(f"[bold cyan]{score:.3f}[/bold cyan]  [bold]{record.title}[/bold]")
+            if record.principle:
+                console.print(f"  [dim italic]{record.principle}[/dim italic]")
+            snippet = record.body[:220]
+            ellipsis = "…" if len(record.body) > 220 else ""
+            console.print(f"  [dim]{snippet}{ellipsis}[/dim]")
+            console.print()
+    finally:
+        store.close()
+
+
+@memory_app.command("ingest")
+def memory_ingest() -> None:
+    """Force an ingestion pass of the character's seed memories.
+    Idempotent — existing records with matching external_id are
+    preserved."""
+    character = load_character(settings.character_path)
+    store = _open_episodic_store(character, ingest=False)
+    if store is None:
+        raise typer.Exit(code=1)
+    try:
+        inserted = ensure_seeds_ingested(character, store)
+        total = len(store.all())
+        console.print(f"[bold]{inserted}[/bold] new, [bold]{total}[/bold] total in episodic store.")
+    finally:
+        store.close()
 
 
 if __name__ == "__main__":
