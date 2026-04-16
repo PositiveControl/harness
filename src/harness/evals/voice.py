@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from harness.character import Character
+from harness.evals.voice_score import VoiceScore, score_actual_against_gold
 from harness.model.adapter import ChatMessage, ModelAdapter
 from harness.persona.rewriter import build_rewriter_messages
 
@@ -18,6 +19,7 @@ class VoiceEvalResult:
     prompt: str
     gold: str
     actual: str
+    score: VoiceScore
     draft: str | None = None  # pass-1 output when persona is on; None otherwise
 
 
@@ -88,6 +90,7 @@ def run_voice_eval(
                     prompt=sample.prompt,
                     gold=sample.gold,
                     actual=actual,
+                    score=score_actual_against_gold(actual, sample.gold),
                     draft=draft,
                 )
             )
@@ -98,6 +101,7 @@ def run_voice_eval(
                     prompt=sample.prompt,
                     gold=sample.gold,
                     actual=draft,
+                    score=score_actual_against_gold(draft, sample.gold),
                 )
             )
     return results

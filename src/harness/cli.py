@@ -207,6 +207,13 @@ def eval_voice(
                 "prompt": r.prompt,
                 "gold": r.gold,
                 "actual": r.actual,
+                "score": {
+                    "aggregate": r.score.aggregate,
+                    "length_match": r.score.length_match,
+                    "no_banned_openers": r.score.no_banned_openers,
+                    "bullet_discipline": r.score.bullet_discipline,
+                    "notes": list(r.score.notes),
+                },
                 **({"draft": r.draft} if r.draft is not None else {}),
             }
             for r in results
@@ -219,9 +226,20 @@ def eval_voice(
     table.add_column("prompt")
     table.add_column("gold", style="green")
     table.add_column("actual", style="yellow")
+    table.add_column("score", style="cyan")
     for r in results:
-        table.add_row(r.sample_id, r.prompt, r.gold.strip(), r.actual.strip())
+        score_cell = (
+            f"{r.score.aggregate:.2f}\n"
+            f"len={r.score.length_match:.2f}\n"
+            f"open={r.score.no_banned_openers:.0f}\n"
+            f"bul={r.score.bullet_discipline:.1f}"
+        )
+        table.add_row(r.sample_id, r.prompt, r.gold.strip(), r.actual.strip(), score_cell)
+    aggregate = sum(r.score.aggregate for r in results) / max(len(results), 1)
     console.print(table)
+    console.print(
+        f"[bold]aggregate voice score:[/bold] {aggregate:.3f} across {len(results)} sample(s)"
+    )
 
 
 if __name__ == "__main__":
