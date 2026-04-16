@@ -16,8 +16,14 @@ def test_load_airton_shape() -> None:
     assert len(character.values) == 5
     assert len(character.taboos) >= 6
     assert len(character.seed_memories) == 5
-    assert len(character.voice_samples) == 6
+    assert len(character.voice_samples) >= 20
     assert all(s.principle for s in character.seed_memories)
+
+
+def test_voice_samples_have_unique_ids() -> None:
+    character = load_character(AIRTON)
+    ids = [s.id for s in character.voice_samples]
+    assert len(ids) == len(set(ids))
 
 
 def test_self_awareness_is_explicit() -> None:
