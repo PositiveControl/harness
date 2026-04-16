@@ -26,8 +26,19 @@ _BANNED_OPENERS: tuple[str, ...] = (
 )
 
 # Numbered lists ("1. foo\n2. bar") are Airton-forbidden when the gold
-# uses prose. Bullet dashes ("- foo\n- bar") are allowed by the style rules.
+# uses prose. Bullet dashes ("- foo\n- bar") are allowed — often right.
 _NUMBERED_LIST_PATTERN = re.compile(r"^\s*\d+[.)]\s", re.MULTILINE)
+
+# Dashed / asterisk / bullet-dot bullet lines, capturing the body of the
+# bullet so we can check how long each item is.
+_BULLET_LINE = re.compile(r"^\s*[-*•]\s+(.+?)$", re.MULTILINE)
+
+# A "bloated" bullet is the tutorial-bullet failure mode: a bullet item
+# that's itself a multi-sentence paragraph. Airton's real bullet usage
+# (see voice suite: stumped, long_context_compression) is one short
+# clause per bullet.
+_MAX_BULLET_CHARS = 140
+_SENTENCE_END = re.compile(r"[.!?](?:\s|$)")
 
 # Mid-sentence assistant tells. A phrase here is a weak signal alone; in
 # aggregate, three or four of them in a response is very strong. Gold
@@ -76,7 +87,8 @@ class VoiceScore:
 
     length_match: float
     no_banned_openers: float
-    bullet_discipline: float
+    bullet_discipline: float  # no numbered lists unless gold has them
+    bullet_density: float  # bullet items are short (one clause each)
     filler_discipline: float
     aggregate: float
     notes: tuple[str, ...]
@@ -114,6 +126,25 @@ def _bullet_discipline_score(actual: str, gold: str) -> tuple[float, str | None]
     return 0.5, "missing_expected_numbered_list"
 
 
+def _bullet_density_score(actual: str) -> tuple[float, str | None]:
+    """Penalize 'tutorial-bullets' — list items that are themselves
+    multi-sentence paragraphs. Airton's bullet usage is one clause per
+    item; anything longer reads as exploded prose and is the failure
+    mode we're actually trying to prevent."""
+    bullets = _BULLET_LINE.findall(actual)
+    if not bullets:
+        return 1.0, None
+    bloated = 0
+    for body in bullets:
+        sentence_count = len(_SENTENCE_END.findall(body.strip()))
+        if sentence_count >= 2 or len(body.strip()) > _MAX_BULLET_CHARS:
+            bloated += 1
+    if bloated == 0:
+        return 1.0, None
+    ratio = bloated / len(bullets)
+    return round(max(0.0, 1.0 - ratio), 3), f"bloated_bullets={bloated}/{len(bullets)}"
+
+
 def _filler_score(actual: str, gold: str) -> tuple[float, list[str]]:
     actual_lower = actual.lower()
     gold_lower = gold.lower()
@@ -134,14 +165,17 @@ def _filler_score(actual: str, gold: str) -> tuple[float, list[str]]:
 
 
 def score_actual_against_gold(actual: str, gold: str) -> VoiceScore:
-    """Compare a model output to its gold response along four axes:
-    length, opener register, bullet shape, and mid-sentence filler.
-    Cheap, deterministic, interpretable. A perfect score is 1.0 across
-    the board. The `judge_score` field is populated separately by the
-    optional LLM judge when running evals with --judge."""
+    """Compare a model output to its gold response along five axes:
+    length, opener register, bullet shape (numbered vs dashed), bullet
+    density (one clause per item vs exploded paragraphs), and
+    mid-sentence filler. Cheap, deterministic, interpretable. A
+    perfect score is 1.0 across the board. The `judge_score` field is
+    populated separately by the optional LLM judge when running evals
+    with --judge."""
     length_match, length_note = _length_score(actual, gold)
     no_banned, banned_note = _banned_opener_score(actual)
     bullet_discipline, bullet_note = _bullet_discipline_score(actual, gold)
+    bullet_density, density_note = _bullet_density_score(actual)
     filler_discipline, filler_notes = _filler_score(actual, gold)
 
     notes: list[str] = [length_note]
@@ -149,13 +183,18 @@ def score_actual_against_gold(actual: str, gold: str) -> VoiceScore:
         notes.append(banned_note)
     if bullet_note:
         notes.append(bullet_note)
+    if density_note:
+        notes.append(density_note)
     notes.extend(filler_notes)
 
-    aggregate = (length_match + no_banned + bullet_discipline + filler_discipline) / 4.0
+    aggregate = (
+        length_match + no_banned + bullet_discipline + bullet_density + filler_discipline
+    ) / 5.0
     return VoiceScore(
         length_match=length_match,
         no_banned_openers=no_banned,
         bullet_discipline=bullet_discipline,
+        bullet_density=bullet_density,
         filler_discipline=filler_discipline,
         aggregate=round(aggregate, 3),
         notes=tuple(notes),

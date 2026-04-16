@@ -67,9 +67,10 @@ def test_length_score_punishes_long_drift() -> None:
     assert score.length_match < 0.3
 
 
-def test_aggregate_is_mean_of_four() -> None:
+def test_aggregate_is_mean_of_five() -> None:
     gold = "Don't know."
-    # Banned opener + bullets + long + filler = all four should hit
+    # Banned opener + numbered + long + filler — density passes (bullets
+    # are one clause each).
     actual = (
         "That's a great question. Here are the causes to ensure correctness:\n"
         "1. Comprehensive testing\n"
@@ -80,9 +81,46 @@ def test_aggregate_is_mean_of_four() -> None:
         score.length_match
         + score.no_banned_openers
         + score.bullet_discipline
+        + score.bullet_density
         + score.filler_discipline
-    ) / 4.0
+    ) / 5.0
     assert score.aggregate == round(expected, 3)
+
+
+def test_bullet_density_passes_on_one_clause_items() -> None:
+    gold = "Two paths:\n- read source\n- write a repro"
+    actual = "Two paths:\n- Read the source\n- Write a repro first"
+    score = score_actual_against_gold(actual, gold)
+    assert score.bullet_density == 1.0
+
+
+def test_bullet_density_penalizes_multi_sentence_items() -> None:
+    gold = "short prose"
+    actual = (
+        "Some options:\n"
+        "- First option. This is important because it matters a lot.\n"
+        "- Second option. Also consider the edge cases. Run tests too.\n"
+        "- Third option. Quick fix that works."
+    )
+    score = score_actual_against_gold(actual, gold)
+    # 2 of 3 bullets have >=2 sentences; density score reflects the ratio.
+    assert score.bullet_density < 1.0
+    assert any("bloated_bullets" in n for n in score.notes)
+
+
+def test_bullet_density_penalizes_very_long_items() -> None:
+    gold = "short"
+    long_bullet = "x" * 200
+    actual = f"Items:\n- {long_bullet}\n- short one"
+    score = score_actual_against_gold(actual, gold)
+    assert score.bullet_density < 1.0
+
+
+def test_bullet_density_ignores_prose_responses() -> None:
+    gold = "short"
+    actual = "This is a prose response with no bullets at all."
+    score = score_actual_against_gold(actual, gold)
+    assert score.bullet_density == 1.0
 
 
 def test_filler_phrase_in_actual_penalizes() -> None:

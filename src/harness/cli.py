@@ -338,6 +338,7 @@ def eval_voice(
                     "length_match": r.score.length_match,
                     "no_banned_openers": r.score.no_banned_openers,
                     "bullet_discipline": r.score.bullet_discipline,
+                    "bullet_density": r.score.bullet_density,
                     "filler_discipline": r.score.filler_discipline,
                     "judge_score": r.score.judge_score,
                     "notes": list(r.score.notes),
@@ -362,6 +363,7 @@ def eval_voice(
             f"len={r.score.length_match:.2f}\n"
             f"open={r.score.no_banned_openers:.0f}\n"
             f"bul={r.score.bullet_discipline:.1f}\n"
+            f"den={r.score.bullet_density:.2f}\n"
             f"fil={r.score.filler_discipline:.2f}"
             f"{judge_line}"
         )
