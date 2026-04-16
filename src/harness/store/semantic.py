@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS semantic (
     superseded_by  INTEGER REFERENCES semantic(id),
     tier           TEXT    NOT NULL DEFAULT 'working',
     created_at     TEXT    NOT NULL,
-    embedding      BLOB    NOT NULL
+    embedding      BLOB    NOT NULL,
+    embedder_id    TEXT,
+    embedding_dim  INTEGER
 );
 """
 
@@ -68,12 +70,20 @@ class SemanticStore:
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
         self._conn.executescript(_CREATE_TABLE)
-        # Schema migration: add superseded_by if the table pre-dates Phase 1b.2.
+        # Schema migrations.
         cols = {row[1] for row in self._conn.execute("PRAGMA table_info(semantic)")}
         if "superseded_by" not in cols:
             self._conn.execute(
                 "ALTER TABLE semantic ADD COLUMN superseded_by INTEGER REFERENCES semantic(id)"
             )
+        if "embedder_id" not in cols:
+            self._conn.execute("ALTER TABLE semantic ADD COLUMN embedder_id TEXT")
+        if "embedding_dim" not in cols:
+            self._conn.execute("ALTER TABLE semantic ADD COLUMN embedding_dim INTEGER")
+        self._conn.execute(
+            "UPDATE semantic SET embedding_dim = LENGTH(embedding) / 4 WHERE embedding_dim IS NULL"
+        )
+        self._conn.execute("UPDATE semantic SET embedder_id = 'legacy' WHERE embedder_id IS NULL")
         self._conn.executescript(_CREATE_INDEXES)
 
     def add(
@@ -101,8 +111,8 @@ class SemanticStore:
             """INSERT INTO semantic (
                 subject, predicate, object, confidence, source,
                 attributed_to, session_id, user_id, supersedes, tier,
-                created_at, embedding
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                created_at, embedding, embedder_id, embedding_dim
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 subject,
                 predicate,
@@ -116,6 +126,8 @@ class SemanticStore:
                 tier,
                 now,
                 vec.tobytes(),
+                self.embedder.id,
+                self.embedder.dimension,
             ),
         )
         return self.get(cur.lastrowid or 0)
@@ -182,8 +194,9 @@ class SemanticStore:
                       attributed_to, session_id, user_id, supersedes, tier,
                       created_at, superseded_by, embedding
                FROM semantic
-               WHERE confidence >= ? AND superseded_by IS NULL""",
-            (min_confidence,),
+               WHERE confidence >= ? AND superseded_by IS NULL
+                 AND embedding_dim = ?""",
+            (min_confidence, self.embedder.dimension),
         ).fetchall()
         if not rows:
             return []
@@ -204,6 +217,41 @@ class SemanticStore:
         if row is None:
             raise KeyError(f"semantic fact {record_id} not found")
         return np.frombuffer(row[0], dtype=np.float32)
+
+    def count_mismatched_embeddings(self) -> int:
+        row = self._conn.execute(
+            """SELECT COUNT(*) FROM semantic
+               WHERE superseded_by IS NULL AND embedding_dim != ?""",
+            (self.embedder.dimension,),
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def rebuild_embeddings(self) -> tuple[int, int]:
+        """Re-embed every active fact with the current embedder."""
+        cur = self._conn.execute(
+            """SELECT id, subject, predicate, object FROM semantic
+               WHERE superseded_by IS NULL ORDER BY id"""
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return 0, 0
+        texts = [f"{r[1]} {r[2]} {r[3]}" for r in rows]
+        vectors = self.embedder.embed(texts)
+        updated = 0
+        for (record_id, *_), vec in zip(rows, vectors, strict=True):
+            self._conn.execute(
+                """UPDATE semantic
+                      SET embedding = ?, embedder_id = ?, embedding_dim = ?
+                    WHERE id = ?""",
+                (
+                    vec.astype(np.float32).tobytes(),
+                    self.embedder.id,
+                    self.embedder.dimension,
+                    record_id,
+                ),
+            )
+            updated += 1
+        return updated, 0
 
     def close(self) -> None:
         self._conn.close()

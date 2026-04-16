@@ -596,6 +596,35 @@ def memory_consolidate(
         semantic.close()
 
 
+@memory_app.command("rebuild-embeddings")
+def memory_rebuild_embeddings() -> None:
+    """Re-embed every active episodic and semantic record with the
+    current embedder. Use after switching embedder models so existing
+    data participates in search again."""
+    character = load_character(settings.character_path)
+    episodic = _open_episodic_store(character, ingest=False)
+    semantic = _open_semantic_store()
+    if episodic is None or semantic is None:
+        raise typer.Exit(code=1)
+    try:
+        ep_mismatched = episodic.count_mismatched_embeddings()
+        sem_mismatched = semantic.count_mismatched_embeddings()
+        console.print(
+            f"episodic: {ep_mismatched} mismatched; semantic: {sem_mismatched} mismatched."
+        )
+        with Status("re-embedding episodic…", console=console):
+            ep_updated, _ = episodic.rebuild_embeddings()
+        with Status("re-embedding semantic…", console=console):
+            sem_updated, _ = semantic.rebuild_embeddings()
+        console.print(
+            f"[green]rebuilt {ep_updated} episodic and {sem_updated} semantic "
+            f"embeddings with {episodic.embedder.id}.[/green]"
+        )
+    finally:
+        episodic.close()
+        semantic.close()
+
+
 @memory_app.command("wipe")
 def memory_wipe(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),

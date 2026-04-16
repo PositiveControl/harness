@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS episodic (
     created_at     TEXT    NOT NULL,
     last_accessed  TEXT,
     embedding      BLOB    NOT NULL,
+    embedder_id    TEXT,
+    embedding_dim  INTEGER,
     superseded_by  INTEGER REFERENCES episodic(id)
 );
 """
@@ -74,12 +76,24 @@ class EpisodicStore:
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
         self._conn.executescript(_CREATE_TABLE)
-        # Schema migration: add superseded_by if the table pre-dates Phase 1b.2.
+        # Schema migrations — safe to run on fresh tables (no-op) or on
+        # older tables (adds the missing column).
         cols = {row[1] for row in self._conn.execute("PRAGMA table_info(episodic)")}
         if "superseded_by" not in cols:
             self._conn.execute(
                 "ALTER TABLE episodic ADD COLUMN superseded_by INTEGER REFERENCES episodic(id)"
             )
+        if "embedder_id" not in cols:
+            self._conn.execute("ALTER TABLE episodic ADD COLUMN embedder_id TEXT")
+        if "embedding_dim" not in cols:
+            self._conn.execute("ALTER TABLE episodic ADD COLUMN embedding_dim INTEGER")
+        # Backfill newly-added columns for rows from older schemas.
+        # Dim is inferable from the BLOB length (4 bytes per float32);
+        # embedder_id can't be recovered, so legacy rows get "legacy".
+        self._conn.execute(
+            "UPDATE episodic SET embedding_dim = LENGTH(embedding) / 4 WHERE embedding_dim IS NULL"
+        )
+        self._conn.execute("UPDATE episodic SET embedder_id = 'legacy' WHERE embedder_id IS NULL")
         # Indexes created after migration so the superseded_by index can
         # reference the freshly-added column.
         self._conn.executescript(_CREATE_INDEXES)
@@ -127,8 +141,9 @@ class EpisodicStore:
         cur = self._conn.execute(
             """INSERT INTO episodic (
                 external_id, title, body, principle, tags, tier, source,
-                session_id, user_id, created_at, embedding
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                session_id, user_id, created_at, embedding,
+                embedder_id, embedding_dim
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 external_id,
                 title,
@@ -141,6 +156,8 @@ class EpisodicStore:
                 user_id,
                 now,
                 vec.tobytes(),
+                self.embedder.id,
+                self.embedder.dimension,
             ),
         )
         return self.get(cur.lastrowid or 0)
@@ -205,16 +222,18 @@ class EpisodicStore:
         k: int = 3,
         min_score: float = 0.0,
     ) -> list[tuple[EpisodicRecord, float]]:
-        """Return up to `k` active (non-superseded) records with cosine
-        similarity >= `min_score`, paired with the similarity. Empty
-        list if the store is empty or nothing clears the threshold —
-        memory that doesn't clear the bar pollutes the prompt and
-        gives us hallucinated relevance where there is none."""
+        """Return up to `k` active records with cosine similarity >=
+        `min_score`. Rows whose embedding dimension doesn't match the
+        current embedder are silently skipped — they belong to a
+        previous embedder generation and need a `rebuild-embeddings`
+        run before they'll participate in search again."""
         rows = self._conn.execute(
             """SELECT id, external_id, title, body, principle, tags, tier,
                       source, session_id, user_id, created_at, superseded_by,
                       embedding
-               FROM episodic WHERE superseded_by IS NULL"""
+               FROM episodic
+               WHERE superseded_by IS NULL AND embedding_dim = ?""",
+            (self.embedder.dimension,),
         ).fetchall()
         if not rows:
             return []
@@ -230,6 +249,52 @@ class EpisodicStore:
 
         scored.sort(key=lambda t: t[1], reverse=True)
         return scored[:k]
+
+    def count_mismatched_embeddings(self) -> int:
+        """How many active rows carry embeddings from a prior embedder
+        generation. Use to tell the user whether a rebuild is worth it."""
+        row = self._conn.execute(
+            """SELECT COUNT(*) FROM episodic
+               WHERE superseded_by IS NULL AND embedding_dim != ?""",
+            (self.embedder.dimension,),
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def rebuild_embeddings(self) -> tuple[int, int]:
+        """Re-embed every active row with the current embedder. Useful
+        after an embedder switch — previous BLOBs are dim-locked to the
+        old model. Returns (rows_updated, rows_skipped). Skipped rows
+        are superseded ones; no point re-embedding retired data."""
+        cur = self._conn.execute(
+            """SELECT id, title, body, principle FROM episodic
+               WHERE superseded_by IS NULL ORDER BY id"""
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return 0, 0
+        texts: list[str] = []
+        for _id, title, body, principle in rows:
+            parts = [title]
+            if principle:
+                parts.append(principle)
+            parts.append(body)
+            texts.append("\n\n".join(parts))
+        vectors = self.embedder.embed(texts)
+        updated = 0
+        for (record_id, _title, _body, _principle), vec in zip(rows, vectors, strict=True):
+            self._conn.execute(
+                """UPDATE episodic
+                      SET embedding = ?, embedder_id = ?, embedding_dim = ?
+                    WHERE id = ?""",
+                (
+                    vec.astype(np.float32).tobytes(),
+                    self.embedder.id,
+                    self.embedder.dimension,
+                    record_id,
+                ),
+            )
+            updated += 1
+        return updated, 0
 
     def close(self) -> None:
         self._conn.close()

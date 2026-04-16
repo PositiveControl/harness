@@ -15,8 +15,8 @@ Living document. The authoritative architecture summary is `CLAUDE.md`; this fil
   - **1d.2** — LLM-judge scoring + filler-pattern detector + chain-of-rewrite option (done).
   - **1b.0** — Episodic memory store (SQLite + BLOB embeddings, cosine scan). Seed memories ingested from character on chat startup. Retrieval wired into the chat system prompt. Validated live against Qwen 2.5 32B — memory-driven responses reproduce seed-memory specifics (done).
   - **1b.1** — Semantic store (atomic facts, same pattern) + batch scribe that extracts episodic + semantic candidates from transcript turns. Watermark-tracked for incremental reruns. Validated end-to-end (done).
-  - **1b.2** — Consolidator: periodic pass that merges duplicates, promotes working → consolidated, supersedes stale facts, drops noise. Not yet started.
-  - **1b.3** — Dimension tracking in stores (`embedder_id` / `dimension` columns), so future embedder switches aren't destructive. Not yet started.
+  - **1b.2** — Consolidator: cluster episodic near-duplicates, group semantic facts by (subject, predicate), promote to consolidated, mark originals superseded. Search filters out superseded rows (done).
+  - **1b.3** — Dimension tracking in stores (`embedder_id` / `embedding_dim` columns) + `memory rebuild-embeddings` command, so future embedder switches are non-destructive. Rows with mismatched dims sit quietly until rebuilt (done).
 - **Phase 2 — Multi-user.** Web gateway, ACLs, affective + procedural memory.
 - **Phase 3 — Gateways + roles.** Slack + Matrix; Kuzu graph layer; multi-agent orchestrator.
 - **Phase 4 — Concurrent + always-on.** Concurrent sessions, launchd, backup target landed.

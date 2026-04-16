@@ -32,6 +32,8 @@ Environment management with `uv` (Python 3.12):
 - `uv run harness memory wipe --yes` — clear episodic + semantic + scribe-watermark data (transcripts preserved). Required when switching embedder dimensions.
 - `uv run harness memory fact-list` / `fact-search "query"` / `fact-add subject predicate object` — semantic store CRUD/search.
 - `uv run harness memory scribe --session ID --model mlx` — batch-extract memories from unprocessed transcript turns, watermark-tracked.
+- `uv run harness memory consolidate` — cluster near-duplicate episodes, merge fact groups by (subject, predicate), supersede retired rows.
+- `uv run harness memory rebuild-embeddings` — re-embed every active record with the current embedder. Non-destructive; use after an embedder switch.
 
 Quality gates (all four must stay green; pre-commit runs them on every commit):
 
