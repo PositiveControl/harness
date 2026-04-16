@@ -17,6 +17,10 @@ mlx = [
     "mlx>=0.22",
     "mlx-lm>=0.20",
 ]
+retrieval = [
+    "sentence-transformers>=3.0",
+    "numpy>=2.0",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -99,4 +103,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["mlx", "mlx.*", "mlx_lm", "mlx_lm.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["sentence_transformers", "sentence_transformers.*", "torch", "torch.*"]
 ignore_missing_imports = true

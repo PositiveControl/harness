@@ -13,7 +13,7 @@ The model is plug-n-play: all model-specific code lives behind an adapter. Prima
 Environment management with `uv` (Python 3.12):
 
 - `uv sync --extra dev` — install runtime + dev deps.
-- `uv sync --extra dev --extra mlx` — add MLX (required before any `--model mlx` command).
+- `uv sync --extra dev --extra mlx --extra retrieval` — add MLX and the retrieval stack (required for `--model mlx` and for retrieval-based few-shot respectively).
 - `uv run hf download mlx-community/Qwen2.5-32B-Instruct-4bit` — pull Qwen 2.5 32B MLX build (one-time, ~18 GB).
 - `uv run harness describe` — dump Airton's resolved character sheet.
 - `uv run harness chat` — CLI chat loop with the echo adapter.
@@ -22,6 +22,8 @@ Environment management with `uv` (Python 3.12):
 - `uv run harness eval voice --model mlx` — run the voice-drift eval; Rich table of `prompt | gold | actual` per sample (leave-one-out by default).
 - `uv run harness eval voice --model mlx --persona` — eval with the persona post-pass active; JSON output includes a `draft` field (pass-1 substance) alongside `actual` (pass-2 voiced).
 - `uv run harness eval voice --model mlx --no-leave-one-out` — ceiling diagnostic: every sample sees the full example set.
+- `uv run harness eval voice --model mlx --top-k 0` — disable retrieval, show all samples (Phase 1a.2 baseline).
+- `uv run harness eval voice --model mlx --top-k 6 --persona` — current best: retrieval-picked few-shot + voice-rewrite post-pass.
 
 Quality gates (all four must stay green; pre-commit runs them on every commit):
 
@@ -61,7 +63,11 @@ The system is designed against these invariants — they shape almost every deci
   - `evals/` — offline evaluations. Pure functions that take a `Character` + `ModelAdapter` and return structured results.
     - `voice.py` — `run_voice_eval(...)` compares model output against the gold responses in `character/airton/voice/canonical.yaml`. Supports `leave_one_out` (default True) and `persona` (default False).
   - `persona/` — voice enforcement on top of the base adapter.
-    - `rewriter.py` — `PersonaAdapter` wraps a base adapter with a two-pass flow: pass 1 produces substance via the caller's system prompt, pass 2 rewrites in the character's register using a dedicated rewriter prompt. `build_rewriter_messages(character, draft, exclude_example_ids=...)` is the pure function the eval uses inline so leave-one-out stays consistent across both passes.
+    - `rewriter.py` — `PersonaAdapter` wraps a base adapter with a two-pass flow: pass 1 produces substance via the caller's system prompt, pass 2 rewrites in the character's register using a dedicated rewriter prompt. `build_rewriter_messages(character, draft, include_samples=...)` is the pure function the eval uses inline so sample selection stays consistent across both passes.
+  - `retrieval/` — embedding-backed few-shot selection. Currently used for voice samples; the same machinery will back episodic and semantic memory lookup in Phase 1b.
+    - `embed.py` — `Embedder` Protocol. Implementations must return L2-normalized vectors so cosine similarity is a dot product.
+    - `st_embedder.py` — `SentenceTransformersEmbedder` (BAAI/bge-small-en-v1.5 by default; MPS on Mac, CPU elsewhere; lazy-loaded).
+    - `voice_retriever.py` — `VoiceRetriever` embeds all sample prompts once at construction; `top_k(query, k=, exclude_ids=)` returns the most similar samples. The CLI (`chat`, `eval voice`) and the voice eval build one per character load.
   - `store/transcript.py` — append-only SQLite transcript with WAL + FTS5. All future stores (episodic, semantic, graph, procedural, affective, identity, world) follow this shape: append-first, indexed for retrieval.
   - `cli.py` — Typer app: `chat` and `describe` commands.
 - `tests/` — pytest. Tests hit real stores (SQLite in `tmp_path`) rather than mocks.

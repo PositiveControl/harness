@@ -97,3 +97,29 @@ def test_no_leave_one_out_includes_every_sample() -> None:
     prompt = adapter.seen_system_prompts[0]
     for sample in character.voice_samples:
         assert sample.gold.strip() in prompt
+
+
+def test_voice_eval_uses_retriever_when_provided() -> None:
+    """With a retriever in play, the prompt should contain only the
+    retrieved few samples — not all N. Uses the fake embedder imported
+    from test_retrieval."""
+    from harness.retrieval import VoiceRetriever
+    from tests.test_retrieval import _FakeEmbedder
+
+    character = load_character(AIRTON)
+    retriever = VoiceRetriever(embedder=_FakeEmbedder(), character=character)
+    adapter = _RecordingAdapter()
+
+    run_voice_eval(
+        character,
+        adapter,
+        sample_ids=["self_reference"],
+        retriever=retriever,
+        top_k=4,
+    )
+
+    assert len(adapter.seen_system_prompts) == 1
+    prompt = adapter.seen_system_prompts[0]
+    shown = sum(1 for s in character.voice_samples if s.gold.strip() in prompt)
+    # 4 retrieved examples; all others must be absent
+    assert shown == 4

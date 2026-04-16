@@ -15,12 +15,32 @@ from harness.evals.voice import run_voice_eval
 from harness.model import AdapterName, ChatMessage, ModelAdapter, make_adapter
 from harness.model.adapter import Role
 from harness.persona import PersonaAdapter
+from harness.retrieval import VoiceRetriever
 from harness.store.transcript import Transcript
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 eval_app = typer.Typer(help="Evaluations against the current character.", no_args_is_help=True)
 app.add_typer(eval_app, name="eval")
 console = Console()
+
+
+def _maybe_retriever(character: Character, top_k: int) -> VoiceRetriever | None:
+    """Build a VoiceRetriever if retrieval is requested and the optional
+    sentence-transformers dep is installed. Returns None to signal the
+    caller to fall back to full-set few-shot."""
+    if top_k <= 0:
+        return None
+    try:
+        from harness.retrieval.st_embedder import SentenceTransformersEmbedder
+    except ImportError:
+        console.print(
+            "[yellow]retrieval extra not installed; falling back to all-samples few-shot. "
+            "Run `uv sync --extra retrieval` to enable top-K retrieval.[/yellow]"
+        )
+        return None
+    embedder = SentenceTransformersEmbedder()
+    with Status(f"warming embedder ({embedder.id})…", console=console):
+        return VoiceRetriever(embedder=embedder, character=character)
 
 
 def _resolve_adapter(
@@ -59,16 +79,23 @@ def chat(
         "--persona/--no-persona",
         help="Wrap the model with a voice-rewrite post-pass (Airton's register).",
     ),
+    top_k: int = typer.Option(
+        6,
+        help="Retrieve top-K voice samples by similarity to the user message "
+        "(default 6). Set 0 to show every sample.",
+    ),
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
     character = load_character(settings.character_path)
     adapter = _resolve_adapter(model, persona=persona, character=character)
+    retriever = _maybe_retriever(character, top_k)
     transcript = Transcript(settings.db_path)
 
-    console.print(f"[bold]{character.name}[/bold] loaded. session={session} model={adapter.id}")
+    console.print(
+        f"[bold]{character.name}[/bold] loaded. "
+        f"session={session} model={adapter.id} top_k={top_k if retriever else 0}"
+    )
     console.print("[dim](ctrl-c to exit)[/dim]\n")
-
-    system = ChatMessage(role="system", content=character.system_prompt())
 
     try:
         while True:
@@ -82,6 +109,14 @@ def chat(
                 role="user",
                 content=user_input,
             )
+
+            if retriever is not None:
+                examples = retriever.top_k(user_input, k=top_k)
+                system_content = character.system_prompt(include_samples=examples)
+            else:
+                system_content = character.system_prompt()
+            system = ChatMessage(role="system", content=system_content)
+
             history = [
                 ChatMessage(role=cast(Role, m.role), content=m.content)
                 for m in transcript.tail(session, limit=50)
@@ -141,12 +176,18 @@ def eval_voice(
         "--persona/--no-persona",
         help="Run the voice-rewrite post-pass after the substance pass.",
     ),
+    top_k: int = typer.Option(
+        6,
+        help="Retrieve top-K voice samples by similarity to each prompt "
+        "(default 6). Set 0 to show every sample (Phase 1a.2 baseline).",
+    ),
 ) -> None:
     """Run the canonical voice prompts and show model-vs-gold side by side."""
     character = load_character(settings.character_path)
     # eval runs persona inline in run_voice_eval so both passes stay
     # leave-one-out-consistent — do not wrap adapter here.
     adapter = _resolve_adapter(model)
+    retriever = _maybe_retriever(character, top_k)
 
     results = run_voice_eval(
         character,
@@ -155,6 +196,8 @@ def eval_voice(
         sample_ids=sample if sample else None,
         leave_one_out=leave_one_out,
         persona=persona,
+        retriever=retriever,
+        top_k=top_k,
     )
 
     if as_json:

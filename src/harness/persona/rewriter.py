@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING
 
 from harness.model.adapter import ChatMessage
 
 if TYPE_CHECKING:
-    from harness.character import Character
+    from harness.character import Character, VoiceSample
     from harness.model.adapter import ModelAdapter
 
 
@@ -41,15 +41,21 @@ def build_rewriter_messages(
     draft: str,
     *,
     exclude_example_ids: frozenset[str] | None = None,
+    include_samples: Sequence[VoiceSample] | None = None,
 ) -> list[ChatMessage]:
     """Compose the messages for a voice-rewrite pass. The system prompt
     reuses the character sheet (voice examples + style rules) and
     appends rewriter-specific instructions. The user message is the
     draft to be rewritten.
 
-    `exclude_example_ids` propagates to the underlying character prompt
-    so the voice eval can stay leave-one-out-honest across both passes."""
-    base_system = character.system_prompt(exclude_example_ids=exclude_example_ids)
+    `include_samples` and `exclude_example_ids` forward to
+    `Character.system_prompt`. With retrieval active the caller passes
+    the retrieved sample set via `include_samples` for both passes so
+    pass 1 and pass 2 see the same anchors."""
+    base_system = character.system_prompt(
+        exclude_example_ids=exclude_example_ids,
+        include_samples=include_samples,
+    )
     instructions = _REWRITER_INSTRUCTIONS.format(name=character.name)
     system = ChatMessage(
         role="system",

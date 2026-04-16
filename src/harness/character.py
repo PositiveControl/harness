@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import textwrap
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,13 +50,24 @@ class Character:
     voice_samples: tuple[VoiceSample, ...]
     seed_memories: tuple[SeedMemory, ...]
 
-    def system_prompt(self, *, exclude_example_ids: frozenset[str] | None = None) -> str:
+    def system_prompt(
+        self,
+        *,
+        exclude_example_ids: frozenset[str] | None = None,
+        include_samples: Sequence[VoiceSample] | None = None,
+    ) -> str:
         """Fallback system prompt for single-model ReAct and voice evals.
         Richer pipelines (multi-agent roles + critic) compose their own.
 
-        `exclude_example_ids` removes matching voice samples from the
-        few-shot examples block. Use it from the voice eval so the
-        prompt being scored isn't also its own demonstration."""
+        Example selection (mutually exclusive):
+
+        - `include_samples` (preferred when using retrieval): use exactly
+          these samples in the order given. The caller is typically a
+          retriever that picked top-K by similarity.
+        - `exclude_example_ids`: use all voice samples except those with
+          matching ids. The voice eval uses this for leave-one-out.
+
+        If neither is given, all voice samples are shown."""
         excluded = exclude_example_ids or frozenset()
         values = "\n".join(f"  - {v.rule}" for v in self.values)
         taboos = "\n".join(f"  - {t}" for t in self.taboos)
@@ -83,7 +95,10 @@ class Character:
                 when asked, say so directly."""
         )
 
-        examples = [s for s in self.voice_samples if s.id not in excluded]
+        if include_samples is not None:
+            examples: list[VoiceSample] = list(include_samples)
+        else:
+            examples = [s for s in self.voice_samples if s.id not in excluded]
         examples_block = (
             "\n\n".join(f"User: {s.prompt}\nYou: {s.gold.strip()}" for s in examples)
             if examples
