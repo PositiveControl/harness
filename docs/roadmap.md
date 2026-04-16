@@ -1,85 +1,99 @@
 # Roadmap
 
-Living document. The authoritative architecture summary is `CLAUDE.md`; this file tracks sequencing and open questions across phases.
+Living document. Authoritative architecture + commands reference is `CLAUDE.md`; daily-use workflow is `docs/usage.md`. This file tracks phase sequencing and open questions.
 
-## Phase structure at a glance
+## Where we are (2026-04-16)
 
-- **Phase 0 — Skeleton.** Complete. Character package, model adapter boundary, SQLite transcript, CLI chat with echo adapter, quality gates (ruff + mypy-strict + pre-commit).
-- **Phase 1 — Memory + persona.** In progress. Broken into sub-phases as the voice work expanded:
-  - **1a** — MLX adapter for Qwen 2.5 32B + voice-drift eval (done).
-  - **1a.1** — Few-shot voice examples + leave-one-out eval flag (done).
-  - **1a.2** — Voice suite expanded from 6 to 32 samples (done). Regression on hard prompts revealed the "more examples" strategy has a ceiling — motivated 1b.0.
-  - **1b.0** — Retrieval-based few-shot (`sentence-transformers` + `VoiceRetriever`). Same substrate that Phase 1b memory uses (done).
-  - **1d** — Persona-voice post-pass (`PersonaAdapter`, two-pass generation; done).
-  - **1d.1** — Voice scorer (length / openers / bullets) + tightened rewriter prompt (done).
-  - **1d.2** — LLM-judge scoring + filler-pattern detector + chain-of-rewrite option (done).
-  - **1b.0** — Episodic memory store (SQLite + BLOB embeddings, cosine scan). Seed memories ingested from character on chat startup. Retrieval wired into the chat system prompt. Validated live against Qwen 2.5 32B — memory-driven responses reproduce seed-memory specifics (done).
-  - **1b.1** — Semantic store (atomic facts, same pattern) + batch scribe that extracts episodic + semantic candidates from transcript turns. Watermark-tracked for incremental reruns. Validated end-to-end (done).
-  - **1b.2** — Consolidator: cluster episodic near-duplicates, group semantic facts by (subject, predicate), promote to consolidated, mark originals superseded. Search filters out superseded rows (done).
-  - **1b.3** — Dimension tracking in stores (`embedder_id` / `embedding_dim` columns) + `memory rebuild-embeddings` command, so future embedder switches are non-destructive. Rows with mismatched dims sit quietly until rebuilt (done).
-- **Phase 2 — Multi-user.** Web gateway, ACLs, affective + procedural memory.
-- **Phase 3 — Gateways + roles.** Slack + Matrix; Kuzu graph layer; multi-agent orchestrator.
-- **Phase 4 — Concurrent + always-on.** Concurrent sessions, launchd, backup target landed.
-- **Phase 5 — Life.** Scheduler, initiative, dreams, autonomy.
+**Working end-to-end**:
+
+- Chat with Airton locally via MLX-hosted Qwen 2.5 32B Instruct.
+- Voice-rewrite post-pass keeps Airton's register on responses the base model would otherwise drift on.
+- Episodic and semantic memory: seed + scribe-written + consolidator-promoted tiers, all retrieval-indexed with mxbai-embed-large-v1 (1024 dim).
+- Per-user relationship scoping — Alice can't see Bob's private memories; shared seeds reach everyone.
+- Corpus growth: `harness voice capture` turns a corrected reply into a new voice sample; the loader picks it up on next start; retrieval surfaces it on similar future prompts.
+- Validated end-to-end twice: the "junior asks for the fix" and "transceiver bug" validation turns both reproduced seed-memory specifics; the onboarding prompt demonstrated corpus growth fixing a previously-generic response.
+- ~110 tests green under ruff + mypy strict + pre-commit.
+
+**What you can't do yet**: talk to Airton from anywhere but a terminal on the M4. No always-on daemon, no gateway, no multi-agent roles.
+
+## Phases landed
+
+- **Phase 0 — Skeleton.** Character package, model adapter boundary, SQLite transcript, CLI + quality gates.
+- **Phase 1a — MLX adapter + voice eval** (incl. 1a.1 few-shot + leave-one-out, 1a.2 voice suite expansion to 32 samples).
+- **Phase 1b.0 — Retrieval substrate** (`sentence-transformers` + `VoiceRetriever`).
+- **Phase 1d — Persona-voice post-pass** (incl. 1d.1 heuristic scorer + tightened rewriter, 1d.2 LLM-judge + filler detector + chain-of-rewrite, 1d.3 nuanced bullet rule + bullet-density scorer).
+- **Phase 1b — Memory proper**:
+  - **1b.0** — Episodic store (SQLite + BLOB embeddings + cosine scan).
+  - **1b.1** — Semantic store + batch scribe + watermark-tracked incremental reruns.
+  - **1b.2** — Consolidator: cluster-merge episodes, group-merge fact triples, mark superseded.
+  - **1b.3** — Dimension tracking on stores + `rebuild-embeddings` for non-destructive embedder switches.
+- **Phase 2.0 — Relationship memory.** Per-user scoping on episodic + semantic search; scribe tags candidates by user; CLI `--user` / `--shared` flags.
+- **Phase 2.1 — Corpus growth.** `harness voice capture` writes captured YAML; character loader merges canonical + captured.
 
 ## Voice durability — the permanent path
 
-Voice quality has a ceiling that prompt engineering cannot reach on its own. The path below is ordered from cheapest and most immediate to deepest and most durable.
+Voice quality has a ceiling that prompt engineering cannot reach on its own. Ordered from cheapest to most durable.
 
-### Tier 1 — Smarter scoring (landed in 1d.2)
+### Tier 1 — Smarter scoring (landed)
 
-- **Heuristic scorer** (`harness.evals.voice_score`): length / openers / bullets / filler. Fast, deterministic, interpretable. Catches regressions reliably.
-- **LLM-as-judge**: small rubric-based rating (1-10) against gold, via the model adapter. Orthogonal to the heuristic scorer; catches mid-sentence register drift that regex cannot. Uses the loaded generation model for simplicity; swap in a different/stronger judge later.
-- **Held-out eval**: once the voice suite passes ~50 samples, reserve a 20% slice that never appears in few-shot or training. The only honest generalization test.
+- Heuristic scorer: length / openers / bullet-discipline / bullet-density / filler.
+- LLM-as-judge (rubric-based 1–10, same model for now).
+- Held-out eval slice — not yet; worthwhile once the voice suite passes ~50 samples.
 
-### Tier 2 — Rewriter refinements (tail of 1d)
+### Tier 2 — Rewriter refinements (mostly landed)
 
-- **Chain-of-rewrite**: two rewrite passes — first for length + openers, second for concrete-action substitution (*"ensure X"* → *"do X"*; quoted rules → the action that follows). Opt-in because it doubles post-pass latency.
-- **Anti-pattern injection**: feed the rewriter its draft's concrete violations (*"you opened with 'That sounds like a solid'"*) rather than abstract rules. Corrections land harder than constraints.
-- **Length-cap enforcement**: pass a hard character-count target derived from the gold distribution instead of a fuzzy *"tighten it."*
+- Chain-of-rewrite (opt-in second pass focused on concrete-action substitution).
+- Nuanced bullet rule: dashes with one-clause items are fine; numbered lists wrong; multi-sentence bullets are the tutorial tell.
+- Remaining: anti-pattern injection ("your draft opened with 'X'"), hard character-count targeting for length.
 
 ### Tier 3 — LoRA fine-tune (Phase 1e candidate)
 
-The first move that changes the model's weights, not its prompt. Train a LoRA adapter on Qwen 2.5 32B using the voice suite as (prompt, gold) pairs.
+First permanent move. Train a LoRA on Qwen 2.5 32B using the voice suite (canonical + captured) as training data.
 
-- **Feasibility**: `mlx-lm` has LoRA support. Fine-tuning 32 to 100 pairs takes a few hours on the M4 Pro.
-- **Outcome**: the base model's register shifts toward Airton's without few-shot. No rewrite pass required for easy cases.
-- **Risk**: catastrophic forgetting on general ability. Mitigation — curate a mixed training set that includes generic prompts with high-quality generic responses to preserve general competence.
-- **Gate**: wait until the heuristic + LLM-judge scorer is trustworthy enough to tell "did this fine-tune help or hurt" before attempting. Otherwise it's flying blind.
+- **Feasibility**: `mlx-lm` has LoRA support; 32 + captured samples fine-tune in a few hours on the M4.
+- **Outcome**: base model's register shifts toward Airton's without few-shot. No rewrite pass needed for easy cases.
+- **Risk**: catastrophic forgetting. Mitigate with a mixed training set.
+- **Gate**: wait until heuristic + judge scorer are trustworthy enough to tell "did this fine-tune help or hurt."
 
-### Tier 4 — Corpus growth loop (landed in Phase 2.1)
+### Tier 4 — Corpus growth loop (landed in 2.1)
 
-The compounding play. Every time Mark edits Airton's response, that edit becomes a new (prompt, gold) pair.
+Infrastructure in place. Compounds every time Mark captures an edit.
 
-- `harness voice capture --session X --gold "…"` writes the corrected reply plus the original (audit trail) into `character/<name>/voice/captured.yaml`. Canonical stays clean.
-- The character loader merges `canonical.yaml` + `captured.yaml` at load time; retrieval treats captured samples the same as curated ones.
-- Validated live: the onboarding prompt that produced a 7-bullet HR checklist gets a captured Airton-voiced reply; next run, Airton reproduces the register near-verbatim.
-- Next richer iteration (Phase 2.2+): in-chat `/edit` command that opens $EDITOR with Airton's reply preloaded so the capture flow doesn't require leaving chat.
+Remaining niceties:
+- In-chat `/edit` command invoking `$EDITOR` with Airton's reply pre-loaded — currently the capture flow requires leaving chat to run the CLI command.
+- Automatic capture prompt after each Airton turn (opt-in; keystroke to skip).
 
 ### Tier 5 — Preference learning (DPO)
 
-Once the corpus passes ~200 samples, Direct Preference Optimization beats SFT for register capture. Train the model to prefer gold-like responses over generic drafts. The draft/gold pairs already produced by `eval voice --persona` are exactly the right shape.
+Once captured hits ~200 samples, DPO beats SFT for register capture. Train the model to prefer gold-like responses over the draft shape. The draft/gold pairs produced by `eval voice --persona` are exactly the right shape.
 
 ### Tier 6 — Full SFT on an expanded corpus (stretch)
 
-With 1000+ curated Airton-voiced responses, do a full supervised fine-tune (not LoRA). Produces a model whose default register IS Airton's. No rewrite pass, no few-shot. This is the ceiling — voice becomes a property of the weights.
+With 1000+ Airton-voiced responses, do a full supervised fine-tune (not LoRA). Voice becomes a property of the weights. At this stage it's worth reconsidering the base model — Qwen 2.5 Instruct's "helpful assistant" tuning is stubborn.
 
-At this stage it's worth reconsidering the base model. Qwen 2.5 Instruct's "helpful assistant" tuning is stubborn. A base (non-Instruct) Qwen or a Mistral base may take persona more cleanly.
+## Next-up candidates (no priority implied)
 
-## Near-term ordering
+All independent; pick any.
 
-1. **Finish Tier 1 scoring** (1d.2) — LLM-judge + filler detector land first so subsequent changes are measurable.
-2. **Land Tier 2 rewriter improvements** where heuristic + judge show material gains.
-3. **Return to Phase 1b (memory)**. Voice is good enough to ship; memory is the headline feature that makes this a harness rather than a chatbot. Voice loops back after memory, at which point:
-4. **LoRA fine-tune (Phase 1e)** — first permanent move, once scoring is trustworthy and memory foundations exist.
-5. **Corpus growth infrastructure** goes in whenever chat UX work lands (Phase 2 web gateway is the natural place).
+- **In-chat `/edit` for voice capture.** Lower the friction of corpus growth. Small CLI change.
+- **Consolidator user-awareness.** Currently clusters across users; harmless with one user, needs fixing before adding a second.
+- **LoRA fine-tune (Phase 1e).** First permanent voice move. Eval suite is dialed in enough to judge the result.
+- **Web gateway.** FastAPI + SvelteKit ops console. Unblocks Slack/Matrix, turns Airton into something other people can reach.
+- **Launchd daemon + scheduled consolidation.** Make Airton actually "always-on"; run scribe + consolidate nightly.
+- **Multi-agent roles** (planner / researcher / executor / critic / persona). The architecture promised these; currently everything runs as a single single-model ReAct-ish loop.
+- **Kuzu graph layer.** When we want relationship graphs over entities (who-works-with-whom, project-depends-on-project).
+- **Scheduled initiative.** Phase 5 — Airton opens threads unprompted, reacts to external events.
 
 ## Open decisions
 
-- **Backup destination** (still TBD). Blocks Phase 2. Candidates: Backblaze B2, iCloud Drive, S3, NAS, another Mac.
-- **LLM-judge model**: same Qwen for now (circular, low-cost), separate small model later for orthogonal signal.
-- **Voice eval cadence**: run automatically on every commit that touches `src/harness/character.py`, `src/harness/persona/`, or `character/airton/`? Would need GitHub-Actions-equivalent locally; defer until Phase 4 hardening.
+- **Backup destination.** Blocks Phase 2 multi-user. Candidates: Backblaze B2, iCloud Drive, S3, NAS, another Mac. Default until chosen: SQLite WAL + local Time Machine + nightly tarball of `data/`.
+- **LLM-judge model.** Same Qwen for now (circular, low cost). Swap in a different/stronger judge — smaller model for speed, or cloud model for orthogonal signal — when the heuristic + circular judge plateau.
+- **Voice eval cadence.** Automatic on commits that touch `src/harness/character.py`, `src/harness/persona/`, or `character/airton/`? Would need a pre-commit or CI hook. Defer until we have a "real" deployment.
 
 ## Principle
 
-Voice is three layers deep: **prompt → pipeline → weights**. Each layer is more permanent than the one above it and more expensive to change. The ladder above walks down it in order. Don't skip rungs.
+Voice is three layers deep: **prompt → pipeline → weights**. Each layer is more permanent than the one above it and more expensive to change. Walk down it in order. Don't skip rungs.
+
+Memory is three layers deep: **seed → scribe → consolidate**. Seeds are curated, scribes are noisy, consolidation is how noise becomes signal. Every memory retrieval in live chat is supposed to be a consolidated one; working-tier is a staging area.
+
+Retrieval is three layers deep for Airton now: **voice few-shot → episodic memories → semantic facts**. Each layer has a similarity floor — irrelevant content should not reach the prompt. More retrieval is not better; *better* retrieval is better.

@@ -4,133 +4,180 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A local-first model-agent harness for a persistent character ("Airton"), designed to be always-reachable by a small trusted circle over Tailscale. Starts as a single-user CLI co-worker; grows into a multi-gateway (web / Slack / Matrix), multi-agent, concurrent, self-maintaining system with memory, tools, and eventually initiative.
+A local-first model-agent harness for a persistent character ("Airton"), built to be always-reachable by a small trusted circle over Tailscale. Starts as a single-user CLI co-worker; grows into a multi-gateway (web / Slack / Matrix), multi-agent, concurrent, self-maintaining system with memory, tools, and eventually initiative.
 
 The model is plug-n-play: all model-specific code lives behind an adapter. Primary runtime is MLX on Apple Silicon (M4 Pro 48 GB). A Linux/larger Mac target may follow.
 
+For daily-use workflow (how Mark actually talks to Airton), see `docs/usage.md`. For sequencing across phases, see `docs/roadmap.md`. This file is the architectural + commands reference.
+
 ## Commands
 
-Environment management with `uv` (Python 3.12):
+Environment setup (one time):
 
-- `uv sync --extra dev` — install runtime + dev deps.
-- `uv sync --extra dev --extra mlx --extra retrieval` — add MLX and the retrieval stack (required for `--model mlx` and for retrieval-based few-shot respectively).
-- `uv run hf download mlx-community/Qwen2.5-32B-Instruct-4bit` — pull Qwen 2.5 32B MLX build (one-time, ~18 GB).
+- `uv sync --extra dev --extra mlx --extra retrieval` — install runtime + dev + MLX + retrieval.
+- `uv run hf download mlx-community/Qwen2.5-32B-Instruct-4bit` — pull the MLX model (~18 GB).
+- `uv run pre-commit install --install-hooks && uv run pre-commit install --hook-type pre-push` — install git hooks.
+
+Daily chat (see `docs/usage.md` for the intended workflow):
+
+- `uv run harness chat --model mlx --persona --memories 3 --facts 5` — full-stack chat: MLX + persona rewriter + 3 episodic memories + 5 semantic facts + retrieval-picked voice few-shot.
+- `uv run harness chat` — echo-adapter dry run (no model, just wiring).
 - `uv run harness describe` — dump Airton's resolved character sheet.
-- `uv run harness chat` — CLI chat loop with the echo adapter.
-- `uv run harness chat --model mlx` — CLI chat with Qwen 2.5 32B.
-- `uv run harness chat --model mlx --persona` — chat with the voice-rewrite post-pass on (Airton's register enforced).
-- `uv run harness eval voice --model mlx` — run the voice-drift eval; Rich table of `prompt | gold | actual` per sample (leave-one-out by default).
-- `uv run harness eval voice --model mlx --persona` — eval with the persona post-pass active; JSON output includes a `draft` field (pass-1 substance) alongside `actual` (pass-2 voiced).
-- `uv run harness eval voice --model mlx --no-leave-one-out` — ceiling diagnostic: every sample sees the full example set.
-- `uv run harness eval voice --model mlx --top-k 0` — disable retrieval, show all samples (Phase 1a.2 baseline).
-- `uv run harness eval voice --model mlx --top-k 6 --persona` — retrieval-picked few-shot + voice-rewrite post-pass.
-- `uv run harness eval voice --model mlx --persona --chain-rewrites --judge` — adds the concrete-substitution second rewrite pass and LLM-judge scoring.
-- `uv run harness memory ingest` — seed Airton's episodic memory from the character's seed memories (idempotent).
-- `uv run harness memory list` — tabular view of every episodic record.
-- `uv run harness memory search "query"` — semantic top-K search over episodic memory.
-- `uv run harness chat --model mlx --memories 3 --facts 5` — chat with top-3 episodic memories and top-5 semantic facts retrieved each turn.
-- `uv run harness memory wipe --yes` — clear episodic + semantic + scribe-watermark data (transcripts preserved). Required when switching embedder dimensions.
-- `uv run harness memory fact-list` / `fact-search "query"` / `fact-add subject predicate object` — semantic store CRUD/search.
-- `uv run harness memory scribe --session ID --model mlx` — batch-extract memories from unprocessed transcript turns, watermark-tracked.
-- `uv run harness memory consolidate` — cluster near-duplicate episodes, merge fact groups by (subject, predicate), supersede retired rows.
-- `uv run harness memory rebuild-embeddings` — re-embed every active record with the current embedder. Non-destructive; use after an embedder switch.
-- `uv run harness voice capture --session X --gold "…"` — record a corrected reply for the session's last user prompt into `character/<name>/voice/captured.yaml`. Picked up on next character load, retrievable like any canonical sample.
-- `uv run harness voice list-captured` — inspect accumulated captures.
 
-Quality gates (all four must stay green; pre-commit runs them on every commit):
+Voice corpus:
+
+- `uv run harness voice capture --session X --gold "…"` — capture a corrected reply as a new voice sample for session X's last user prompt. Goes to `character/<name>/voice/captured.yaml`.
+- `uv run harness voice list-captured` — inspect the captured set.
+
+Memory operations:
+
+- `uv run harness memory ingest` — seed the episodic store from `character/<name>/seed_memories/` (idempotent).
+- `uv run harness memory list [--tier seed|consolidated|working]` — table of episodic records.
+- `uv run harness memory search "query"` — semantic top-K over episodic.
+- `uv run harness memory fact-list [--tier X] [--subject Y]` — semantic facts.
+- `uv run harness memory fact-search "query"` — semantic top-K over facts.
+- `uv run harness memory fact-add SUBJECT PREDICATE OBJECT [--user NAME]` — manual fact insert (shared if `--user` unset).
+- `uv run harness memory scribe --session X --user NAME --model mlx` — batch-extract candidate memories from the session's unprocessed turns.
+- `uv run harness memory consolidate` — cluster near-duplicate episodes, merge fact groups by `(subject, predicate)`, supersede the losers.
+- `uv run harness memory rebuild-embeddings` — re-embed all active rows with the current embedder. Non-destructive; use after an embedder switch.
+- `uv run harness memory wipe --yes` — clear episodic + semantic + scribe-watermark data (transcripts preserved).
+
+Voice + persona evals:
+
+- `uv run harness eval voice --model mlx --top-k 6 --persona` — current best config.
+- `uv run harness eval voice --model mlx --persona --chain-rewrites --judge` — add the concrete-substitution second rewrite pass and LLM-judge scoring.
+- `uv run harness eval voice --model mlx --no-leave-one-out` — ceiling diagnostic: every sample sees the full example set.
+- `uv run harness eval voice --model mlx --top-k 0` — disable retrieval, show every sample.
+- `uv run harness eval voice --model mlx --sample SAMPLE_ID` — run one sample.
+- Append `--json` for machine-readable output.
+
+Quality gates (all must stay green; pre-commit runs them on every commit):
 
 - `uv run ruff check .` — lint.
 - `uv run ruff format .` — format in place.
 - `uv run mypy src tests` — strict type-check (src + tests).
-- `uv run pytest` — full test suite.
+- `uv run pytest` — full test suite (currently ~110 tests).
 - `uv run pytest tests/test_character.py::test_load_airton_shape` — single test.
-- `uv run pytest --cov` — tests with coverage.
 - `uv run pre-commit run --all-files` — run all hooks against the working tree.
-- `uv run pre-commit install --install-hooks && uv run pre-commit install --hook-type pre-push` — (re-)install git hooks after a fresh clone.
 
 ## Architecture
 
-The system is designed against these invariants — they shape almost every decision:
+Load-bearing invariants — they shape almost every decision:
 
 1. **One identity, one memory, one orchestrator — many gateways.** The character is a single coherent being. Gateways (CLI now; web/Slack/Matrix later) normalize to a common envelope and hand off to the orchestrator.
-2. **Concurrency-ready from day one, concurrent from day N.** No globals. Every turn is keyed by `(user, channel, turn_id)`. Even the Phase 0 CLI is written as if it were one of many sessions.
+2. **Concurrency-ready from day one, concurrent from day N.** No globals. Every turn is keyed by `(user, channel, turn_id)`. Even the current CLI is written as if it were one of many sessions.
 3. **Models stay behind an adapter.** Only `harness.model.*` imports MLX / llama.cpp / Ollama / OpenAI SDKs. The rest of the system speaks `ChatMessage` + `ModelAdapter.complete()`.
-4. **Auditable memory.** Every mutation is attributed to a speaker, turn, and reason. Memory writes are two-phase: a scribe emits candidates, a consolidator promotes on a periodic pass.
+4. **Auditable memory.** Every mutation is attributed to a speaker, turn, and reason. Memory writes are two-phase: scribe emits candidates, consolidator promotes on a periodic pass. Superseded rows stay for audit; they drop out of retrieval.
+5. **Hybrid memory scoping.** Shared character memory (seeds, project facts) lives at `user_id IS NULL` and is visible to everyone. Per-user relationship memory is siloed — `search(..., user_id=<this user>)` only returns that user's rows plus shared ones.
 
 ### Repo layout
 
 - `character/airton/` — the character as data. Treat as configuration, not code.
   - `core.yaml` — immutable identity: premise, pronouns, values, taboos, directives, deep/shallow domains, on-being-wrong register.
-  - `constitution.md` — principles enforced by the critic model at generation time.
-  - `voice/canonical.yaml` — voice calibration + drift-eval suite (6 locked samples; 14 more to extrapolate in Phase 1).
+  - `constitution.md` — principles the critic-style pass enforces at generation time.
+  - `voice/canonical.yaml` — 32 curated voice samples; doubles as drift-eval suite.
+  - `voice/captured.yaml` — accrues live captures from `harness voice capture`. Loaded alongside canonical at character load.
   - `seed_memories/*.md` — formative "lived experiences" written into episodic memory on day 0. Frontmatter-tagged by principle so retrieval can surface them by lesson as well as by content.
-- `src/harness/` — runtime (src layout, package name `harness`).
+
+- `src/harness/` — runtime (src layout, package `harness`).
   - `config.py` — pydantic-settings; env-prefixed `HARNESS_*`.
-  - `character.py` — loads `character/<name>/` into a frozen `Character` dataclass; renders a fallback `system_prompt()` for single-model loops.
+  - `character.py` — loads `character/<name>/` into a frozen `Character` dataclass; renders a fallback `system_prompt()`. Merges `voice/canonical.yaml` + `voice/captured.yaml`.
   - `model/` — adapter boundary. Anything model-specific lives here and nowhere else.
     - `adapter.py` — `ChatMessage` + `ModelAdapter` protocol.
-    - `echo.py` — deterministic adapter used for wiring tests and running the loop without a model.
-    - `mlx.py` — MLX-backed adapter (Qwen 2.5 32B by default). Lazy load; only this file imports `mlx_lm`.
-    - `factory.py` — `make_adapter(name)` resolves `"echo" | "mlx"` to an instance. MLX is imported lazily inside, so environments without MLX still work.
-  - `evals/` — offline evaluations. Pure functions that take a `Character` + `ModelAdapter` and return structured results.
-    - `voice.py` — `run_voice_eval(...)` compares model output against the gold responses in `character/airton/voice/canonical.yaml`. Supports `leave_one_out` (default True) and `persona` (default False).
-  - `persona/` — voice enforcement on top of the base adapter.
-    - `rewriter.py` — `PersonaAdapter` wraps a base adapter with a two-pass flow: pass 1 produces substance via the caller's system prompt, pass 2 rewrites in the character's register using a dedicated rewriter prompt. `build_rewriter_messages(character, draft, include_samples=...)` is the pure function the eval uses inline so sample selection stays consistent across both passes.
-  - `retrieval/` — embedding-backed few-shot selection. Currently used for voice samples; the same machinery will back episodic and semantic memory lookup in Phase 1b.
-    - `embed.py` — `Embedder` Protocol. Implementations must return L2-normalized vectors so cosine similarity is a dot product.
-    - `st_embedder.py` — `SentenceTransformersEmbedder` (BAAI/bge-small-en-v1.5 by default; MPS on Mac, CPU elsewhere; lazy-loaded).
-    - `voice_retriever.py` — `VoiceRetriever` embeds all sample prompts once at construction; `top_k(query, k=, exclude_ids=)` returns the most similar samples. The CLI (`chat`, `eval voice`) and the voice eval build one per character load.
-  - `store/transcript.py` — append-only SQLite transcript with WAL + FTS5. All future stores (episodic, semantic, graph, procedural, affective, identity, world) follow this shape: append-first, indexed for retrieval.
-  - `store/episodic.py` — `EpisodicStore` holds narrative records (title, body, principle, tags, tier) in SQLite alongside float32-BLOB embeddings. `search(query, k)` is an in-process cosine scan — fine up to ~10k records, upgrade to LanceDB when we need more. `ensure_seeds_ingested(character, store)` is idempotent and runs on chat startup. Tier vocabulary: `seed` (loaded from character YAML) · `consolidated` (promoted by future consolidator) · `working` (scribe and ad-hoc writes).
-  - `store/semantic.py` — `SemanticStore` holds atomic (subject, predicate, object) triples with confidence, provenance, tier, and a `supersedes` self-reference. Same BLOB-embedding-plus-cosine-scan pattern as episodic. `search(query, k, min_confidence)` embeds *"subject predicate object"* for natural-language retrieval.
-  - `scribe/` — batch extraction from transcript to the memory stores.
-    - `extractor.py` — `extract_candidates(adapter, character, turns)` calls the model with a strict-JSON rubric and returns parsed `EpisodicCandidate` + `SemanticCandidate` tuples. `parse_scribe_output` tolerates markdown fences and garbage, drops malformed items rather than failing the whole window.
-    - `runner.py` — `run_scribe(...)` walks unprocessed transcript turns in windows past a per-session watermark, persists candidates to the stores at tier="working", advances the watermark. Non-overlapping windows; malformed output is logged in the summary and processing continues.
-  - **Embedder**: `mixedbread-ai/mxbai-embed-large-v1`, 1024 dims, Matryoshka-trained. One embedder shared across voice retrieval, episodic memory, and semantic memory so they live in a comparable geometry. Changing the embedder is currently destructive — existing BLOBs are dim-locked — so plan to add `embedder_id` / `dimension` columns to the stores before any future switch.
-  - `cli.py` — Typer app: `chat` and `describe` commands.
-- `tests/` — pytest. Tests hit real stores (SQLite in `tmp_path`) rather than mocks.
+    - `echo.py` — deterministic adapter for wiring tests.
+    - `mlx.py` — MLX-backed adapter (Qwen 2.5 32B Instruct 4-bit by default). Lazy load.
+    - `factory.py` — `make_adapter("echo" | "mlx")`. MLX imported lazily, so environments without MLX still work with echo.
+  - `persona/rewriter.py` — `PersonaAdapter` wraps a base adapter with a voice-rewrite post-pass. Optional chain-of-rewrite (`chain_rewrites=True`) adds a second concrete-substitution pass.
+  - `retrieval/` — embedding-backed similarity search.
+    - `embed.py` — `Embedder` Protocol. Implementations return L2-normalized vectors so cosine similarity is a dot product.
+    - `st_embedder.py` — `SentenceTransformersEmbedder`; default `mixedbread-ai/mxbai-embed-large-v1` (1024 dim, MPS on Mac).
+    - `voice_retriever.py` — embeds all voice samples once on construction; `top_k(query, k=, exclude_ids=)`.
+  - `store/` — persistent stores (SQLite + BLOB embeddings + cosine scan). Graduate to LanceDB when past ~10k rows.
+    - `transcript.py` — append-only transcript (WAL + FTS5). `fetch_after(session, after_id=)` for scribe.
+    - `episodic.py` — `EpisodicStore`: title / body / principle / tags / tier / source / user_id / `superseded_by` + embedding BLOB. Tiers: `seed` · `consolidated` · `working`.
+    - `semantic.py` — `SemanticStore`: `(subject, predicate, object)` triples with confidence, provenance, tier, `supersedes`, `superseded_by`.
+    - Both stores carry `embedder_id` + `embedding_dim` per row; search filters mismatched dims so a new embedder doesn't crash. `rebuild_embeddings()` migrates in place.
+  - `scribe/` — batch extraction from transcript to memory stores.
+    - `extractor.py` — `extract_candidates(adapter, character, turns)`; strict-JSON rubric, tolerates markdown fences + garbage.
+    - `runner.py` — `run_scribe(..., user_id=)`; watermark-tracked per session; non-overlapping windows.
+  - `consolidate/consolidator.py` — `run_consolidation(episodic, semantic)`. Episodic uses single-link clustering at cosine ≥ 0.80, picks most-recent as representative. Semantic groups by case-insensitive `(subject, predicate)`, picks highest-confidence-then-recent. Originals marked `superseded_by → new_id`; retrieval filters them out.
+  - `evals/` — offline evals.
+    - `voice.py` — `run_voice_eval(..., retriever=, persona=, use_judge=, chain_rewrites=)`.
+    - `voice_score.py` — heuristic scorer: length / openers / bullet-discipline / bullet-density / filler. Aggregate is the mean.
+    - `voice_judge.py` — LLM-as-judge; parses 1-10 from the adapter.
+  - `cli.py` — Typer app: `chat`, `describe`, `eval voice`, `memory {list,search,scribe,consolidate,wipe,rebuild-embeddings,fact-*,ingest}`, `voice {capture,list-captured}`.
 
-### Phasing (where we are, where we're going)
+- `tests/` — pytest. Tests hit real stores (SQLite in `tmp_path`) rather than mocks. ~110 tests across character, stores, retrieval, scribe, consolidator, persona, voice eval, dimension tracking, relationship memory, voice capture.
 
-- **Phase 0 — Skeleton (current).** Character package, model adapter boundary, SQLite transcript, CLI chat with echo adapter, loadable character sheet.
-- **Phase 1 — Memory + persona.** MLX adapter (primary model: Qwen 2.5 32B, MLX 4-bit; A/B vs Llama 3.3 70B once scaffold is stable). Episodic + semantic layers with LanceDB. Retrieval fusion. Single-model ReAct tool loop. Persona-voice post-pass. Extrapolate the voice suite to 20 canonical samples; wire it as a drift-eval.
-- **Phase 2 — Multi-user.** Web gateway (FastAPI + SvelteKit ops console). Per-user ACLs (enforced in code, tested). Affective + procedural memory. Scribe/consolidator split.
-- **Phase 3 — Gateways + roles.** Slack (Bolt) and Matrix (matrix-nio) gateways. Kuzu graph layer. Multi-agent roles (planner / researcher / executor / critic / persona). Model router (heuristic table over `ModelAdapter.id`).
-- **Phase 4 — Concurrent + always-on.** Concurrent sessions, launchd daemon, audit + policy hardening, off-box backups (destination TBD — SQLite WAL + LanceDB/Kuzu snapshots → rclone).
-- **Phase 5 — Life.** Scheduler, initiative, dreams (consolidation runs), proactive triggers, autonomy.
+### Voice stack
 
-### Decisions already locked
+Per-turn composition:
 
-- **Runtime**: Python 3.12, asyncio (entering in Phase 1).
-- **Stores**: SQLite + FTS5 (transcript, semantic, procedural, affective, audit) · LanceDB (vectors) · Kuzu (graph). All embedded, single-box, no extra daemons.
-- **Models**: MLX primary; llama.cpp as fallback; OpenAI-compatible adapter as a cloud escape hatch for the router only.
-- **Transport surface (eventual)**: web + Slack + Matrix, reachable via Tailscale. Small-trusted-circle auth; per-user capabilities in Phase 2.
-- **Character**: Airton. `it` pronouns. Self-aware as software. 5 values, 8 taboos + 1 positive directive. Voice + 5 seed memories locked.
+1. **Retrieval** — `VoiceRetriever.top_k(user_message, k=6)` picks the 6 most similar voice samples by cosine.
+2. **System prompt** — `Character.system_prompt(include_samples=retrieved)` renders identity + values + taboos + style rules + retrieved examples.
+3. **Episodic memory** — `EpisodicStore.search(user_message, k=3, min_score=0.5, user_id=speaker)` appends a memory block when hits clear the floor.
+4. **Semantic facts** — `SemanticStore.search(user_message, k=5, min_score=0.45, user_id=speaker)` appends a facts block when hits clear the floor.
+5. **Pass 1 (substance)** — `base_adapter.complete([system, ...history])`.
+6. **Pass 2 (voice rewrite)** — `base_adapter.complete(build_rewriter_messages(character, draft))`. Preserves substance, fixes register.
+7. **Optional pass 3** — concrete-substitution rewrite (`chain_rewrites=True`). Opt-in; doubles persona latency.
+
+### Memory stack
+
+Three layers of writes:
+
+- **Seeds** (`tier="seed"`, `user_id IS NULL`) — loaded from `character/<name>/seed_memories/` and `character/<name>/voice/canonical.yaml`. Shared across everyone.
+- **Working** (`tier="working"`, `user_id=<speaker>` or `NULL`) — scribe-written candidates from recent transcript. Not yet curated.
+- **Consolidated** (`tier="consolidated"`) — consolidator-promoted records that merge near-duplicate working-tier entries.
+
+Retrieval filters: `superseded_by IS NULL AND embedding_dim = <current> AND (user_id IS NULL OR user_id = <speaker>)`.
+
+### Phase progress
+
+Done:
+
+- **Phase 0** — Skeleton.
+- **Phase 1a/b/d** — MLX adapter, voice eval suite, few-shot + retrieval, persona rewriter, heuristic + judge scoring, chain-of-rewrite, episodic store, semantic store, scribe, consolidator, dimension tracking.
+- **Phase 2.0** — Relationship memory (per-user scoping).
+- **Phase 2.1** — Corpus growth via `voice capture`.
+
+Available but not started (no priority implied):
+
+- In-chat `/edit` invoking `$EDITOR` so captures don't require shell flags.
+- Consolidator user-awareness (currently clusters across users; harmless with one user, needs fixing before second user).
+- LoRA fine-tune on Qwen 2.5 32B using the voice suite as training data (roadmap Tier 3).
+- Web gateway (FastAPI + SvelteKit ops console).
+- Slack + Matrix gateways.
+- Scheduled consolidation (launchd → nightly).
+- Off-box backup destination — decision still open.
+- Multi-agent roles (planner / researcher / executor / critic / persona).
+- Kuzu graph layer.
 
 ## Conventions
 
-- **Don't import MLX, llama.cpp, or any model SDK outside `src/harness/model/`.** The adapter boundary is load-bearing. Violations break the plug-n-play guarantee.
-- **Every store is append-first, attributed, and timestamped.** If you're writing a new memory layer, start from `store/transcript.py` as the template and diverge only where you must.
-- **Tests hit real stores.** No mocking of SQLite or LanceDB. Use `tmp_path`.
-- **Character data is configuration, not code.** Never hardcode Airton's rules into `src/`. The runtime reads `character/airton/` and should work just as well with `character/<someone-else>/`.
-- **Identity first, then voice, then content.** When composing prompts, the system prompt starts with premise + self-awareness + values + taboos. If you find yourself re-stating identity inline in a prompt, that belongs in `core.yaml`.
+- **Don't import MLX, llama.cpp, or any model SDK outside `src/harness/model/`.** The adapter boundary is load-bearing.
+- **Every store is append-first, attributed, and timestamped.** New memory layers start from `store/episodic.py` as the template.
+- **Tests hit real stores.** No mocking of SQLite. Use `tmp_path`.
+- **Character data is configuration, not code.** Never hardcode Airton's rules into `src/`. The runtime reads `character/<name>/`.
+- **Identity first, then voice, then content.** System prompt starts with premise + self-awareness + values + taboos, then retrieved examples, then memory/facts. If you find yourself re-stating identity inline in code, it belongs in `core.yaml`.
+- **User scoping is mandatory on retrieval.** Any `.search()` call that serves a user-facing turn must pass `user_id=speaker`. Omitting it is an owner-tier view — fine for dev tools, wrong for chat.
 
 ## Quality tooling
 
 Pre-commit hooks are installed (`pre-commit` + `pre-push`) and enforce:
 
-- **ruff** (`check` + `format`) with rules: `E W F I UP B C4 SIM RET TID PT S N RUF`. The only global ignore is `S101` (asserts); per-file ignores live in `pyproject.toml`.
-- **mypy** in `strict` mode — `warn_unused_ignores`, `warn_redundant_casts`, `warn_return_any`, `warn_unreachable`. The `harness` package ships a `py.typed` marker so downstream type-checking works.
-- **pytest** at push time — quick on pre-commit would be too slow once we add the MLX adapter, so tests gate pushes, not individual commits.
+- **ruff** (`check` + `format`) with rules: `E W F I UP B C4 SIM RET TID PT S N RUF`. Global ignore: `S101`. Per-file ignores in `pyproject.toml`.
+- **mypy** in `strict` mode — `warn_unused_ignores`, `warn_redundant_casts`, `warn_return_any`, `warn_unreachable`. The `harness` package ships a `py.typed` marker.
+- **pytest** at push time — gate pushes, not individual commits.
 
 Rules of engagement:
 
-- Don't silence a failing check with a blanket `# noqa` / `# type: ignore`. Either fix it or add a targeted, commented per-file ignore in `pyproject.toml`.
-- `ruff format` owns layout; don't hand-format. If the formatter and a rule disagree, change the rule.
-- New dependencies go in `pyproject.toml` — never into the venv directly. Run `uv sync --extra dev` after editing.
+- Don't silence a failing check with blanket `# noqa` / `# type: ignore`. Fix it, or add a targeted per-file ignore with a comment explaining why.
+- `ruff format` owns layout; don't hand-format. If formatter and rule disagree, change the rule.
+- New deps go in `pyproject.toml`. Run `uv sync --extra dev --extra mlx --extra retrieval` after.
 
 ## Open threads
 
-- **Backup destination**: TBD. Default until chosen: SQLite WAL + local Time Machine + nightly tarball of Kuzu/LanceDB in `~/backups/harness/`. Pick an off-box target before Phase 2.
-- **Voice suite extrapolation**: 14 pending scenarios listed in `character/airton/voice/canonical.yaml` under `pending_to_extrapolate`. Draft these when the MLX adapter is online so we can calibrate against the real model.
-- **5th value already locked** ("If I can't measure it, I can't trust it."); no pending character gaps.
+- **Backup destination**: still TBD. Default until chosen: SQLite WAL + local Time Machine + nightly tarball of the `data/` dir. Candidates: Backblaze B2, iCloud Drive, S3, NAS, another Mac.
+- **LLM-judge model**: currently uses the same Qwen that generated the reply (circular). Swap in a different/stronger judge when we want orthogonal signal.
+- **Consolidator user-awareness**: currently clusters across users. Fix before adding a second user.
+- **Voice corpus held-out split**: once captured samples cross ~50, reserve ~20% for a true generalization eval that never appears in few-shot.
