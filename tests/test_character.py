@@ -40,3 +40,28 @@ def test_system_prompt_includes_values_and_taboos() -> None:
     for t in character.taboos:
         assert t in prompt
     assert character.premise in prompt
+
+
+def test_system_prompt_embeds_voice_examples() -> None:
+    character = load_character(AIRTON)
+    prompt = character.system_prompt()
+
+    for sample in character.voice_samples:
+        assert sample.prompt in prompt
+        assert sample.gold.strip() in prompt
+    assert "Voice examples" in prompt
+    assert "How you speak" in prompt
+
+
+def test_system_prompt_excludes_named_voice_examples() -> None:
+    character = load_character(AIRTON)
+    excluded = frozenset({"self_reference"})
+    prompt = character.system_prompt(exclude_example_ids=excluded)
+
+    excluded_sample = next(s for s in character.voice_samples if s.id == "self_reference")
+    assert excluded_sample.gold.strip() not in prompt
+
+    for sample in character.voice_samples:
+        if sample.id in excluded:
+            continue
+        assert sample.gold.strip() in prompt

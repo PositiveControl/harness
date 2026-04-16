@@ -42,7 +42,12 @@ class MLXAdapter:
             return
         from mlx_lm import load as _load
 
-        self._model, self._tokenizer = _load(self.repo)
+        # mlx_lm.load() returns a 2- or 3-tuple depending on `return_config`;
+        # we only need model + tokenizer. Index instead of unpacking so the
+        # Union type-checks cleanly.
+        loaded = _load(self.repo)
+        self._model = loaded[0]
+        self._tokenizer = loaded[1]
 
     def _ensure_loaded(self) -> None:
         if self._model is None:

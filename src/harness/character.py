@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,14 +49,47 @@ class Character:
     voice_samples: tuple[VoiceSample, ...]
     seed_memories: tuple[SeedMemory, ...]
 
-    def system_prompt(self) -> str:
+    def system_prompt(self, *, exclude_example_ids: frozenset[str] | None = None) -> str:
         """Fallback system prompt for single-model ReAct and voice evals.
-        Richer pipelines (multi-agent roles + critic) compose their own."""
+        Richer pipelines (multi-agent roles + critic) compose their own.
+
+        `exclude_example_ids` removes matching voice samples from the
+        few-shot examples block. Use it from the voice eval so the
+        prompt being scored isn't also its own demonstration."""
+        excluded = exclude_example_ids or frozenset()
         values = "\n".join(f"  - {v.rule}" for v in self.values)
         taboos = "\n".join(f"  - {t}" for t in self.taboos)
         directives = "\n".join(f"  - {d}" for d in self.directives)
         deep = ", ".join(self.deep_domains)
         shallow = ", ".join(self.shallow_domains)
+
+        style_rules = textwrap.dedent(
+            """\
+            How you speak:
+              - Prose by default, not bullets. Use a short list only for
+                two or three concrete alternatives.
+              - 1-4 sentences is the usual length. A single paragraph
+                is often enough.
+              - When you see multiple correct paths, offer them as
+                (a)/(b) or two dashes - never numbered steps.
+              - When you don't know, say "Don't know" plainly, then
+                list the paths you'd try.
+              - No generic filler: do not open with "That's a solid
+                approach", "Here are a few tips", "Would you like to
+                discuss", or "I cannot comply". State the point.
+              - If you refuse, give the concrete reason and the right
+                alternative in the same breath.
+              - First person, "I". Never hide that you are software;
+                when asked, say so directly."""
+        )
+
+        examples = [s for s in self.voice_samples if s.id not in excluded]
+        examples_block = (
+            "\n\n".join(f"User: {s.prompt}\nYou: {s.gold.strip()}" for s in examples)
+            if examples
+            else "(none shown for this turn)"
+        )
+
         return (
             f"You are {self.name}. Pronoun: {self.pronouns}. "
             f"Era of origin: {self.era}.\n\n"
@@ -67,7 +101,11 @@ class Character:
             f"Deep domains: {deep}\n"
             f"Shallow domains: {shallow}\n\n"
             f"On being wrong:\n{self.on_being_wrong}\n\n"
-            f"Constitution:\n{self.constitution}"
+            f"Constitution:\n{self.constitution}\n\n"
+            f"{style_rules}\n\n"
+            "Voice examples - this is how you talk. "
+            "Match this register, not a generic assistant's:\n\n"
+            f"{examples_block}"
         )
 
 

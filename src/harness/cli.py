@@ -114,6 +114,12 @@ def eval_voice(
     ),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
     temperature: float = typer.Option(0.5, help="Sampling temperature"),
+    leave_one_out: bool = typer.Option(
+        True,
+        "--leave-one-out/--no-leave-one-out",
+        help="Exclude each sample from its own few-shot examples (default on). "
+        "Disable to measure the ceiling with the full example set in view.",
+    ),
 ) -> None:
     """Run the canonical voice prompts and show model-vs-gold side by side."""
     character = load_character(settings.character_path)
@@ -124,6 +130,7 @@ def eval_voice(
         adapter,
         temperature=temperature,
         sample_ids=sample if sample else None,
+        leave_one_out=leave_one_out,
     )
 
     if as_json:
