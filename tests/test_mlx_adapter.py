@@ -47,6 +47,36 @@ def test_mlx_adapter_id_derived_from_repo() -> None:
     assert b.id == "mlx:bar"
 
 
+def test_mlx_adapter_accepts_custom_repo() -> None:
+    from harness.model.mlx import MLXAdapter
+
+    adapter = MLXAdapter(repo="mlx-community/Qwen2.5-7B-Instruct-4bit")
+    assert adapter.repo == "mlx-community/Qwen2.5-7B-Instruct-4bit"
+    assert adapter.id == "mlx:Qwen2.5-7B-Instruct-4bit"
+    assert adapter.adapter_path is None
+
+
+def test_mlx_adapter_with_lora_path_ids_differently() -> None:
+    from harness.model.mlx import MLXAdapter
+
+    adapter = MLXAdapter(
+        repo="mlx-community/Qwen2.5-7B-Instruct-4bit",
+        adapter_path="/path/to/airton-v1/adapters.npz",
+    )
+    assert adapter.adapter_path == "/path/to/airton-v1/adapters.npz"
+    assert adapter.id == "mlx:Qwen2.5-7B-Instruct-4bit+lora:adapters"
+
+
+def test_mlx_adapter_lora_stem_comes_from_filename() -> None:
+    from harness.model.mlx import MLXAdapter
+
+    adapter = MLXAdapter(
+        repo="mlx-community/Qwen2.5-7B-Instruct-4bit",
+        adapter_path="/loras/airton-v2/fine-tuned.npz",
+    )
+    assert adapter.id == "mlx:Qwen2.5-7B-Instruct-4bit+lora:fine-tuned"
+
+
 def test_mlx_adapter_does_not_load_on_construction() -> None:
     """Instantiation must not pay the ~30s model-load cost."""
     from harness.model.mlx import MLXAdapter

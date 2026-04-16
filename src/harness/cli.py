@@ -116,11 +116,29 @@ def _resolve_adapter(
     *,
     persona: bool = False,
     character: Character | None = None,
+    model_repo: str | None = None,
+    lora_path: str | None = None,
 ) -> ModelAdapter:
-    try:
-        adapter: ModelAdapter = make_adapter(cast(AdapterName, name))
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
+    # Custom MLX configs (repo override, LoRA adapter) bypass the factory
+    # and instantiate MLXAdapter directly. The factory handles the named
+    # defaults; this is the escape hatch for LoRA runs and ad-hoc model
+    # swaps.
+    if model_repo or lora_path:
+        if name != "mlx":
+            raise typer.BadParameter("--model-repo and --lora-path require --model mlx.")
+        from harness.model.mlx import MLXAdapter
+
+        kwargs: dict[str, object] = {}
+        if model_repo:
+            kwargs["repo"] = model_repo
+        if lora_path:
+            kwargs["adapter_path"] = lora_path
+        adapter: ModelAdapter = MLXAdapter(**kwargs)  # type: ignore[arg-type]
+    else:
+        try:
+            adapter = make_adapter(cast(AdapterName, name))
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
 
     if persona:
         if character is None:
@@ -142,6 +160,18 @@ def chat(
     channel: str = typer.Option("cli", help="Channel name"),
     speaker: str = typer.Option("mark", help="Your handle"),
     model: str = typer.Option("echo", help="Adapter: echo | mlx"),
+    model_repo: str | None = typer.Option(
+        None,
+        "--model-repo",
+        help="Override the MLX repo. Default: mlx-community/Qwen2.5-32B-Instruct-4bit. "
+        "Requires --model mlx.",
+    ),
+    lora_path: str | None = typer.Option(
+        None,
+        "--lora-path",
+        help="Path to a LoRA adapter file (adapters.npz) to apply on top of the "
+        "base MLX model. Requires --model mlx.",
+    ),
     persona: bool = typer.Option(
         False,
         "--persona/--no-persona",
@@ -180,7 +210,13 @@ def chat(
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
     character = load_character(settings.character_path)
-    adapter = _resolve_adapter(model, persona=persona, character=character)
+    adapter = _resolve_adapter(
+        model,
+        persona=persona,
+        character=character,
+        model_repo=model_repo,
+        lora_path=lora_path,
+    )
     retriever = _maybe_retriever(character, top_k)
     memory_store = _open_episodic_store(character) if memories > 0 else None
     semantic_store = _open_semantic_store() if facts > 0 else None
@@ -285,6 +321,16 @@ def describe() -> None:
 @eval_app.command("voice")
 def eval_voice(
     model: str = typer.Option("mlx", help="Adapter: echo | mlx"),
+    model_repo: str | None = typer.Option(
+        None,
+        "--model-repo",
+        help="Override the MLX repo. Requires --model mlx.",
+    ),
+    lora_path: str | None = typer.Option(
+        None,
+        "--lora-path",
+        help="LoRA adapter path. Requires --model mlx.",
+    ),
     sample: list[str] | None = typer.Option(
         None, "--sample", help="Limit to a specific sample id (repeatable)"
     ),
@@ -324,7 +370,7 @@ def eval_voice(
     character = load_character(settings.character_path)
     # eval runs persona inline in run_voice_eval so both passes stay
     # leave-one-out-consistent — do not wrap adapter here.
-    adapter = _resolve_adapter(model)
+    adapter = _resolve_adapter(model, model_repo=model_repo, lora_path=lora_path)
     retriever = _maybe_retriever(character, top_k)
 
     results = run_voice_eval(
@@ -556,11 +602,17 @@ def memory_scribe(
         "than scoped to --user. Intended for character-level extractions.",
     ),
     model: str = typer.Option("mlx", help="Adapter for extraction: echo | mlx"),
+    model_repo: str | None = typer.Option(
+        None, "--model-repo", help="Override the MLX repo. Requires --model mlx."
+    ),
+    lora_path: str | None = typer.Option(
+        None, "--lora-path", help="LoRA adapter path. Requires --model mlx."
+    ),
     window_size: int = typer.Option(20, help="Turns per extraction window"),
 ) -> None:
     """Walk unprocessed transcript turns and extract candidate memories."""
     character = load_character(settings.character_path)
-    adapter = _resolve_adapter(model)
+    adapter = _resolve_adapter(model, model_repo=model_repo, lora_path=lora_path)
     episodic = _open_episodic_store(character)
     semantic = _open_semantic_store()
     if episodic is None or semantic is None:

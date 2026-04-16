@@ -46,10 +46,12 @@ def test_character_loader_merges_captured_samples(tmp_path: Path) -> None:
 def test_character_loader_works_when_captured_file_missing(tmp_path: Path) -> None:
     target = _copy_character(AIRTON, tmp_path / "airton")
     captured_path = target / "voice" / "captured.yaml"
+    # The source dir may already have captured samples from live use;
+    # remove the copy so this test exercises the "file missing" path.
+    captured_path.unlink(missing_ok=True)
     assert not captured_path.exists()
 
     character = load_character(target)
-    # Same count as canonical — no captured samples yet
     canonical_doc = yaml.safe_load((target / "voice" / "canonical.yaml").read_text())
     assert len(character.voice_samples) == len(canonical_doc["samples"])
 
