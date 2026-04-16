@@ -66,6 +66,7 @@ def _persist_candidates(
     semantic_store: SemanticStore,
     session_id: str,
     source_label: str,
+    user_id: str | None,
 ) -> tuple[int, int]:
     episodic_written = 0
     for cand in result.episodic:
@@ -78,6 +79,7 @@ def _persist_candidates(
             tier="working",
             source=source_label,
             session_id=session_id,
+            user_id=user_id,
         )
         episodic_written += 1
 
@@ -90,6 +92,7 @@ def _persist_candidates(
             confidence=fact.confidence,
             source=source_label,
             session_id=session_id,
+            user_id=user_id,
             tier="working",
         )
         semantic_written += 1
@@ -105,11 +108,17 @@ def run_scribe(
     semantic_store: SemanticStore,
     *,
     session_id: str,
+    user_id: str | None = None,
     window_size: int = 20,
 ) -> ScribeRunSummary:
     """Walk unprocessed transcript turns for one session, extract
     candidates in windows, and persist them. Advances a watermark so
     reruns are incremental.
+
+    `user_id` tags every candidate with a user scope — the session's
+    participant whose relationship memory this data belongs to. Pass
+    None to write shared (character-level) memory; usually you want the
+    speaker.
 
     Windows are non-overlapping for simplicity. If the model produces
     unparseable output for a window, that window's error is logged in
@@ -139,6 +148,7 @@ def run_scribe(
             semantic_store=semantic_store,
             session_id=session_id,
             source_label=source_label,
+            user_id=user_id,
         )
         summary.episodic_written += wrote_ep
         summary.semantic_written += wrote_sem

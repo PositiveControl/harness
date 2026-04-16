@@ -221,20 +221,38 @@ class EpisodicStore:
         *,
         k: int = 3,
         min_score: float = 0.0,
+        user_id: str | None = None,
     ) -> list[tuple[EpisodicRecord, float]]:
         """Return up to `k` active records with cosine similarity >=
         `min_score`. Rows whose embedding dimension doesn't match the
         current embedder are silently skipped — they belong to a
         previous embedder generation and need a `rebuild-embeddings`
-        run before they'll participate in search again."""
-        rows = self._conn.execute(
-            """SELECT id, external_id, title, body, principle, tags, tier,
-                      source, session_id, user_id, created_at, superseded_by,
-                      embedding
-               FROM episodic
-               WHERE superseded_by IS NULL AND embedding_dim = ?""",
-            (self.embedder.dimension,),
-        ).fetchall()
+        run before they'll participate in search again.
+
+        `user_id` scopes to relationship memory: when given, returns
+        rows where `user_id IS NULL` (shared / character-level) OR
+        `user_id = <this user>`. Other users' private memories are
+        never returned. When `user_id` is None, this is an owner-tier
+        view that sees everything."""
+        if user_id is None:
+            rows = self._conn.execute(
+                """SELECT id, external_id, title, body, principle, tags, tier,
+                          source, session_id, user_id, created_at, superseded_by,
+                          embedding
+                   FROM episodic
+                   WHERE superseded_by IS NULL AND embedding_dim = ?""",
+                (self.embedder.dimension,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """SELECT id, external_id, title, body, principle, tags, tier,
+                          source, session_id, user_id, created_at, superseded_by,
+                          embedding
+                   FROM episodic
+                   WHERE superseded_by IS NULL AND embedding_dim = ?
+                     AND (user_id IS NULL OR user_id = ?)""",
+                (self.embedder.dimension, user_id),
+            ).fetchall()
         if not rows:
             return []
 

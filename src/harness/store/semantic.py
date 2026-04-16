@@ -183,21 +183,38 @@ class SemanticStore:
         k: int = 5,
         min_confidence: float = 0.0,
         min_score: float = 0.0,
+        user_id: str | None = None,
     ) -> list[tuple[SemanticFact, float]]:
         """Return up to `k` active facts (not superseded) where stored
         confidence >= `min_confidence` AND retrieval cosine similarity
         >= `min_score`. Confidence gates by trustworthiness; the score
         gate gates by relevance. Both matter — a high-confidence fact
-        about an unrelated topic still pollutes the prompt."""
-        rows = self._conn.execute(
-            """SELECT id, subject, predicate, object, confidence, source,
-                      attributed_to, session_id, user_id, supersedes, tier,
-                      created_at, superseded_by, embedding
-               FROM semantic
-               WHERE confidence >= ? AND superseded_by IS NULL
-                 AND embedding_dim = ?""",
-            (min_confidence, self.embedder.dimension),
-        ).fetchall()
+        about an unrelated topic still pollutes the prompt.
+
+        `user_id` scopes to relationship memory: when given, returns
+        rows where `user_id IS NULL` OR `user_id = <this user>`.
+        Other users' private facts are never returned."""
+        if user_id is None:
+            rows = self._conn.execute(
+                """SELECT id, subject, predicate, object, confidence, source,
+                          attributed_to, session_id, user_id, supersedes, tier,
+                          created_at, superseded_by, embedding
+                   FROM semantic
+                   WHERE confidence >= ? AND superseded_by IS NULL
+                     AND embedding_dim = ?""",
+                (min_confidence, self.embedder.dimension),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """SELECT id, subject, predicate, object, confidence, source,
+                          attributed_to, session_id, user_id, supersedes, tier,
+                          created_at, superseded_by, embedding
+                   FROM semantic
+                   WHERE confidence >= ? AND superseded_by IS NULL
+                     AND embedding_dim = ?
+                     AND (user_id IS NULL OR user_id = ?)""",
+                (min_confidence, self.embedder.dimension, user_id),
+            ).fetchall()
         if not rows:
             return []
         q_vec = self.embedder.embed([query])[0].astype(np.float32)

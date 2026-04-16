@@ -212,13 +212,23 @@ def chat(
                 system_content = character.system_prompt()
 
             if memory_store is not None:
-                hits = memory_store.search(user_input, k=memories, min_score=memories_threshold)
+                hits = memory_store.search(
+                    user_input,
+                    k=memories,
+                    min_score=memories_threshold,
+                    user_id=speaker,
+                )
                 if hits:
                     recalled = [rec for rec, _score in hits]
                     system_content = f"{system_content}\n\n{_render_memory_block(recalled)}"
 
             if semantic_store is not None:
-                fact_hits = semantic_store.search(user_input, k=facts, min_score=facts_threshold)
+                fact_hits = semantic_store.search(
+                    user_input,
+                    k=facts,
+                    min_score=facts_threshold,
+                    user_id=speaker,
+                )
                 if fact_hits:
                     known = [f for f, _score in fact_hits]
                     system_content = f"{system_content}\n\n{_render_fact_block(known)}"
@@ -498,6 +508,12 @@ def memory_fact_add(
     confidence: float = typer.Option(0.9, help="Confidence 0-1"),
     tier: str = typer.Option("working", help="Tier: seed | consolidated | working"),
     source: str = typer.Option("user", help="Provenance label"),
+    user: str | None = typer.Option(
+        None,
+        "--user",
+        help="Relationship scope. Leave unset (or pass empty) to write a "
+        "shared fact visible to everyone.",
+    ),
 ) -> None:
     """Add a single fact to the semantic store."""
     store = _open_semantic_store()
@@ -510,6 +526,7 @@ def memory_fact_add(
             object=object_,
             confidence=confidence,
             source=source,
+            user_id=user if user else None,
             tier=tier,
         )
         console.print(
@@ -523,6 +540,18 @@ def memory_fact_add(
 @memory_app.command("scribe")
 def memory_scribe(
     session: str = typer.Option("local", help="Session id to scribe"),
+    user: str = typer.Option(
+        "mark",
+        "--user",
+        help="User to tag scribed memories with (relationship scope). "
+        "Use --shared to write character-level shared memory instead.",
+    ),
+    shared: bool = typer.Option(
+        False,
+        "--shared",
+        help="Write scribed memories as shared (user_id = NULL) rather "
+        "than scoped to --user. Intended for character-level extractions.",
+    ),
     model: str = typer.Option("mlx", help="Adapter for extraction: echo | mlx"),
     window_size: int = typer.Option(20, help="Turns per extraction window"),
 ) -> None:
@@ -535,6 +564,7 @@ def memory_scribe(
         raise typer.Exit(code=1)
     transcript = Transcript(settings.db_path)
     try:
+        user_id = None if shared else user
         with Status(f"scribe running on session={session}…", console=console):
             summary = run_scribe(
                 adapter,
@@ -543,6 +573,7 @@ def memory_scribe(
                 episodic,
                 semantic,
                 session_id=session,
+                user_id=user_id,
                 window_size=window_size,
             )
         console.print(
