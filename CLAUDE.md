@@ -34,6 +34,8 @@ Environment management with `uv` (Python 3.12):
 - `uv run harness memory scribe --session ID --model mlx` — batch-extract memories from unprocessed transcript turns, watermark-tracked.
 - `uv run harness memory consolidate` — cluster near-duplicate episodes, merge fact groups by (subject, predicate), supersede retired rows.
 - `uv run harness memory rebuild-embeddings` — re-embed every active record with the current embedder. Non-destructive; use after an embedder switch.
+- `uv run harness voice capture --session X --gold "…"` — record a corrected reply for the session's last user prompt into `character/<name>/voice/captured.yaml`. Picked up on next character load, retrievable like any canonical sample.
+- `uv run harness voice list-captured` — inspect accumulated captures.
 
 Quality gates (all four must stay green; pre-commit runs them on every commit):
 

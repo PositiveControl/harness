@@ -129,10 +129,25 @@ def load_character(path: Path) -> Character:
     constitution = (path / "constitution.md").read_text().strip()
 
     voice_doc = yaml.safe_load((path / "voice" / "canonical.yaml").read_text())
-    voice_samples = tuple(
+    canonical_samples = [
         VoiceSample(id=s["id"], prompt=s["prompt"], gold=s["gold"].strip())
         for s in voice_doc["samples"]
-    )
+    ]
+
+    # Corpus growth: captured.yaml accrues samples harvested from live
+    # chat edits. Same schema as canonical; loaded alongside so retrieval
+    # treats them identically. Curated and captured stay separate on disk
+    # so the canonical set remains reviewable/clean.
+    captured_path = path / "voice" / "captured.yaml"
+    captured_samples: list[VoiceSample] = []
+    if captured_path.exists():
+        captured_doc = yaml.safe_load(captured_path.read_text()) or {}
+        for s in captured_doc.get("samples", []) or []:
+            captured_samples.append(
+                VoiceSample(id=s["id"], prompt=s["prompt"], gold=s["gold"].strip())
+            )
+
+    voice_samples = tuple(canonical_samples + captured_samples)
 
     seed_dir = path / "seed_memories"
     seeds: list[SeedMemory] = []

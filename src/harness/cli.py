@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import cast
 
 import typer
@@ -32,6 +33,8 @@ eval_app = typer.Typer(help="Evaluations against the current character.", no_arg
 app.add_typer(eval_app, name="eval")
 memory_app = typer.Typer(help="Inspect and manage episodic memory.", no_args_is_help=True)
 app.add_typer(memory_app, name="memory")
+voice_app = typer.Typer(help="Voice suite — capture and manage samples.", no_args_is_help=True)
+app.add_typer(voice_app, name="voice")
 console = Console()
 
 
@@ -700,6 +703,118 @@ def memory_ingest() -> None:
         console.print(f"[bold]{inserted}[/bold] new, [bold]{total}[/bold] total in episodic store.")
     finally:
         store.close()
+
+
+@voice_app.command("capture")
+def voice_capture(
+    session: str = typer.Option("local", help="Session id to pull the exchange from."),
+    gold: str = typer.Option(
+        ...,
+        "--gold",
+        help="The corrected reply — what Airton should have said in response "
+        "to the last user prompt in the session.",
+    ),
+    prompt: str | None = typer.Option(
+        None,
+        "--prompt",
+        help="Override the user prompt this sample is paired with. Defaults "
+        "to the last user turn in the session.",
+    ),
+    sample_id: str | None = typer.Option(
+        None,
+        "--id",
+        help="Custom sample id. Defaults to captured-<UTC timestamp>.",
+    ),
+) -> None:
+    """Capture a user edit of Airton's reply as a new voice sample.
+
+    The captured sample goes into `character/<name>/voice/captured.yaml`,
+    a separate file from the curated canonical set, and will be loaded
+    alongside canonical samples on the next character load. Over time
+    this is how the voice corpus compounds from real use."""
+    import yaml
+
+    transcript = Transcript(settings.db_path)
+    try:
+        history = transcript.tail(session, limit=200)
+    finally:
+        transcript.close()
+
+    if prompt is None:
+        user_turns = [m for m in history if m.role == "user"]
+        if not user_turns:
+            console.print(
+                f"[red]no user turns in session '{session}'. "
+                "Pass --prompt to supply one explicitly.[/red]"
+            )
+            raise typer.Exit(code=1)
+        prompt = user_turns[-1].content
+
+    original: str | None = None
+    assistant_turns = [m for m in history if m.role == "assistant"]
+    if assistant_turns:
+        original = assistant_turns[-1].content
+
+    character_dir = settings.character_path
+    captured_path = character_dir / "voice" / "captured.yaml"
+    captured_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if captured_path.exists():
+        doc = yaml.safe_load(captured_path.read_text()) or {"samples": []}
+    else:
+        doc = {"version": 1, "samples": []}
+
+    if sample_id is None:
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        sample_id = f"captured-{stamp}"
+
+    new_sample: dict[str, object] = {
+        "id": sample_id,
+        "prompt": prompt,
+        "gold": gold.strip(),
+        "captured_at": datetime.now(UTC).isoformat(),
+        "captured_from": f"session={session}",
+    }
+    if original is not None:
+        new_sample["original"] = original
+
+    doc.setdefault("samples", []).append(new_sample)
+    captured_path.write_text(yaml.safe_dump(doc, sort_keys=False, allow_unicode=True))
+
+    console.print(
+        f"[green]captured[/green] id={sample_id!r} "
+        f"→ {captured_path.relative_to(settings.root)} "
+        f"(now {len(doc['samples'])} captured sample(s))"
+    )
+
+
+@voice_app.command("list-captured")
+def voice_list_captured() -> None:
+    """List every captured sample in the current character."""
+    import yaml
+
+    captured_path = settings.character_path / "voice" / "captured.yaml"
+    if not captured_path.exists():
+        console.print("[dim](no captured samples yet)[/dim]")
+        return
+    doc = yaml.safe_load(captured_path.read_text()) or {}
+    samples = doc.get("samples", []) or []
+    if not samples:
+        console.print("[dim](no captured samples yet)[/dim]")
+        return
+    table = Table(title=f"Captured samples ({len(samples)})", show_lines=True)
+    table.add_column("id", style="bold")
+    table.add_column("captured_at")
+    table.add_column("prompt")
+    table.add_column("gold", style="green")
+    for s in samples:
+        table.add_row(
+            str(s.get("id", "?")),
+            str(s.get("captured_at", "?")),
+            str(s.get("prompt", "?")),
+            str(s.get("gold", "?")),
+        )
+    console.print(table)
 
 
 if __name__ == "__main__":

@@ -47,13 +47,14 @@ The first move that changes the model's weights, not its prompt. Train a LoRA ad
 - **Risk**: catastrophic forgetting on general ability. Mitigation — curate a mixed training set that includes generic prompts with high-quality generic responses to preserve general competence.
 - **Gate**: wait until the heuristic + LLM-judge scorer is trustworthy enough to tell "did this fine-tune help or hurt" before attempting. Otherwise it's flying blind.
 
-### Tier 4 — Corpus growth loop (Phase 2-adjacent, ongoing)
+### Tier 4 — Corpus growth loop (landed in Phase 2.1)
 
-The compounding play. Every time Mark edits Airton's response before sending (or flags a response as "off"), that edit becomes a new (prompt, gold) pair. The corpus grows with use.
+The compounding play. Every time Mark edits Airton's response, that edit becomes a new (prompt, gold) pair.
 
-- **Infrastructure**: `harness chat` records edits; the voice suite's canonical set stays curated but new captures pool into a growth set.
-- **Payoff**: in six months, hundreds of real-world (prompt, gold) pairs. In a year, enough for a non-trivial SFT pass.
-- **Dependency**: web UI or richer CLI where editing is a first-class action (part of Phase 2).
+- `harness voice capture --session X --gold "…"` writes the corrected reply plus the original (audit trail) into `character/<name>/voice/captured.yaml`. Canonical stays clean.
+- The character loader merges `canonical.yaml` + `captured.yaml` at load time; retrieval treats captured samples the same as curated ones.
+- Validated live: the onboarding prompt that produced a 7-bullet HR checklist gets a captured Airton-voiced reply; next run, Airton reproduces the register near-verbatim.
+- Next richer iteration (Phase 2.2+): in-chat `/edit` command that opens $EDITOR with Airton's reply preloaded so the capture flow doesn't require leaving chat.
 
 ### Tier 5 — Preference learning (DPO)
 

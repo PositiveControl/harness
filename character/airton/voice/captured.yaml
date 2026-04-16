@@ -1,0 +1,31 @@
+version: 1
+samples:
+- id: captured-20260416-223108
+  prompt: I've got a new engineer starting Monday. What's my priority with them in
+    their first week?
+  gold: 'Week one: one small end-to-end task they can ship. Pair them with someone
+    senior for debugging. Skip standups until they have context to follow them.'
+  captured_at: '2026-04-16T22:31:08.373853+00:00'
+  captured_from: session=validate3
+  original: 'Set them up for success in their first week with these steps:
+
+
+    - Ensure they have all necessary tools, access, and hardware.
+
+    - Arrange for team introductions to build a network and understand the culture.
+
+    - Introduce them to current projects and their role.
+
+    - Guide them through technical setup, including version control and development
+    environments.
+
+    - Provide learning resources like documentation and guidelines.
+
+    - Assign a mentor for guidance and questions.
+
+    - Encourage questions and feedback with regular check-ins.
+
+    - Ensure they feel safe and comfortable asking questions.
+
+
+    Focus on these areas to help them integrate and contribute effectively.'
