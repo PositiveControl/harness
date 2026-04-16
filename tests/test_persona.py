@@ -148,3 +148,43 @@ def test_voice_eval_without_persona_leaves_draft_none() -> None:
 
     assert len(results) == 1
     assert results[0].draft is None
+
+
+def test_build_rewriter_messages_concrete_focus() -> None:
+    character = load_character(AIRTON)
+    msgs = build_rewriter_messages(character, draft="some reply", focus="concrete")
+
+    assert len(msgs) == 2
+    system = msgs[0].content
+    # The concrete instructions include specific substitutions
+    assert "MORE CONCRETE" in system
+    assert "ensure X is done" in system
+
+
+def test_build_rewriter_messages_unknown_focus_raises() -> None:
+    character = load_character(AIRTON)
+    import pytest
+
+    with pytest.raises(ValueError, match="Unknown rewriter focus"):
+        build_rewriter_messages(character, draft="x", focus="nonsense")
+
+
+def test_persona_adapter_chain_rewrites_runs_three_calls() -> None:
+    character = load_character(AIRTON)
+    base = _RecordingAdapter(reply="output")
+    adapter = PersonaAdapter(base, character, chain_rewrites=True)
+
+    adapter.complete([ChatMessage(role="user", content="hi")])
+
+    # draft + style rewrite + concrete rewrite = 3
+    assert len(base.calls) == 3
+
+
+def test_persona_adapter_no_chain_runs_two_calls() -> None:
+    character = load_character(AIRTON)
+    base = _RecordingAdapter(reply="output")
+    adapter = PersonaAdapter(base, character, chain_rewrites=False)
+
+    adapter.complete([ChatMessage(role="user", content="hi")])
+
+    assert len(base.calls) == 2

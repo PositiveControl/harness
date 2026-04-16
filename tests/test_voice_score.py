@@ -67,10 +67,58 @@ def test_length_score_punishes_long_drift() -> None:
     assert score.length_match < 0.3
 
 
-def test_aggregate_is_mean_of_three() -> None:
+def test_aggregate_is_mean_of_four() -> None:
     gold = "Don't know."
-    # Banned opener + bullets + long = all three should hit
-    actual = "That's a great question. Here are the causes:\n1. One\n2. Two" + " extra" * 50
+    # Banned opener + bullets + long + filler = all four should hit
+    actual = (
+        "That's a great question. Here are the causes to ensure correctness:\n"
+        "1. Comprehensive testing\n"
+        "2. Thoroughly maintain robustness"
+    )
     score = score_actual_against_gold(actual, gold)
-    expected = (score.length_match + score.no_banned_openers + score.bullet_discipline) / 3.0
+    expected = (
+        score.length_match
+        + score.no_banned_openers
+        + score.bullet_discipline
+        + score.filler_discipline
+    ) / 4.0
     assert score.aggregate == round(expected, 3)
+
+
+def test_filler_phrase_in_actual_penalizes() -> None:
+    gold = "Pick the simpler one."
+    actual = (
+        "We want to ensure that the implementation is comprehensive and maintains "
+        "robustness across various scenarios."
+    )
+    score = score_actual_against_gold(actual, gold)
+    assert score.filler_discipline < 1.0
+    joined = " ".join(score.notes)
+    assert "ensure that" in joined or "comprehensive" in joined
+
+
+def test_filler_not_penalized_when_gold_uses_it() -> None:
+    # Gold uses "maintainable"; actual using it once should not be penalized.
+    gold = "Pick the option that stays maintainable."
+    actual = "The first option stays maintainable longer."
+    score = score_actual_against_gold(actual, gold)
+    # One occurrence each -> no excess -> full score
+    assert score.filler_discipline == 1.0
+
+
+def test_filler_caps_at_zero() -> None:
+    gold = "short"
+    actual = (
+        "ensure that we ensure that we make sure to ensure that we ensure "
+        "comprehensive maintainability and robustness in various scenarios and "
+        "make sure that we feel free to let me know."
+    )
+    score = score_actual_against_gold(actual, gold)
+    assert score.filler_discipline == 0.0
+
+
+def test_judge_score_defaults_to_none() -> None:
+    gold = "ok"
+    actual = "ok"
+    score = score_actual_against_gold(actual, gold)
+    assert score.judge_score is None

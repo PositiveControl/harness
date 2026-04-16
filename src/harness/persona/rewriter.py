@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from harness.model.adapter import ModelAdapter
 
 
-_REWRITER_INSTRUCTIONS = """\
+_STYLE_REWRITER_INSTRUCTIONS = """\
 You are the voice editor for {name}. Above you see how {name} talks.
 
 Below is a DRAFT reply someone wrote. Rewrite it in {name}'s voice.
@@ -29,6 +29,10 @@ fact in the draft must remain in the rewrite. CHANGE only the style:
   - Prose by default, not numbered lists. Numbered lists ("1.", "2.")
     are almost always wrong for {name}. Use dashes for two or three
     concrete alternatives only.
+  - Cut mid-sentence filler: "ensure that", "make sure to",
+    "comprehensive", "maintains robustness", "various scenarios",
+    "given the complexity", "feel free to", "let me know". These are
+    assistant tells. Replace with direct statements or cut.
   - When the draft admits not knowing, say "Don't know" plainly and
     list the paths to try.
   - When the draft refuses, state the concrete reason and the right
@@ -42,12 +46,42 @@ Return only the rewritten reply. No preamble, no explanation of
 what you changed."""
 
 
+_CONCRETE_REWRITER_INSTRUCTIONS = """\
+You are sharpening a reply that's already in {name}'s voice. Make it
+MORE CONCRETE. Substance stays; abstraction goes.
+
+Specific substitutions to apply wherever they fit:
+
+  - "ensure X is done" → "do X" or just the imperative.
+  - "consider doing Y" → "do Y" when Y is the recommendation.
+  - "maintains robustness / correctness / maintainability" → cut; these
+    are assumed, not claims.
+  - "various scenarios" or "various conditions" → name two or three
+    specific scenarios, or cut.
+  - "given the complexity" / "given the importance" → cut; if the
+    complexity matters, name the specific complexity.
+  - If the reply QUOTES a rule ("never X without asking"), replace the
+    quote with the concrete action {name} would take instead ("I'll
+    rebase locally and open a PR").
+  - If the reply gives generic advice, swap to a first-person plan:
+    "I'd start with...", "I checked X — ...", "Give me a minute with Y".
+  - If a question is still needed, make it one short question.
+
+Do not add new advice. Do not lengthen. Return only the sharpened
+reply. No preamble."""
+
+
+# Backward-compatible alias; callers use the style instructions by default.
+_REWRITER_INSTRUCTIONS = _STYLE_REWRITER_INSTRUCTIONS
+
+
 def build_rewriter_messages(
     character: Character,
     draft: str,
     *,
     exclude_example_ids: frozenset[str] | None = None,
     include_samples: Sequence[VoiceSample] | None = None,
+    focus: str = "style",
 ) -> list[ChatMessage]:
     """Compose the messages for a voice-rewrite pass. The system prompt
     reuses the character sheet (voice examples + style rules) and
@@ -57,21 +91,34 @@ def build_rewriter_messages(
     `include_samples` and `exclude_example_ids` forward to
     `Character.system_prompt`. With retrieval active the caller passes
     the retrieved sample set via `include_samples` for both passes so
-    pass 1 and pass 2 see the same anchors."""
+    pass 1 and pass 2 see the same anchors.
+
+    `focus` selects which instruction block the rewriter receives:
+
+    - "style" (default): length, openers, bullets, filler — the
+      first-pass voice rewrite.
+    - "concrete": substitute abstract advice with specific actions and
+      first-person moves — the optional second rewrite pass."""
     base_system = character.system_prompt(
         exclude_example_ids=exclude_example_ids,
         include_samples=include_samples,
     )
-    instructions = _REWRITER_INSTRUCTIONS.format(name=character.name)
+    if focus == "concrete":
+        instructions = _CONCRETE_REWRITER_INSTRUCTIONS.format(name=character.name)
+        user_framing = f"Reply to sharpen in {character.name}'s voice"
+    elif focus == "style":
+        instructions = _STYLE_REWRITER_INSTRUCTIONS.format(name=character.name)
+        user_framing = f"Draft reply to rewrite in {character.name}'s voice"
+    else:
+        raise ValueError(f"Unknown rewriter focus: {focus!r}")
+
     system = ChatMessage(
         role="system",
         content=f"{base_system}\n\n{instructions}",
     )
     user = ChatMessage(
         role="user",
-        content=(
-            f"Draft reply to rewrite in {character.name}'s voice.\n\nDraft:\n{draft}\n\nRewrite:"
-        ),
+        content=f"{user_framing}.\n\nDraft:\n{draft}\n\nRewrite:",
     )
     return [system, user]
 
@@ -98,11 +145,13 @@ class PersonaAdapter:
         *,
         rewriter_temperature: float = 0.2,
         rewriter_max_tokens: int | None = None,
+        chain_rewrites: bool = False,
     ) -> None:
         self.base = base
         self.character = character
         self.rewriter_temperature = rewriter_temperature
         self.rewriter_max_tokens = rewriter_max_tokens
+        self.chain_rewrites = chain_rewrites
         self.id = f"persona[{base.id}]"
         self.context_window = base.context_window
 
@@ -119,10 +168,20 @@ class PersonaAdapter:
         temperature: float = 0.7,
     ) -> str:
         draft = self.base.complete(messages, max_tokens=max_tokens, temperature=temperature)
-        rewrite_msgs = build_rewriter_messages(self.character, draft)
         rewrite_cap = self.rewriter_max_tokens if self.rewriter_max_tokens else max_tokens
+
+        style_msgs = build_rewriter_messages(self.character, draft, focus="style")
+        styled = self.base.complete(
+            style_msgs,
+            max_tokens=rewrite_cap,
+            temperature=self.rewriter_temperature,
+        )
+        if not self.chain_rewrites:
+            return styled
+
+        concrete_msgs = build_rewriter_messages(self.character, styled, focus="concrete")
         return self.base.complete(
-            rewrite_msgs,
+            concrete_msgs,
             max_tokens=rewrite_cap,
             temperature=self.rewriter_temperature,
         )

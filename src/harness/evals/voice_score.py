@@ -29,19 +29,58 @@ _BANNED_OPENERS: tuple[str, ...] = (
 # uses prose. Bullet dashes ("- foo\n- bar") are allowed by the style rules.
 _NUMBERED_LIST_PATTERN = re.compile(r"^\s*\d+[.)]\s", re.MULTILINE)
 
+# Mid-sentence assistant tells. A phrase here is a weak signal alone; in
+# aggregate, three or four of them in a response is very strong. Gold
+# responses in the canonical suite avoid all of these, so any excess
+# over the gold's own count is counted as filler.
+_FILLER_PHRASES: tuple[str, ...] = (
+    "ensure that",
+    "ensures that",
+    "to ensure",
+    "make sure that",
+    "make sure to",
+    "it's important to",
+    "it is important to",
+    "comprehensive",
+    "maintainability",
+    "maintainable",
+    "maintains",
+    "robustness",
+    "various scenarios",
+    "various conditions",
+    "in this context",
+    "given the complexity",
+    "let me know",
+    "feel free to",
+    "happy to help",
+    "to summarize",
+    "in summary",
+    "let me break",
+    "here's a breakdown",
+    "consider the following",
+    "keep in mind",
+    "clearly defined",
+    "thoroughly",
+    "seamlessly",
+    "proceed with caution",
+    "from my end",
+    "from your end",
+)
+
 
 @dataclass(frozen=True)
 class VoiceScore:
-    """Three sub-metrics, aggregate is the mean. Each sub-score is 0..1
-    so the aggregate is easy to reason about. Sub-scores are separately
-    readable so we can see *where* a drift happens, not just that it
-    did."""
+    """Sub-metrics each scored 0..1; aggregate is the mean. Sub-scores
+    are reported separately so we can see *where* a drift happens, not
+    just that it did."""
 
     length_match: float
     no_banned_openers: float
     bullet_discipline: float
+    filler_discipline: float
     aggregate: float
     notes: tuple[str, ...]
+    judge_score: int | None = None  # set by the optional LLM judge; None if not run
 
 
 def _length_score(actual: str, gold: str) -> tuple[float, str]:
@@ -75,25 +114,49 @@ def _bullet_discipline_score(actual: str, gold: str) -> tuple[float, str | None]
     return 0.5, "missing_expected_numbered_list"
 
 
+def _filler_score(actual: str, gold: str) -> tuple[float, list[str]]:
+    actual_lower = actual.lower()
+    gold_lower = gold.lower()
+    hits: list[str] = []
+    excess_total = 0
+    for phrase in _FILLER_PHRASES:
+        actual_count = actual_lower.count(phrase)
+        gold_count = gold_lower.count(phrase)
+        excess = actual_count - gold_count
+        if excess > 0:
+            hits.append(f"filler:{phrase!r}x{excess}")
+            excess_total += excess
+    # Each excess filler phrase costs 0.15 of the score; cap at zero.
+    # Gold uses none of these, so a clean response scores 1.0; two
+    # excess phrases → 0.70; five excess phrases → 0.25; seven+ → 0.
+    score = max(0.0, 1.0 - 0.15 * excess_total)
+    return round(score, 3), hits
+
+
 def score_actual_against_gold(actual: str, gold: str) -> VoiceScore:
-    """Compare a model output to its gold response along three axes:
-    length, opener register, and bullet shape. Cheap, deterministic,
-    interpretable. A perfect score is 1.0 across the board."""
+    """Compare a model output to its gold response along four axes:
+    length, opener register, bullet shape, and mid-sentence filler.
+    Cheap, deterministic, interpretable. A perfect score is 1.0 across
+    the board. The `judge_score` field is populated separately by the
+    optional LLM judge when running evals with --judge."""
     length_match, length_note = _length_score(actual, gold)
     no_banned, banned_note = _banned_opener_score(actual)
     bullet_discipline, bullet_note = _bullet_discipline_score(actual, gold)
+    filler_discipline, filler_notes = _filler_score(actual, gold)
 
     notes: list[str] = [length_note]
     if banned_note:
         notes.append(banned_note)
     if bullet_note:
         notes.append(bullet_note)
+    notes.extend(filler_notes)
 
-    aggregate = (length_match + no_banned + bullet_discipline) / 3.0
+    aggregate = (length_match + no_banned + bullet_discipline + filler_discipline) / 4.0
     return VoiceScore(
         length_match=length_match,
         no_banned_openers=no_banned,
         bullet_discipline=bullet_discipline,
+        filler_discipline=filler_discipline,
         aggregate=round(aggregate, 3),
         notes=tuple(notes),
     )

@@ -181,6 +181,19 @@ def eval_voice(
         help="Retrieve top-K voice samples by similarity to each prompt "
         "(default 6). Set 0 to show every sample (Phase 1a.2 baseline).",
     ),
+    chain_rewrites: bool = typer.Option(
+        False,
+        "--chain-rewrites/--no-chain-rewrites",
+        help="Add a second 'concrete substitution' rewrite pass on top of the "
+        "style pass. Requires --persona.",
+    ),
+    use_judge: bool = typer.Option(
+        False,
+        "--judge/--no-judge",
+        help="After heuristic scoring, ask the adapter to rate each response "
+        "1-10 against gold. Circular (same model) but catches register drift "
+        "the regex scorer misses.",
+    ),
 ) -> None:
     """Run the canonical voice prompts and show model-vs-gold side by side."""
     character = load_character(settings.character_path)
@@ -198,6 +211,8 @@ def eval_voice(
         persona=persona,
         retriever=retriever,
         top_k=top_k,
+        use_judge=use_judge,
+        chain_rewrites=chain_rewrites,
     )
 
     if as_json:
@@ -212,6 +227,8 @@ def eval_voice(
                     "length_match": r.score.length_match,
                     "no_banned_openers": r.score.no_banned_openers,
                     "bullet_discipline": r.score.bullet_discipline,
+                    "filler_discipline": r.score.filler_discipline,
+                    "judge_score": r.score.judge_score,
                     "notes": list(r.score.notes),
                 },
                 **({"draft": r.draft} if r.draft is not None else {}),
@@ -228,11 +245,14 @@ def eval_voice(
     table.add_column("actual", style="yellow")
     table.add_column("score", style="cyan")
     for r in results:
+        judge_line = f"\njudge={r.score.judge_score}/10" if r.score.judge_score is not None else ""
         score_cell = (
             f"{r.score.aggregate:.2f}\n"
             f"len={r.score.length_match:.2f}\n"
             f"open={r.score.no_banned_openers:.0f}\n"
-            f"bul={r.score.bullet_discipline:.1f}"
+            f"bul={r.score.bullet_discipline:.1f}\n"
+            f"fil={r.score.filler_discipline:.2f}"
+            f"{judge_line}"
         )
         table.add_row(r.sample_id, r.prompt, r.gold.strip(), r.actual.strip(), score_cell)
     aggregate = sum(r.score.aggregate for r in results) / max(len(results), 1)
@@ -240,6 +260,12 @@ def eval_voice(
     console.print(
         f"[bold]aggregate voice score:[/bold] {aggregate:.3f} across {len(results)} sample(s)"
     )
+    judge_scores = [r.score.judge_score for r in results if r.score.judge_score is not None]
+    if judge_scores:
+        judge_mean = sum(judge_scores) / len(judge_scores)
+        console.print(
+            f"[bold]judge mean:[/bold] {judge_mean:.2f}/10 across {len(judge_scores)} sample(s)"
+        )
 
 
 if __name__ == "__main__":
