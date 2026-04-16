@@ -149,7 +149,13 @@ class SemanticStore:
         *,
         k: int = 5,
         min_confidence: float = 0.0,
+        min_score: float = 0.0,
     ) -> list[tuple[SemanticFact, float]]:
+        """Return up to `k` facts where stored confidence >= `min_confidence`
+        AND retrieval cosine similarity >= `min_score`. The confidence
+        gate filters by trustworthiness; the score gate filters by
+        actual relevance to the query. Both matter — a high-confidence
+        fact about an unrelated topic still pollutes the prompt."""
         rows = self._conn.execute(
             """SELECT id, subject, predicate, object, confidence, source,
                       attributed_to, session_id, user_id, supersedes, tier,
@@ -164,7 +170,8 @@ class SemanticStore:
         for row in rows:
             vec = np.frombuffer(row[12], dtype=np.float32)
             sim = float(np.dot(q_vec, vec))
-            scored.append((_row_to_fact(row[:12]), sim))
+            if sim >= min_score:
+                scored.append((_row_to_fact(row[:12]), sim))
         scored.sort(key=lambda t: t[1], reverse=True)
         return scored[:k]
 

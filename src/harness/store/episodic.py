@@ -158,9 +158,18 @@ class EpisodicStore:
             ).fetchall()
         return [_row_to_record(r) for r in rows]
 
-    def search(self, query: str, *, k: int = 3) -> list[tuple[EpisodicRecord, float]]:
-        """Return the top-K most similar records to `query`, paired with
-        their cosine similarity. Empty list if the store is empty."""
+    def search(
+        self,
+        query: str,
+        *,
+        k: int = 3,
+        min_score: float = 0.0,
+    ) -> list[tuple[EpisodicRecord, float]]:
+        """Return up to `k` records with cosine similarity >= `min_score`,
+        paired with the similarity. Empty list if the store is empty or
+        nothing clears the threshold — memory that doesn't clear the bar
+        pollutes the prompt and gives us hallucinated "relevance" where
+        there is none."""
         rows = self._conn.execute(
             """SELECT id, external_id, title, body, principle, tags, tier,
                       source, session_id, user_id, created_at, embedding
@@ -175,7 +184,8 @@ class EpisodicStore:
             vec = np.frombuffer(row[11], dtype=np.float32)
             # Vectors are normalized by the Embedder contract; dot == cosine.
             sim = float(np.dot(q_vec, vec))
-            scored.append((_row_to_record(row[:11]), sim))
+            if sim >= min_score:
+                scored.append((_row_to_record(row[:11]), sim))
 
         scored.sort(key=lambda t: t[1], reverse=True)
         return scored[:k]

@@ -151,14 +151,27 @@ def chat(
     memories: int = typer.Option(
         3,
         "--memories",
-        help="Number of episodic memories to retrieve per user turn "
-        "(default 3). Set 0 to disable memory retrieval.",
+        help="Max episodic memories to retrieve per user turn (default 3). "
+        "Set 0 to disable memory retrieval.",
+    ),
+    memories_threshold: float = typer.Option(
+        0.5,
+        "--memories-threshold",
+        help="Cosine-similarity floor for memory retrieval. Memories below "
+        "this are dropped even if there are fewer than --memories of them. "
+        "Prevents irrelevant memories from polluting the prompt.",
     ),
     facts: int = typer.Option(
         5,
         "--facts",
-        help="Number of semantic facts to retrieve per user turn "
-        "(default 5). Set 0 to disable fact retrieval.",
+        help="Max semantic facts to retrieve per user turn (default 5). "
+        "Set 0 to disable fact retrieval.",
+    ),
+    facts_threshold: float = typer.Option(
+        0.45,
+        "--facts-threshold",
+        help="Cosine-similarity floor for fact retrieval. Lower than the "
+        "memory floor because facts are much shorter strings and score lower.",
     ),
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
@@ -198,13 +211,13 @@ def chat(
                 system_content = character.system_prompt()
 
             if memory_store is not None:
-                hits = memory_store.search(user_input, k=memories)
+                hits = memory_store.search(user_input, k=memories, min_score=memories_threshold)
                 if hits:
                     recalled = [rec for rec, _score in hits]
                     system_content = f"{system_content}\n\n{_render_memory_block(recalled)}"
 
             if semantic_store is not None:
-                fact_hits = semantic_store.search(user_input, k=facts)
+                fact_hits = semantic_store.search(user_input, k=facts, min_score=facts_threshold)
                 if fact_hits:
                     known = [f for f, _score in fact_hits]
                     system_content = f"{system_content}\n\n{_render_fact_block(known)}"
