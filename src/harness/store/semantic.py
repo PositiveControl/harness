@@ -12,7 +12,7 @@ import numpy as np
 if TYPE_CHECKING:
     from harness.retrieval.embed import Embedder
 
-_SCHEMA = """
+_CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS semantic (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     subject        TEXT    NOT NULL,
@@ -24,13 +24,17 @@ CREATE TABLE IF NOT EXISTS semantic (
     session_id     TEXT,
     user_id        TEXT,
     supersedes     INTEGER REFERENCES semantic(id),
+    superseded_by  INTEGER REFERENCES semantic(id),
     tier           TEXT    NOT NULL DEFAULT 'working',
     created_at     TEXT    NOT NULL,
     embedding      BLOB    NOT NULL
 );
+"""
 
-CREATE INDEX IF NOT EXISTS semantic_subject_idx ON semantic (subject);
-CREATE INDEX IF NOT EXISTS semantic_tier_idx    ON semantic (tier);
+_CREATE_INDEXES = """
+CREATE INDEX IF NOT EXISTS semantic_subject_idx       ON semantic (subject);
+CREATE INDEX IF NOT EXISTS semantic_tier_idx          ON semantic (tier);
+CREATE INDEX IF NOT EXISTS semantic_superseded_by_idx ON semantic (superseded_by);
 """
 
 
@@ -48,6 +52,7 @@ class SemanticFact:
     supersedes: int | None
     tier: str
     created_at: datetime
+    superseded_by: int | None = None
 
 
 class SemanticStore:
@@ -62,7 +67,14 @@ class SemanticStore:
         self._conn = sqlite3.connect(self.db_path, isolation_level=None)
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
-        self._conn.executescript(_SCHEMA)
+        self._conn.executescript(_CREATE_TABLE)
+        # Schema migration: add superseded_by if the table pre-dates Phase 1b.2.
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(semantic)")}
+        if "superseded_by" not in cols:
+            self._conn.execute(
+                "ALTER TABLE semantic ADD COLUMN superseded_by INTEGER REFERENCES semantic(id)"
+            )
+        self._conn.executescript(_CREATE_INDEXES)
 
     def add(
         self,
@@ -112,7 +124,7 @@ class SemanticStore:
         row = self._conn.execute(
             """SELECT id, subject, predicate, object, confidence, source,
                       attributed_to, session_id, user_id, supersedes, tier,
-                      created_at
+                      created_at, superseded_by
                FROM semantic WHERE id = ?""",
             (record_id,),
         ).fetchone()
@@ -125,10 +137,11 @@ class SemanticStore:
         *,
         tier: str | None = None,
         subject: str | None = None,
+        include_superseded: bool = False,
     ) -> list[SemanticFact]:
         query = """SELECT id, subject, predicate, object, confidence, source,
                       attributed_to, session_id, user_id, supersedes, tier,
-                      created_at FROM semantic"""
+                      created_at, superseded_by FROM semantic"""
         conditions: list[str] = []
         params: list[object] = []
         if tier is not None:
@@ -137,11 +150,19 @@ class SemanticStore:
         if subject is not None:
             conditions.append("subject = ?")
             params.append(subject)
+        if not include_superseded:
+            conditions.append("superseded_by IS NULL")
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY id"
         rows = self._conn.execute(query, params).fetchall()
         return [_row_to_fact(r) for r in rows]
+
+    def mark_superseded(self, record_id: int, *, by: int) -> None:
+        self._conn.execute(
+            "UPDATE semantic SET superseded_by = ? WHERE id = ?",
+            (by, record_id),
+        )
 
     def search(
         self,
@@ -151,16 +172,17 @@ class SemanticStore:
         min_confidence: float = 0.0,
         min_score: float = 0.0,
     ) -> list[tuple[SemanticFact, float]]:
-        """Return up to `k` facts where stored confidence >= `min_confidence`
-        AND retrieval cosine similarity >= `min_score`. The confidence
-        gate filters by trustworthiness; the score gate filters by
-        actual relevance to the query. Both matter — a high-confidence
-        fact about an unrelated topic still pollutes the prompt."""
+        """Return up to `k` active facts (not superseded) where stored
+        confidence >= `min_confidence` AND retrieval cosine similarity
+        >= `min_score`. Confidence gates by trustworthiness; the score
+        gate gates by relevance. Both matter — a high-confidence fact
+        about an unrelated topic still pollutes the prompt."""
         rows = self._conn.execute(
             """SELECT id, subject, predicate, object, confidence, source,
                       attributed_to, session_id, user_id, supersedes, tier,
-                      created_at, embedding
-               FROM semantic WHERE confidence >= ?""",
+                      created_at, superseded_by, embedding
+               FROM semantic
+               WHERE confidence >= ? AND superseded_by IS NULL""",
             (min_confidence,),
         ).fetchall()
         if not rows:
@@ -168,12 +190,20 @@ class SemanticStore:
         q_vec = self.embedder.embed([query])[0].astype(np.float32)
         scored: list[tuple[SemanticFact, float]] = []
         for row in rows:
-            vec = np.frombuffer(row[12], dtype=np.float32)
+            vec = np.frombuffer(row[13], dtype=np.float32)
             sim = float(np.dot(q_vec, vec))
             if sim >= min_score:
-                scored.append((_row_to_fact(row[:12]), sim))
+                scored.append((_row_to_fact(row[:13]), sim))
         scored.sort(key=lambda t: t[1], reverse=True)
         return scored[:k]
+
+    def fetch_embedding(self, record_id: int) -> np.ndarray:
+        row = self._conn.execute(
+            "SELECT embedding FROM semantic WHERE id = ?", (record_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"semantic fact {record_id} not found")
+        return np.frombuffer(row[0], dtype=np.float32)
 
     def close(self) -> None:
         self._conn.close()
@@ -194,4 +224,5 @@ def _row_to_fact(row: Iterable[Any]) -> SemanticFact:
         supersedes=int(r[9]) if r[9] is not None else None,
         tier=str(r[10]),
         created_at=datetime.fromisoformat(str(r[11])),
+        superseded_by=int(r[12]) if len(r) > 12 and r[12] is not None else None,
     )

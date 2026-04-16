@@ -11,6 +11,7 @@ from rich.table import Table
 
 from harness.character import Character, load_character
 from harness.config import settings
+from harness.consolidate import run_consolidation
 from harness.evals.voice import run_voice_eval
 from harness.model import AdapterName, ChatMessage, ModelAdapter, make_adapter
 from harness.model.adapter import Role
@@ -556,6 +557,41 @@ def memory_scribe(
                 console.print(f"  - {err}")
     finally:
         transcript.close()
+        episodic.close()
+        semantic.close()
+
+
+@memory_app.command("consolidate")
+def memory_consolidate(
+    episodic_threshold: float = typer.Option(
+        0.80,
+        help="Cosine-similarity threshold for clustering near-duplicate episodes.",
+    ),
+) -> None:
+    """Promote working-tier memories to consolidated. Clusters similar
+    episodes; groups semantic facts by (subject, predicate); marks
+    superseded rows so they drop out of retrieval. Idempotent."""
+    character = load_character(settings.character_path)
+    episodic = _open_episodic_store(character, ingest=False)
+    semantic = _open_semantic_store()
+    if episodic is None or semantic is None:
+        raise typer.Exit(code=1)
+    try:
+        with Status("running consolidation…", console=console):
+            summary = run_consolidation(episodic, semantic, episodic_threshold=episodic_threshold)
+        console.print(
+            f"episodic: considered [bold]{summary.episodic_considered}[/bold] working, "
+            f"merged [bold]{summary.episodic_clusters_merged}[/bold] cluster(s), "
+            f"promoted [bold]{summary.episodic_promoted}[/bold], "
+            f"superseded [bold]{summary.episodic_superseded}[/bold]"
+        )
+        console.print(
+            f"semantic: considered [bold]{summary.semantic_considered}[/bold] working, "
+            f"merged [bold]{summary.semantic_groups_merged}[/bold] group(s), "
+            f"promoted [bold]{summary.semantic_promoted}[/bold], "
+            f"superseded [bold]{summary.semantic_superseded}[/bold]"
+        )
+    finally:
         episodic.close()
         semantic.close()
 

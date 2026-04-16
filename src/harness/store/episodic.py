@@ -14,25 +14,29 @@ if TYPE_CHECKING:
     from harness.character import Character
     from harness.retrieval.embed import Embedder
 
-_SCHEMA = """
+_CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS episodic (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    external_id  TEXT    UNIQUE,
-    title        TEXT    NOT NULL,
-    body         TEXT    NOT NULL,
-    principle    TEXT,
-    tags         TEXT    NOT NULL DEFAULT '[]',
-    tier         TEXT    NOT NULL,
-    source       TEXT    NOT NULL,
-    session_id   TEXT,
-    user_id      TEXT,
-    created_at   TEXT    NOT NULL,
-    last_accessed TEXT,
-    embedding    BLOB    NOT NULL
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    external_id    TEXT    UNIQUE,
+    title          TEXT    NOT NULL,
+    body           TEXT    NOT NULL,
+    principle      TEXT,
+    tags           TEXT    NOT NULL DEFAULT '[]',
+    tier           TEXT    NOT NULL,
+    source         TEXT    NOT NULL,
+    session_id     TEXT,
+    user_id        TEXT,
+    created_at     TEXT    NOT NULL,
+    last_accessed  TEXT,
+    embedding      BLOB    NOT NULL,
+    superseded_by  INTEGER REFERENCES episodic(id)
 );
+"""
 
-CREATE INDEX IF NOT EXISTS episodic_external_id_idx ON episodic (external_id);
-CREATE INDEX IF NOT EXISTS episodic_tier_idx ON episodic (tier);
+_CREATE_INDEXES = """
+CREATE INDEX IF NOT EXISTS episodic_external_id_idx   ON episodic (external_id);
+CREATE INDEX IF NOT EXISTS episodic_tier_idx          ON episodic (tier);
+CREATE INDEX IF NOT EXISTS episodic_superseded_by_idx ON episodic (superseded_by);
 """
 
 
@@ -45,10 +49,11 @@ class EpisodicRecord:
     principle: str | None
     tags: tuple[str, ...]
     tier: str  # "seed" | "consolidated" | "working"
-    source: str  # "yaml" | "scribe" | "user"
+    source: str  # "yaml" | "scribe" | "user" | "consolidator"
     session_id: str | None
     user_id: str | None
     created_at: datetime
+    superseded_by: int | None = None  # non-null → retired; filter out of retrieval
 
 
 class EpisodicStore:
@@ -68,7 +73,16 @@ class EpisodicStore:
         self._conn = sqlite3.connect(self.db_path, isolation_level=None)
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
-        self._conn.executescript(_SCHEMA)
+        self._conn.executescript(_CREATE_TABLE)
+        # Schema migration: add superseded_by if the table pre-dates Phase 1b.2.
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(episodic)")}
+        if "superseded_by" not in cols:
+            self._conn.execute(
+                "ALTER TABLE episodic ADD COLUMN superseded_by INTEGER REFERENCES episodic(id)"
+            )
+        # Indexes created after migration so the superseded_by index can
+        # reference the freshly-added column.
+        self._conn.executescript(_CREATE_INDEXES)
 
     def has(self, external_id: str) -> bool:
         row = self._conn.execute(
@@ -134,7 +148,7 @@ class EpisodicStore:
     def get(self, record_id: int) -> EpisodicRecord:
         row = self._conn.execute(
             """SELECT id, external_id, title, body, principle, tags, tier,
-                      source, session_id, user_id, created_at
+                      source, session_id, user_id, created_at, superseded_by
                FROM episodic WHERE id = ?""",
             (record_id,),
         ).fetchone()
@@ -142,21 +156,47 @@ class EpisodicStore:
             raise KeyError(f"episodic record {record_id} not found")
         return _row_to_record(row)
 
-    def all(self, *, tier: str | None = None) -> list[EpisodicRecord]:
-        if tier is None:
-            rows = self._conn.execute(
-                """SELECT id, external_id, title, body, principle, tags, tier,
-                          source, session_id, user_id, created_at
-                   FROM episodic ORDER BY id"""
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                """SELECT id, external_id, title, body, principle, tags, tier,
-                          source, session_id, user_id, created_at
-                   FROM episodic WHERE tier = ? ORDER BY id""",
-                (tier,),
-            ).fetchall()
+    def all(
+        self,
+        *,
+        tier: str | None = None,
+        include_superseded: bool = False,
+    ) -> list[EpisodicRecord]:
+        conditions: list[str] = []
+        params: list[object] = []
+        if tier is not None:
+            conditions.append("tier = ?")
+            params.append(tier)
+        if not include_superseded:
+            conditions.append("superseded_by IS NULL")
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        # `where` is assembled from hardcoded column checks, not user
+        # input — S608 is a false positive here.
+        rows = self._conn.execute(
+            f"""SELECT id, external_id, title, body, principle, tags, tier,
+                       source, session_id, user_id, created_at, superseded_by
+                FROM episodic{where} ORDER BY id""",  # noqa: S608
+            params,
+        ).fetchall()
         return [_row_to_record(r) for r in rows]
+
+    def mark_superseded(self, record_id: int, *, by: int) -> None:
+        """Mark `record_id` as superseded by the record with id `by`. The
+        record still exists (audit trail) but drops out of retrieval."""
+        self._conn.execute(
+            "UPDATE episodic SET superseded_by = ? WHERE id = ?",
+            (by, record_id),
+        )
+
+    def fetch_embedding(self, record_id: int) -> np.ndarray:
+        """Return the stored embedding for a record, as a numpy array.
+        Used by the consolidator for clustering without re-embedding."""
+        row = self._conn.execute(
+            "SELECT embedding FROM episodic WHERE id = ?", (record_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"episodic record {record_id} not found")
+        return np.frombuffer(row[0], dtype=np.float32)
 
     def search(
         self,
@@ -165,15 +205,16 @@ class EpisodicStore:
         k: int = 3,
         min_score: float = 0.0,
     ) -> list[tuple[EpisodicRecord, float]]:
-        """Return up to `k` records with cosine similarity >= `min_score`,
-        paired with the similarity. Empty list if the store is empty or
-        nothing clears the threshold — memory that doesn't clear the bar
-        pollutes the prompt and gives us hallucinated "relevance" where
-        there is none."""
+        """Return up to `k` active (non-superseded) records with cosine
+        similarity >= `min_score`, paired with the similarity. Empty
+        list if the store is empty or nothing clears the threshold —
+        memory that doesn't clear the bar pollutes the prompt and
+        gives us hallucinated relevance where there is none."""
         rows = self._conn.execute(
             """SELECT id, external_id, title, body, principle, tags, tier,
-                      source, session_id, user_id, created_at, embedding
-               FROM episodic"""
+                      source, session_id, user_id, created_at, superseded_by,
+                      embedding
+               FROM episodic WHERE superseded_by IS NULL"""
         ).fetchall()
         if not rows:
             return []
@@ -181,11 +222,11 @@ class EpisodicStore:
         q_vec = self.embedder.embed([query])[0].astype(np.float32)
         scored: list[tuple[EpisodicRecord, float]] = []
         for row in rows:
-            vec = np.frombuffer(row[11], dtype=np.float32)
+            vec = np.frombuffer(row[12], dtype=np.float32)
             # Vectors are normalized by the Embedder contract; dot == cosine.
             sim = float(np.dot(q_vec, vec))
             if sim >= min_score:
-                scored.append((_row_to_record(row[:11]), sim))
+                scored.append((_row_to_record(row[:12]), sim))
 
         scored.sort(key=lambda t: t[1], reverse=True)
         return scored[:k]
@@ -207,6 +248,7 @@ def _row_to_record(row: tuple) -> EpisodicRecord:  # type: ignore[type-arg]
         session_id=row[8],
         user_id=row[9],
         created_at=datetime.fromisoformat(row[10]),
+        superseded_by=row[11] if len(row) > 11 else None,
     )
 
 
