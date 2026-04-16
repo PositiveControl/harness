@@ -545,6 +545,35 @@ def memory_scribe(
         semantic.close()
 
 
+@memory_app.command("wipe")
+def memory_wipe(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+) -> None:
+    """Clear episodic, semantic, and scribe-watermark data. Transcripts
+    and character data are preserved. Use after switching embedder
+    dimensions, or when you want to re-ingest from scratch."""
+    if not yes:
+        typer.confirm(
+            "This wipes all episodic, semantic, and scribe-watermark data. Proceed?",
+            abort=True,
+        )
+    import contextlib
+    import sqlite3
+
+    # Hardcoded whitelist — not user input, so S608 is a false positive
+    # for this interpolation, but we keep the table names fixed anyway.
+    tables = ("episodic", "semantic", "scribe_watermark")
+    conn = sqlite3.connect(settings.db_path)
+    try:
+        for table in tables:
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(f"DELETE FROM {table}")  # noqa: S608
+        conn.commit()
+    finally:
+        conn.close()
+    console.print("[yellow]wiped episodic, semantic, and scribe_watermark.[/yellow]")
+
+
 @memory_app.command("ingest")
 def memory_ingest() -> None:
     """Force an ingestion pass of the character's seed memories.

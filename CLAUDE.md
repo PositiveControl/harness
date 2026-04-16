@@ -28,7 +28,10 @@ Environment management with `uv` (Python 3.12):
 - `uv run harness memory ingest` — seed Airton's episodic memory from the character's seed memories (idempotent).
 - `uv run harness memory list` — tabular view of every episodic record.
 - `uv run harness memory search "query"` — semantic top-K search over episodic memory.
-- `uv run harness chat --model mlx --memories 3` — chat with top-3 episodic memories retrieved each turn (default).
+- `uv run harness chat --model mlx --memories 3 --facts 5` — chat with top-3 episodic memories and top-5 semantic facts retrieved each turn.
+- `uv run harness memory wipe --yes` — clear episodic + semantic + scribe-watermark data (transcripts preserved). Required when switching embedder dimensions.
+- `uv run harness memory fact-list` / `fact-search "query"` / `fact-add subject predicate object` — semantic store CRUD/search.
+- `uv run harness memory scribe --session ID --model mlx` — batch-extract memories from unprocessed transcript turns, watermark-tracked.
 
 Quality gates (all four must stay green; pre-commit runs them on every commit):
 
@@ -74,7 +77,12 @@ The system is designed against these invariants — they shape almost every deci
     - `st_embedder.py` — `SentenceTransformersEmbedder` (BAAI/bge-small-en-v1.5 by default; MPS on Mac, CPU elsewhere; lazy-loaded).
     - `voice_retriever.py` — `VoiceRetriever` embeds all sample prompts once at construction; `top_k(query, k=, exclude_ids=)` returns the most similar samples. The CLI (`chat`, `eval voice`) and the voice eval build one per character load.
   - `store/transcript.py` — append-only SQLite transcript with WAL + FTS5. All future stores (episodic, semantic, graph, procedural, affective, identity, world) follow this shape: append-first, indexed for retrieval.
-  - `store/episodic.py` — `EpisodicStore` holds narrative records (title, body, principle, tags, tier) in SQLite alongside float32-BLOB embeddings. `search(query, k)` is an in-process cosine scan — fine up to ~10k records, upgrade to LanceDB when we need more. `ensure_seeds_ingested(character, store)` is idempotent and runs on chat startup. Tier vocabulary: `seed` (loaded from character YAML) · `consolidated` (promoted from transcript by future scribe) · `working` (ad-hoc writes).
+  - `store/episodic.py` — `EpisodicStore` holds narrative records (title, body, principle, tags, tier) in SQLite alongside float32-BLOB embeddings. `search(query, k)` is an in-process cosine scan — fine up to ~10k records, upgrade to LanceDB when we need more. `ensure_seeds_ingested(character, store)` is idempotent and runs on chat startup. Tier vocabulary: `seed` (loaded from character YAML) · `consolidated` (promoted by future consolidator) · `working` (scribe and ad-hoc writes).
+  - `store/semantic.py` — `SemanticStore` holds atomic (subject, predicate, object) triples with confidence, provenance, tier, and a `supersedes` self-reference. Same BLOB-embedding-plus-cosine-scan pattern as episodic. `search(query, k, min_confidence)` embeds *"subject predicate object"* for natural-language retrieval.
+  - `scribe/` — batch extraction from transcript to the memory stores.
+    - `extractor.py` — `extract_candidates(adapter, character, turns)` calls the model with a strict-JSON rubric and returns parsed `EpisodicCandidate` + `SemanticCandidate` tuples. `parse_scribe_output` tolerates markdown fences and garbage, drops malformed items rather than failing the whole window.
+    - `runner.py` — `run_scribe(...)` walks unprocessed transcript turns in windows past a per-session watermark, persists candidates to the stores at tier="working", advances the watermark. Non-overlapping windows; malformed output is logged in the summary and processing continues.
+  - **Embedder**: `mixedbread-ai/mxbai-embed-large-v1`, 1024 dims, Matryoshka-trained. One embedder shared across voice retrieval, episodic memory, and semantic memory so they live in a comparable geometry. Changing the embedder is currently destructive — existing BLOBs are dim-locked — so plan to add `embedder_id` / `dimension` columns to the stores before any future switch.
   - `cli.py` — Typer app: `chat` and `describe` commands.
 - `tests/` — pytest. Tests hit real stores (SQLite in `tmp_path`) rather than mocks.
 

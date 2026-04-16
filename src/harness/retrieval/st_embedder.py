@@ -8,8 +8,9 @@ import numpy as np
 
 class SentenceTransformersEmbedder:
     """Embedder backed by sentence-transformers. Default model is
-    BAAI/bge-small-en-v1.5 — 384-dim, ~100 MB on disk, ~a few ms per
-    query once loaded.
+    mixedbread-ai/mxbai-embed-large-v1 — 1024-dim, ~1.3 GB RAM, near
+    top-of-MTEB for English and Matryoshka-trained (truncatable to 512
+    or 256 if we want cheaper search later).
 
     Uses Metal (MPS) on Apple silicon when available, CPU elsewhere.
     Model load is deferred until the first embed() call so imports stay
@@ -17,7 +18,7 @@ class SentenceTransformersEmbedder:
 
     def __init__(
         self,
-        model_name: str = "BAAI/bge-small-en-v1.5",
+        model_name: str = "mixedbread-ai/mxbai-embed-large-v1",
         *,
         device: str | None = None,
     ) -> None:
@@ -25,7 +26,7 @@ class SentenceTransformersEmbedder:
         self._device = device
         self._model: Any | None = None
         self.id = f"st:{model_name.split('/')[-1]}"
-        self.dimension = 384  # BGE-small default; updated after load
+        self.dimension = 1024  # mxbai-embed-large default; updated after load
 
     def _ensure_loaded(self) -> None:
         if self._model is not None:
