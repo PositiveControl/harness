@@ -44,7 +44,11 @@ Two paths.
 
 You've just landed in voice-coverage territory: the prompt is near no existing voice sample, so Qwen is falling back to generic register.
 
-Fix it by teaching Airton what it should have said:
+Fix it by teaching Airton what it should have said. Two paths:
+
+**In-chat (easiest):** type `/edit` at the `you ›` prompt. Your `$EDITOR` opens with Airton's last reply pre-loaded — rewrite it in the voice you want, save, and exit. The edited text becomes a new voice sample paired with the preceding user message. Saving without changes is a no-op.
+
+**From the shell:**
 
 ```
 uv run harness voice capture \
@@ -52,7 +56,7 @@ uv run harness voice capture \
   --gold "What Airton should have said, in Airton's voice."
 ```
 
-This writes a new sample to `character/airton/voice/captured.yaml` paired with your previous user message as the prompt. On your next chat startup, retrieval will pick it up for similar future prompts.
+Either way writes a new sample to `character/airton/voice/captured.yaml`. On your next chat startup, retrieval will pick it up for similar future prompts.
 
 To confirm the capture landed:
 

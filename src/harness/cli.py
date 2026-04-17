@@ -75,6 +75,7 @@ from harness.tools import (
 )
 
 _EXIT_COMMANDS = frozenset({"/exit", "/quit", "exit", "quit", ":q", ":quit"})
+_EDIT_COMMANDS = frozenset({"/edit", "/capture"})
 
 # Sentinel used to encode structured tool_calls onto an assistant turn's
 # content when persisting to the transcript. Two-line format: human-readable
@@ -316,6 +317,45 @@ def _describe_call(call: ToolCall, workspace: Path) -> str:
         return " ".join(f"{k}={v}" for k, v in args.items()) or "(no args)"
     # Fallback: the raw args dict.
     return str(args)
+
+
+def _open_in_editor(initial_text: str) -> str | None:
+    """Launch $EDITOR (fallback: vi) on a temp file pre-loaded with
+    `initial_text`. Returns the edited text on successful exit, or None
+    if the user quit without saving / left the file unchanged / the
+    editor failed to launch."""
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+    editor_bin = shutil.which(editor.split()[0])
+    if editor_bin is None:
+        return None
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        suffix=".md",
+        delete=False,
+    ) as tmp:
+        tmp.write(initial_text)
+        tmp_path = Path(tmp.name)
+    try:
+        # Split the editor env var so "code --wait" etc. still work.
+        cmd = [*editor.split(), str(tmp_path)]
+        try:
+            subprocess.run(cmd, check=False)  # noqa: S603 — command comes from $EDITOR
+        except OSError:
+            return None
+        edited = tmp_path.read_text(encoding="utf-8")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    if edited.strip() == initial_text.strip():
+        return None
+    return edited
 
 
 def _render_fact_block(facts: list[SemanticFact]) -> str:
@@ -988,7 +1028,10 @@ def chat(
         f"tools={'on' if registry else 'off'}"
         + (f" workspace={workspace_path}" if registry else "")
     )
-    console.print("[dim](ctrl-c, /exit, /quit, or :q to exit)[/dim]\n")
+    console.print(
+        "[dim](ctrl-c, /exit, /quit, or :q to exit · "
+        "/edit to capture a corrected reply as a voice sample)[/dim]\n"
+    )
 
     def _load_history() -> tuple[ChatMessage | None, list[ChatMessage]]:
         """Return (optional summary-system-message, turns-since-pointer).
@@ -1074,6 +1117,39 @@ def chat(
                 continue
             if user_input.lower() in _EXIT_COMMANDS:
                 break
+            if user_input.lower() in _EDIT_COMMANDS:
+                # Slash command: open $EDITOR on Airton's last reply.
+                # Saving writes a new captured voice sample paired with
+                # the preceding user prompt. Closes the loop between
+                # 'reply was off-register' and 'new training sample'
+                # without leaving chat.
+                history_tail = transcript.tail(session, limit=50)
+                user_turns = [m for m in history_tail if m.role == "user"]
+                assistant_turns = [m for m in history_tail if m.role == "assistant"]
+                if not user_turns or not assistant_turns:
+                    console.print(
+                        "[yellow]no exchange to capture yet — have a turn "
+                        "first, then run /edit.[/yellow]"
+                    )
+                    continue
+                prev_prompt = user_turns[-1].content
+                prev_reply = assistant_turns[-1].content
+                edited = _open_in_editor(prev_reply)
+                if edited is None:
+                    console.print("[dim](no changes — nothing captured)[/dim]")
+                    continue
+                captured_path, sample_id, total = _write_voice_capture(
+                    prompt=prev_prompt,
+                    gold=edited,
+                    session=session,
+                    original=prev_reply,
+                )
+                console.print(
+                    f"[green]captured[/green] id={sample_id!r} "
+                    f"→ {captured_path.relative_to(settings.root)} "
+                    f"(now {total} captured sample(s))"
+                )
+                continue
             transcript.append(
                 session=session,
                 channel=channel,
@@ -1743,6 +1819,46 @@ def memory_ingest() -> None:
 
 
 @voice_app.command("capture")
+def _write_voice_capture(
+    *,
+    prompt: str,
+    gold: str,
+    session: str,
+    original: str | None,
+    sample_id: str | None = None,
+) -> tuple[Path, str, int]:
+    """Shared between `harness voice capture` and the in-chat /edit
+    slash command. Appends a sample to `voice/captured.yaml` and
+    returns (path, sample_id, total_sample_count)."""
+    import yaml
+
+    captured_path = settings.character_path / "voice" / "captured.yaml"
+    captured_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if captured_path.exists():
+        doc = yaml.safe_load(captured_path.read_text()) or {"samples": []}
+    else:
+        doc = {"version": 1, "samples": []}
+
+    if sample_id is None:
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        sample_id = f"captured-{stamp}"
+
+    new_sample: dict[str, object] = {
+        "id": sample_id,
+        "prompt": prompt,
+        "gold": gold.strip(),
+        "captured_at": datetime.now(UTC).isoformat(),
+        "captured_from": f"session={session}",
+    }
+    if original is not None:
+        new_sample["original"] = original
+
+    doc.setdefault("samples", []).append(new_sample)
+    captured_path.write_text(yaml.safe_dump(doc, sort_keys=False, allow_unicode=True))
+    return captured_path, sample_id, len(doc["samples"])
+
+
 def voice_capture(
     session: str = typer.Option("local", help="Session id to pull the exchange from."),
     gold: str = typer.Option(
@@ -1769,8 +1885,6 @@ def voice_capture(
     a separate file from the curated canonical set, and will be loaded
     alongside canonical samples on the next character load. Over time
     this is how the voice corpus compounds from real use."""
-    import yaml
-
     transcript = Transcript(settings.db_path)
     try:
         history = transcript.tail(session, limit=200)
@@ -1792,36 +1906,18 @@ def voice_capture(
     if assistant_turns:
         original = assistant_turns[-1].content
 
-    character_dir = settings.character_path
-    captured_path = character_dir / "voice" / "captured.yaml"
-    captured_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if captured_path.exists():
-        doc = yaml.safe_load(captured_path.read_text()) or {"samples": []}
-    else:
-        doc = {"version": 1, "samples": []}
-
-    if sample_id is None:
-        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        sample_id = f"captured-{stamp}"
-
-    new_sample: dict[str, object] = {
-        "id": sample_id,
-        "prompt": prompt,
-        "gold": gold.strip(),
-        "captured_at": datetime.now(UTC).isoformat(),
-        "captured_from": f"session={session}",
-    }
-    if original is not None:
-        new_sample["original"] = original
-
-    doc.setdefault("samples", []).append(new_sample)
-    captured_path.write_text(yaml.safe_dump(doc, sort_keys=False, allow_unicode=True))
+    captured_path, final_id, total = _write_voice_capture(
+        prompt=prompt,
+        gold=gold,
+        session=session,
+        original=original,
+        sample_id=sample_id,
+    )
 
     console.print(
-        f"[green]captured[/green] id={sample_id!r} "
+        f"[green]captured[/green] id={final_id!r} "
         f"→ {captured_path.relative_to(settings.root)} "
-        f"(now {len(doc['samples'])} captured sample(s))"
+        f"(now {total} captured sample(s))"
     )
 
 
