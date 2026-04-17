@@ -933,11 +933,16 @@ def chat(
                     f"`edit_file` are relative to the sandbox root; `shell` runs "
                     f"with it as cwd.\n\n"
                     "TOOL-USE RULES (follow these EVERY turn):\n"
-                    "- The user's request IS the instruction. NEVER ask the user "
-                    "'Would you like me to …?' / 'Should I …?' / 'Please confirm' "
-                    "/ 'Do you want me to …?'. Call the tool right now. Write-tier "
-                    "tools have their own approve/decline prompt at the tool layer "
-                    "— do NOT duplicate it in chat.\n"
+                    "- The user's request IS the instruction. Act on it immediately.\n"
+                    "- FORBIDDEN PHRASES — never emit any of these in your reply:\n"
+                    '    • "Would you like to / Would you like me to"\n'
+                    '    • "Should I proceed / Shall I / Do you want me to"\n'
+                    '    • "Please confirm / Let\'s confirm / confirm your approval"\n'
+                    '    • "we need to make sure the user confirms"\n'
+                    "  If you catch yourself typing any of these, STOP — delete "
+                    "the sentence and call the tool instead. The tool layer runs "
+                    "its own approve/decline UX for write-tier tools; chat-level "
+                    "meta-confirm just wastes the user's time.\n"
                     "- NEVER claim you did something (added/updated/created/wrote/"
                     "edited/appended a file, ran a command, etc.) unless you actually "
                     "called the corresponding write-tier tool on this turn AND the "

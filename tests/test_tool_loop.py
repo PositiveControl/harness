@@ -518,6 +518,74 @@ def test_loop_catches_chat_level_meta_confirm() -> None:
     assert len(nudges) == 1
 
 
+def test_loop_catches_would_you_like_to_add() -> None:
+    """Regression (harness-edj, second round): original regex required
+    'would you like me to' / 'us to'. 7B Qwen actually emits 'would you
+    like to add scratch to .gitignore?' — no intervening 'me'/'us'."""
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content=(
+                    "Let's confirm the user's approval. Would you like to "
+                    "add `scratch` to the `.gitignore` file? Please confirm "
+                    "your approval."
+                )
+            ),
+            ModelReply(content="Okay, calling the tool."),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="add scratch to the gitignore")],
+        ToolRegistry(),
+    )
+    nudges = [
+        m
+        for m in result.messages
+        if m.role == "user" and "Do NOT ask the user to confirm" in m.content
+    ]
+    assert len(nudges) == 1
+
+
+def test_loop_strips_meta_confirm_when_tool_call_present(tmp_path: Path) -> None:
+    """Regression (harness-edj, third round): 7B sometimes emits BOTH a
+    chat-level meta-confirm narrative AND a tool call in the same reply.
+    The tool call is valid; the narrative is noise. We blank the content
+    so the wrap-up round doesn't see the model's own hallucinated
+    confirmation dialog in history."""
+    (tmp_path / "a.txt").write_text("content")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content=(
+                    "To read the file, we need to make sure the user "
+                    "confirms the action. Would you like me to proceed?"
+                ),
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "a.txt"}),),
+            ),
+            ModelReply(content="the file says 'content'"),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read a.txt")],
+        registry,
+    )
+    # Tool ran.
+    tool_msgs = [m for m in result.messages if m.role == "tool"]
+    assert len(tool_msgs) == 1
+    # The assistant turn that carried the tool call had its noisy
+    # content blanked out (we replaced the ModelReply).
+    assistant_turns = [m for m in result.messages if m.role == "assistant"]
+    # The stripped turn is the one with tool_calls; its content is "".
+    tool_turn = next(m for m in assistant_turns if m.tool_calls)
+    assert tool_turn.content == ""
+    # Final reply unaffected.
+    assert "content" in result.content
+
+
 def test_loop_catches_should_i_proceed() -> None:
     adapter = _ScriptedAdapter(
         replies=[
@@ -544,7 +612,7 @@ def test_loop_does_not_nudge_legitimate_questions() -> None:
     nudge. The regex is narrow enough that 'what should I know about X?' /
     'which file should I look at?' don't match — only ask-for-go-ahead
     patterns do."""
-    adapter = _ScriptedAdapter(replies=[ModelReply(content="Which test suite should I run?")])
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="Which file did you mean?")])
     result = run_tool_loop(
         adapter,
         [ChatMessage(role="user", content="run the tests")],

@@ -58,20 +58,32 @@ _FALSE_SUCCESS_RE = re.compile(
 # Matches chat-level meta-confirm prompts — "Would you like me to…?",
 # "Should I…?", "Please confirm…", "Shall I…?" etc. Small models default
 # to this pattern when they misunderstand that the user's request IS
-# the instruction and the tool layer handles confirmation.
+# the instruction and the tool layer handles confirmation. Broad on
+# purpose: 7B Qwen hit several variants in a single reply
+# ("let's confirm", "would you like to", "please confirm your approval")
+# so we catch all of them.
 _META_CONFIRM_RE = re.compile(
     r"(?:"
-    r"would you like (?:me to|us to)"
+    r"would you like (?:(?:me|us|you)\s+)?to\s+"
+    r"(?:add|proceed|continue|update|create|edit|write|change|append|"
+    r"remove|modify|delete|run|install|make|do|confirm|go\s+ahead)"
     r"|"
     r"shall i\b"
     r"|"
-    r"should i (?:proceed|go ahead|continue|update|add|edit|change|write|do)"
+    r"should i (?:proceed|go ahead|continue|update|add|edit|change|"
+    r"write|do|run)"
     r"|"
     r"do you want me to"
     r"|"
     r"please confirm"
     r"|"
-    r"confirm (?:your |the )?(?:approval|request|intent|instruction)"
+    r"confirm (?:your |the |my )?(?:approval|request|intent|instruction)"
+    r"|"
+    r"let(?:'s|\s+us)\s+confirm"
+    r"|"
+    r"we\s+need\s+to\s+make\s+sure\s+(?:the\s+user|you)\s+confirms?"
+    r"|"
+    r"(?:please\s+)?approve\s+(?:the\s+|this\s+)?action"
     r")",
     re.IGNORECASE,
 )
@@ -242,6 +254,21 @@ def run_tool_loop(
                 )
         finally:
             emit(ToolLoopEvent(kind="model_call_end", round_index=round_idx))
+
+        # Small models sometimes emit meta-confirm narrative AND a tool call
+        # in the same reply ("Would you like me to …? <tool_call>…"). The
+        # tool call is valid but the narrative is noise — strip it from the
+        # assistant turn's content so the wrap-up round doesn't see the model
+        # hallucinating a confirmation dialog in its own history. The tool
+        # still runs; the user just doesn't get a bizarre 'did you want me
+        # to?' before an action they already asked for.
+        if last_reply.tool_calls and _META_CONFIRM_RE.search(last_reply.content):
+            last_reply = ModelReply(
+                content="",
+                tool_calls=last_reply.tool_calls,
+                was_truncated=last_reply.was_truncated,
+                had_unparseable_call=last_reply.had_unparseable_call,
+            )
 
         if not last_reply.tool_calls:
             # If any tool has already executed in this turn (prior round's
