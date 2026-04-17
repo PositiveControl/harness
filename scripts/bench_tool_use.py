@@ -234,7 +234,7 @@ def _tool_spec_schema(spec: Any) -> dict[str, Any]:
 
 
 def _build_all_tools() -> list[Any]:
-    """Instantiate all five built-in tools with real dependencies.
+    """Instantiate every built-in tool with real dependencies.
 
     Memory tools need the live episodic + semantic stores so we can
     invoke them and measure realistic output. If the stores are empty
@@ -245,12 +245,14 @@ def _build_all_tools() -> list[Any]:
     from harness.retrieval.st_embedder import SentenceTransformersEmbedder
     from harness.store.episodic import EpisodicStore
     from harness.store.semantic import SemanticStore
+    from harness.tools import EditFileTool
 
     embedder = SentenceTransformersEmbedder()
     episodic = EpisodicStore(settings.db_path, embedder=embedder)
     semantic = SemanticStore(settings.db_path, embedder=embedder)
     return [
         ReadFileTool(root=settings.root),
+        EditFileTool(root=settings.root),
         WriteFileTool(root=settings.root),
         ShellTool(cwd=settings.root),
         SearchMemoryTool(store=episodic, user_id="mark"),
@@ -313,7 +315,7 @@ def measure_tokens(repo: str) -> None:
 
     print(f"  baseline (no tools):          {baseline:>5} tokens")
     print(
-        f"  all five tools (combined):    {total_with_all:>5} tokens "
+        f"  all {len(specs)} tools combined:        {total_with_all:>5} tokens "
         f"(delta {total_with_all - baseline})"
     )
     print()

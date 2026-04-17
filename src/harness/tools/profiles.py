@@ -23,11 +23,11 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_memory",
         "search_facts",
     ),
-    # Active code collaboration — full read/write/shell/memory. edit_file
-    # and git tools will join once implemented (see bd issues harness-8or,
-    # harness-d4d).
+    # Active code collaboration — full read/write/shell/memory. Git
+    # tools will join once implemented (see bd issue harness-d4d).
     "coding": (
         "read_file",
+        "edit_file",
         "write_file",
         "shell",
         "search_memory",

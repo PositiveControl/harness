@@ -45,6 +45,7 @@ from harness.store.transcript import Transcript, TranscriptMessage
 from harness.tools import (
     DEFAULT_PROFILE,
     TOOL_PROFILES,
+    EditFileTool,
     ReadFileTool,
     SearchFactsTool,
     SearchMemoryTool,
@@ -647,6 +648,7 @@ def chat(
         # through to the warning path so future-tool profiles stay loadable.
         builders: dict[str, Callable[[], Tool | None]] = {
             "read_file": lambda: ReadFileTool(root=workspace_path),
+            "edit_file": lambda: EditFileTool(root=workspace_path),
             "write_file": lambda: WriteFileTool(root=workspace_path),
             "shell": lambda: ShellTool(cwd=workspace_path),
             "search_memory": (

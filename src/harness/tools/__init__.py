@@ -14,6 +14,7 @@ from harness.tools.base import (
     ToolResult,
     ToolSpec,
 )
+from harness.tools.edit_file import EditFileTool
 from harness.tools.profiles import (
     DEFAULT_PROFILE,
     TOOL_PROFILES,
@@ -28,6 +29,7 @@ from harness.tools.write_file import WriteFileTool
 __all__ = [
     "DEFAULT_PROFILE",
     "TOOL_PROFILES",
+    "EditFileTool",
     "ModelReply",
     "ReadFileTool",
     "SearchFactsTool",
