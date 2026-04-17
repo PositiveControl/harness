@@ -227,6 +227,21 @@ def test_renderer_suppresses_trailing_meta_confirm_fragment() -> None:
     assert "suppressed" in captured
 
 
+def test_renderer_drops_bare_tool_intent_sentence() -> None:
+    """'I will search the web for X.' gets suppressed — it either
+    precedes a real tool call (in which case the intent preamble is
+    filler) or it's fabrication lead-in. Either way, drop it."""
+    _, captured = _render(
+        [
+            "Working on it. ",  # kept
+            "I will search the web for BBQ restaurants. ",  # dropped
+        ]
+    )
+    assert "Working on it" in captured
+    assert "I will search" not in captured
+    assert "suppressed" in captured
+
+
 def test_renderer_drops_fabricated_search_sentence() -> None:
     """harness-q27 regression — a 'Here are the results: …' sentence
     with a placeholder URL must be suppressed before display."""

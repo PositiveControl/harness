@@ -109,6 +109,24 @@ _FABRICATED_SEARCH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Matches tool-intent statements that should be accompanied by an
+# actual <tool_call>. Broader than the trailing-teaser regex: doesn't
+# require end-of-content anchoring, and includes 'I will <verb>' not
+# just "I'll <verb>". When a reply contains one of these AND no tool
+# was called this turn, the model has announced intent without acting
+# on it — classic 7B failure mode (harness-q27 follow-up).
+_TOOL_INTENT_RE = re.compile(
+    r"\b(?:"
+    r"i['\u2019]?ll|i\s+will|i\s+need\s+to|i\s+should|i'?m\s+going\s+to|"
+    r"let\s+me|let['\u2019]?s|"
+    r"now\s+i['\u2019]?ll|now\s+let\s+me|next,?\s+i['\u2019]?ll"
+    r")\s+"
+    r"(?:search|look\s+(?:up|for|at)|find|check|read|run|fetch|call|"
+    r"invoke|execute|list|grep|edit|write|open|browse|query|"
+    r"retrieve|download|inspect|examine)\b",
+    re.IGNORECASE,
+)
+
 _MAX_TOKENS_CEILING = 8192
 _BAIL_RETRIES_PER_TURN = 2
 
@@ -158,6 +176,19 @@ def _diagnose_bail(reply: ModelReply, *, tools_ran_this_turn: bool) -> str | Non
             "tool this turn — you cannot know results without actually calling "
             "search_web / fetch_url / read_file. Call the appropriate tool now, "
             "or tell the user you cannot answer without live data."
+        )
+    if not tools_ran_this_turn and _TOOL_INTENT_RE.search(reply.content):
+        return (
+            "Your reply said you would do something ('I will search…', "
+            "'let me check…', etc.) but you did NOT emit a tool_call. "
+            "Stated intent is not action. To call a tool, emit EXACTLY "
+            "this block (no wrapping text, no commentary) as part of "
+            "your next reply:\n"
+            '<tool_call>{"name": "<tool_name>", "arguments": {<args>}}</tool_call>\n'
+            "Example for search_web:\n"
+            '<tool_call>{"name": "search_web", "arguments": '
+            '{"query": "ahwatukee bbq"}}</tool_call>\n'
+            "If you cannot figure out the right tool/args, say so plainly."
         )
     return None
 

@@ -34,6 +34,7 @@ from harness.orchestrator import (
     _FABRICATED_SEARCH_RE,
     _FALSE_SUCCESS_RE,
     _META_CONFIRM_RE,
+    _TOOL_INTENT_RE,
     ToolLoopEvent,
     run_tool_loop,
 )
@@ -548,13 +549,21 @@ _SENTENCE_BOUNDARY_RE = re.compile(r"(?:[.!?][\s)\]'\"]+|\n)")
 
 def _is_suppressible(text: str) -> bool:
     """True when `text` matches any of the stream-level filter rules
-    (meta-confirm, false-success, or fabricated search output). Single
-    entry point so the renderer's three call sites stay in lock-step
-    as the rule set grows."""
+    (meta-confirm, false-success, fabricated search output, or bare
+    tool-intent statements). Single entry point so the renderer's
+    three call sites stay in lock-step as the rule set grows.
+
+    Tool-intent statements ('I will search…', 'let me check…') get
+    suppressed because either (a) the model actually calls the tool,
+    in which case the tool-call status line replaces the preamble, or
+    (b) the model doesn't call it, in which case the preamble is a
+    misleading lead-in to fabricated output. Dropping in both cases
+    is the right trade."""
     return bool(
         _META_CONFIRM_RE.search(text)
         or _FALSE_SUCCESS_RE.search(text)
         or _FABRICATED_SEARCH_RE.search(text)
+        or _TOOL_INTENT_RE.search(text)
     )
 
 

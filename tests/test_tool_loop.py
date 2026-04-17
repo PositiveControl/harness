@@ -683,6 +683,33 @@ def test_wrap_up_rounds_use_tighter_max_tokens() -> None:
     assert adapter.calls == [1024, 128]
 
 
+def test_loop_catches_bare_tool_intent() -> None:
+    """Regression follow-up (harness-q27): 7B says 'I will search the
+    web for ...' and then fabricates a numbered list without ever
+    emitting a tool_call. Broadened _TOOL_INTENT_RE catches 'I will
+    <verb>' (not just 'I'll <verb>') and the resulting nudge includes
+    a concrete <tool_call> template for the model to copy."""
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(content=("I will search the web for places to eat BBQ in Ahwatukee.")),
+            ModelReply(content="I cannot figure out the tool syntax — giving up."),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="search for BBQ")],
+        ToolRegistry(),
+    )
+    nudges = [
+        m
+        for m in result.messages
+        if m.role == "user" and "Stated intent is not action" in m.content
+    ]
+    assert len(nudges) == 1
+    # Nudge gives a concrete template the model can copy.
+    assert '"name": "search_web"' in nudges[0].content
+
+
 def test_loop_catches_fabricated_search_results() -> None:
     """Regression (harness-q27): asked 'search the web for X', the
     7B replied 'Here are the results: 1. Title: … URL:
