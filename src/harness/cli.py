@@ -12,7 +12,6 @@ from typing import cast
 
 import typer
 from rich.console import Console
-from rich.live import Live
 from rich.markdown import Markdown
 from rich.status import Status
 from rich.table import Table
@@ -292,53 +291,41 @@ class _ThinkingSpinner:
 
 
 class _StreamRenderer:
-    """Live Markdown region that accumulates streaming token deltas.
+    """Plain-text streaming region for token deltas.
 
-    Start / append / stop are the full lifecycle. `start` opens a
-    `rich.live.Live` attached to the console; `append` grows the buffer
-    and re-renders as Markdown; `stop` tears down Live, leaving the
-    final render on screen. Multiple start/stop cycles on the same
-    renderer render as sibling Markdown blocks (one per model call)."""
+    Earlier versions wrapped a `rich.live.Live` around a re-rendered
+    `Markdown` block. That repainted the full buffer at 10 Hz, and when
+    the buffer exceeded terminal height Rich could not clear the prior
+    frames — each tick leaked into scrollback as a growing-prefix
+    duplicate. Streaming is now plain-text append: each delta is written
+    directly with no repaint, so long replies render exactly once."""
 
-    def __init__(self, console: Console, *, refresh_per_second: int = 10) -> None:
+    def __init__(self, console: Console) -> None:
         self._console = console
-        self._refresh = refresh_per_second
-        self._live: Live | None = None
         self._buf = ""
+        self._active = False
 
     def start(self) -> None:
-        if self._live is not None:
-            return
         self._buf = ""
-        self._live = Live(
-            Markdown(""),
-            console=self._console,
-            refresh_per_second=self._refresh,
-            vertical_overflow="visible",
-        )
-        self._live.__enter__()
+        self._active = True
 
     def append(self, delta: str) -> None:
-        if self._live is None:
+        if not self._active:
             self.start()
         self._buf += delta
-        assert self._live is not None
-        self._live.update(Markdown(self._buf))
+        self._console.print(delta, end="", markup=False, highlight=False, soft_wrap=True)
 
     def stop(self) -> str:
-        if self._live is None:
-            out = self._buf
-            self._buf = ""
-            return out
-        self._live.__exit__(None, None, None)
-        self._live = None
         out = self._buf
+        if self._active and out:
+            self._console.print()
         self._buf = ""
+        self._active = False
         return out
 
     @property
     def active(self) -> bool:
-        return self._live is not None
+        return self._active
 
 
 def _stream_or_complete(
