@@ -12,10 +12,16 @@ Three measurements per config:
      the reply contains "harness" (the true name in this repo's
      pyproject.toml) AND the model actually called read_file.
 
+A fourth mode, `--measure-tokens`, loads only the tokenizer for a
+chosen repo and prints per-tool schema + result costs. Fast (tokenizer
+download is a few MB; no model weights needed) and useful for deciding
+which tools to enable by default.
+
 Usage:
     uv run python scripts/bench_tool_use.py
     uv run python scripts/bench_tool_use.py --only ollama,qwen3-coder
     uv run python scripts/bench_tool_use.py --prompt-tokens 512
+    uv run python scripts/bench_tool_use.py --measure-tokens
 
 Skips any config whose model isn't locally available (HF cache for MLX,
 `ollama list` for Ollama) so this is safe to run even if one model
@@ -30,12 +36,20 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from harness.config import settings
 from harness.model.adapter import ChatMessage, ModelAdapter
 from harness.model.ollama import OllamaAdapter
 from harness.orchestrator import run_tool_loop
-from harness.tools import ReadFileTool, ToolRegistry
+from harness.tools import (
+    ReadFileTool,
+    SearchFactsTool,
+    SearchMemoryTool,
+    ShellTool,
+    ToolRegistry,
+    WriteFileTool,
+)
 
 _WARM_SYSTEM = "You are a concise assistant. Reply in prose, no bullet lists."
 _WARM_PROMPT = "In one paragraph of 4-6 sentences, explain what makes a good side project scope."
@@ -207,6 +221,133 @@ def run_bench(cfg: Config, *, warm_tokens: int) -> BenchResult:
     )
 
 
+def _tool_spec_schema(spec: Any) -> dict[str, Any]:
+    """Render a ToolSpec into the OpenAI-style schema the chat template expects."""
+    return {
+        "type": "function",
+        "function": {
+            "name": spec.name,
+            "description": spec.description,
+            "parameters": spec.parameters,
+        },
+    }
+
+
+def _build_all_tools() -> list[Any]:
+    """Instantiate all five built-in tools with real dependencies.
+
+    Memory tools need the live episodic + semantic stores so we can
+    invoke them and measure realistic output. If the stores are empty
+    the tools still return (the "no results" path), which is a valid
+    minimum — the schema cost is what dominates anyway."""
+    # Lazy imports so the throughput-only bench path doesn't pay for
+    # sentence-transformers startup cost when it doesn't need memory.
+    from harness.retrieval.st_embedder import SentenceTransformersEmbedder
+    from harness.store.episodic import EpisodicStore
+    from harness.store.semantic import SemanticStore
+
+    embedder = SentenceTransformersEmbedder()
+    episodic = EpisodicStore(settings.db_path, embedder=embedder)
+    semantic = SemanticStore(settings.db_path, embedder=embedder)
+    return [
+        ReadFileTool(root=settings.root),
+        WriteFileTool(root=settings.root),
+        ShellTool(cwd=settings.root),
+        SearchMemoryTool(store=episodic, user_id="mark"),
+        SearchFactsTool(store=semantic, user_id="mark"),
+    ]
+
+
+_BASE_MESSAGES = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hi."},
+]
+
+_RESULT_PROBES: dict[str, tuple[str, dict[str, Any]]] = {
+    # (tool_name, kwargs). write_file is skipped at call time — we
+    # synthesize its return string from the documented format rather
+    # than actually writing, to keep the bench side-effect-free.
+    "read_file": ("read_file", {"path": "pyproject.toml"}),
+    "shell": ("shell", {"cmd": "ls"}),
+    "search_memory": ("search_memory", {"query": "first week priorities", "k": 3}),
+    "search_facts": ("search_facts", {"query": "project", "k": 3}),
+}
+
+
+def measure_tokens(repo: str) -> None:
+    """Tokenizer-only measurement path. Downloads tokenizer files (small)
+    and applies the chat template with and without tools to compute the
+    schema delta per tool, then invokes each tool with a representative
+    input to measure result tokens."""
+    print(f"\n=== token costs · {repo} ===")
+    try:
+        from transformers import AutoTokenizer
+    except ImportError as exc:  # pragma: no cover — defer to runtime
+        print(f"  skipped: transformers not installed ({exc})")
+        return
+    tokenizer = AutoTokenizer.from_pretrained(repo, trust_remote_code=True)
+
+    def count(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None) -> int:
+        # Render to string, then encode — `tokenize=True` is inconsistent
+        # across transformers versions (sometimes wraps in a BatchEncoding).
+        # tokenizer stubs type `tools` narrowly; our JSON-schema dicts fit at
+        # runtime — the templates just read string fields.
+        prompt: str = tokenizer.apply_chat_template(
+            messages,
+            tools=tools,  # type: ignore[arg-type]
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        return len(tokenizer.encode(prompt))
+
+    tools = _build_all_tools()
+    specs = [t.spec for t in tools]
+    schemas = [_tool_spec_schema(s) for s in specs]
+
+    baseline = count(_BASE_MESSAGES, tools=None)
+    total_with_all = count(_BASE_MESSAGES, tools=schemas)
+    per_tool_costs: list[tuple[str, int]] = []
+    for spec, schema in zip(specs, schemas, strict=True):
+        one = count(_BASE_MESSAGES, tools=[schema])
+        per_tool_costs.append((spec.name, one - baseline))
+
+    print(f"  baseline (no tools):          {baseline:>5} tokens")
+    print(
+        f"  all five tools (combined):    {total_with_all:>5} tokens "
+        f"(delta {total_with_all - baseline})"
+    )
+    print()
+    print("  per-tool schema cost (delta vs baseline):")
+    print(f"  {'tool':<20} {'tokens':>7}")
+    print(f"  {'-' * 20} {'-' * 7}")
+    for name, cost in per_tool_costs:
+        print(f"  {name:<20} {cost:>7}")
+
+    # Tool results — actually invoke each tool, tokenize the output
+    # as a tool-role message body (closest to what goes back to the model).
+    print()
+    print("  result cost on representative input:")
+    print(f"  {'tool':<20} {'chars':>7} {'tokens':>7}")
+    print(f"  {'-' * 20} {'-' * 7} {'-' * 7}")
+    registry = ToolRegistry()
+    for t in tools:
+        registry.register(t)
+    for name, args in _RESULT_PROBES.values():
+        try:
+            res = registry.call(name, args)
+            output = res.output if res.success else f"[error] {res.output}"
+        except Exception as exc:
+            output = f"[raised] {type(exc).__name__}: {exc}"
+        # tokenize the output as a message body — this is what the model
+        # sees next round as the tool-role result content.
+        toks = len(tokenizer.encode(output, add_special_tokens=False))
+        print(f"  {name:<20} {len(output):>7} {toks:>7}")
+    # write_file is synthesized — its return is always "wrote N chars to PATH"
+    synth = "wrote 1234 chars to src/harness/tools/new_tool.py"
+    synth_tokens = len(tokenizer.encode(synth, add_special_tokens=False))
+    print(f"  {'write_file (synth)':<20} {len(synth):>7} {synth_tokens:>7}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -219,7 +360,22 @@ def main() -> None:
         default=256,
         help="max_tokens for the warm-throughput prompt (default 256).",
     )
+    parser.add_argument(
+        "--measure-tokens",
+        action="store_true",
+        help="Skip throughput / tool-probe; instead, load only the tokenizer "
+        "for --token-repo and print per-tool schema + result token costs.",
+    )
+    parser.add_argument(
+        "--token-repo",
+        default="mlx-community/Qwen2.5-32B-Instruct-4bit",
+        help="HF repo whose chat template + tokenizer to use for --measure-tokens.",
+    )
     args = parser.parse_args()
+
+    if args.measure_tokens:
+        measure_tokens(args.token_repo)
+        return
 
     configs = _make_configs()
     if args.only:
