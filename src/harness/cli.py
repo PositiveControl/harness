@@ -427,8 +427,12 @@ class _StreamRenderer:
     # ~a second rather than piling up invisibly until max_tokens fires.
     _MAX_BUFFER = 400
 
-    def __init__(self, console: Console) -> None:
+    def __init__(self, console: Console, *, show_suppressions: bool = False) -> None:
         self._console = console
+        # Dev flag — when True, print the '⋯ suppressed N line(s)…' footer
+        # so you can see the filter working. Off by default: users don't
+        # need to know about the model's self-inflicted noise.
+        self._show_suppressions = show_suppressions
         self._visible = ""  # emitted to console
         self._pending = ""  # tokens not yet at a sentence boundary
         self._suppressed_count = 0
@@ -491,13 +495,14 @@ class _StreamRenderer:
             else:
                 self._emit(self._pending)
             self._pending = ""
-        if self._active and self._suppressed_count > 0:
+        if self._active and self._suppressed_count > 0 and self._show_suppressions:
             self._console.print(
                 f"[dim]⋯ suppressed {self._suppressed_count} line(s) of "
                 f"meta-confirm / hallucinated-success narrative[/dim]"
             )
         out = self._visible
-        if self._active and (out or self._suppressed_count > 0):
+        show_trailing_newline = out or (self._suppressed_count > 0 and self._show_suppressions)
+        if self._active and show_trailing_newline:
             self._console.print()
         self._visible = ""
         self._pending = ""
@@ -786,6 +791,14 @@ def chat(
         help="Number of most-recent turns to leave verbatim when "
         "compaction fires. Older turns become summary.",
     ),
+    dev: bool = typer.Option(
+        False,
+        "--dev/--no-dev",
+        help="Dev mode — surface internal signals like the stream filter's "
+        "'⋯ suppressed N line(s)…' markers. Off by default so users don't "
+        "see the model's self-inflicted noise; on for developers tuning "
+        "the filter or debugging small-model behavior.",
+    ),
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
     character = load_character(settings.character_path)
@@ -909,7 +922,7 @@ def chat(
 
     retrieval_state = _RetrievalState()
     thinking = _ThinkingSpinner(console)
-    stream_renderer = _StreamRenderer(console)
+    stream_renderer = _StreamRenderer(console, show_suppressions=dev)
 
     def _warn_once(msg: str) -> None:
         console.print(f"[yellow]⚠ {msg}[/yellow]")

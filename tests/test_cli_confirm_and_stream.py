@@ -150,18 +150,37 @@ def test_describe_remember_fact(tmp_path: Path) -> None:
 # ---------- _StreamRenderer sentence filter ----------
 
 
-def _render(deltas: list[str]) -> tuple[str, str]:
-    """Run deltas through the renderer; return (visible_output, captured_stdout)."""
+def _render(deltas: list[str], *, show_suppressions: bool = True) -> tuple[str, str]:
+    """Run deltas through the renderer; return (visible_output, captured_stdout).
+
+    Defaults to dev mode (show_suppressions=True) because most tests
+    assert on the '⋯ suppressed…' marker. Production default is False —
+    users don't see those markers unless they pass --dev."""
     import io
 
     out = io.StringIO()
     console = Console(file=out, force_terminal=False, color_system=None, width=200)
-    renderer = _StreamRenderer(console)
+    renderer = _StreamRenderer(console, show_suppressions=show_suppressions)
     renderer.start()
     for d in deltas:
         renderer.append(d)
     visible = renderer.stop()
     return visible, out.getvalue()
+
+
+def test_renderer_hides_suppression_marker_by_default() -> None:
+    """Non-dev users don't see the '⋯ suppressed…' footer — only the
+    model's legitimate output shows up."""
+    _, captured = _render(
+        [
+            "Fine. ",  # keep
+            "Would you like me to proceed? ",  # dropped silently
+        ],
+        show_suppressions=False,
+    )
+    assert "Fine" in captured
+    assert "suppressed" not in captured
+    assert "Would you like" not in captured
 
 
 def test_renderer_emits_plain_prose() -> None:
