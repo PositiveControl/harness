@@ -358,6 +358,106 @@ def _open_in_editor(initial_text: str) -> str | None:
     return edited
 
 
+def _render_chat_header(
+    *,
+    console: Console,
+    character_name: str,
+    session: str,
+    speaker: str,
+    adapter_id: str,
+    lora_path: str | None,
+    persona: bool,
+    top_k: int,
+    retriever_active: bool,
+    memories: int,
+    memories_threshold: float,
+    memories_active: bool,
+    facts: int,
+    facts_threshold: float,
+    facts_active: bool,
+    tools_enabled: bool,
+    tool_set: str,
+    tool_names: list[str],
+    workspace_path: Path | None,
+    rewrite_on_tools: bool,
+    compact_at: float,
+    compact_keep_recent: int,
+    dev: bool,
+) -> None:
+    """Render the chat-session loading header as an aligned key-value grid.
+
+    The top line is the character's name rendered as a pseudo-logo (a
+    single-glyph mark today; a proper ASCII logo can slot in when it
+    lands). Every flag that meaningfully changes behavior gets its own
+    row so the user can see at a glance what's on: persona state,
+    retrieval knobs, tool profile, workspace sandbox, compaction cap,
+    dev-mode toggle. Missing / disabled features render as `off` in
+    dim text, so the eye skips them."""
+    from rich.table import Table
+
+    # Header. One unicode glyph keeps enough room for a multi-line ASCII
+    # logo later without needing to reflow the grid.
+    console.print(f"\n[bold green]◈ {character_name}[/bold green]\n")
+
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="dim", justify="right")
+    grid.add_column()
+
+    grid.add_row("session", f"[cyan]{session}[/cyan]  · speaker: [cyan]{speaker}[/cyan]")
+
+    model_value = f"[bold]{adapter_id}[/bold]"
+    if lora_path:
+        model_value += f"  +lora: [dim]{lora_path}[/dim]"
+    grid.add_row("model", model_value)
+
+    grid.add_row("persona", "[green]on[/green]" if persona else "[dim]off[/dim]")
+
+    retrieval_bits: list[str] = []
+    if retriever_active and top_k > 0:
+        retrieval_bits.append(f"voice×{top_k}")
+    if memories_active and memories > 0:
+        retrieval_bits.append(f"memories×{memories} [dim](≥{memories_threshold:.2f})[/dim]")
+    if facts_active and facts > 0:
+        retrieval_bits.append(f"facts×{facts} [dim](≥{facts_threshold:.2f})[/dim]")
+    grid.add_row(
+        "retrieval",
+        " · ".join(retrieval_bits) if retrieval_bits else "[dim]off[/dim]",
+    )
+
+    if tools_enabled and tool_names:
+        tools_summary = (
+            f"[green]{tool_set}[/green] · {len(tool_names)} tools "
+            f"[dim]({', '.join(tool_names[:6])}"
+            + (f", …+{len(tool_names) - 6}" if len(tool_names) > 6 else "")
+            + ")[/dim]"
+        )
+        grid.add_row("tools", tools_summary)
+        if workspace_path is not None:
+            try:
+                ws_display = "~/" + str(workspace_path.relative_to(Path.home()))
+            except ValueError:
+                ws_display = str(workspace_path)
+            grid.add_row("workspace", ws_display)
+        if rewrite_on_tools:
+            grid.add_row("rewrite-on-tools", "[green]on[/green]")
+    else:
+        grid.add_row("tools", "[dim]off[/dim]")
+
+    if compact_at > 0:
+        grid.add_row(
+            "compact",
+            f"{int(compact_at * 100)}% of window · keep {compact_keep_recent}",
+        )
+    else:
+        grid.add_row("compact", "[dim]off[/dim]")
+
+    if dev:
+        grid.add_row("mode", "[yellow]dev[/yellow]")
+
+    console.print(grid)
+    console.print()
+
+
 def _render_fact_block(facts: list[SemanticFact]) -> str:
     """Render retrieved semantic facts as a compact block for the system
     prompt. One line per fact — subject, predicate, object, confidence."""
@@ -1019,14 +1119,30 @@ def chat(
         elif event.kind == "tool_call_declined":
             console.print("   [yellow]✗ declined[/yellow]")
 
-    console.print(
-        f"[bold]{character.name}[/bold] loaded. "
-        f"session={session} model={adapter.id} "
-        f"top_k={top_k if retriever else 0} "
-        f"memories={memories if memory_store else 0} "
-        f"facts={facts if semantic_store else 0} "
-        f"tools={'on' if registry else 'off'}"
-        + (f" workspace={workspace_path}" if registry else "")
+    _render_chat_header(
+        console=console,
+        character_name=character.name,
+        session=session,
+        speaker=speaker,
+        adapter_id=adapter.id,
+        lora_path=lora_path,
+        persona=persona,
+        top_k=top_k,
+        retriever_active=retriever is not None,
+        memories=memories,
+        memories_threshold=memories_threshold,
+        memories_active=memory_store is not None,
+        facts=facts,
+        facts_threshold=facts_threshold,
+        facts_active=semantic_store is not None,
+        tools_enabled=registry is not None,
+        tool_set=tool_set,
+        tool_names=registry.names() if registry is not None else [],
+        workspace_path=workspace_path if registry is not None else None,
+        rewrite_on_tools=rewrite_on_tools,
+        compact_at=compact_at,
+        compact_keep_recent=compact_keep_recent,
+        dev=dev,
     )
     console.print(
         "[dim](ctrl-c, /exit, /quit, or :q to exit · "
