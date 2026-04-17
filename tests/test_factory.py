@@ -21,6 +21,14 @@ def test_make_adapter_mlx_is_lazy() -> None:
     assert adapter.id.startswith("mlx:")
 
 
+def test_make_adapter_ollama_is_lazy() -> None:
+    """Instantiation must not contact the Ollama daemon — network I/O
+    is deferred until the first .complete() call."""
+    adapter = make_adapter("ollama")
+    assert isinstance(adapter, ModelAdapter)
+    assert adapter.id.startswith("ollama:")
+
+
 def test_make_adapter_unknown_raises() -> None:
     with pytest.raises(ValueError, match="Unknown adapter"):
         make_adapter(cast(AdapterName, "not-a-real-adapter"))
