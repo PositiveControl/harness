@@ -10,10 +10,12 @@ from harness.scribe.extractor import (
     format_window,
     parse_scribe_output,
 )
+from harness.scribe.locks import ScribeLockBusy, session_lock
 from harness.scribe.runner import ScribeRunSummary, run_scribe
 
 __all__ = [
     "EpisodicCandidate",
+    "ScribeLockBusy",
     "ScribeResult",
     "ScribeRunSummary",
     "SemanticCandidate",
@@ -21,4 +23,5 @@ __all__ = [
     "format_window",
     "parse_scribe_output",
     "run_scribe",
+    "session_lock",
 ]

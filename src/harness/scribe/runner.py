@@ -6,8 +6,11 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from harness.scribe.extractor import ScribeResult, extract_candidates
+from harness.scribe.locks import session_lock
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from harness.character import Character
     from harness.model.adapter import ModelAdapter
     from harness.store.episodic import EpisodicStore
@@ -110,6 +113,8 @@ def run_scribe(
     session_id: str,
     user_id: str | None = None,
     window_size: int = 20,
+    lock_dir: Path | None = None,
+    blocking_lock: bool = True,
 ) -> ScribeRunSummary:
     """Walk unprocessed transcript turns for one session, extract
     candidates in windows, and persist them. Advances a watermark so
@@ -123,36 +128,44 @@ def run_scribe(
     Windows are non-overlapping for simplicity. If the model produces
     unparseable output for a window, that window's error is logged in
     the summary and processing continues — we do NOT re-try, because
-    malformed output tends to repeat."""
+    malformed output tends to repeat.
+
+    The run is wrapped in a filesystem advisory lock keyed by
+    session_id, so two concurrent scribes (chat + nightly launchd job)
+    can't double-process the same window. Default lock_dir is
+    <db_dir>/locks; tests can pin their own. Pass blocking_lock=False to
+    raise ScribeLockBusy instead of waiting."""
     summary = ScribeRunSummary(session_id=session_id)
 
-    watermark = _get_watermark(transcript.connection, session_id)
-    turns = transcript.fetch_after(session_id, after_id=watermark)
-    if not turns:
-        return summary
+    lock_path = lock_dir if lock_dir is not None else transcript.db_path.parent / "locks"
+    with session_lock(session_id, lock_path, blocking=blocking_lock):
+        watermark = _get_watermark(transcript.connection, session_id)
+        turns = transcript.fetch_after(session_id, after_id=watermark)
+        if not turns:
+            return summary
 
-    for start in range(0, len(turns), window_size):
-        window = turns[start : start + window_size]
-        if not window:
-            continue
-        summary.windows += 1
-        source_label = f"scribe:session={session_id}:turns={window[0].id}-{window[-1].id}"
+        for start in range(0, len(turns), window_size):
+            window = turns[start : start + window_size]
+            if not window:
+                continue
+            summary.windows += 1
+            source_label = f"scribe:session={session_id}:turns={window[0].id}-{window[-1].id}"
 
-        result = extract_candidates(adapter, character, turns=window)
-        if result.parse_error is not None:
-            summary.parse_errors.append(f"window {start}: {result.parse_error}")
+            result = extract_candidates(adapter, character, turns=window)
+            if result.parse_error is not None:
+                summary.parse_errors.append(f"window {start}: {result.parse_error}")
 
-        wrote_ep, wrote_sem = _persist_candidates(
-            result,
-            episodic_store=episodic_store,
-            semantic_store=semantic_store,
-            session_id=session_id,
-            source_label=source_label,
-            user_id=user_id,
-        )
-        summary.episodic_written += wrote_ep
-        summary.semantic_written += wrote_sem
-        summary.turns_processed += len(window)
-        _set_watermark(transcript.connection, session_id, window[-1].id)
+            wrote_ep, wrote_sem = _persist_candidates(
+                result,
+                episodic_store=episodic_store,
+                semantic_store=semantic_store,
+                session_id=session_id,
+                source_label=source_label,
+                user_id=user_id,
+            )
+            summary.episodic_written += wrote_ep
+            summary.semantic_written += wrote_sem
+            summary.turns_processed += len(window)
+            _set_watermark(transcript.connection, session_id, window[-1].id)
 
     return summary

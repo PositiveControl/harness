@@ -5,10 +5,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from harness.character import load_character
 from harness.model.adapter import ChatMessage
-from harness.scribe import parse_scribe_output, run_scribe
+from harness.scribe import ScribeLockBusy, parse_scribe_output, run_scribe, session_lock
 from harness.scribe.extractor import extract_candidates, format_window
 from harness.store.episodic import EpisodicStore
 from harness.store.semantic import SemanticStore
@@ -195,6 +196,45 @@ def test_run_scribe_persists_candidates_and_advances_watermark(tmp_path: Path) -
         second = run_scribe(scripted, character, t, ep, sem, session_id="s1")
         assert second.turns_processed == 0
         assert second.episodic_written == 0
+    finally:
+        t.close()
+        ep.close()
+        sem.close()
+
+
+def test_session_lock_rejects_concurrent_holder(tmp_path: Path) -> None:
+    with (
+        session_lock("s1", tmp_path),
+        pytest.raises(ScribeLockBusy),
+        session_lock("s1", tmp_path, blocking=False),
+    ):
+        pass
+
+
+def test_session_lock_different_sessions_dont_conflict(tmp_path: Path) -> None:
+    with session_lock("s1", tmp_path), session_lock("s2", tmp_path, blocking=False):
+        pass
+
+
+def test_run_scribe_honors_blocking_false_when_locked(tmp_path: Path) -> None:
+    character = load_character(AIRTON)
+    t = Transcript(tmp_path / "h.sqlite")
+    ep = EpisodicStore(tmp_path / "h.sqlite", embedder=_FakeEmbedder())
+    sem = SemanticStore(tmp_path / "h.sqlite", embedder=_FakeEmbedder())
+    try:
+        t.append(session="s", channel="c", speaker="mark", role="user", content="hi")
+        scripted = _ScriptedAdapter(replies=['{"episodic": [], "semantic": []}'])
+        with session_lock("s", tmp_path), pytest.raises(ScribeLockBusy):
+            run_scribe(
+                scripted,
+                character,
+                t,
+                ep,
+                sem,
+                session_id="s",
+                lock_dir=tmp_path,
+                blocking_lock=False,
+            )
     finally:
         t.close()
         ep.close()
