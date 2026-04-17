@@ -29,6 +29,7 @@ from harness.tools.read_file import ReadFileTool
 from harness.tools.remember import RememberEventTool, RememberFactTool
 from harness.tools.search_facts import SearchFactsTool
 from harness.tools.search_memory import SearchMemoryTool
+from harness.tools.search_web import SearchWebTool
 from harness.tools.shell import ShellTool
 from harness.tools.write_file import WriteFileTool
 
@@ -50,6 +51,7 @@ __all__ = [
     "ScribeSessionTool",
     "SearchFactsTool",
     "SearchMemoryTool",
+    "SearchWebTool",
     "ShellTool",
     "StreamChunk",
     "StreamComplete",

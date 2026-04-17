@@ -59,6 +59,7 @@ from harness.tools import (
     ScribeSessionTool,
     SearchFactsTool,
     SearchMemoryTool,
+    SearchWebTool,
     ShellTool,
     Tool,
     ToolCall,
@@ -681,6 +682,7 @@ def chat(
                     else None
                 )
             ),
+            "search_web": lambda: SearchWebTool(),
             "remember_fact": (
                 lambda: (
                     RememberFactTool(store=semantic_store, user_id=speaker, session_id=session)

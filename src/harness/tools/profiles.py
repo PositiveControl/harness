@@ -15,6 +15,17 @@ from __future__ import annotations
 
 TOOL_PROFILES: dict[str, tuple[str, ...]] = {
     "minimal": (),
+    # Explicit web-research set — search_web is the new member. Not in
+    # core/coding because search queries leave the trust boundary.
+    "research": (
+        "read_file",
+        "list_dir",
+        "grep",
+        "glob",
+        "search_memory",
+        "search_facts",
+        "search_web",
+    ),
     # Read-only everyday chat: open a file, find files, grep, recall.
     "core": (
         "read_file",
