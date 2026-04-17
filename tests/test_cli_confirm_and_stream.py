@@ -227,6 +227,30 @@ def test_renderer_suppresses_trailing_meta_confirm_fragment() -> None:
     assert "suppressed" in captured
 
 
+def test_renderer_drops_fabricated_search_sentence() -> None:
+    """harness-q27 regression — a 'Here are the results: …' sentence
+    with a placeholder URL must be suppressed before display."""
+    _, captured = _render(
+        [
+            "Working on it. ",  # kept
+            "Here are the results:\n",  # dropped — newline ends the sentence
+        ]
+    )
+    assert "Here are the results" not in captured
+    assert "Working on it" in captured
+    assert "suppressed" in captured
+
+
+def test_renderer_drops_placeholder_domain_sentence() -> None:
+    _, captured = _render(
+        [
+            "See https://www.example.com/page for details. ",
+        ]
+    )
+    assert "example.com" not in captured
+    assert "suppressed" in captured
+
+
 def test_renderer_force_flushes_runaway_paragraph() -> None:
     """Regression: the 7B went into a degenerate loop that didn't emit
     sentence terminators. Previously the renderer would buffer silently

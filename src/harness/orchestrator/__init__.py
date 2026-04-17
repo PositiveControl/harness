@@ -3,6 +3,7 @@ adapter. Sits between the CLI and the adapter. Does not know about
 persona or retrieval (those are the caller's responsibility)."""
 
 from harness.orchestrator.tool_loop import (
+    _FABRICATED_SEARCH_RE,
     _FALSE_SUCCESS_RE,
     _META_CONFIRM_RE,
     ConfirmFn,
@@ -14,8 +15,10 @@ from harness.orchestrator.tool_loop import (
 
 __all__ = [
     # Private regexes exposed for the CLI stream renderer so it can
-    # suppress meta-confirm / false-success text before it lands on the
-    # user's terminal. Used by stream-level filtering; not a stable API.
+    # suppress meta-confirm / false-success / fabricated-output text
+    # before it lands on the user's terminal. Used by stream-level
+    # filtering; not a stable API.
+    "_FABRICATED_SEARCH_RE",
     "_FALSE_SUCCESS_RE",
     "_META_CONFIRM_RE",
     "ConfirmFn",

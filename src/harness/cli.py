@@ -31,6 +31,7 @@ from harness.evals.voice import run_voice_eval
 from harness.model import AdapterName, ChatMessage, ModelAdapter, make_adapter
 from harness.model.adapter import Role, count_tokens
 from harness.orchestrator import (
+    _FABRICATED_SEARCH_RE,
     _FALSE_SUCCESS_RE,
     _META_CONFIRM_RE,
     ToolLoopEvent,
@@ -537,7 +538,24 @@ class _ThinkingSpinner:
         self.stop()
 
 
-_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?\n][\s)\]'\"]*")
+# A sentence ends at .?! followed by whitespace / end-of-string, or at
+# any newline. Requiring whitespace after the period means URLs like
+# 'www.example.com/page' don't get split at the dot inside the host
+# (regression from harness-q27 where that split hid the fabrication
+# pattern from the suppression regexes).
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?:[.!?][\s)\]'\"]+|\n)")
+
+
+def _is_suppressible(text: str) -> bool:
+    """True when `text` matches any of the stream-level filter rules
+    (meta-confirm, false-success, or fabricated search output). Single
+    entry point so the renderer's three call sites stay in lock-step
+    as the rule set grows."""
+    return bool(
+        _META_CONFIRM_RE.search(text)
+        or _FALSE_SUCCESS_RE.search(text)
+        or _FABRICATED_SEARCH_RE.search(text)
+    )
 
 
 class _StreamRenderer:
@@ -603,7 +621,7 @@ class _StreamRenderer:
             end = match.end()
             sentence = self._pending[:end]
             self._pending = self._pending[end:]
-            if _META_CONFIRM_RE.search(sentence) or _FALSE_SUCCESS_RE.search(sentence):
+            if _is_suppressible(sentence):
                 # Drop — do not print. The orchestrator will feed a nudge
                 # back to the model on the next round.
                 self._suppressed_count += 1
@@ -612,10 +630,11 @@ class _StreamRenderer:
 
     def _force_flush_pending(self) -> None:
         """Emit the pending buffer even without a sentence boundary.
-        Still runs the meta-confirm / false-success regexes so a
-        runaway hallucination gets dropped instead of spilling to
-        screen; the counter tells the user something was suppressed."""
-        if _META_CONFIRM_RE.search(self._pending) or _FALSE_SUCCESS_RE.search(self._pending):
+        Still runs the meta-confirm / false-success / fabrication
+        regexes so a runaway hallucination gets dropped instead of
+        spilling to screen; the counter tells the user something was
+        suppressed."""
+        if _is_suppressible(self._pending):
             self._suppressed_count += 1
         else:
             self._emit(self._pending)
@@ -630,7 +649,7 @@ class _StreamRenderer:
         # runs so a model that trailed off mid-meta-confirm ("Would
         # you like me to") doesn't leak in the final chunk either.
         if self._pending:
-            if _META_CONFIRM_RE.search(self._pending) or _FALSE_SUCCESS_RE.search(self._pending):
+            if _is_suppressible(self._pending):
                 self._suppressed_count += 1
             else:
                 self._emit(self._pending)
@@ -1345,6 +1364,13 @@ def chat(
                     "the user asks what's in a directory, what a file contains, or "
                     "what this project does, you MUST call a tool first (`list_dir`, "
                     "`read_file`, `grep`) and base your answer on the tool's output.\n"
+                    "- NEVER fabricate tool output. If the user asks you to search "
+                    "the web, fetch a URL, read a file, or look up a fact in memory, "
+                    "you MUST call the corresponding tool first. Do NOT invent "
+                    "URLs, titles, snippets, file contents, or search results — "
+                    "placeholder domains (example.com, your-site.com, localhost) "
+                    "are forbidden. If the right tool isn't available this turn, "
+                    "say so plainly.\n"
                     "- After tool results come back, respond with a substantive "
                     "reply that uses them. Never return an empty reply — the user "
                     "is waiting for your conclusion, not just the tool output.\n"

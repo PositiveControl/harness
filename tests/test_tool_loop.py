@@ -683,6 +683,92 @@ def test_wrap_up_rounds_use_tighter_max_tokens() -> None:
     assert adapter.calls == [1024, 128]
 
 
+def test_loop_catches_fabricated_search_results() -> None:
+    """Regression (harness-q27): asked 'search the web for X', the
+    7B replied 'Here are the results: 1. Title: … URL:
+    https://www.example.com/…' — completely fabricated, no tool call.
+    Orchestrator must nudge it to actually invoke search_web."""
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content=(
+                    "Here are the results: "
+                    "1. Title: Ahwatukee BBQ Dinner — "
+                    "URL: https://www.example.com/ahwatukee-bbq-dinner — "
+                    "SNIPPET: Ahwatukee BBQ Dinner is a popular local event."
+                )
+            ),
+            ModelReply(content="I cannot search right now."),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="search the web for ahwatukee bbq")],
+        ToolRegistry(),
+    )
+    nudges = [
+        m for m in result.messages if m.role == "user" and "fabricated tool output" in m.content
+    ]
+    assert len(nudges) == 1
+
+
+def test_loop_catches_placeholder_domains() -> None:
+    """Any reply containing example.com / your-site.com etc. without a
+    tool call is almost certainly fabricated."""
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(content="The answer is at https://your-site.com/path for reference."),
+            ModelReply(content="retry"),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="where is that doc?")],
+        ToolRegistry(),
+    )
+    nudges = [
+        m for m in result.messages if m.role == "user" and "fabricated tool output" in m.content
+    ]
+    assert len(nudges) == 1
+
+
+def test_loop_allows_search_result_summary_after_real_call() -> None:
+    """When a tool actually ran this turn, the model summarizing 'here
+    are the results' in its wrap-up is legitimate, not fabrication."""
+    registry = ToolRegistry()
+
+    class _Noop:
+        @property
+        def spec(self) -> ToolSpec:
+            return ToolSpec(
+                name="noop",
+                description="d",
+                parameters={"type": "object", "properties": {}},
+                tier="read",
+            )
+
+        def call(self) -> str:
+            return "real tool output"
+
+    registry.register(_Noop())
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(content="", tool_calls=(ToolCall(name="noop", arguments={}),)),
+            ModelReply(content="Here are the results: ..."),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="look it up")],
+        registry,
+    )
+    # A real tool ran, so the 'here are the results' wrap-up is fine.
+    nudges = [
+        m for m in result.messages if m.role == "user" and "fabricated tool output" in m.content
+    ]
+    assert not nudges
+
+
 def test_loop_caps_bail_retries() -> None:
     """If the model keeps bailing, give up after the per-turn cap (2)
     rather than consuming the full max_rounds budget."""

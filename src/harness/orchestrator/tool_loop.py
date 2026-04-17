@@ -88,6 +88,27 @@ _META_CONFIRM_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Matches replies that look like fabricated search-tool output — a
+# numbered results intro or URLs hosted on classic placeholder domains
+# (example.com/org/net, your-site, localhost, etc.). Small models
+# sometimes respond to 'search the web for X' by inventing a result
+# list with a made-up URL and snippet rather than calling search_web.
+# Paired with 'no tool has run this turn' this is a strong fabrication
+# tell (see harness-q27).
+_FABRICATED_SEARCH_RE = re.compile(
+    r"(?:"
+    r"here\s+are\s+the\s+results"
+    r"|"
+    r"here\s+(?:is|are)\s+(?:what\s+)?i\s+found"
+    r"|"
+    r"(?:top|first|search)\s+results?\s*:"
+    r"|"
+    r"https?://(?:www\.)?(?:example|your-?site|your-?domain|"
+    r"placeholder|localhost|test|dummy|fake)\.(?:com|org|net|io)\b"
+    r")",
+    re.IGNORECASE,
+)
+
 _MAX_TOKENS_CEILING = 8192
 _BAIL_RETRIES_PER_TURN = 2
 
@@ -129,6 +150,14 @@ def _diagnose_bail(reply: ModelReply, *, tools_ran_this_turn: bool) -> str | Non
             "message IS the instruction — call the tool right now. Write-tier "
             "tools have their own approve/decline UX at the tool layer; "
             "re-asking in chat just wastes a round."
+        )
+    if not tools_ran_this_turn and _FABRICATED_SEARCH_RE.search(reply.content):
+        return (
+            "Your reply looks like fabricated tool output (search results / "
+            "placeholder URLs / 'here are the results'). You did NOT call any "
+            "tool this turn — you cannot know results without actually calling "
+            "search_web / fetch_url / read_file. Call the appropriate tool now, "
+            "or tell the user you cannot answer without live data."
         )
     return None
 
