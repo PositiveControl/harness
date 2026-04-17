@@ -194,6 +194,7 @@ def run_tool_loop(
     confirm: ConfirmFn | None = None,
     observe: ObserverFn | None = None,
     max_tokens: int = 1024,
+    wrap_up_max_tokens: int = 384,
     temperature: float = 0.5,
 ) -> ToolLoopResult:
     """Drive a model + tool registry until the model emits a text-only
@@ -204,7 +205,13 @@ def run_tool_loop(
     model as a tool-role message so it can adjust.
 
     `observe(event)` is called synchronously on every state transition
-    so a CLI can print inline status."""
+    so a CLI can print inline status.
+
+    `wrap_up_max_tokens` caps generation in rounds that come AFTER a
+    tool has already executed this turn. Those rounds are just the
+    model restating what changed — they don't need the full 1024-token
+    budget. Capping prevents small models from burning 10s+ on a
+    'thinking…' spinner generating filler after the work is done."""
     working: list[ChatMessage] = list(messages)
     initial_count = len(working)
     events: list[ToolLoopEvent] = []
@@ -220,6 +227,11 @@ def run_tool_loop(
     stream_fn = getattr(adapter, "stream_with_tools", None)
 
     for round_idx in range(max_rounds):
+        # Post-tool rounds are wrap-up rounds — tighter cap.
+        tools_already_ran = any(m.role == "tool" for m in working[initial_count:])
+        round_max_tokens = (
+            min(current_max_tokens, wrap_up_max_tokens) if tools_already_ran else current_max_tokens
+        )
         emit(ToolLoopEvent(kind="round_start", round_index=round_idx))
         emit(ToolLoopEvent(kind="model_call_start", round_index=round_idx))
         try:
@@ -227,7 +239,7 @@ def run_tool_loop(
                 stream_iter: Iterator[StreamChunk] = stream_fn(
                     working,
                     tools=registry.specs(),
-                    max_tokens=current_max_tokens,
+                    max_tokens=round_max_tokens,
                     temperature=temperature,
                 )
                 reply: ModelReply | None = None
@@ -249,7 +261,7 @@ def run_tool_loop(
                 last_reply = adapter.complete_with_tools(
                     working,
                     tools=registry.specs(),
-                    max_tokens=current_max_tokens,
+                    max_tokens=round_max_tokens,
                     temperature=temperature,
                 )
         finally:

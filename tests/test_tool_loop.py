@@ -627,6 +627,62 @@ def test_loop_does_not_nudge_legitimate_questions() -> None:
     assert not nudges
 
 
+def test_wrap_up_rounds_use_tighter_max_tokens() -> None:
+    """Post-tool rounds are brief summaries — they shouldn't inherit the
+    initial round's full token budget. Cap prevents small models from
+    burning 10s+ of spinner time on filler after the real work is done."""
+
+    @dataclass
+    class _CapturingAdapter:
+        calls: list[int] = field(default_factory=list)
+
+        def complete_with_tools(
+            self,
+            messages: Iterable[ChatMessage],
+            *,
+            tools: list[ToolSpec] | None = None,
+            max_tokens: int = 1024,
+            temperature: float = 0.5,
+        ) -> ModelReply:
+            self.calls.append(max_tokens)
+            # First call: emit a tool call. Second call: plain text (exits loop).
+            if len(self.calls) == 1:
+                return ModelReply(
+                    content="",
+                    tool_calls=(ToolCall(name="nullop", arguments={}),),
+                )
+            return ModelReply(content="done")
+
+    # Minimal registry with a no-op read-tier tool.
+    class _Noop:
+        @property
+        def spec(self) -> ToolSpec:
+            return ToolSpec(
+                name="nullop",
+                description="d",
+                parameters={"type": "object", "properties": {}},
+                tier="read",
+            )
+
+        def call(self) -> str:
+            return ""
+
+    registry = ToolRegistry()
+    registry.register(_Noop())
+    adapter = _CapturingAdapter()
+
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="do a thing")],
+        registry,
+        max_tokens=1024,
+        wrap_up_max_tokens=128,
+    )
+    # First round: no tool has run yet → full 1024-token budget.
+    # Second round: wrap-up → capped at 128.
+    assert adapter.calls == [1024, 128]
+
+
 def test_loop_caps_bail_retries() -> None:
     """If the model keeps bailing, give up after the per-turn cap (2)
     rather than consuming the full max_rounds budget."""
