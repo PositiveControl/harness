@@ -94,7 +94,7 @@ _META_CONFIRM_RE = re.compile(
 # sometimes respond to 'search the web for X' by inventing a result
 # list with a made-up URL and snippet rather than calling search_web.
 # Paired with 'no tool has run this turn' this is a strong fabrication
-# tell (see harness-q27).
+# tell (see harness-q27, harness-j1d).
 _FABRICATED_SEARCH_RE = re.compile(
     r"(?:"
     r"here\s+are\s+the\s+results"
@@ -105,6 +105,14 @@ _FABRICATED_SEARCH_RE = re.compile(
     r"|"
     r"https?://(?:www\.)?(?:example|your-?site|your-?domain|"
     r"placeholder|localhost|test|dummy|fake)\.(?:com|org|net|io)\b"
+    r"|"
+    # Numbered-list entry whose content ends with terminal punctuation
+    # plus a closing double-quote (`."`, `!"`, `?"`) and contains no
+    # URL. Classic fabricated-snippet shape: 7B-class models imitate
+    # search-tool output in an HTML-excerpt style instead of emitting
+    # a <tool_call>. Tempered match rules out real `1. TITLE —
+    # https://...` search_web entries. See harness-j1d.
+    r"(?:\A|\n)\s*\d+\.\s+(?:(?!https?://).)*?[.!?]\"(?=\s|$)"
     r")",
     re.IGNORECASE,
 )

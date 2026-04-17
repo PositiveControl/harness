@@ -739,6 +739,65 @@ def test_loop_catches_fabricated_search_results() -> None:
     assert len(nudges) == 1
 
 
+def test_loop_catches_fabricated_quoted_snippet_list() -> None:
+    """Regression (harness-j1d): asked 'search the web for BBQ', the
+    Qwen 7B 4-bit replied with a numbered list of prose snippets ending
+    in `."` and emitted no URLs. The earlier _FABRICATED_SEARCH_RE keyed
+    on 'here are the results' / placeholder URLs and missed this shape,
+    so the loop returned the fabrication as the final reply."""
+    fabrication = (
+        "1. From local favorites to new openings, we've got you covered "
+        'with our list of top BBQ spots."\n'
+        "2. From classic barbecues to gourmet options, our guide has "
+        'everything you need to know."\n'
+        "3. From traditional ribs to pulled pork, find the perfect spot "
+        'for your next BBQ meal."'
+    )
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(content=fabrication),
+            ModelReply(content="I cannot search right now."),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="search the web for ahwatukee bbq")],
+        ToolRegistry(),
+    )
+    nudges = [
+        m for m in result.messages if m.role == "user" and "fabricated tool output" in m.content
+    ]
+    assert len(nudges) == 1
+
+
+def test_loop_allows_real_search_result_format() -> None:
+    """Guard for harness-j1d: a numbered entry that contains a real URL
+    (the shape search_web actually emits) must NOT be diagnosed as
+    fabrication. The tempered match in _FABRICATED_SEARCH_RE rejects
+    entries with `https://` inside."""
+    real_shape = (
+        "1. Weber BBQ — https://weberbbq.com\n"
+        '   "A local spot with great ribs."\n'
+        "2. Joe's Pit — https://joespit.example-real.com\n"
+        '   "Pulled pork and brisket."'
+    )
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(content=real_shape),
+            ModelReply(content="retry"),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="anything")],
+        ToolRegistry(),
+    )
+    nudges = [
+        m for m in result.messages if m.role == "user" and "fabricated tool output" in m.content
+    ]
+    assert not nudges
+
+
 def test_loop_catches_placeholder_domains() -> None:
     """Any reply containing example.com / your-site.com etc. without a
     tool call is almost certainly fabricated."""
