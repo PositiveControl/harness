@@ -2,6 +2,7 @@
   "database": "dolt",
   "backend": "dolt",
   "dolt_mode": "server",
+  "dolt_server_port": 13694,
   "dolt_database": "harness",
   "project_id": "0ed26144-ac8e-4ebb-8126-714bbbc74bbc"
 }
