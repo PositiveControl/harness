@@ -4,7 +4,7 @@ import json
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,6 +27,12 @@ from harness.compaction import (
 )
 from harness.config import settings
 from harness.consolidate import run_consolidation
+from harness.evals.router import (
+    RouterEvalResult,
+    default_fixture_path,
+    load_fixture,
+    run_router_eval,
+)
 from harness.evals.voice import run_voice_eval
 from harness.model import AdapterName, ChatMessage, ModelAdapter, make_adapter
 from harness.model.adapter import Role, count_tokens
@@ -73,6 +79,7 @@ from harness.tools import (
     Tool,
     ToolCall,
     ToolRegistry,
+    ToolSpec,
     WriteFileTool,
     resolve_tool_names,
 )
@@ -1687,6 +1694,162 @@ def eval_voice(
         console.print(
             f"[bold]judge mean:[/bold] {judge_mean:.2f}/10 across {len(judge_scores)} sample(s)"
         )
+
+
+def _resolve_router_tool_specs(tool_names: Sequence[str], workspace: Path) -> list[ToolSpec]:
+    """Instantiate the minimum-viable set of tools needed to read their
+    ToolSpecs for the router eval. Memory-dependent tools (search_memory,
+    search_facts, remember_*) are skipped with a warning — the eval
+    fixture can still cover them via the same tool name, but the router
+    will see the spec from a dummy no-op tool below."""
+    builders: dict[str, Callable[[], Tool]] = {
+        "read_file": lambda: ReadFileTool(root=workspace),
+        "list_dir": lambda: ListDirTool(root=workspace),
+        "grep": lambda: GrepTool(root=workspace),
+        "glob": lambda: GlobTool(root=workspace),
+        "search_web": lambda: SearchWebTool(),
+        "git_status": lambda: GitStatusTool(root=workspace),
+        "git_diff": lambda: GitDiffTool(root=workspace),
+        "git_log": lambda: GitLogTool(root=workspace),
+    }
+    # Memory tools need live stores; for eval we only need the schema,
+    # so substitute a no-op stub that carries the same ToolSpec shape.
+    memory_schemas: dict[str, ToolSpec] = {
+        "search_memory": ToolSpec(
+            name="search_memory",
+            description="Search Airton's episodic memory for past events, decisions, or exchanges.",
+            parameters={
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Semantic search query"}},
+                "required": ["query"],
+            },
+            tier="read",
+        ),
+        "search_facts": ToolSpec(
+            name="search_facts",
+            description="Search Airton's semantic facts (subject/predicate/object triples).",
+            parameters={
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Semantic search query"}},
+                "required": ["query"],
+            },
+            tier="read",
+        ),
+    }
+    specs: list[ToolSpec] = []
+    for name in tool_names:
+        if name in builders:
+            specs.append(builders[name]().spec)
+        elif name in memory_schemas:
+            specs.append(memory_schemas[name])
+        else:
+            console.print(f"[yellow]⚠ tool {name!r} has no eval-time spec — skipping[/yellow]")
+    return specs
+
+
+@eval_app.command("router")
+def eval_router(
+    router_repo: str = typer.Option(
+        "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+        "--router-repo",
+        help="HF repo for the router model under test.",
+    ),
+    tool_set: str = typer.Option(
+        "research",
+        "--tool-set",
+        help="Tool profile whose specs the router sees. Default 'research' "
+        "(read/list/grep/glob + search_memory/facts + search_web).",
+    ),
+    tools_add: str | None = typer.Option(
+        None, "--tools-add", help="Comma-separated tool names to add on top of --tool-set."
+    ),
+    tools_drop: str | None = typer.Option(
+        None, "--tools-drop", help="Comma-separated tool names to drop from --tool-set."
+    ),
+    fixture_path: Path | None = typer.Option(
+        None,
+        "--fixture",
+        help="Path to a router-eval YAML file. Defaults to `character/<name>/router_eval.yaml`.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+) -> None:
+    """Replay the router-eval fixture through the configured router and
+    score tool-selection accuracy. Lock in quality before swapping
+    models or tweaking prompts."""
+    character = load_character(settings.character_path)
+    path = fixture_path or default_fixture_path(settings.character_path)
+    if not path.exists():
+        raise typer.BadParameter(f"router eval fixture not found: {path}")
+    fixture = load_fixture(path)
+
+    try:
+        wanted_names = resolve_tool_names(
+            tool_set,
+            add=tuple((tools_add or "").split(",")),
+            drop=tuple((tools_drop or "").split(",")),
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    tool_specs = _resolve_router_tool_specs(wanted_names, settings.root)
+
+    from harness.model.mlx import MLXAdapter
+
+    router = ModelRouter(adapter=MLXAdapter(repo=router_repo))
+    result = run_router_eval(router, tool_specs, fixture)
+
+    if as_json:
+        payload = {
+            "router_repo": router_repo,
+            "fixture": str(path),
+            "accuracy": result.accuracy,
+            "tool_accuracy": result.tool_accuracy,
+            "cases": [
+                {
+                    "prompt": c.prompt,
+                    "expected_tool": c.expected_tool,
+                    "actual_tool": c.actual_tool,
+                    "expected_args": list(c.expected_args),
+                    "actual_args": c.actual_args,
+                    "passed": c.passed,
+                    "tool_correct": c.tool_correct,
+                    "args_correct": c.args_correct,
+                }
+                for c in result.cases
+            ],
+        }
+        console.print_json(json.dumps(payload))
+        return
+
+    _print_router_eval_table(result, router_repo, character.name)
+
+
+def _print_router_eval_table(
+    result: RouterEvalResult, router_repo: str, character_name: str
+) -> None:
+    table = Table(title=f"Router eval — {router_repo} · {character_name}", show_lines=False)
+    table.add_column("✓", style="bold", width=2)
+    table.add_column("prompt")
+    table.add_column("expected", style="green")
+    table.add_column("actual", style="yellow")
+    table.add_column("args", style="dim")
+    for c in result.cases:
+        mark = "[green]✓[/green]" if c.passed else "[red]✗[/red]"
+        exp = c.expected_tool if c.expected_tool is not None else "[dim]null[/dim]"
+        act = c.actual_tool if c.actual_tool is not None else "[dim]null[/dim]"
+        if c.args_correct:
+            args_note = ""
+        else:
+            missing = sorted(set(c.expected_args) - c.actual_args.keys())
+            args_note = f"missing {missing}"
+        table.add_row(mark, c.prompt, exp, act, args_note)
+    console.print(table)
+    passed = sum(1 for c in result.cases if c.passed)
+    console.print(
+        f"[bold]{passed}/{len(result.cases)} passed · "
+        f"{result.accuracy * 100:.1f}% full · "
+        f"{result.tool_accuracy * 100:.1f}% tool-only[/bold]"
+    )
 
 
 @memory_app.command("list")

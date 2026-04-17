@@ -1,0 +1,86 @@
+# Router eval fixture — prompts the intent router should classify
+# correctly. Loaded by `harness eval router`. Each entry:
+#
+#   prompt: the user message
+#   expected_tool: the tool name the router should pick, or `null` for
+#     'no tool needed' (casual chat, greeting, arithmetic the main
+#     model can answer directly).
+#   expected_args (optional): list of argument names that MUST appear
+#     in the router's `arguments` dict. Missing args = partial credit
+#     (tool right, args wrong).
+#
+# Goal: lock in router quality so a model swap or prompt change
+# doesn't silently regress. Keep the mix balanced — ~50% should be
+# null so we catch the small model's bias toward over-routing.
+
+- prompt: search the web for bbq restaurants in 85048 tonight
+  expected_tool: search_web
+  expected_args: [query]
+
+- prompt: look up the latest news on Claude 4.7 pricing
+  expected_tool: search_web
+  expected_args: [query]
+
+- prompt: find me a good sourdough starter recipe online
+  expected_tool: search_web
+  expected_args: [query]
+
+- prompt: what's the weather in Phoenix right now
+  expected_tool: search_web
+  expected_args: [query]
+
+- prompt: show me what's in src/harness/cli.py
+  expected_tool: read_file
+  expected_args: [path]
+
+- prompt: open pyproject.toml and tell me what's configured
+  expected_tool: read_file
+  expected_args: [path]
+
+- prompt: list the files in src/harness/tools
+  expected_tool: list_dir
+
+- prompt: grep for FABRICATED_SEARCH in the code
+  expected_tool: grep
+
+- prompt: find all tests matching test_router_*
+  expected_tool: glob
+
+- prompt: what do you remember about our last session
+  expected_tool: search_memory
+  expected_args: [query]
+
+- prompt: recall the conversation where we discussed retrieval thresholds
+  expected_tool: search_memory
+  expected_args: [query]
+
+- prompt: what facts do you know about my preferences
+  expected_tool: search_facts
+  expected_args: [query]
+
+# Null cases — casual chat, greetings, things the main model can
+# answer without a tool. The 1.5B has a bias toward over-routing, so
+# these are load-bearing for catching regressions.
+- prompt: hey how's it going
+  expected_tool: null
+
+- prompt: good morning
+  expected_tool: null
+
+- prompt: tell me a joke
+  expected_tool: null
+
+- prompt: what's 2 plus 2
+  expected_tool: null
+
+- prompt: thanks, that was helpful
+  expected_tool: null
+
+- prompt: what do you think about that approach
+  expected_tool: null
+
+- prompt: write a haiku about autumn
+  expected_tool: null
+
+- prompt: explain what a merkle tree is
+  expected_tool: null
