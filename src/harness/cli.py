@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -29,7 +30,12 @@ from harness.consolidate import run_consolidation
 from harness.evals.voice import run_voice_eval
 from harness.model import AdapterName, ChatMessage, ModelAdapter, make_adapter
 from harness.model.adapter import Role, count_tokens
-from harness.orchestrator import ToolLoopEvent, run_tool_loop
+from harness.orchestrator import (
+    _FALSE_SUCCESS_RE,
+    _META_CONFIRM_RE,
+    ToolLoopEvent,
+    run_tool_loop,
+)
 from harness.persona import PersonaAdapter
 from harness.persona.rewriter import build_rewriter_messages
 from harness.retrieval import VoiceRetriever
@@ -227,6 +233,91 @@ def _format_ctx_meter(used: int, total: int) -> str:
     return f"[{color}]ctx {used / 1000:.1f}k / {total / 1000:.0f}k ({pct * 100:.0f}%)[/{color}]"
 
 
+def _pre_validate_write_call(call: ToolCall, workspace: Path) -> str | None:
+    """Run cheap sanity checks on a write-tier tool call BEFORE asking
+    the user to approve. Returns None when the call looks sane; returns
+    a human-readable reason when we should refuse outright and redirect
+    the model.
+
+    Currently guards only the write_file(overwrite=True) shrink-clobber
+    pattern (see harness-2tq) — the tool itself has the same check as
+    a defense-in-depth, but catching here keeps the 'approve?' prompt
+    out of the user's face for calls that would just fail anyway."""
+    if call.name != "write_file":
+        return None
+    args = call.arguments
+    if not args.get("overwrite"):
+        return None
+    rel = str(args.get("path", ""))
+    new_content = args.get("content", "") or ""
+    if not rel:
+        return None
+    try:
+        target = (workspace / rel).resolve()
+        target.relative_to(workspace.resolve())
+    except (ValueError, OSError):
+        # Path issues — let the tool itself surface the error.
+        return None
+    if not target.exists() or not target.is_file():
+        return None
+    try:
+        existing_size = target.stat().st_size
+    except OSError:
+        return None
+    if len(new_content) < existing_size // 2 and len(new_content) < 1024:
+        return (
+            f"new content is {len(new_content)} bytes but {rel} is "
+            f"{existing_size} bytes — looks like an append disguised "
+            f'as overwrite. Use edit_file(path={rel!r}, old_string="", '
+            f"new_string=...) to append."
+        )
+    return None
+
+
+def _describe_call(call: ToolCall, workspace: Path) -> str:
+    """Render a one-line intent summary for the approve prompt, so the
+    user doesn't have to read through a raw {args} dict to decide."""
+    args = call.arguments
+    name = call.name
+    if name == "write_file":
+        rel = str(args.get("path", ""))
+        size = len(args.get("content", "") or "")
+        overwrite = bool(args.get("overwrite"))
+        target = (workspace / rel).resolve() if rel else None
+        pre_existed = bool(target and target.exists())
+        if pre_existed and overwrite:
+            try:
+                existing_size = target.stat().st_size if target else 0
+            except OSError:
+                existing_size = 0
+            return f"overwrite {rel} ({existing_size}B → {size}B)"
+        if pre_existed:
+            return f"write {rel} ({size}B) — BLOCKED: already exists"
+        return f"create {rel} ({size}B)"
+    if name == "edit_file":
+        rel = str(args.get("path", ""))
+        old = args.get("old_string", "")
+        new = args.get("new_string", "") or ""
+        if not old:
+            return f"append {len(new)}B to {rel}"
+        replace_all = bool(args.get("replace_all"))
+        scope = "all matches" if replace_all else "1 match"
+        return f"edit {rel} ({scope}, -{len(old)}B / +{len(new)}B)"
+    if name == "shell":
+        cmd = str(args.get("cmd", ""))
+        trimmed = cmd if len(cmd) <= 80 else cmd[:77] + "..."
+        return f"run: {trimmed}"
+    if name in ("remember_fact",):
+        return f"{args.get('subject', '?')} {args.get('predicate', '?')} {args.get('object', '?')}"
+    if name in ("remember_event",):
+        title = str(args.get("title", ""))[:60]
+        return f'record event: "{title}"'
+    if name in ("scribe_session", "consolidate_memory"):
+        return " ".join(f"{k}={v}" for k, v in args.items()) or "(no args)"
+    # Fallback: the raw args dict.
+    return str(args)
+
+
 def _render_fact_block(facts: list[SemanticFact]) -> str:
     """Render retrieved semantic facts as a compact block for the system
     prompt. One line per fact — subject, predicate, object, confidence."""
@@ -306,36 +397,86 @@ class _ThinkingSpinner:
         self.stop()
 
 
+_SENTENCE_BOUNDARY_RE = re.compile(r"[.!?\n][\s)\]'\"]*")
+
+
 class _StreamRenderer:
-    """Plain-text streaming region for token deltas.
+    """Plain-text streaming region for token deltas, with sentence-level
+    meta-confirm / false-success suppression.
 
     Earlier versions wrapped a `rich.live.Live` around a re-rendered
     `Markdown` block. That repainted the full buffer at 10 Hz, and when
     the buffer exceeded terminal height Rich could not clear the prior
     frames — each tick leaked into scrollback as a growing-prefix
-    duplicate. Streaming is now plain-text append: each delta is written
-    directly with no repaint, so long replies render exactly once."""
+    duplicate. Streaming is now plain-text append, sentence-buffered:
+    each completed sentence is checked against the meta-confirm /
+    false-success regexes and dropped if it matches, so the user never
+    sees 'Would you like me to…?' / 'has been added' narrative the
+    orchestrator is about to strip anyway.
+
+    Cost: sentence-level latency instead of token-level. The user sees
+    one sentence appear at a time rather than token-by-token. Worth it
+    to keep small-model noise off the screen."""
 
     def __init__(self, console: Console) -> None:
         self._console = console
-        self._buf = ""
+        self._visible = ""  # emitted to console
+        self._pending = ""  # tokens not yet at a sentence boundary
+        self._suppressed_count = 0
         self._active = False
 
     def start(self) -> None:
-        self._buf = ""
+        self._visible = ""
+        self._pending = ""
+        self._suppressed_count = 0
         self._active = True
 
     def append(self, delta: str) -> None:
         if not self._active:
             self.start()
-        self._buf += delta
-        self._console.print(delta, end="", markup=False, highlight=False, soft_wrap=True)
+        self._pending += delta
+        self._flush_complete_sentences()
+
+    def _flush_complete_sentences(self) -> None:
+        while True:
+            match = _SENTENCE_BOUNDARY_RE.search(self._pending)
+            if match is None:
+                return
+            end = match.end()
+            sentence = self._pending[:end]
+            self._pending = self._pending[end:]
+            if _META_CONFIRM_RE.search(sentence) or _FALSE_SUCCESS_RE.search(sentence):
+                # Drop — do not print. The orchestrator will feed a nudge
+                # back to the model on the next round.
+                self._suppressed_count += 1
+                continue
+            self._emit(sentence)
+
+    def _emit(self, text: str) -> None:
+        self._visible += text
+        self._console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
 
     def stop(self) -> str:
-        out = self._buf
-        if self._active and out:
+        # Flush any trailing partial sentence — the regex check still
+        # runs so a model that trailed off mid-meta-confirm ("Would
+        # you like me to") doesn't leak in the final chunk either.
+        if self._pending:
+            if _META_CONFIRM_RE.search(self._pending) or _FALSE_SUCCESS_RE.search(self._pending):
+                self._suppressed_count += 1
+            else:
+                self._emit(self._pending)
+            self._pending = ""
+        if self._active and self._suppressed_count > 0:
+            self._console.print(
+                f"[dim]⋯ suppressed {self._suppressed_count} line(s) of "
+                f"meta-confirm / hallucinated-success narrative[/dim]"
+            )
+        out = self._visible
+        if self._active and (out or self._suppressed_count > 0):
             self._console.print()
-        self._buf = ""
+        self._visible = ""
+        self._pending = ""
+        self._suppressed_count = 0
         self._active = False
         return out
 
@@ -754,10 +895,19 @@ def chat(
         return name
 
     def confirm_write_tool(call: ToolCall) -> bool:
+        # Pre-validate: some calls are so obviously wrong that we refuse
+        # them without even asking the user. The tool's own call() has
+        # the same guard as a safety net, but catching it here keeps the
+        # approve prompt out of the user's face for doomed calls.
+        refusal = _pre_validate_write_call(call, workspace_path)
+        if refusal is not None:
+            console.print(f"[red]🚫 refusing {call.name}: {refusal}[/red]")
+            return False
         if call.name in approved_tools:
             return True
         label = _tool_label(call.name)
-        console.print(f"[yellow]🔧 Airton wants to [bold]{label}[/bold][/yellow] {call.arguments}")
+        summary = _describe_call(call, workspace_path)
+        console.print(f"[yellow]🔧 Airton wants to [bold]{label}[/bold] — {summary}[/yellow]")
         answer = console.input("   approve? [y/N/always]: ").strip().lower()
         if answer == "always":
             approved_tools.add(call.name)

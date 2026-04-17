@@ -3,6 +3,8 @@ adapter. Sits between the CLI and the adapter. Does not know about
 persona or retrieval (those are the caller's responsibility)."""
 
 from harness.orchestrator.tool_loop import (
+    _FALSE_SUCCESS_RE,
+    _META_CONFIRM_RE,
     ConfirmFn,
     ObserverFn,
     ToolLoopEvent,
@@ -11,6 +13,11 @@ from harness.orchestrator.tool_loop import (
 )
 
 __all__ = [
+    # Private regexes exposed for the CLI stream renderer so it can
+    # suppress meta-confirm / false-success text before it lands on the
+    # user's terminal. Used by stream-level filtering; not a stable API.
+    "_FALSE_SUCCESS_RE",
+    "_META_CONFIRM_RE",
     "ConfirmFn",
     "ObserverFn",
     "ToolLoopEvent",
