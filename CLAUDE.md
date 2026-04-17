@@ -21,6 +21,10 @@ Environment setup (one time):
 Daily chat (see `docs/usage.md` for the intended workflow):
 
 - `uv run harness chat --model mlx --persona --memories 3 --facts 5` — full-stack chat: MLX + persona rewriter + 3 episodic memories + 5 semantic facts + retrieval-picked voice few-shot.
+- `uv run harness chat --model mlx --persona --tools` — same, plus the tool-use orchestrator (`read_file`, `write_file`, `shell`, `search_memory`, `search_facts`). Add `--workspace DIR` to point the filesystem tools at another repo.
+- `uv run harness chat --model mlx --model-repo mlx-community/Qwen2.5-Coder-32B-Instruct-4bit --persona` — override the default model repo. Works for `chat`, `eval voice`, and `memory scribe`.
+- `uv run harness chat --model mlx --lora-path ./adapters/airton --persona` — apply a LoRA adapter (directory from `mlx_lm.lora`) on top of the base MLX model.
+- `uv run harness chat --model ollama --model-repo qwen2.5-coder:32b-instruct --persona` — Ollama backend.
 - `uv run harness chat` — echo-adapter dry run (no model, just wiring).
 - `uv run harness describe` — dump Airton's resolved character sheet.
 
@@ -56,7 +60,7 @@ Quality gates (all must stay green; pre-commit runs them on every commit):
 - `uv run ruff check .` — lint.
 - `uv run ruff format .` — format in place.
 - `uv run mypy src tests` — strict type-check (src + tests).
-- `uv run pytest` — full test suite (currently ~110 tests).
+- `uv run pytest` — full test suite (currently ~217 tests).
 - `uv run pytest tests/test_character.py::test_load_airton_shape` — single test.
 - `uv run pre-commit run --all-files` — run all hooks against the working tree.
 
@@ -82,12 +86,14 @@ Load-bearing invariants — they shape almost every decision:
 - `src/harness/` — runtime (src layout, package `harness`).
   - `config.py` — pydantic-settings; env-prefixed `HARNESS_*`.
   - `character.py` — loads `character/<name>/` into a frozen `Character` dataclass; renders a fallback `system_prompt()`. Merges `voice/canonical.yaml` + `voice/captured.yaml`.
+  - `_quiet.py` — suppresses HF / transformers / sentence-transformers startup noise so the CLI stays readable.
   - `model/` — adapter boundary. Anything model-specific lives here and nowhere else.
-    - `adapter.py` — `ChatMessage` + `ModelAdapter` protocol.
+    - `adapter.py` — `ChatMessage` + `ModelAdapter` protocol (including `complete_with_tools` for tool-use).
     - `echo.py` — deterministic adapter for wiring tests.
-    - `mlx.py` — MLX-backed adapter (Qwen 2.5 32B Instruct 4-bit by default). Lazy load.
-    - `factory.py` — `make_adapter("echo" | "mlx")`. MLX imported lazily, so environments without MLX still work with echo.
-  - `persona/rewriter.py` — `PersonaAdapter` wraps a base adapter with a voice-rewrite post-pass. Optional chain-of-rewrite (`chain_rewrites=True`) adds a second concrete-substitution pass.
+    - `mlx.py` — MLX-backed adapter (Qwen 2.5 32B Instruct 4-bit by default). Streams tokens. Accepts `model_repo` and `lora_path` overrides. Lazy load.
+    - `ollama.py` — Ollama-backed adapter with tool-call + token-streaming support. Model tag via `model_repo`.
+    - `factory.py` — `make_adapter("echo" | "mlx" | "ollama", model_repo=, lora_path=)`. Backends imported lazily.
+  - `persona/rewriter.py` — `PersonaAdapter` wraps a base adapter with a voice-rewrite post-pass. Optional chain-of-rewrite (`chain_rewrites=True`) adds a second concrete-substitution pass. Off by default when a turn used tools (`rewrite_on_tools=False`) — rewriter compresses, which is wrong for investigate/summarize replies.
   - `retrieval/` — embedding-backed similarity search.
     - `embed.py` — `Embedder` Protocol. Implementations return L2-normalized vectors so cosine similarity is a dot product.
     - `st_embedder.py` — `SentenceTransformersEmbedder`; default `mixedbread-ai/mxbai-embed-large-v1` (1024 dim, MPS on Mac).
@@ -97,17 +103,30 @@ Load-bearing invariants — they shape almost every decision:
     - `episodic.py` — `EpisodicStore`: title / body / principle / tags / tier / source / user_id / `superseded_by` + embedding BLOB. Tiers: `seed` · `consolidated` · `working`.
     - `semantic.py` — `SemanticStore`: `(subject, predicate, object)` triples with confidence, provenance, tier, `supersedes`, `superseded_by`.
     - Both stores carry `embedder_id` + `embedding_dim` per row; search filters mismatched dims so a new embedder doesn't crash. `rebuild_embeddings()` migrates in place.
+    - All stores set `PRAGMA busy_timeout = 5000` so concurrent writes wait instead of erroring.
   - `scribe/` — batch extraction from transcript to memory stores.
     - `extractor.py` — `extract_candidates(adapter, character, turns)`; strict-JSON rubric, tolerates markdown fences + garbage.
     - `runner.py` — `run_scribe(..., user_id=)`; watermark-tracked per session; non-overlapping windows.
-  - `consolidate/consolidator.py` — `run_consolidation(episodic, semantic)`. Episodic uses single-link clustering at cosine ≥ 0.80, picks most-recent as representative. Semantic groups by case-insensitive `(subject, predicate)`, picks highest-confidence-then-recent. Originals marked `superseded_by → new_id`; retrieval filters them out.
+    - `locks.py` — `fcntl`-based per-session lock so concurrent scribe runs on the same session serialize instead of racing the watermark.
+  - `consolidate/consolidator.py` — `run_consolidation(episodic, semantic)`. Episodic uses single-link clustering at cosine ≥ 0.80, picks most-recent as representative. Semantic groups by case-insensitive `(subject, predicate)`, picks highest-confidence-then-recent. Originals marked `superseded_by → new_id`; retrieval filters them out. **Not yet user-aware** — clusters across `user_id` (fine with one user, broken before the second).
+  - `compaction/` — context-window management.
+    - `store.py` — persists per-session compaction summaries so reruns don't re-summarize unchanged history.
+    - `summarizer.py` — folds older turns into a single session summary using the same adapter.
+    - `runner.py` — `maybe_compact(messages, tokens_used, window, compact_at, keep_recent)`; fires when the context meter crosses `--compact-at` (default 0.8 of the window) and leaves `--compact-keep-recent` turns verbatim.
+  - `tools/` — built-in tools for the agent loop.
+    - `base.py` — `Tool` protocol + `ToolResult`; tools declare schema, execute given a workspace-scoped context, return content + optional metadata. Write-tier tools are marked and trigger per-session user confirmation.
+    - `read_file.py` / `write_file.py` / `shell.py` — filesystem + shell, all sandboxed to `--workspace`.
+    - `search_memory.py` / `search_facts.py` — read-only retrieval over episodic + semantic stores, scoped to the speaker.
+  - `orchestrator/tool_loop.py` — runs the adapter's `complete_with_tools` loop: model → tool calls → execute → feed results back → repeat until no more tool calls. Handles display labels, token counting, streaming, retrieval degradation (skips retrieval when a tool run is clearly on rails).
   - `evals/` — offline evals.
     - `voice.py` — `run_voice_eval(..., retriever=, persona=, use_judge=, chain_rewrites=)`.
     - `voice_score.py` — heuristic scorer: length / openers / bullet-discipline / bullet-density / filler. Aggregate is the mean.
     - `voice_judge.py` — LLM-as-judge; parses 1-10 from the adapter.
-  - `cli.py` — Typer app: `chat`, `describe`, `eval voice`, `memory {list,search,scribe,consolidate,wipe,rebuild-embeddings,fact-*,ingest}`, `voice {capture,list-captured}`.
+  - `cli.py` — Typer app: `chat` (with `--tools`, `--workspace`, `--model-repo`, `--lora-path`, `--rewrite-on-tools`, `--compact-at`, `--compact-keep-recent`), `describe`, `eval voice`, `memory {list,search,scribe,consolidate,wipe,rebuild-embeddings,fact-*,ingest}`, `voice {capture,list-captured}`.
 
-- `tests/` — pytest. Tests hit real stores (SQLite in `tmp_path`) rather than mocks. ~110 tests across character, stores, retrieval, scribe, consolidator, persona, voice eval, dimension tracking, relationship memory, voice capture.
+- `tests/` — pytest. Tests hit real stores (SQLite in `tmp_path`) rather than mocks. ~217 tests across character, stores, retrieval, scribe, consolidator, persona, voice eval, dimension tracking, relationship memory, voice capture, tool loop, tools, compaction, Ollama adapter, CLI helpers.
+
+- `scripts/` — benchmarks and one-offs (model-speed benchmark, tool-use benchmark).
 
 ### Voice stack
 
@@ -131,6 +150,18 @@ Three layers of writes:
 
 Retrieval filters: `superseded_by IS NULL AND embedding_dim = <current> AND (user_id IS NULL OR user_id = <speaker>)`.
 
+### Tool-use stack
+
+When `--tools` is set, the chat loop hands the adapter a tool schema and enters `orchestrator/tool_loop.py`:
+
+1. Adapter calls `complete_with_tools(messages, tools)` — MLX and Ollama both implement this.
+2. If the model emits tool calls, the loop executes each tool (write-tier tools prompt for confirmation on first use per session), appends the result to the working message list, and loops.
+3. When the model returns a final reply (no tool calls), the loop exits and that reply is the turn's output.
+4. Persona rewrite is **off by default** when tools ran — the rewriter compresses, which is wrong for multi-step investigations. `--rewrite-on-tools` opts back in for casual tool use.
+5. If the prompt + tool results approach `--compact-at × context_window` tokens, `compaction/` folds older turns into a session summary. The transcript is unchanged — only the model-visible history shrinks.
+
+Filesystem tools (`read_file` / `write_file` / `shell`) are sandboxed to `--workspace` (default: the harness repo root). Memory + transcripts stay under the harness data dir regardless.
+
 ### Phase progress
 
 Done:
@@ -139,18 +170,21 @@ Done:
 - **Phase 1a/b/d** — MLX adapter, voice eval suite, few-shot + retrieval, persona rewriter, heuristic + judge scoring, chain-of-rewrite, episodic store, semantic store, scribe, consolidator, dimension tracking.
 - **Phase 2.0** — Relationship memory (per-user scoping).
 - **Phase 2.1** — Corpus growth via `voice capture`.
+- **Phase 3.0+3.1** — Tool use: 5 built-in tools (read_file, write_file, shell, search_memory, search_facts), orchestrator loop, `--tools` flag, `--workspace` sandbox, write-tier confirmation, streaming tokens, context meter, automatic compaction, retrieval degradation when on-rails, Ollama adapter with tool-call support. Robustness hardening: scribe fcntl session lock, SQLite `busy_timeout` pragma, HF/transformers startup noise suppression, `--model-repo` and `--lora-path` flags across chat/eval/scribe.
 
-Available but not started (no priority implied):
+Available but not started (no priority implied — tracked as `bd` issues):
 
 - In-chat `/edit` invoking `$EDITOR` so captures don't require shell flags.
 - Consolidator user-awareness (currently clusters across users; harmless with one user, needs fixing before second user).
 - LoRA fine-tune on Qwen 2.5 32B using the voice suite as training data (roadmap Tier 3).
-- Web gateway (FastAPI + SvelteKit ops console).
+- Web gateway (FastAPI + SvelteKit ops console). Blocked on auth + rate limit + backup decisions.
 - Slack + Matrix gateways.
 - Scheduled consolidation (launchd → nightly).
 - Off-box backup destination — decision still open.
 - Multi-agent roles (planner / researcher / executor / critic / persona).
 - Kuzu graph layer.
+
+Issue tracker: `bd ready` — see `AGENTS.md` for workflow.
 
 ## Conventions
 

@@ -2,19 +2,24 @@
 
 Living document. Authoritative architecture + commands reference is `CLAUDE.md`; daily-use workflow is `docs/usage.md`. This file tracks phase sequencing and open questions.
 
-## Where we are (2026-04-16)
+## Where we are (2026-04-17)
 
 **Working end-to-end**:
 
-- Chat with Airton locally via MLX-hosted Qwen 2.5 32B Instruct.
+- Chat with Airton locally via MLX-hosted Qwen 2.5 32B Instruct, swappable to any MLX HF repo via `--model-repo`, or to Ollama via `--model ollama`.
+- Optional LoRA adapter on top of the base MLX model (`--lora-path`) — plumbed through chat / eval / scribe.
 - Voice-rewrite post-pass keeps Airton's register on responses the base model would otherwise drift on.
 - Episodic and semantic memory: seed + scribe-written + consolidator-promoted tiers, all retrieval-indexed with mxbai-embed-large-v1 (1024 dim).
 - Per-user relationship scoping — Alice can't see Bob's private memories; shared seeds reach everyone.
 - Corpus growth: `harness voice capture` turns a corrected reply into a new voice sample; the loader picks it up on next start; retrieval surfaces it on similar future prompts.
-- Validated end-to-end twice: the "junior asks for the fix" and "transceiver bug" validation turns both reproduced seed-memory specifics; the onboarding prompt demonstrated corpus growth fixing a previously-generic response.
-- ~110 tests green under ruff + mypy strict + pre-commit.
+- **Tool use (Phase 3)**: `--tools` hands the model 5 built-in tools (read_file, write_file, shell, search_memory, search_facts); the orchestrator runs the tool-call loop, confirms write-tier tools once per session, streams tokens, renders a context meter, and auto-compacts older turns when the context window crosses `--compact-at`. Filesystem tools are sandboxed to `--workspace`.
+- Robustness hardening: scribe `fcntl` session lock (no overlapping scribe runs corrupting the watermark); `PRAGMA busy_timeout = 5000` across all SQLite stores; HF/transformers/ST startup noise suppressed; Ollama adapter supports tool calls + token streaming.
+- Validated end-to-end: the "junior asks for the fix" and "transceiver bug" validation turns both reproduced seed-memory specifics; the onboarding prompt demonstrated corpus growth fixing a previously-generic response.
+- ~217 tests green under ruff + mypy strict + pre-commit.
 
 **What you can't do yet**: talk to Airton from anywhere but a terminal on the M4. No always-on daemon, no gateway, no multi-agent roles.
+
+**Captured voice corpus** (as of this refresh): 32 canonical + 1 captured. Most LoRA voice lift needs more capture — aim for ~50 captured before pulling the Tier-3 LoRA trigger.
 
 ## Phases landed
 
@@ -29,6 +34,7 @@ Living document. Authoritative architecture + commands reference is `CLAUDE.md`;
   - **1b.3** — Dimension tracking on stores + `rebuild-embeddings` for non-destructive embedder switches.
 - **Phase 2.0 — Relationship memory.** Per-user scoping on episodic + semantic search; scribe tags candidates by user; CLI `--user` / `--shared` flags.
 - **Phase 2.1 — Corpus growth.** `harness voice capture` writes captured YAML; character loader merges canonical + captured.
+- **Phase 3.0 + 3.1 — Tool use.** 5 built-in tools (read_file, write_file, shell, search_memory, search_facts), `--tools` flag, orchestrator loop, Ollama adapter with tool-call + token-streaming support, streaming tokens, spinner, context meter, automatic compaction (`--compact-at`, `--compact-keep-recent`), retrieval degradation when a turn is clearly on-rails, `--workspace` sandbox, write-tier confirmation, `--rewrite-on-tools` toggle for the persona rewriter. Alongside: `--model-repo` and `--lora-path` flags across chat / eval / scribe, scribe fcntl session lock, SQLite `busy_timeout` pragma, HF/transformers noise suppression.
 
 ## Voice durability — the permanent path
 
@@ -73,16 +79,21 @@ With 1000+ Airton-voiced responses, do a full supervised fine-tune (not LoRA). V
 
 ## Next-up candidates (no priority implied)
 
-All independent; pick any.
+Tracked as `bd` issues now — run `bd ready` for the live list. Summary of current open candidates:
 
-- **In-chat `/edit` for voice capture.** Lower the friction of corpus growth. Small CLI change.
-- **Consolidator user-awareness.** Currently clusters across users; harmless with one user, needs fixing before adding a second.
-- **LoRA fine-tune (Phase 1e).** First permanent voice move. Eval suite is dialed in enough to judge the result.
-- **Web gateway.** FastAPI + SvelteKit ops console. Unblocks Slack/Matrix, turns Airton into something other people can reach.
-- **Launchd daemon + scheduled consolidation.** Make Airton actually "always-on"; run scribe + consolidate nightly.
-- **Multi-agent roles** (planner / researcher / executor / critic / persona). The architecture promised these; currently everything runs as a single single-model ReAct-ish loop.
-- **Kuzu graph layer.** When we want relationship graphs over entities (who-works-with-whom, project-depends-on-project).
-- **Scheduled initiative.** Phase 5 — Airton opens threads unprompted, reacts to external events.
+- **Refresh docs** (`harness-1ja`) — this pass. Keep CLAUDE.md + roadmap in sync with reality.
+- **LoRA fine-tune (Phase 1e)** (`harness-kr4`) — first permanent voice move. Eval suite is dialed in enough to judge the result. Gate on captured corpus size (currently 1 — too low; capture more first).
+- **Consolidator user-awareness** (`harness-4uh`) — clusters across users today; blocker before adding a second.
+- **In-chat `/edit` for voice capture** (`harness-dws`) — lower the friction of corpus growth. Small CLI change.
+- **Launchd daemon + scheduled consolidation + nightly backup** (`harness-bi3`, blocked on backup destination `harness-cxd`).
+- **Web gateway (epic)** (`harness-g7y`) — FastAPI + SvelteKit ops console. Blocked on auth (`harness-55p`), rate limit, and backup destination.
+
+Not yet filed in `bd` (forward look):
+
+- Slack + Matrix gateways (after web gateway).
+- Multi-agent roles (planner / researcher / executor / critic / persona). The architecture promised these; currently everything runs as a single-model tool-use loop.
+- Kuzu graph layer. When we want relationship graphs over entities (who-works-with-whom, project-depends-on-project).
+- Scheduled initiative. Phase 5 — Airton opens threads unprompted, reacts to external events.
 
 ## Robustness backlog
 
