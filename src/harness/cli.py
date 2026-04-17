@@ -53,6 +53,8 @@ from harness.tools import (
     GrepTool,
     ListDirTool,
     ReadFileTool,
+    RememberEventTool,
+    RememberFactTool,
     SearchFactsTool,
     SearchMemoryTool,
     ShellTool,
@@ -674,6 +676,20 @@ def chat(
                 lambda: (
                     SearchFactsTool(store=semantic_store, user_id=speaker)
                     if semantic_store is not None
+                    else None
+                )
+            ),
+            "remember_fact": (
+                lambda: (
+                    RememberFactTool(store=semantic_store, user_id=speaker, session_id=session)
+                    if semantic_store is not None
+                    else None
+                )
+            ),
+            "remember_event": (
+                lambda: (
+                    RememberEventTool(store=memory_store, user_id=speaker, session_id=session)
+                    if memory_store is not None
                     else None
                 )
             ),

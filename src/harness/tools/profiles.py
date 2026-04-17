@@ -39,11 +39,13 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_memory",
         "search_facts",
     ),
-    # Memory-curation sessions. Live-write tools will join once
-    # implemented (see bd issues harness-vn5, harness-1tu, harness-5tz).
+    # Memory-curation sessions. supersede_fact will join once
+    # implemented (see bd issue harness-5tz).
     "memory": (
         "search_memory",
         "search_facts",
+        "remember_fact",
+        "remember_event",
     ),
     # Self-inspection. `stats` and `transcript_recent` will join once
     # implemented (see bd issues harness-m2e, harness-2mi).

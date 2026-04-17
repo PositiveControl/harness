@@ -25,6 +25,7 @@ from harness.tools.profiles import (
     resolve_tool_names,
 )
 from harness.tools.read_file import ReadFileTool
+from harness.tools.remember import RememberEventTool, RememberFactTool
 from harness.tools.search_facts import SearchFactsTool
 from harness.tools.search_memory import SearchMemoryTool
 from harness.tools.shell import ShellTool
@@ -42,6 +43,8 @@ __all__ = [
     "ListDirTool",
     "ModelReply",
     "ReadFileTool",
+    "RememberEventTool",
+    "RememberFactTool",
     "SearchFactsTool",
     "SearchMemoryTool",
     "ShellTool",
