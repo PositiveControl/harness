@@ -24,8 +24,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_memory",
         "search_facts",
     ),
-    # Active code collaboration — full read/write/shell/memory. Git
-    # tools will join once implemented (see bd issue harness-d4d).
+    # Active code collaboration — full read/write/shell/memory/git.
     "coding": (
         "read_file",
         "list_dir",
@@ -34,6 +33,9 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "edit_file",
         "write_file",
         "shell",
+        "git_status",
+        "git_diff",
+        "git_log",
         "search_memory",
         "search_facts",
     ),

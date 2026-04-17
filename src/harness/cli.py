@@ -46,6 +46,9 @@ from harness.tools import (
     DEFAULT_PROFILE,
     TOOL_PROFILES,
     EditFileTool,
+    GitDiffTool,
+    GitLogTool,
+    GitStatusTool,
     GlobTool,
     GrepTool,
     ListDirTool,
@@ -657,6 +660,9 @@ def chat(
             "list_dir": lambda: ListDirTool(root=workspace_path),
             "grep": lambda: GrepTool(root=workspace_path),
             "glob": lambda: GlobTool(root=workspace_path),
+            "git_status": lambda: GitStatusTool(root=workspace_path),
+            "git_diff": lambda: GitDiffTool(root=workspace_path),
+            "git_log": lambda: GitLogTool(root=workspace_path),
             "search_memory": (
                 lambda: (
                     SearchMemoryTool(store=memory_store, user_id=speaker)

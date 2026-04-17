@@ -15,6 +15,7 @@ from harness.tools.base import (
     ToolSpec,
 )
 from harness.tools.edit_file import EditFileTool
+from harness.tools.git import GitDiffTool, GitLogTool, GitStatusTool
 from harness.tools.glob import GlobTool
 from harness.tools.grep import GrepTool
 from harness.tools.list_dir import ListDirTool
@@ -33,6 +34,9 @@ __all__ = [
     "DEFAULT_PROFILE",
     "TOOL_PROFILES",
     "EditFileTool",
+    "GitDiffTool",
+    "GitLogTool",
+    "GitStatusTool",
     "GlobTool",
     "GrepTool",
     "ListDirTool",
