@@ -84,6 +84,20 @@ All independent; pick any.
 - **Kuzu graph layer.** When we want relationship graphs over entities (who-works-with-whom, project-depends-on-project).
 - **Scheduled initiative.** Phase 5 — Airton opens threads unprompted, reacts to external events.
 
+## Robustness backlog
+
+Deferred items from a 2026-04-16 critique pass. Not load-bearing for a single-user local CLI; relevant as the system opens to multiple gateways, multiple users, or automated scheduling. Filed here so we don't lose them.
+
+- **Auth / authz on gateways.** Tailscale covers the network layer today. When web / Slack / Matrix gateways land, each needs its own identity check before writes hit memory. Blocks any gateway that isn't terminal-local.
+- **Rate limiting.** Per-user throughput cap on turns + tool calls. Matters once something other than Mark can trigger generation.
+- **Backup / restore workflow.** Beyond the existing open decision on destination: need a tested restore path and a nightly job. Likely pairs with launchd daemon.
+- **Consolidator user-awareness.** Currently clusters across users; harmless with one user, incorrect before a second arrives. (Already on the next-up list — mirrored here because it's a robustness blocker, not a feature.)
+- **Error logging + structured telemetry.** Nothing emits structured events today. Minimum: a rotating JSONL log for tool-call outcomes and scribe runs. Scales up to OpenTelemetry if we grow out of that.
+- **Health check / readiness endpoint.** Needed for the launchd daemon and any gateway. Can start as `harness health` returning store + embedder + model status.
+- **Database corruption recovery.** SQLite WAL survives power loss, but we have no `integrity_check` + restore-from-backup runbook. Write one once backup destination is chosen.
+- **Resource caps on long-running sessions.** Transcript tail already limits history to 50 turns; memory store is naturally bounded by consolidation. Revisit when a session runs for days without restart.
+- **Scheduled-consolidation hardening.** When consolidation runs nightly via launchd, it must not overlap with interactive scribe / chat writes. Depends on the scribe lock landing first (Item 5 below).
+
 ## Open decisions
 
 - **Backup destination.** Blocks Phase 2 multi-user. Candidates: Backblaze B2, iCloud Drive, S3, NAS, another Mac. Default until chosen: SQLite WAL + local Time Machine + nightly tarball of `data/`.
