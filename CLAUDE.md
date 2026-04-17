@@ -21,7 +21,7 @@ Environment setup (one time):
 Daily chat (see `docs/usage.md` for the intended workflow):
 
 - `uv run harness chat --model mlx --persona --memories 3 --facts 5` — full-stack chat: MLX + persona rewriter + 3 episodic memories + 5 semantic facts + retrieval-picked voice few-shot.
-- `uv run harness chat --model mlx --persona --tools` — same, plus the tool-use orchestrator (`read_file`, `write_file`, `shell`, `search_memory`, `search_facts`). Add `--workspace DIR` to point the filesystem tools at another repo.
+- `uv run harness chat --model mlx --persona --tools` — same, plus the tool-use orchestrator (defaults to the `core` tool-set; pass `--tool-set coding` for full read/write/shell, `memory` for recall-only, etc.). Add `--workspace DIR` to point the filesystem tools at another repo. Escape hatches: `--tools-add X,Y` and `--tools-drop Z`.
 - `uv run harness chat --model mlx --model-repo mlx-community/Qwen2.5-Coder-32B-Instruct-4bit --persona` — override the default model repo. Works for `chat`, `eval voice`, and `memory scribe`.
 - `uv run harness chat --model mlx --lora-path ./adapters/airton --persona` — apply a LoRA adapter (directory from `mlx_lm.lora`) on top of the base MLX model.
 - `uv run harness chat --model ollama --model-repo qwen2.5-coder:32b-instruct --persona` — Ollama backend.
@@ -115,6 +115,7 @@ Load-bearing invariants — they shape almost every decision:
     - `runner.py` — `maybe_compact(messages, tokens_used, window, compact_at, keep_recent)`; fires when the context meter crosses `--compact-at` (default 0.8 of the window) and leaves `--compact-keep-recent` turns verbatim.
   - `tools/` — built-in tools for the agent loop.
     - `base.py` — `Tool` protocol + `ToolResult`; tools declare schema, execute given a workspace-scoped context, return content + optional metadata. Write-tier tools are marked and trigger per-session user confirmation.
+    - `profiles.py` — named tool-set profiles (`minimal`, `core`, `coding`, `memory`, `diagnostic`) that group tools by use case. `resolve_tool_names(profile, add=, drop=)` returns the final set. Profiles may list forward-compatible names that don't exist yet; the CLI warns + skips.
     - `read_file.py` / `write_file.py` / `shell.py` — filesystem + shell, all sandboxed to `--workspace`.
     - `search_memory.py` / `search_facts.py` — read-only retrieval over episodic + semantic stores, scoped to the speaker.
   - `orchestrator/tool_loop.py` — runs the adapter's `complete_with_tools` loop: model → tool calls → execute → feed results back → repeat until no more tool calls. Handles display labels, token counting, streaming, retrieval degradation (skips retrieval when a tool run is clearly on rails).

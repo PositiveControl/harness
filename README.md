@@ -152,7 +152,10 @@ Key flags:
 | `--facts-threshold F` | Similarity floor for semantic retrieval (default 0.45). |
 | `--session NAME` | Session id — determines which transcript the scribe later reads. |
 | `--speaker NAME` | Who you are — scopes relationship memory. |
-| `--tools` | Enable the tool-use orchestrator loop (`read_file`, `write_file`, `shell`, `search_memory`, `search_facts`). Write-tier tools prompt for confirmation on first use per session. |
+| `--tools` | Enable the tool-use orchestrator loop. Which tools register depends on `--tool-set`. Write-tier tools prompt for confirmation on first use per session. |
+| `--tool-set NAME` | Named profile: `minimal`, `core` (default, read-only), `coding` (full dev loop), `memory`, `diagnostic`. Each targets ≤ ~1,500 tokens of schema overhead. |
+| `--tools-add X,Y` | Comma-separated tool names to add on top of the profile. |
+| `--tools-drop X,Y` | Comma-separated tool names to drop from the profile. |
 | `--workspace DIR` | Directory the `read_file` / `write_file` / `shell` tools operate inside. Defaults to the harness repo root. Only takes effect with `--tools`. Memory and transcripts still live under the harness data dir regardless. |
 | `--rewrite-on-tools` | When tools ran in a turn, also run the persona rewriter on the final reply. Off by default — the rewriter compresses, which is wrong for summarize / investigate tasks. |
 | `--compact-at F` | Fraction of context window at which to auto-summarize older turns (default 0.8, set 0 to disable). |

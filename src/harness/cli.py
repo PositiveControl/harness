@@ -43,13 +43,17 @@ from harness.store import (
 )
 from harness.store.transcript import Transcript, TranscriptMessage
 from harness.tools import (
+    DEFAULT_PROFILE,
+    TOOL_PROFILES,
     ReadFileTool,
     SearchFactsTool,
     SearchMemoryTool,
     ShellTool,
+    Tool,
     ToolCall,
     ToolRegistry,
     WriteFileTool,
+    resolve_tool_names,
 )
 
 _EXIT_COMMANDS = frozenset({"/exit", "/quit", "exit", "quit", ":q", ":quit"})
@@ -551,9 +555,28 @@ def chat(
     tools: bool = typer.Option(
         False,
         "--tools/--no-tools",
-        help="Enable tool use. Registers read_file, write_file, shell, "
-        "search_memory, search_facts. Write-tier tools prompt for "
+        help="Enable tool use. Which tools are registered depends on "
+        "--tool-set (default: 'core'). Write-tier tools prompt for "
         "confirmation the first time they're called each session.",
+    ),
+    tool_set: str = typer.Option(
+        DEFAULT_PROFILE,
+        "--tool-set",
+        help=(
+            f"Named profile of tools to enable with --tools. One of: "
+            f"{sorted(TOOL_PROFILES)}. Schema cost targets kept under "
+            f"~1500 tokens per profile."
+        ),
+    ),
+    tools_add: str | None = typer.Option(
+        None,
+        "--tools-add",
+        help="Comma-separated tool names to add on top of the --tool-set.",
+    ),
+    tools_drop: str | None = typer.Option(
+        None,
+        "--tools-drop",
+        help="Comma-separated tool names to drop from the --tool-set.",
     ),
     rewrite_on_tools: bool = typer.Option(
         False,
@@ -610,14 +633,55 @@ def chat(
     registry: ToolRegistry | None = None
     approved_tools: set[str] = set()
     if tools:
+        try:
+            wanted_names = resolve_tool_names(
+                tool_set,
+                add=tuple((tools_add or "").split(",")),
+                drop=tuple((tools_drop or "").split(",")),
+            )
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+
+        # Map names → builders. Memory tools return None when their store
+        # isn't available (--memories 0 / --facts 0). Unknown names fall
+        # through to the warning path so future-tool profiles stay loadable.
+        builders: dict[str, Callable[[], Tool | None]] = {
+            "read_file": lambda: ReadFileTool(root=workspace_path),
+            "write_file": lambda: WriteFileTool(root=workspace_path),
+            "shell": lambda: ShellTool(cwd=workspace_path),
+            "search_memory": (
+                lambda: (
+                    SearchMemoryTool(store=memory_store, user_id=speaker)
+                    if memory_store is not None
+                    else None
+                )
+            ),
+            "search_facts": (
+                lambda: (
+                    SearchFactsTool(store=semantic_store, user_id=speaker)
+                    if semantic_store is not None
+                    else None
+                )
+            ),
+        }
+
         registry = ToolRegistry()
-        registry.register(ReadFileTool(root=workspace_path))
-        registry.register(WriteFileTool(root=workspace_path))
-        registry.register(ShellTool(cwd=workspace_path))
-        if memory_store is not None:
-            registry.register(SearchMemoryTool(store=memory_store, user_id=speaker))
-        if semantic_store is not None:
-            registry.register(SearchFactsTool(store=semantic_store, user_id=speaker))
+        for name in wanted_names:
+            builder = builders.get(name)
+            if builder is None:
+                console.print(f"[yellow]⚠ tool {name!r} not yet implemented — skipping[/yellow]")
+                continue
+            tool = builder()
+            if tool is None:
+                console.print(
+                    f"[yellow]⚠ tool {name!r} needs a store that isn't enabled "
+                    f"(check --memories / --facts)[/yellow]"
+                )
+                continue
+            registry.register(tool)
+
+        if not registry.names():
+            registry = None  # empty profile → same as --no-tools
 
     retrieval_state = _RetrievalState()
     thinking = _ThinkingSpinner(console)

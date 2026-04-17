@@ -14,6 +14,11 @@ from harness.tools.base import (
     ToolResult,
     ToolSpec,
 )
+from harness.tools.profiles import (
+    DEFAULT_PROFILE,
+    TOOL_PROFILES,
+    resolve_tool_names,
+)
 from harness.tools.read_file import ReadFileTool
 from harness.tools.search_facts import SearchFactsTool
 from harness.tools.search_memory import SearchMemoryTool
@@ -21,6 +26,8 @@ from harness.tools.shell import ShellTool
 from harness.tools.write_file import WriteFileTool
 
 __all__ = [
+    "DEFAULT_PROFILE",
+    "TOOL_PROFILES",
     "ModelReply",
     "ReadFileTool",
     "SearchFactsTool",
@@ -35,4 +42,5 @@ __all__ = [
     "ToolResult",
     "ToolSpec",
     "WriteFileTool",
+    "resolve_tool_names",
 ]
