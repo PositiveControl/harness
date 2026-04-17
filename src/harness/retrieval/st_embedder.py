@@ -38,7 +38,13 @@ class SentenceTransformersEmbedder:
         if device is None:
             device = "mps" if torch.backends.mps.is_available() else "cpu"
         self._model = SentenceTransformer(self.model_name, device=device)
-        self.dimension = int(self._model.get_sentence_embedding_dimension())
+        # sentence-transformers 3.3+ renamed `get_sentence_embedding_dimension`
+        # to `get_embedding_dimension`. Prefer the new name; fall back on
+        # older pinned versions.
+        try:
+            self.dimension = int(self._model.get_embedding_dimension())
+        except AttributeError:
+            self.dimension = int(self._model.get_sentence_embedding_dimension())
 
     def embed(self, texts: Iterable[str]) -> np.ndarray:
         self._ensure_loaded()

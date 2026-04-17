@@ -10,6 +10,7 @@ from rich.markdown import Markdown
 from rich.status import Status
 from rich.table import Table
 
+import harness._quiet  # noqa: F401 — side-effect import: silences HF/transformers/sentence-transformers noise before they load
 from harness.character import Character, load_character
 from harness.config import settings
 from harness.consolidate import run_consolidation
