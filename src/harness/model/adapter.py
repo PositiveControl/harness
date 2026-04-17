@@ -40,3 +40,28 @@ class ModelAdapter(Protocol):
         max_tokens: int = 512,
         temperature: float = 0.7,
     ) -> str: ...
+
+
+def approx_token_count(messages: Iterable[ChatMessage]) -> int:
+    """Char-heuristic token count: ~4 chars per token plus ~4 tokens of
+    role/delimiter overhead per message. Shared fallback for adapters
+    that don't have a tokenizer on hand."""
+    total = 0
+    for m in messages:
+        total += len(m.content) // 4 + 4
+    return total
+
+
+def count_tokens(adapter: object, messages: Iterable[ChatMessage]) -> int:
+    """Ask the adapter for an exact token count when it can produce one;
+    otherwise fall back to `approx_token_count`. Kept off the core
+    `ModelAdapter` protocol so test stubs and alternative adapters don't
+    all have to implement it."""
+    materialized = list(messages)
+    fn = getattr(adapter, "count_tokens", None)
+    if callable(fn):
+        try:
+            return int(fn(materialized))
+        except Exception:
+            return approx_token_count(materialized)
+    return approx_token_count(materialized)

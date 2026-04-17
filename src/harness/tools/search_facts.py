@@ -45,6 +45,7 @@ class SearchFactsTool:
                 "required": ["query"],
             },
             tier="read",
+            display_name="Recall facts",
         )
 
     def call(

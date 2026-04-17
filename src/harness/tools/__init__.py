@@ -5,6 +5,9 @@ concerns live in `src/harness/orchestrator/`."""
 
 from harness.tools.base import (
     ModelReply,
+    StreamChunk,
+    StreamComplete,
+    StreamText,
     Tool,
     ToolCall,
     ToolRegistry,
@@ -23,6 +26,9 @@ __all__ = [
     "SearchFactsTool",
     "SearchMemoryTool",
     "ShellTool",
+    "StreamChunk",
+    "StreamComplete",
+    "StreamText",
     "Tool",
     "ToolCall",
     "ToolRegistry",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 from harness.tools.base import ToolSpec
 
@@ -10,9 +11,14 @@ from harness.tools.base import ToolSpec
 class ShellTool:
     """Run a shell command, capture stdout + stderr + exit code.
     Write-tier — requires user confirmation. No interactive input
-    supported; if the command waits for input it will time out."""
+    supported; if the command waits for input it will time out.
+
+    `cwd` pins the working directory. None means inherit the caller's
+    cwd (fine for tests); in production chat the CLI pins it to the
+    workspace so `pwd` agrees with `read_file` / `write_file`."""
 
     timeout_seconds: int = 15
+    cwd: Path | None = None
 
     @property
     def spec(self) -> ToolSpec:
@@ -40,6 +46,7 @@ class ShellTool:
                 "required": ["cmd"],
             },
             tier="write",
+            display_name="Run shell",
         )
 
     def call(self, *, cmd: str, timeout: int | None = None) -> str:
@@ -54,6 +61,7 @@ class ShellTool:
                 text=True,
                 timeout=effective_timeout,
                 check=False,
+                cwd=str(self.cwd) if self.cwd is not None else None,
             )
         except subprocess.TimeoutExpired:
             return f"timed out after {effective_timeout}s"

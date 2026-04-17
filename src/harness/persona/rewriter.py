@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING
 
 from harness.model.adapter import ChatMessage
+from harness.model.adapter import count_tokens as _count_tokens
 
 if TYPE_CHECKING:
     from harness.character import Character, VoiceSample
@@ -166,6 +167,9 @@ class PersonaAdapter:
         if callable(loader):
             loader()
 
+    def count_tokens(self, messages: Iterable[ChatMessage]) -> int:
+        return _count_tokens(self.base, messages)
+
     def complete(
         self,
         messages: Iterable[ChatMessage],
@@ -190,4 +194,55 @@ class PersonaAdapter:
             concrete_msgs,
             max_tokens=rewrite_cap,
             temperature=self.rewriter_temperature,
+        )
+
+    def stream(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+    ) -> Iterator[str]:
+        """Stream the two (or three) persona passes back-to-back.
+
+        Pass 1 streams the base-adapter draft. A dim separator then
+        marks the handoff to pass 2, which streams the voice rewrite.
+        When `chain_rewrites` is on, pass 3 streams the concrete-
+        substitution rewrite after a second separator. Every token the
+        model generates reaches the caller; the caller decides what to
+        render on-screen vs keep only for transcript."""
+        base_stream = getattr(self.base, "stream", None)
+        if not callable(base_stream):
+            # Base adapter has no streaming — fall back to one-shot output
+            # of the fully-composed complete(). Streams as one chunk.
+            yield self.complete(
+                messages, max_tokens=max_tokens, temperature=temperature
+            )
+            return
+
+        rewrite_cap = self.rewriter_max_tokens if self.rewriter_max_tokens else max_tokens
+
+        draft_parts: list[str] = []
+        for delta in base_stream(messages, max_tokens=max_tokens, temperature=temperature):
+            draft_parts.append(delta)
+            yield delta
+        draft = "".join(draft_parts)
+
+        yield "\n\n*— voice pass —*\n\n"
+
+        style_msgs = build_rewriter_messages(self.character, draft, focus="style")
+        styled_parts: list[str] = []
+        for delta in base_stream(
+            style_msgs, max_tokens=rewrite_cap, temperature=self.rewriter_temperature
+        ):
+            styled_parts.append(delta)
+            yield delta
+        if not self.chain_rewrites:
+            return
+
+        styled = "".join(styled_parts)
+        yield "\n\n*— concrete pass —*\n\n"
+        concrete_msgs = build_rewriter_messages(self.character, styled, focus="concrete")
+        yield from base_stream(
+            concrete_msgs, max_tokens=rewrite_cap, temperature=self.rewriter_temperature
         )

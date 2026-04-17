@@ -13,6 +13,11 @@ class ToolSpec:
     description: str
     parameters: dict[str, Any]  # JSON schema for arguments
     tier: str  # "read" | "write" — write-tier tools need user confirmation
+    display_name: str | None = None  # human-readable label for UI; falls back to `name`
+
+    @property
+    def label(self) -> str:
+        return self.display_name or self.name
 
 
 @runtime_checkable
@@ -46,14 +51,44 @@ class ToolResult:
 @dataclass(frozen=True)
 class ModelReply:
     """Richer return type for adapters that support tool use. `content`
-    may be empty if the model only wants to call tools this round."""
+    may be empty if the model only wants to call tools this round.
+
+    `was_truncated` and `had_unparseable_call` are diagnostic hints the
+    orchestrator uses to recover from common failure modes (token-limit
+    truncation, malformed `<tool_call>` blocks). Adapters that can't
+    cheaply detect these leave them False — the loop falls back to
+    teaser-regex detection."""
 
     content: str
     tool_calls: tuple[ToolCall, ...] = ()
+    was_truncated: bool = False
+    had_unparseable_call: bool = False
 
     @property
     def wants_tools(self) -> bool:
         return bool(self.tool_calls)
+
+
+@dataclass(frozen=True)
+class StreamText:
+    """Visible text delta emitted by a streaming adapter. The accumulation
+    of every `StreamText.text` across a stream reconstructs the model's
+    raw output (tool-call tags included — callers mask them for display)."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class StreamComplete:
+    """Terminal chunk of a tool-aware stream. Carries the parsed
+    ModelReply so the tool loop can dispatch any tool calls the model
+    emitted. Exactly one StreamComplete is yielded per stream, always
+    last."""
+
+    reply: ModelReply
+
+
+StreamChunk = StreamText | StreamComplete
 
 
 class ToolRegistry:

@@ -188,3 +188,82 @@ def test_persona_adapter_no_chain_runs_two_calls() -> None:
     adapter.complete([ChatMessage(role="user", content="hi")])
 
     assert len(base.calls) == 2
+
+
+@dataclass
+class _StreamingRecordingAdapter:
+    """Base adapter stub for persona-stream tests. Each .stream() call
+    returns a canned list of deltas; the test asserts each call's draft
+    reaches the caller and that the inter-pass separator fires exactly
+    once per rewrite pass."""
+
+    id: str = "recording"
+    context_window: int = 8192
+    per_call_deltas: list[list[str]] = field(default_factory=list)
+    calls: list[list[ChatMessage]] = field(default_factory=list)
+
+    def complete(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+    ) -> str:
+        return "".join(self.stream(messages, max_tokens=max_tokens, temperature=temperature))
+
+    def stream(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+    ) -> Iterable[str]:
+        self.calls.append(list(messages))
+        deltas = self.per_call_deltas.pop(0) if self.per_call_deltas else ["ok"]
+        yield from deltas
+
+
+def test_persona_adapter_stream_yields_draft_then_rewrite() -> None:
+    character = load_character(AIRTON)
+    base = _StreamingRecordingAdapter(
+        per_call_deltas=[["draft ", "text"], ["styled ", "text"]]
+    )
+    adapter = PersonaAdapter(base, character, chain_rewrites=False)
+
+    chunks = list(adapter.stream([ChatMessage(role="user", content="hi")]))
+    joined = "".join(chunks)
+    # draft text, separator, rewrite text — all visible in the stream
+    assert "draft text" in joined
+    assert "styled text" in joined
+    # Separator marks the pass handoff
+    assert joined.count("voice pass") == 1
+    # Two base calls — one draft, one style rewrite
+    assert len(base.calls) == 2
+
+
+def test_persona_adapter_stream_chain_runs_three_calls() -> None:
+    character = load_character(AIRTON)
+    base = _StreamingRecordingAdapter(
+        per_call_deltas=[["draft"], ["styled"], ["concrete"]]
+    )
+    adapter = PersonaAdapter(base, character, chain_rewrites=True)
+
+    joined = "".join(adapter.stream([ChatMessage(role="user", content="hi")]))
+    assert "draft" in joined
+    assert "styled" in joined
+    assert "concrete" in joined
+    assert joined.count("voice pass") == 1
+    assert joined.count("concrete pass") == 1
+    assert len(base.calls) == 3
+
+
+def test_persona_adapter_stream_falls_back_without_base_stream() -> None:
+    """If the base adapter has no stream method, persona yields a single
+    chunk from complete() so the API stays uniform."""
+    character = load_character(AIRTON)
+    base = _RecordingAdapter(reply="final")
+    adapter = PersonaAdapter(base, character, chain_rewrites=False)
+
+    chunks = list(adapter.stream([ChatMessage(role="user", content="hi")]))
+    # Fallback emits the fully-composed reply as one chunk
+    assert "".join(chunks) == "final"

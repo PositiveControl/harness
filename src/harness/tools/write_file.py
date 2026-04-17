@@ -40,6 +40,7 @@ class WriteFileTool:
                 "required": ["path", "content"],
             },
             tier="write",
+            display_name="Write file",
         )
 
     def call(self, *, path: str, content: str) -> str:

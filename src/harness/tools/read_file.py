@@ -35,6 +35,7 @@ class ReadFileTool:
                 "required": ["path"],
             },
             tier="read",
+            display_name="Read file",
         )
 
     def call(self, *, path: str) -> str:

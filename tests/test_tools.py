@@ -91,6 +91,40 @@ def test_every_tool_satisfies_protocol(tmp_path: Path) -> None:
         store_sem.close()
 
 
+def test_every_tool_declares_a_human_readable_label(tmp_path: Path) -> None:
+    """`ToolSpec.label` is what the CLI prints — every shipped tool must
+    set a display_name so users never see the machine name like
+    'search_facts' in confirm prompts or call logs."""
+    store_ep = EpisodicStore(tmp_path / "e.sqlite", embedder=_FakeEmbedder())
+    store_sem = SemanticStore(tmp_path / "s.sqlite", embedder=_FakeEmbedder())
+    try:
+        tools: list[Tool] = [
+            ReadFileTool(root=tmp_path),
+            WriteFileTool(root=tmp_path),
+            ShellTool(),
+            SearchMemoryTool(store=store_ep),
+            SearchFactsTool(store=store_sem),
+        ]
+        for tool in tools:
+            spec = tool.spec
+            assert spec.display_name is not None, f"{spec.name} missing display_name"
+            assert spec.label == spec.display_name
+            assert spec.label != spec.name  # label must be prettier than machine name
+    finally:
+        store_ep.close()
+        store_sem.close()
+
+
+def test_tool_spec_label_falls_back_to_name_when_no_display_name() -> None:
+    spec = ToolSpec(
+        name="raw_name",
+        description="d",
+        parameters={"type": "object", "properties": {}},
+        tier="read",
+    )
+    assert spec.label == "raw_name"
+
+
 # ---------- ReadFileTool ----------
 
 
@@ -169,6 +203,13 @@ def test_shell_times_out() -> None:
     tool = ShellTool(timeout_seconds=1)
     result = tool.call(cmd="sleep 5")
     assert "timed out" in result
+
+
+def test_shell_runs_in_cwd(tmp_path: Path) -> None:
+    tool = ShellTool(cwd=tmp_path)
+    result = tool.call(cmd="pwd")
+    # macOS /tmp is a symlink to /private/tmp — resolve both sides for the compare.
+    assert str(tmp_path.resolve()) in result or str(tmp_path) in result
 
 
 # ---------- SearchMemoryTool / SearchFactsTool ----------

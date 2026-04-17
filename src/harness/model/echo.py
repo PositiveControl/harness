@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
-from harness.model.adapter import ChatMessage
+from harness.model.adapter import ChatMessage, approx_token_count
 
 
 @dataclass
@@ -27,3 +27,18 @@ class EchoAdapter:
             "",
         )
         return f"[echo] {last_user}"
+
+    def stream(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+    ) -> Iterator[str]:
+        """Trivial streaming shim: yield the echo reply as a single chunk.
+        Exists so any CLI path that prefers the streaming API can still
+        use the echo adapter for wiring tests."""
+        yield self.complete(messages, max_tokens=max_tokens, temperature=temperature)
+
+    def count_tokens(self, messages: Iterable[ChatMessage]) -> int:
+        return approx_token_count(messages)

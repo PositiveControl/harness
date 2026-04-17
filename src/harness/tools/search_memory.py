@@ -44,6 +44,7 @@ class SearchMemoryTool:
                 "required": ["query"],
             },
             tier="read",
+            display_name="Recall memory",
         )
 
     def call(self, *, query: str, k: int = 5) -> str:
