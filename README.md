@@ -59,14 +59,40 @@ uv run pre-commit install --hook-type pre-push
 uv run harness memory ingest
 ```
 
-### Optional: Ollama adapter
+### Running a different model
 
-If you want to run against an Ollama server instead of MLX:
+By default the `mlx` adapter loads `mlx-community/Qwen2.5-32B-Instruct-4bit`. Override with `--model-repo`:
 
 ```bash
-# Start ollama separately, then:
-uv run harness chat --model ollama --ollama-model qwen2.5:32b-instruct --persona
+# Qwen 2.5 Coder 32B on MLX
+uv run harness chat --model mlx \
+  --model-repo mlx-community/Qwen2.5-Coder-32B-Instruct-4bit \
+  --persona
+
+# A smaller MLX model for speed
+uv run harness chat --model mlx \
+  --model-repo mlx-community/Qwen2.5-7B-Instruct-4bit
+
+# Ollama with a specific tag
+uv run harness chat --model ollama \
+  --model-repo qwen2.5-coder:32b-instruct \
+  --persona
 ```
+
+`--model-repo` works for `chat`, `eval voice`, and `memory scribe` — anywhere an adapter is constructed. Pull the weights first (`uv run hf download <repo>` for MLX; `ollama pull <tag>` for Ollama).
+
+### Running with a LoRA adapter
+
+Apply a LoRA trained with `mlx_lm.lora` on top of the base MLX model:
+
+```bash
+uv run harness chat --model mlx \
+  --model-repo mlx-community/Qwen2.5-32B-Instruct-4bit \
+  --lora-path ./adapters/airton-voice-lora \
+  --persona
+```
+
+`--lora-path` expects a **directory** (the output of `mlx_lm.lora` training, containing `adapter_config.json` plus weight files). Requires `--model mlx`.
 
 ### Environment variables
 
@@ -107,15 +133,33 @@ Key flags:
 | Flag | Purpose |
 |---|---|
 | `--model {echo,mlx,ollama}` | Pick the model adapter. |
+| `--model-repo REPO` | Override the model id. For `mlx`: an HF repo (e.g. `mlx-community/Qwen2.5-Coder-32B-Instruct-4bit`). For `ollama`: a model tag. Ignored for `echo`. |
+| `--lora-path DIR` | Apply a LoRA adapter (directory from `mlx_lm.lora` training) on top of the base MLX model. Requires `--model mlx`. |
 | `--persona` | Enable two-pass voice rewriter. Without it, the base model drifts to generic-assistant prose. |
 | `--chain-rewrites` | Add a third concrete-substitution pass. More character, ~1.5× latency. |
-| `--memories N` | Retrieve up to N episodic memories per turn (default 0). |
-| `--facts N` | Retrieve up to N semantic facts per turn (default 0). |
+| `--memories N` | Retrieve up to N episodic memories per turn (default 3). |
+| `--facts N` | Retrieve up to N semantic facts per turn (default 5). |
 | `--memories-threshold F` | Similarity floor for episodic retrieval (default 0.5). |
 | `--facts-threshold F` | Similarity floor for semantic retrieval (default 0.45). |
 | `--session NAME` | Session id — determines which transcript the scribe later reads. |
 | `--speaker NAME` | Who you are — scopes relationship memory. |
-| `--tools` | Enable the tool-use orchestrator loop. |
+| `--tools` | Enable the tool-use orchestrator loop (`read_file`, `write_file`, `shell`, `search_memory`, `search_facts`). Write-tier tools prompt for confirmation on first use per session. |
+| `--workspace DIR` | Directory the `read_file` / `write_file` / `shell` tools operate inside. Defaults to the harness repo root. Only takes effect with `--tools`. Memory and transcripts still live under the harness data dir regardless. |
+| `--rewrite-on-tools` | When tools ran in a turn, also run the persona rewriter on the final reply. Off by default — the rewriter compresses, which is wrong for summarize / investigate tasks. |
+| `--compact-at F` | Fraction of context window at which to auto-summarize older turns (default 0.8, set 0 to disable). |
+| `--compact-keep-recent N` | Number of most-recent turns to leave verbatim when compaction fires (default 10). |
+
+### Working in another repo (`--workspace`)
+
+With `--tools`, the `read_file`, `write_file`, and `shell` tools are sandboxed to a single directory. By default that's the harness repo root. Point it elsewhere to use Airton as a co-worker on a different codebase:
+
+```bash
+uv run harness chat --model mlx --persona --tools \
+  --workspace ~/dev/some-other-project \
+  --session other-project
+```
+
+Memory, transcripts, and the character's voice corpus still live under the harness data dir — only tool filesystem access is scoped to `--workspace`. Use a distinct `--session` name so the scribe can later extract memories specific to that project.
 
 ### Voice corpus
 
