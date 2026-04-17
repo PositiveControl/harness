@@ -23,14 +23,17 @@ class WriteFileTool:
         return ToolSpec(
             name="write_file",
             description=(
-                "Create a NEW file in the workspace. Use `edit_file` "
-                "for changes to an existing file — `write_file` always "
-                "writes the full content you pass and will refuse to "
-                "overwrite an existing file unless you explicitly set "
-                "`overwrite=true` (which destroys the previous "
-                "content entirely). Creates parent directories as "
-                "needed. Path is relative to the workspace root; "
-                "cannot escape it. User confirmation is required."
+                "Create a NEW file in the workspace. Do NOT use this "
+                "tool to add a line to an existing file, edit an "
+                "existing file, or append — use `edit_file` for all "
+                "of those (edit_file with empty old_string appends). "
+                "`write_file` always writes the full content you pass "
+                "and refuses to overwrite an existing file unless you "
+                "explicitly set `overwrite=true` (which destroys the "
+                "previous content entirely). Only use overwrite when "
+                "the user explicitly asks to regenerate the file from "
+                "scratch. Creates parent directories as needed. Path "
+                "is relative to the workspace root; cannot escape it."
             ),
             parameters={
                 "type": "object",
@@ -72,6 +75,25 @@ class WriteFileTool:
                 f"or pass overwrite=true to replace the entire file "
                 f"(destroys previous content)."
             )
+        if pre_existed and overwrite:
+            # Sanity check: if the new content is much smaller than the
+            # existing file, this is almost certainly the 'model meant to
+            # append but reached for overwrite' mistake (see harness-2tq).
+            # Refuse the shrink and redirect to edit_file. Threshold: new
+            # content is both under half the existing size AND under 1KB —
+            # the 1KB floor avoids blocking legitimate regenerations of
+            # small configs where the new version happens to be smaller.
+            existing_size = target.stat().st_size
+            if len(content) < existing_size // 2 and len(content) < 1024:
+                raise ValueError(
+                    f"refusing to overwrite {path}: new content is "
+                    f"{len(content)} bytes but the existing file is "
+                    f"{existing_size} bytes. This looks like you meant to "
+                    f"append or edit, not replace. Use "
+                    f"edit_file(path={path!r}, old_string='', "
+                    f"new_string=<line to append>) to append, or set an "
+                    f"explicit old_string to replace a specific section."
+                )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
         action = "overwrote" if pre_existed else "wrote"

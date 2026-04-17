@@ -55,6 +55,27 @@ _FALSE_SUCCESS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Matches chat-level meta-confirm prompts — "Would you like me to…?",
+# "Should I…?", "Please confirm…", "Shall I…?" etc. Small models default
+# to this pattern when they misunderstand that the user's request IS
+# the instruction and the tool layer handles confirmation.
+_META_CONFIRM_RE = re.compile(
+    r"(?:"
+    r"would you like (?:me to|us to)"
+    r"|"
+    r"shall i\b"
+    r"|"
+    r"should i (?:proceed|go ahead|continue|update|add|edit|change|write|do)"
+    r"|"
+    r"do you want me to"
+    r"|"
+    r"please confirm"
+    r"|"
+    r"confirm (?:your |the )?(?:approval|request|intent|instruction)"
+    r")",
+    re.IGNORECASE,
+)
+
 _MAX_TOKENS_CEILING = 8192
 _BAIL_RETRIES_PER_TURN = 2
 
@@ -89,6 +110,13 @@ def _diagnose_bail(reply: ModelReply, *, tools_ran_this_turn: bool) -> str | Non
             "workspace without calling a write-tier tool (edit_file, "
             "write_file, shell). Either call the appropriate tool now, or "
             "tell the user you cannot make that change."
+        )
+    if not tools_ran_this_turn and _META_CONFIRM_RE.search(reply.content):
+        return (
+            "Do NOT ask the user to confirm in chat. The user's previous "
+            "message IS the instruction — call the tool right now. Write-tier "
+            "tools have their own approve/decline UX at the tool layer; "
+            "re-asking in chat just wastes a round."
         )
     return None
 

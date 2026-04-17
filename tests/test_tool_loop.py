@@ -487,6 +487,78 @@ def test_loop_allows_success_claim_after_tool_actually_ran() -> None:
     assert "updated successfully" in result.content
 
 
+def test_loop_catches_chat_level_meta_confirm() -> None:
+    """Regression (harness-edj): asked 'add scratch to .gitignore',
+    the model replied 'Would you like me to add scratch to the
+    .gitignore file?' without calling a tool. Small models default
+    to this when they misread the user's request as a proposal.
+    The orchestrator must nudge them to call the tool now."""
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content=(
+                    "To add the `scratch` directory to the `.gitignore` file, "
+                    "we need to make sure the user confirms the action. "
+                    "Would you like me to add `scratch` to the `.gitignore` file?"
+                )
+            ),
+            ModelReply(content="Okay, adding it now."),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="add scratch to .gitignore")],
+        ToolRegistry(),
+    )
+    nudges = [
+        m
+        for m in result.messages
+        if m.role == "user" and "Do NOT ask the user to confirm" in m.content
+    ]
+    assert len(nudges) == 1
+
+
+def test_loop_catches_should_i_proceed() -> None:
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(content="Should I proceed with updating the file?"),
+            ModelReply(content="Done."),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="update the readme")],
+        ToolRegistry(),
+    )
+    nudges = [
+        m
+        for m in result.messages
+        if m.role == "user" and "Do NOT ask the user to confirm" in m.content
+    ]
+    assert len(nudges) == 1
+
+
+def test_loop_does_not_nudge_legitimate_questions() -> None:
+    """A genuine clarifying question (the user gave an ambiguous request,
+    not an instruction to mutate state) should not trigger the meta-confirm
+    nudge. The regex is narrow enough that 'what should I know about X?' /
+    'which file should I look at?' don't match — only ask-for-go-ahead
+    patterns do."""
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="Which test suite should I run?")])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="run the tests")],
+        ToolRegistry(),
+    )
+    # No bail-nudge injected for the genuine clarifier.
+    nudges = [
+        m
+        for m in result.messages
+        if m.role == "user" and "Do NOT ask the user to confirm" in m.content
+    ]
+    assert not nudges
+
+
 def test_loop_caps_bail_retries() -> None:
     """If the model keeps bailing, give up after the per-turn cap (2)
     rather than consuming the full max_rounds budget."""

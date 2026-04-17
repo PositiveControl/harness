@@ -30,19 +30,23 @@ class EditFileTool:
         return ToolSpec(
             name="edit_file",
             description=(
-                "Edit a file in the workspace. Prefer this over "
-                "write_file for changes to existing files — it's "
-                "cheaper in tokens and safer against truncation.\n\n"
+                "Edit an EXISTING file in the workspace. Use this "
+                "(not write_file) for every change to a file that "
+                "already exists — it's cheaper in tokens and never "
+                "destroys content you didn't touch.\n\n"
                 "Two modes:\n"
+                "  • APPEND (most common for 'add X to Y'): leave "
+                "`old_string` EMPTY and `new_string` is added to the "
+                "end of the file. Example — 'add scratch to "
+                '.gitignore\' → edit_file(path=".gitignore", '
+                'old_string="", new_string="scratch\\n"). '
+                "Remember the trailing newline so the next entry "
+                "lands on its own line.\n"
                 "  • REPLACE: set `old_string` to the exact text to "
                 "find (including whitespace) and `new_string` to the "
                 "replacement. `old_string` must be unique in the file "
                 "unless `replace_all=true`. Include surrounding lines "
-                "when the literal target repeats.\n"
-                "  • APPEND: leave `old_string` empty and `new_string` "
-                "is added to the end of the file. Use this for "
-                "'add a line to .gitignore' / 'append an entry' style "
-                "requests.\n\n"
+                "when the literal target repeats.\n\n"
                 "Returns a summary of what changed."
             ),
             parameters={

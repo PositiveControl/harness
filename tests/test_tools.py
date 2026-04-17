@@ -192,10 +192,45 @@ def test_write_file_refuses_existing_without_overwrite(tmp_path: Path) -> None:
 def test_write_file_overwrite_opt_in(tmp_path: Path) -> None:
     tool = WriteFileTool(root=tmp_path)
     target = tmp_path / "config.toml"
-    target.write_text("old = 1\n")
-    result = tool.call(path="config.toml", content="new = 2\n", overwrite=True)
+    # Prior content similar in size to the new content — not a shrink.
+    target.write_text("old_key = 1\nold_other = 2\n")
+    result = tool.call(
+        path="config.toml",
+        content="new_key = 2\nnew_other = 3\n",
+        overwrite=True,
+    )
     assert "overwrote" in result
-    assert target.read_text() == "new = 2\n"
+    assert target.read_text() == "new_key = 2\nnew_other = 3\n"
+
+
+def test_write_file_refuses_drastic_shrink_even_with_overwrite(tmp_path: Path) -> None:
+    """Regression (harness-2tq): 'add scratch to .gitignore' drove the
+    model to write_file(content='scratch\\n', overwrite=True) — a catastrophic
+    clobber of a 400-byte file with 8 bytes. Refuse the shrink and redirect
+    to edit_file."""
+    tool = WriteFileTool(root=tmp_path)
+    target = tmp_path / ".gitignore"
+    target.write_text(
+        ".venv/\n__pycache__/\nnode_modules/\ndist/\n.mypy_cache/\n"
+        ".ruff_cache/\n.pytest_cache/\ndata/\n.env\n.env.local\n.DS_Store\n"
+    )
+    with pytest.raises(ValueError, match="looks like you meant to append"):
+        tool.call(path=".gitignore", content="scratch\n", overwrite=True)
+    # Existing content untouched.
+    assert "scratch\n" not in target.read_text()
+    assert "__pycache__" in target.read_text()
+
+
+def test_write_file_allows_overwrite_of_small_config(tmp_path: Path) -> None:
+    """Legitimate use case: regenerating a small config file. The shrink
+    guard has a 1KB floor so this isn't blocked."""
+    tool = WriteFileTool(root=tmp_path)
+    target = tmp_path / "config.toml"
+    target.write_text("old = 1\n")
+    # New content is smaller but both are under 1KB and under the 50% rule
+    # threshold: existing=8, new=6 — existing//2 = 4, so new (6) >= 4. Pass.
+    result = tool.call(path="config.toml", content="new=2\n", overwrite=True)
+    assert "overwrote" in result
 
 
 def test_write_file_spec_lists_overwrite_param(tmp_path: Path) -> None:
