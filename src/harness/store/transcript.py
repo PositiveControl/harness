@@ -48,6 +48,10 @@ class Transcript:
         self._conn = sqlite3.connect(self.db_path, isolation_level=None)
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
+        # Wait up to 5s for other writers (chat + launchd scribe on same
+        # file) before raising "database is locked". WAL already permits
+        # concurrent readers; this covers the writer-writer edge.
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.executescript(_SCHEMA)
 
     def append(

@@ -69,6 +69,7 @@ class SemanticStore:
         self._conn = sqlite3.connect(self.db_path, isolation_level=None)
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.executescript(_CREATE_TABLE)
         # Schema migrations.
         cols = {row[1] for row in self._conn.execute("PRAGMA table_info(semantic)")}
