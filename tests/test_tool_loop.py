@@ -414,6 +414,79 @@ def test_loop_does_not_nudge_genuine_final_reply() -> None:
     assert all(m.role != "user" or m.content == "ask" for m in result.messages)
 
 
+def test_loop_recovers_from_false_success_claim() -> None:
+    """Regression (harness-3fn): asked to 'add scratch to .gitignore',
+    the model replied 'The scratch directory is now included in the
+    .gitignore file' without calling any tool. We now detect that
+    completion-claim-without-action and re-prompt."""
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content=(
+                    "The scratch directory has been added to the .gitignore "
+                    "file, so it will be excluded from version control."
+                )
+            ),
+            ModelReply(content="I cannot modify files with no write tool available."),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="add scratch to .gitignore")],
+        ToolRegistry(),
+    )
+    nudges = [
+        m
+        for m in result.messages
+        if m.role == "user" and "claims that a file was changed" in m.content
+    ]
+    assert len(nudges) == 1
+    assert "cannot modify" in result.content.lower()
+
+
+def test_loop_allows_success_claim_after_tool_actually_ran() -> None:
+    """Wrap-up round: the model summarizes after a successful tool call.
+    The completion-claim regex matches but should NOT trigger a nudge
+    because a tool already ran this turn (legitimate summary)."""
+    # Round 1: model calls edit_file, gets result. Round 2: model wraps
+    # up with a past-tense summary that would match _FALSE_SUCCESS_RE.
+    registry = ToolRegistry()
+
+    class _AlwaysOk:
+        @property
+        def spec(self) -> ToolSpec:
+            return ToolSpec(
+                name="noop",
+                description="d",
+                parameters={"type": "object", "properties": {}},
+                tier="read",
+            )
+
+        def call(self) -> str:
+            return "ok"
+
+    registry.register(_AlwaysOk())
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(content="", tool_calls=(ToolCall(name="noop", arguments={}),)),
+            ModelReply(content="The file has been updated successfully."),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="do it")],
+        registry,
+    )
+    # No nudge — the claim follows a real tool execution this turn.
+    nudges = [
+        m
+        for m in result.messages
+        if m.role == "user" and "claims that a file was changed" in m.content
+    ]
+    assert not nudges
+    assert "updated successfully" in result.content
+
+
 def test_loop_caps_bail_retries() -> None:
     """If the model keeps bailing, give up after the per-turn cap (2)
     rather than consuming the full max_rounds budget."""

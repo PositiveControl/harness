@@ -30,15 +30,39 @@ _TEASER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Matches past-tense / present-perfect claims that an action was completed —
+# "has been added", "is now included", "I've created", "successfully updated",
+# etc. When the reply contains one of these AND no tool was executed in the
+# turn, the model is hallucinating success (harness-3fn).
+_FALSE_SUCCESS_RE = re.compile(
+    r"\b(?:"
+    r"has been\s+(?:added|included|updated|created|written|modified|replaced|removed|set|appended|saved|deleted)"
+    r"|"
+    r"(?:is|are)\s+now\s+(?:in|included|added|excluded|set|present|updated|available|saved)"
+    r"|"
+    r"(?:i(?:'ve|\shave)|i(?:'ve|\shave)\s+(?:just|now|successfully))\s+(?:added|included|updated|created|written|modified|replaced|removed|set|appended|saved|deleted)"
+    r"|"
+    r"successfully\s+(?:added|included|updated|created|written|modified|replaced|saved|deleted|appended)"
+    r"|"
+    r"the\s+\S+\s+(?:has\s+been|is\s+now|will\s+be)\s+(?:added|included|updated|created|excluded|modified|replaced)"
+    r")\b",
+    re.IGNORECASE,
+)
+
 _MAX_TOKENS_CEILING = 8192
 _BAIL_RETRIES_PER_TURN = 2
 
 
-def _diagnose_bail(reply: ModelReply) -> str | None:
+def _diagnose_bail(reply: ModelReply, *, tools_ran_this_turn: bool) -> str | None:
     """Classify a 0-tool-calls reply. Returns:
     - "truncated" — caller should retry with a larger token budget
     - a nudge string — caller should append it as a user message and retry
-    - None — genuine final reply, terminate normally"""
+    - None — genuine final reply, terminate normally
+
+    `tools_ran_this_turn` distinguishes a first-round bail (no tools
+    have executed yet) from a wrap-up round (tools ran in a prior
+    round; this round is summarizing). Completion claims are legitimate
+    in wrap-ups but hallucinations in first-round bails."""
     if reply.was_truncated:
         return "truncated"
     if reply.had_unparseable_call:
@@ -51,6 +75,14 @@ def _diagnose_bail(reply: ModelReply) -> str | None:
         return (
             "Your reply announced more work but didn't include any tool calls. "
             "Either call the tool now, or give the user your final answer."
+        )
+    if not tools_ran_this_turn and _FALSE_SUCCESS_RE.search(reply.content):
+        return (
+            "Your reply claims that a file was changed / created / updated, "
+            "but you did not call any tool this turn. You CANNOT modify the "
+            "workspace without calling a write-tier tool (edit_file, "
+            "write_file, shell). Either call the appropriate tool now, or "
+            "tell the user you cannot make that change."
         )
     return None
 
@@ -128,6 +160,7 @@ def run_tool_loop(
     `observe(event)` is called synchronously on every state transition
     so a CLI can print inline status."""
     working: list[ChatMessage] = list(messages)
+    initial_count = len(working)
     events: list[ToolLoopEvent] = []
     last_reply: ModelReply = ModelReply(content="", tool_calls=())
     bail_retries = _BAIL_RETRIES_PER_TURN
@@ -177,7 +210,16 @@ def run_tool_loop(
             emit(ToolLoopEvent(kind="model_call_end", round_index=round_idx))
 
         if not last_reply.tool_calls:
-            recovery = _diagnose_bail(last_reply) if bail_retries > 0 else None
+            # If any tool has already executed in this turn (prior round's
+            # tool_calls produced tool-role messages appended to working),
+            # a completion claim is legitimate — the model is wrapping up.
+            # Only treat a claim as hallucination when no tool has run yet.
+            tools_ran_this_turn = any(m.role == "tool" for m in working[initial_count:])
+            recovery = (
+                _diagnose_bail(last_reply, tools_ran_this_turn=tools_ran_this_turn)
+                if bail_retries > 0
+                else None
+            )
             if recovery is not None and round_idx + 1 < max_rounds:
                 bail_retries -= 1
                 if recovery == "truncated":
