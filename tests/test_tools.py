@@ -177,6 +177,34 @@ def test_write_file_refuses_path_traversal(tmp_path: Path) -> None:
         tool.call(path="../evil.txt", content="nope")
 
 
+def test_write_file_refuses_existing_without_overwrite(tmp_path: Path) -> None:
+    """Regression: write_file used to clobber existing files silently.
+    The model misinterpreted 'add something' as a write_file call and
+    destroyed the previous content. Now it must opt in explicitly."""
+    tool = WriteFileTool(root=tmp_path)
+    target = tmp_path / ".gitignore"
+    target.write_text("existing line\n")
+    with pytest.raises(ValueError, match="already exists"):
+        tool.call(path=".gitignore", content="scratch\n")
+    assert target.read_text() == "existing line\n"
+
+
+def test_write_file_overwrite_opt_in(tmp_path: Path) -> None:
+    tool = WriteFileTool(root=tmp_path)
+    target = tmp_path / "config.toml"
+    target.write_text("old = 1\n")
+    result = tool.call(path="config.toml", content="new = 2\n", overwrite=True)
+    assert "overwrote" in result
+    assert target.read_text() == "new = 2\n"
+
+
+def test_write_file_spec_lists_overwrite_param(tmp_path: Path) -> None:
+    spec = WriteFileTool(root=tmp_path).spec
+    assert "overwrite" in spec.parameters["properties"]
+    # Pointer to edit_file should live in the description so the model sees it.
+    assert "edit_file" in spec.description
+
+
 # ---------- ShellTool ----------
 
 
