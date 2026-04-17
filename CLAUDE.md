@@ -15,7 +15,7 @@ For daily-use workflow (how Mark actually talks to Airton), see `docs/usage.md`.
 Environment setup (one time):
 
 - `uv sync --extra dev --extra mlx --extra retrieval` — install runtime + dev + MLX + retrieval.
-- `uv run hf download mlx-community/Qwen2.5-32B-Instruct-4bit` — pull the MLX model (~18 GB).
+- `uv run hf download mlx-community/Qwen2.5-7B-Instruct-4bit` — pull the default MLX model (~4 GB). For the fuller 32B model: `uv run hf download mlx-community/Qwen2.5-32B-Instruct-4bit` (~18 GB).
 - `uv run pre-commit install --install-hooks && uv run pre-commit install --hook-type pre-push` — install git hooks.
 
 Daily chat (see `docs/usage.md` for the intended workflow):
@@ -90,7 +90,7 @@ Load-bearing invariants — they shape almost every decision:
   - `model/` — adapter boundary. Anything model-specific lives here and nowhere else.
     - `adapter.py` — `ChatMessage` + `ModelAdapter` protocol (including `complete_with_tools` for tool-use).
     - `echo.py` — deterministic adapter for wiring tests.
-    - `mlx.py` — MLX-backed adapter (Qwen 2.5 32B Instruct 4-bit by default). Streams tokens. Accepts `model_repo` and `lora_path` overrides. Lazy load.
+    - `mlx.py` — MLX-backed adapter (Qwen 2.5 7B Instruct 4-bit by default; 32B / Qwen2.5-Coder available via `--model-repo`). Streams tokens. Accepts `model_repo` and `lora_path` overrides. Lazy load.
     - `ollama.py` — Ollama-backed adapter with tool-call + token-streaming support. Model tag via `model_repo`.
     - `factory.py` — `make_adapter("echo" | "mlx" | "ollama", model_repo=, lora_path=)`. Backends imported lazily.
   - `persona/rewriter.py` — `PersonaAdapter` wraps a base adapter with a voice-rewrite post-pass. Optional chain-of-rewrite (`chain_rewrites=True`) adds a second concrete-substitution pass. Off by default when a turn used tools (`rewrite_on_tools=False`) — rewriter compresses, which is wrong for investigate/summarize replies.

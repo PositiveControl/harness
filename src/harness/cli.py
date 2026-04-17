@@ -503,7 +503,7 @@ def chat(
         None,
         "--model-repo",
         help="Override the model identifier for the selected adapter. "
-        "For mlx: HF repo (default mlx-community/Qwen2.5-32B-Instruct-4bit). "
+        "For mlx: HF repo (default mlx-community/Qwen2.5-7B-Instruct-4bit). "
         "For ollama: model tag (default gemma4:latest). Ignored for echo.",
     ),
     lora_path: str | None = typer.Option(

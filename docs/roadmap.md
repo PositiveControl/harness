@@ -6,7 +6,7 @@ Living document. Authoritative architecture + commands reference is `CLAUDE.md`;
 
 **Working end-to-end**:
 
-- Chat with Airton locally via MLX-hosted Qwen 2.5 32B Instruct, swappable to any MLX HF repo via `--model-repo`, or to Ollama via `--model ollama`.
+- Chat with Airton locally via MLX-hosted Qwen 2.5 (7B default for dev speed; 32B available via `--model-repo`), swappable to any MLX HF repo, or to Ollama via `--model ollama`.
 - Optional LoRA adapter on top of the base MLX model (`--lora-path`) — plumbed through chat / eval / scribe.
 - Voice-rewrite post-pass keeps Airton's register on responses the base model would otherwise drift on.
 - Episodic and semantic memory: seed + scribe-written + consolidator-promoted tiers, all retrieval-indexed with mxbai-embed-large-v1 (1024 dim).

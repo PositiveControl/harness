@@ -48,8 +48,8 @@ Requirements: macOS (Apple Silicon for MLX), Python 3.11+, [`uv`](https://docs.a
 # 1. Install dependencies
 uv sync --extra dev --extra mlx --extra retrieval
 
-# 2. Pull the default MLX model (~18 GB, 4-bit quantized Qwen 2.5 32B Instruct)
-uv run hf download mlx-community/Qwen2.5-32B-Instruct-4bit
+# 2. Pull the default MLX model (~4 GB, 4-bit quantized Qwen 2.5 7B Instruct)
+uv run hf download mlx-community/Qwen2.5-7B-Instruct-4bit
 
 # 3. Install git hooks (ruff + mypy + pytest gates)
 uv run pre-commit install --install-hooks
@@ -61,7 +61,16 @@ uv run harness memory ingest
 
 ### Running a different model
 
-By default the `mlx` adapter loads `mlx-community/Qwen2.5-32B-Instruct-4bit`. Override with `--model-repo`:
+By default the `mlx` adapter loads `mlx-community/Qwen2.5-7B-Instruct-4bit` (smaller + faster for daily use). Override with `--model-repo` for bigger models:
+
+```bash
+# Qwen 2.5 32B — full-power base model
+uv run harness chat --model mlx \
+  --model-repo mlx-community/Qwen2.5-32B-Instruct-4bit \
+  --persona
+```
+
+More examples:
 
 ```bash
 # Qwen 2.5 Coder 32B on MLX

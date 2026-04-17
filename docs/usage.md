@@ -12,7 +12,7 @@ uv run harness chat --model mlx --persona --memories 3 --facts 5
 
 What the flags do:
 
-- `--model mlx` — use Qwen 2.5 32B on MLX. Omit to use the echo adapter (no model, just wiring — useful if MLX is down).
+- `--model mlx` — use Qwen 2.5 7B on MLX (default for local dev speed; pass `--model-repo mlx-community/Qwen2.5-32B-Instruct-4bit` for the bigger model). Omit `--model mlx` to use the echo adapter (no model, just wiring — useful if MLX is down).
 - `--persona` — run the two-pass voice rewriter. Pass 1 generates substance; pass 2 rewrites in Airton's register. Without it, Airton will drift toward generic-assistant prose.
 - `--memories 3` — retrieve up to 3 episodic memories per turn that clear the 0.5 similarity floor.
 - `--facts 5` — retrieve up to 5 semantic facts per turn that clear the 0.45 floor.

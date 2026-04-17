@@ -238,7 +238,7 @@ class MLXAdapter:
 
     def __init__(
         self,
-        repo: str = "mlx-community/Qwen2.5-32B-Instruct-4bit",
+        repo: str = "mlx-community/Qwen2.5-7B-Instruct-4bit",
         *,
         adapter_path: str | None = None,
         context_window: int = 131_072,
