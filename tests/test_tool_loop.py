@@ -1052,6 +1052,217 @@ def test_parse_qwen3_coder_multiple_calls() -> None:
     assert [c.arguments["path"] for c in calls] == ["a", "b"]
 
 
+# ---------- Router integration (harness-ut3) ----------
+
+
+@dataclass
+class _ScriptedRouter:
+    """Returns a queued RouterIntent on each classify() call."""
+
+    intents: list[object]  # RouterIntent | None
+    classify_calls: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
+
+    def classify(self, user_message: str, tool_specs: list[ToolSpec]) -> object:
+        self.classify_calls.append((user_message, tuple(s.name for s in tool_specs)))
+        return self.intents.pop(0) if self.intents else None
+
+
+def _read_tool(name: str, output: str = "tool ran") -> ToolSpec:
+    return ToolSpec(
+        name=name,
+        description=f"{name} tool",
+        parameters={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        tier="read",
+    )
+
+
+@dataclass
+class _ReadTool:
+    """Concrete read-tier tool for router integration tests."""
+
+    name: str
+    output: str = "tool ran"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return _read_tool(self.name)
+
+    def call(self, *, query: str) -> str:
+        _ = query  # kwarg is part of the tool schema; content ignored in tests
+        return self.output
+
+
+def test_router_injects_tool_call_and_skips_fabrication() -> None:
+    """Happy path — router picks search_web with valid args, orchestrator
+    runs the tool itself, main model only does a wrap-up round. Adapter
+    was never asked to emit <tool_call> so it couldn't fabricate."""
+    from harness.router.intent import RouterIntent
+
+    registry = ToolRegistry()
+    registry.register(_ReadTool(name="search_web", output="1. Weber BBQ — https://weberbbq.com"))
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="Weber BBQ is a good option near you.")])
+    router = _ScriptedRouter(
+        intents=[RouterIntent(tool_name="search_web", arguments={"query": "bbq"})]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="search the web for bbq")],
+        registry,
+        router=router,  # type: ignore[arg-type]  # structural match
+    )
+    assert result.content == "Weber BBQ is a good option near you."
+    # One synthetic assistant + one tool result were injected before round 0.
+    tool_msgs = [m for m in result.messages if m.role == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].name == "search_web"
+    # Main model ran exactly once — no fabrication retries.
+    assert len(adapter.calls_seen) == 1
+    # router_intent event fired.
+    intents = [e for e in result.events if e.kind == "router_intent"]
+    assert len(intents) == 1
+    assert intents[0].call is not None
+    assert intents[0].call.name == "search_web"
+
+
+def test_router_none_return_falls_through() -> None:
+    """Router gave up (unparseable output) → normal loop runs."""
+    registry = ToolRegistry()
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="hello back")])
+    router = _ScriptedRouter(intents=[None])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="hey")],
+        registry,
+        router=router,  # type: ignore[arg-type]
+    )
+    assert result.content == "hello back"
+    assert not any(e.kind == "router_intent" for e in result.events)
+
+
+def test_router_null_tool_falls_through() -> None:
+    """Router said `{"tool": null}` → no tool to run, normal loop."""
+    from harness.router.intent import RouterIntent
+
+    registry = ToolRegistry()
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="casual reply")])
+    router = _ScriptedRouter(intents=[RouterIntent(tool_name=None, arguments={})])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="hey")],
+        registry,
+        router=router,  # type: ignore[arg-type]
+    )
+    assert result.content == "casual reply"
+    assert not any(e.kind == "router_intent" for e in result.events)
+
+
+def test_router_unknown_tool_falls_through() -> None:
+    """Router hallucinated a tool name that isn't registered. Don't
+    execute; fall through and let the main model handle it."""
+    from harness.router.intent import RouterIntent
+
+    registry = ToolRegistry()
+    registry.register(_ReadTool(name="search_web"))
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="fallback reply")])
+    router = _ScriptedRouter(
+        intents=[RouterIntent(tool_name="does_not_exist", arguments={"query": "x"})]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="hey")],
+        registry,
+        router=router,  # type: ignore[arg-type]
+    )
+    assert result.content == "fallback reply"
+    assert not any(e.kind == "router_intent" for e in result.events)
+
+
+def test_router_missing_required_arg_falls_through() -> None:
+    """Required `query` arg not present → skip routing, fall through."""
+    from harness.router.intent import RouterIntent
+
+    registry = ToolRegistry()
+    registry.register(_ReadTool(name="search_web"))
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="fallback")])
+    router = _ScriptedRouter(intents=[RouterIntent(tool_name="search_web", arguments={})])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="search")],
+        registry,
+        router=router,  # type: ignore[arg-type]
+    )
+    assert result.content == "fallback"
+    assert not any(e.kind == "router_intent" for e in result.events)
+
+
+def test_router_skips_write_tier_tools() -> None:
+    """Write-tier tools need the main model's richer context + their
+    own confirmation UX. Router is read-tier only for now."""
+    from harness.router.intent import RouterIntent
+
+    class _WriteTool:
+        @property
+        def spec(self) -> ToolSpec:
+            return ToolSpec(
+                name="edit_file",
+                description="edit",
+                parameters={
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+                tier="write",
+            )
+
+        def call(self, *, path: str) -> str:
+            _ = path
+            return "edited"
+
+    registry = ToolRegistry()
+    registry.register(_WriteTool())
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="fallback")])
+    router = _ScriptedRouter(
+        intents=[RouterIntent(tool_name="edit_file", arguments={"path": "x.py"})]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="edit x.py")],
+        registry,
+        router=router,  # type: ignore[arg-type]
+    )
+    assert result.content == "fallback"
+    assert not any(e.kind == "router_intent" for e in result.events)
+
+
+def test_router_passes_only_last_user_message() -> None:
+    """Classification key is the most recent user turn, not the whole
+    thread — the system prompt and history are the main model's job."""
+    from harness.router.intent import RouterIntent
+
+    registry = ToolRegistry()
+    registry.register(_ReadTool(name="search_web"))
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="done")])
+    router = _ScriptedRouter(
+        intents=[RouterIntent(tool_name="search_web", arguments={"query": "pho"})]
+    )
+    run_tool_loop(
+        adapter,
+        [
+            ChatMessage(role="system", content="you are airton"),
+            ChatMessage(role="user", content="earlier turn"),
+            ChatMessage(role="assistant", content="earlier reply"),
+            ChatMessage(role="user", content="now search for pho"),
+        ],
+        registry,
+        router=router,  # type: ignore[arg-type]
+    )
+    assert router.classify_calls[0][0] == "now search for pho"
+
+
 # Explicit import to confirm we can pass pytest from the tests folder
 def test_tools_module_importable() -> None:
     import harness.tools  # noqa: F401 — import-for-side-effect check

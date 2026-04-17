@@ -18,6 +18,7 @@ from harness.tools.base import (
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from harness.router.intent import Router
     from harness.tools.base import StreamChunk, ToolSpec
 
 
@@ -223,9 +224,14 @@ class _ToolCapableAdapter(Protocol):
 @dataclass(frozen=True)
 class ToolLoopEvent:
     """Emitted synchronously to the optional observer so the CLI can
-    print inline status. Kind is one of: round_start, model_call_start,
-    token_delta, model_call_end, tool_call_start, tool_call_end,
-    tool_call_failed, tool_call_declined, round_complete.
+    print inline status. Kind is one of: router_intent, round_start,
+    model_call_start, token_delta, model_call_end, tool_call_start,
+    tool_call_end, tool_call_failed, tool_call_declined, round_complete.
+
+    `router_intent` fires at most once per turn, before round 0, when a
+    Router pre-pass routed to a tool. `call` carries the ToolCall the
+    router chose; a tool_call_start/end pair follows immediately as the
+    orchestrator executes it itself.
 
     `model_call_start` fires just before the adapter is invoked;
     `model_call_end` fires once it returns. When the adapter supports
@@ -253,6 +259,72 @@ ConfirmFn = Callable[[ToolCall], bool]
 ObserverFn = Callable[[ToolLoopEvent], None]
 
 
+def _last_user_message(messages: Iterable[ChatMessage]) -> str | None:
+    """Walk the thread backwards and return the content of the most
+    recent user-role message, or None if there isn't one. The router
+    classifies on this single message — the system prompt, history,
+    and any prior assistant turns are the main model's job."""
+    for m in reversed(list(messages)):
+        if m.role == "user":
+            return m.content
+    return None
+
+
+def _router_prelude(
+    router: Router,
+    working: list[ChatMessage],
+    registry: ToolRegistry,
+    confirm: ConfirmFn | None,
+    emit: Callable[[ToolLoopEvent], None],
+) -> bool:
+    """Classify the last user turn and, on a usable intent, append a
+    synthetic assistant tool-call turn + the tool result to `working`
+    in place. Returns True if routing produced a tool execution (main
+    model enters wrap-up mode directly), False otherwise.
+
+    Conservative guards: read-tier tools only (write-tier needs the
+    main model's richer context + its own confirmation UX), intent
+    tool must exist in the registry, all required arguments must be
+    present. Any failure falls through silently — the router is
+    advisory, never blocking."""
+    user_message = _last_user_message(working)
+    if user_message is None:
+        return False
+    intent = router.classify(user_message, registry.specs())
+    if intent is None or intent.tool_name is None:
+        return False
+    if intent.tool_name not in registry:
+        return False
+    spec = registry.get(intent.tool_name).spec
+    if spec.tier != "read":
+        return False
+    required = spec.parameters.get("required", []) or []
+    if any(key not in intent.arguments for key in required):
+        return False
+
+    call = ToolCall(name=intent.tool_name, arguments=dict(intent.arguments))
+    emit(ToolLoopEvent(kind="router_intent", call=call, round_index=0))
+    emit(ToolLoopEvent(kind="tool_call_start", call=call, round_index=0))
+    if confirm is not None and spec.tier == "write" and not confirm(call):
+        # Unreachable under the read-tier guard above, but kept for
+        # symmetry with the main loop's confirmation path.
+        result = ToolResult(
+            tool_name=call.name,
+            output="user declined to approve this tool call",
+            success=False,
+            error="user_declined",
+        )
+        emit(ToolLoopEvent(kind="tool_call_declined", call=call, result=result, round_index=0))
+    else:
+        result = registry.call(call.name, call.arguments)
+        kind = "tool_call_end" if result.success else "tool_call_failed"
+        emit(ToolLoopEvent(kind=kind, call=call, result=result, round_index=0))
+
+    working.append(ChatMessage(role="assistant", content="", tool_calls=(call,)))
+    working.append(ChatMessage(role="tool", content=result.output, name=call.name))
+    return True
+
+
 def run_tool_loop(
     adapter: _ToolCapableAdapter,
     messages: Iterable[ChatMessage],
@@ -264,6 +336,7 @@ def run_tool_loop(
     max_tokens: int = 1024,
     wrap_up_max_tokens: int = 384,
     temperature: float = 0.5,
+    router: Router | None = None,
 ) -> ToolLoopResult:
     """Drive a model + tool registry until the model emits a text-only
     reply or `max_rounds` rounds are spent.
@@ -279,7 +352,14 @@ def run_tool_loop(
     tool has already executed this turn. Those rounds are just the
     model restating what changed — they don't need the full 1024-token
     budget. Capping prevents small models from burning 10s+ on a
-    'thinking…' spinner generating filler after the work is done."""
+    'thinking…' spinner generating filler after the work is done.
+
+    `router`, when set, classifies the last user turn once before the
+    first model round. On a usable intent (known read-tier tool, all
+    required args present), the orchestrator synthesizes the tool call
+    itself, executes it, and the main model only sees a wrap-up round.
+    This skips the fabrication-and-nudge loop that small adapters fall
+    into on factual queries (see harness-j1d / harness-q27)."""
     working: list[ChatMessage] = list(messages)
     initial_count = len(working)
     events: list[ToolLoopEvent] = []
@@ -291,6 +371,9 @@ def run_tool_loop(
         events.append(event)
         if observe is not None:
             observe(event)
+
+    if router is not None:
+        _router_prelude(router, working, registry, confirm, emit)
 
     stream_fn = getattr(adapter, "stream_with_tools", None)
 
