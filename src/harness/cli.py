@@ -1,22 +1,35 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
+from types import TracebackType
 from typing import cast
 
 import typer
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.status import Status
 from rich.table import Table
 
 import harness._quiet  # noqa: F401 — side-effect import: silences HF/transformers/sentence-transformers noise before they load
-from harness.character import Character, load_character
+from harness.character import Character, VoiceSample, load_character
+from harness.compaction import (
+    CompactionOutcome,
+    CompactionStore,
+    run_compaction,
+    should_compact,
+)
 from harness.config import settings
 from harness.consolidate import run_consolidation
 from harness.evals.voice import run_voice_eval
 from harness.model import AdapterName, ChatMessage, ModelAdapter, make_adapter
-from harness.model.adapter import Role
+from harness.model.adapter import Role, count_tokens
 from harness.orchestrator import ToolLoopEvent, run_tool_loop
 from harness.persona import PersonaAdapter
 from harness.persona.rewriter import build_rewriter_messages
@@ -29,7 +42,7 @@ from harness.store import (
     SemanticStore,
     ensure_seeds_ingested,
 )
-from harness.store.transcript import Transcript
+from harness.store.transcript import Transcript, TranscriptMessage
 from harness.tools import (
     ReadFileTool,
     SearchFactsTool,
@@ -39,6 +52,79 @@ from harness.tools import (
     ToolRegistry,
     WriteFileTool,
 )
+
+_EXIT_COMMANDS = frozenset({"/exit", "/quit", "exit", "quit", ":q", ":quit"})
+
+# Sentinel used to encode structured tool_calls onto an assistant turn's
+# content when persisting to the transcript. Two-line format: human-readable
+# content, then the sentinel, then a single JSON line with the tool_calls.
+_TOOL_CALLS_SENTINEL = "\n__TOOL_CALLS_V1__\n"
+
+
+def _encode_assistant_with_tool_calls(content: str, tool_calls: tuple[ToolCall, ...]) -> str:
+    if not tool_calls:
+        return content
+    payload = json.dumps(
+        {"tool_calls": [{"name": tc.name, "arguments": tc.arguments} for tc in tool_calls]}
+    )
+    return f"{content}{_TOOL_CALLS_SENTINEL}{payload}"
+
+
+def _decode_transcript_message(m: TranscriptMessage) -> ChatMessage:
+    """Convert a persisted transcript row back into a ChatMessage so the
+    next turn's history reconstructs tool_calls on assistant turns and
+    carries the tool name on tool-role turns."""
+    role = cast(Role, m.role)
+    content = m.content
+    tool_calls: tuple[ToolCall, ...] = ()
+    if role == "assistant" and _TOOL_CALLS_SENTINEL in content:
+        head, _, tail_json = content.partition(_TOOL_CALLS_SENTINEL)
+        try:
+            payload = json.loads(tail_json)
+            parsed = payload.get("tool_calls") or []
+            tool_calls = tuple(
+                ToolCall(name=p["name"], arguments=p.get("arguments", {}))
+                for p in parsed
+                if isinstance(p, dict) and isinstance(p.get("name"), str)
+            )
+            content = head
+        except (json.JSONDecodeError, KeyError, TypeError):
+            tool_calls = ()
+    name = m.speaker if role == "tool" else None
+    return ChatMessage(role=role, content=content, name=name, tool_calls=tool_calls)
+
+
+def _persist_tool_exchange(
+    transcript: Transcript,
+    *,
+    session: str,
+    channel: str,
+    character_name: str,
+    initial_count: int,
+    loop_messages: list[ChatMessage],
+) -> None:
+    """Append the assistant tool-call and tool-result turns from a tool
+    loop to the transcript so the next user turn sees them in history.
+    `initial_count` is the number of messages that were already in the
+    working list before the loop added any (system + history length)."""
+    for msg in loop_messages[initial_count:]:
+        if msg.role == "assistant":
+            transcript.append(
+                session=session,
+                channel=channel,
+                speaker=character_name,
+                role="assistant",
+                content=_encode_assistant_with_tool_calls(msg.content, msg.tool_calls),
+            )
+        elif msg.role == "tool":
+            transcript.append(
+                session=session,
+                channel=channel,
+                speaker=msg.name or "tool",
+                role="tool",
+                content=msg.content,
+            )
+
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 eval_app = typer.Typer(help="Evaluations against the current character.", no_args_is_help=True)
@@ -50,9 +136,20 @@ app.add_typer(voice_app, name="voice")
 console = Console()
 
 
+_EMBEDDER_SENTINEL: object = object()
+_cached_embedder: object = _EMBEDDER_SENTINEL
+
+
 def _load_embedder() -> object | None:
-    """Lazy-import the default embedder. Returns None (with a warning)
-    if the retrieval extra isn't installed."""
+    """Lazy-import and memoize the default embedder. Returns None (with
+    a warning) if the retrieval extra isn't installed.
+
+    The result is cached process-wide — `cmd_chat` wires retriever +
+    episodic store + semantic store from the same instance, so the 1.3
+    GB embedder model loads once instead of three times."""
+    global _cached_embedder
+    if _cached_embedder is not _EMBEDDER_SENTINEL:
+        return None if _cached_embedder is None else _cached_embedder
     try:
         from harness.retrieval.st_embedder import SentenceTransformersEmbedder
     except ImportError:
@@ -60,8 +157,10 @@ def _load_embedder() -> object | None:
             "[yellow]retrieval extra not installed. "
             "Run `uv sync --extra retrieval` to enable retrieval + memory.[/yellow]"
         )
+        _cached_embedder = None
         return None
-    return SentenceTransformersEmbedder()
+    _cached_embedder = SentenceTransformersEmbedder()
+    return _cached_embedder
 
 
 def _maybe_retriever(character: Character, top_k: int) -> VoiceRetriever | None:
@@ -98,6 +197,21 @@ def _open_semantic_store() -> SemanticStore | None:
     return SemanticStore(settings.db_path, embedder=embedder)  # type: ignore[arg-type]
 
 
+def _format_ctx_meter(used: int, total: int) -> str:
+    """Render 'ctx 4.2k / 32k (13%)' with color thresholds: dim under
+    75%, yellow 75-90%, red above 90%. Only shown when `total > 0`."""
+    if total <= 0:
+        return ""
+    pct = used / total
+    if pct >= 0.9:
+        color = "red"
+    elif pct >= 0.75:
+        color = "yellow"
+    else:
+        color = "dim"
+    return f"[{color}]ctx {used / 1000:.1f}k / {total / 1000:.0f}k ({pct * 100:.0f}%)[/{color}]"
+
+
 def _render_fact_block(facts: list[SemanticFact]) -> str:
     """Render retrieved semantic facts as a compact block for the system
     prompt. One line per fact — subject, predicate, object, confidence."""
@@ -105,6 +219,222 @@ def _render_fact_block(facts: list[SemanticFact]) -> str:
     for f in facts:
         lines.append(f"- {f.subject} {f.predicate} {f.object} (conf={f.confidence:.2f})")
     return "\n".join(lines)
+
+
+class _ThinkingSpinner:
+    """Live 'thinking… Ns' spinner. Rich's Status animates the spinner
+    glyph; a small daemon thread updates the elapsed-seconds suffix
+    every 250 ms so the user sees the timer tick.
+
+    Both start() and stop() are idempotent: start() is a no-op when
+    already running, stop() a no-op when already stopped. This lets the
+    chat loop kick the spinner on as soon as the user presses Enter
+    (so the prompt isn't silent), have the tool-loop observer bounce it
+    per model call, and stop it cleanly before any console.input() or
+    final Markdown print — without any caller needing to track state."""
+
+    def __init__(self, console: Console, label: str = "thinking") -> None:
+        self._console = console
+        self._label = label
+        self._running = False
+        self._status: Status | None = None
+        self._stop_event: threading.Event | None = None
+        self._thread: threading.Thread | None = None
+        self._started_at = 0.0
+
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._started_at = time.monotonic()
+        self._status = self._console.status(
+            f"[dim]⋯ {self._label}… 0s[/dim]",
+            spinner="dots",
+        )
+        self._status.__enter__()
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._tick, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if not self._running:
+            return
+        self._running = False
+        if self._stop_event is not None:
+            self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        if self._status is not None:
+            self._status.__exit__(None, None, None)
+        self._status = None
+        self._stop_event = None
+        self._thread = None
+
+    def _tick(self) -> None:
+        assert self._stop_event is not None
+        while not self._stop_event.wait(0.25):
+            if self._status is None:
+                return
+            elapsed = int(time.monotonic() - self._started_at)
+            self._status.update(f"[dim]⋯ {self._label}… {elapsed}s[/dim]")
+
+    def __enter__(self) -> _ThinkingSpinner:
+        self.start()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.stop()
+
+
+class _StreamRenderer:
+    """Live Markdown region that accumulates streaming token deltas.
+
+    Start / append / stop are the full lifecycle. `start` opens a
+    `rich.live.Live` attached to the console; `append` grows the buffer
+    and re-renders as Markdown; `stop` tears down Live, leaving the
+    final render on screen. Multiple start/stop cycles on the same
+    renderer render as sibling Markdown blocks (one per model call)."""
+
+    def __init__(self, console: Console, *, refresh_per_second: int = 10) -> None:
+        self._console = console
+        self._refresh = refresh_per_second
+        self._live: Live | None = None
+        self._buf = ""
+
+    def start(self) -> None:
+        if self._live is not None:
+            return
+        self._buf = ""
+        self._live = Live(
+            Markdown(""),
+            console=self._console,
+            refresh_per_second=self._refresh,
+            vertical_overflow="visible",
+        )
+        self._live.__enter__()
+
+    def append(self, delta: str) -> None:
+        if self._live is None:
+            self.start()
+        self._buf += delta
+        assert self._live is not None
+        self._live.update(Markdown(self._buf))
+
+    def stop(self) -> str:
+        if self._live is None:
+            out = self._buf
+            self._buf = ""
+            return out
+        self._live.__exit__(None, None, None)
+        self._live = None
+        out = self._buf
+        self._buf = ""
+        return out
+
+    @property
+    def active(self) -> bool:
+        return self._live is not None
+
+
+def _stream_or_complete(
+    adapter: object,
+    messages: list[ChatMessage],
+    *,
+    stream_renderer: _StreamRenderer,
+    max_tokens: int = 512,
+    temperature: float = 0.7,
+) -> tuple[str, bool]:
+    """Stream via `adapter.stream(...)` when available, otherwise fall
+    back to the blocking `adapter.complete(...)`. Returns the reply
+    text and whether streaming actually happened — the caller uses the
+    streamed flag to skip a duplicate final Markdown print (Live
+    already rendered the content)."""
+    stream_fn = getattr(adapter, "stream", None)
+    if callable(stream_fn):
+        stream_renderer.start()
+        for delta in stream_fn(messages, max_tokens=max_tokens, temperature=temperature):
+            stream_renderer.append(delta)
+        text = stream_renderer.stop()
+        return text, True
+    complete_fn = adapter.complete  # type: ignore[attr-defined]
+    text = complete_fn(messages, max_tokens=max_tokens, temperature=temperature)
+    assert isinstance(text, str)
+    return text, False
+
+
+@dataclass
+class _RetrievalState:
+    """Per-chat-session health of the three retrieval sources. Once a
+    source raises we disable it for the rest of the session so the user
+    doesn't get a warning on every turn. The chat still works — just
+    without that source's prompt context."""
+
+    voice_ok: bool = True
+    episodic_ok: bool = True
+    semantic_ok: bool = True
+
+
+def _retrieve_turn_context(
+    *,
+    user_input: str,
+    speaker: str,
+    retriever: VoiceRetriever | None,
+    memory_store: EpisodicStore | None,
+    semantic_store: SemanticStore | None,
+    top_k: int,
+    memories: int,
+    memories_threshold: float,
+    facts: int,
+    facts_threshold: float,
+    state: _RetrievalState,
+    warn: Callable[[str], None],
+) -> tuple[list[VoiceSample], list[EpisodicRecord], list[SemanticFact]]:
+    """Run the three retrieval sources for one turn. Any that raise are
+    disabled for the rest of the session (flagged on `state`) and a
+    one-time `warn(msg)` fires. Returns the hits from the sources that
+    are still healthy — empty lists for the ones that aren't."""
+    examples: list[VoiceSample] = []
+    if retriever is not None and state.voice_ok and top_k > 0:
+        try:
+            examples = retriever.top_k(user_input, k=top_k)
+        except Exception as exc:
+            state.voice_ok = False
+            warn(f"voice retrieval disabled for this session: {exc}")
+
+    recalled: list[EpisodicRecord] = []
+    if memory_store is not None and state.episodic_ok and memories > 0:
+        try:
+            hits = memory_store.search(
+                user_input,
+                k=memories,
+                min_score=memories_threshold,
+                user_id=speaker,
+            )
+            recalled = [rec for rec, _score in hits]
+        except Exception as exc:
+            state.episodic_ok = False
+            warn(f"episodic memory disabled for this session: {exc}")
+
+    known_facts: list[SemanticFact] = []
+    if semantic_store is not None and state.semantic_ok and facts > 0:
+        try:
+            fact_hits = semantic_store.search(
+                user_input,
+                k=facts,
+                min_score=facts_threshold,
+                user_id=speaker,
+            )
+            known_facts = [f for f, _score in fact_hits]
+        except Exception as exc:
+            state.semantic_ok = False
+            warn(f"semantic facts disabled for this session: {exc}")
+
+    return examples, recalled, known_facts
 
 
 def _render_memory_block(memories: list[EpisodicRecord]) -> str:
@@ -131,21 +461,31 @@ def _resolve_adapter(
     model_repo: str | None = None,
     lora_path: str | None = None,
 ) -> ModelAdapter:
-    # Custom MLX configs (repo override, LoRA adapter) bypass the factory
-    # and instantiate MLXAdapter directly. The factory handles the named
-    # defaults; this is the escape hatch for LoRA runs and ad-hoc model
-    # swaps.
-    if model_repo or lora_path:
-        if name != "mlx":
-            raise typer.BadParameter("--model-repo and --lora-path require --model mlx.")
-        from harness.model.mlx import MLXAdapter
+    # Custom configs bypass the factory and instantiate the adapter
+    # directly. --lora-path is MLX-only; --model-repo works for MLX
+    # (HF repo) and Ollama (model tag like "gemma4:latest").
+    if lora_path and name != "mlx":
+        raise typer.BadParameter("--lora-path requires --model mlx.")
 
-        kwargs: dict[str, object] = {}
-        if model_repo:
-            kwargs["repo"] = model_repo
-        if lora_path:
-            kwargs["adapter_path"] = lora_path
-        adapter: ModelAdapter = MLXAdapter(**kwargs)  # type: ignore[arg-type]
+    adapter: ModelAdapter
+    if model_repo or lora_path:
+        if name == "mlx":
+            from harness.model.mlx import MLXAdapter
+
+            mlx_kwargs: dict[str, object] = {}
+            if model_repo:
+                mlx_kwargs["repo"] = model_repo
+            if lora_path:
+                mlx_kwargs["adapter_path"] = lora_path
+            adapter = MLXAdapter(**mlx_kwargs)  # type: ignore[arg-type]
+        elif name == "ollama":
+            from harness.model.ollama import OllamaAdapter
+
+            adapter = OllamaAdapter(model=model_repo) if model_repo else OllamaAdapter()
+        else:
+            raise typer.BadParameter(
+                f"--model-repo not supported for --model {name}; use mlx or ollama."
+            )
     else:
         try:
             adapter = make_adapter(cast(AdapterName, name))
@@ -171,12 +511,13 @@ def chat(
     session: str = typer.Option("local", help="Session identifier"),
     channel: str = typer.Option("cli", help="Channel name"),
     speaker: str = typer.Option("mark", help="Your handle"),
-    model: str = typer.Option("echo", help="Adapter: echo | mlx"),
+    model: str = typer.Option("echo", help="Adapter: echo | mlx | ollama"),
     model_repo: str | None = typer.Option(
         None,
         "--model-repo",
-        help="Override the MLX repo. Default: mlx-community/Qwen2.5-32B-Instruct-4bit. "
-        "Requires --model mlx.",
+        help="Override the model identifier for the selected adapter. "
+        "For mlx: HF repo (default mlx-community/Qwen2.5-32B-Instruct-4bit). "
+        "For ollama: model tag (default gemma4:latest). Ignored for echo.",
     ),
     lora_path: str | None = typer.Option(
         None,
@@ -227,9 +568,42 @@ def chat(
         "search_memory, search_facts. Write-tier tools prompt for "
         "confirmation the first time they're called each session.",
     ),
+    rewrite_on_tools: bool = typer.Option(
+        False,
+        "--rewrite-on-tools/--no-rewrite-on-tools",
+        help="When tools ran in a turn, also apply the persona rewriter to the "
+        "final reply. Off by default — the rewriter is trained to compress, "
+        "which is wrong for summarize / investigate tasks that need prose. Turn "
+        "on for casual tooled chat where you want Airton-voice on every reply.",
+    ),
+    workspace: str | None = typer.Option(
+        None,
+        "--workspace",
+        help="Directory read_file / write_file / shell operate inside. "
+        "Default: the harness repo root. Only takes effect with --tools. "
+        "Memory and transcripts still live under the harness data dir.",
+    ),
+    compact_at: float = typer.Option(
+        0.8,
+        "--compact-at",
+        help="Fraction of the context window at which to auto-summarize "
+        "older turns (0 to disable). When the context meter crosses this, "
+        "every turn older than --compact-keep-recent is folded into a "
+        "single session summary. The transcript is unchanged — only the "
+        "prompt the model sees shrinks.",
+    ),
+    compact_keep_recent: int = typer.Option(
+        10,
+        "--compact-keep-recent",
+        help="Number of most-recent turns to leave verbatim when "
+        "compaction fires. Older turns become summary.",
+    ),
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
     character = load_character(settings.character_path)
+    workspace_path = Path(workspace).expanduser().resolve() if workspace else settings.root
+    if tools and not workspace_path.is_dir():
+        raise typer.BadParameter(f"workspace {workspace_path} is not a directory")
     # When tools are active we run persona manually *after* the tool loop,
     # so we resolve the base adapter unwrapped. Without tools, persona
     # wraps the base adapter as before.
@@ -244,25 +618,37 @@ def chat(
     memory_store = _open_episodic_store(character) if memories > 0 else None
     semantic_store = _open_semantic_store() if facts > 0 else None
     transcript = Transcript(settings.db_path)
+    compaction_store = CompactionStore(settings.db_path) if compact_at > 0 else None
 
     registry: ToolRegistry | None = None
     approved_tools: set[str] = set()
     if tools:
         registry = ToolRegistry()
-        registry.register(ReadFileTool(root=settings.root))
-        registry.register(WriteFileTool(root=settings.root))
-        registry.register(ShellTool())
+        registry.register(ReadFileTool(root=workspace_path))
+        registry.register(WriteFileTool(root=workspace_path))
+        registry.register(ShellTool(cwd=workspace_path))
         if memory_store is not None:
             registry.register(SearchMemoryTool(store=memory_store, user_id=speaker))
         if semantic_store is not None:
             registry.register(SearchFactsTool(store=semantic_store, user_id=speaker))
 
+    retrieval_state = _RetrievalState()
+    thinking = _ThinkingSpinner(console)
+    stream_renderer = _StreamRenderer(console)
+
+    def _warn_once(msg: str) -> None:
+        console.print(f"[yellow]⚠ {msg}[/yellow]")
+
+    def _tool_label(name: str) -> str:
+        if registry is not None and name in registry:
+            return registry.get(name).spec.label
+        return name
+
     def confirm_write_tool(call: ToolCall) -> bool:
         if call.name in approved_tools:
             return True
-        console.print(
-            f"[yellow]🔧 Airton wants to call [bold]{call.name}[/bold][/yellow] {call.arguments}"
-        )
+        label = _tool_label(call.name)
+        console.print(f"[yellow]🔧 Airton wants to [bold]{label}[/bold][/yellow] {call.arguments}")
         answer = console.input("   approve? [y/N/always]: ").strip().lower()
         if answer == "always":
             approved_tools.add(call.name)
@@ -270,11 +656,23 @@ def chat(
         return answer.startswith("y")
 
     def render_tool_event(event: ToolLoopEvent) -> None:
-        if event.kind == "tool_call_start":
+        if event.kind == "model_call_start":
+            thinking.start()
+        elif event.kind == "token_delta":
+            # First token received — drop the spinner, open a Live region
+            # (if not already) and append. Subsequent deltas just append.
+            thinking.stop()
+            if event.delta:
+                stream_renderer.append(event.delta)
+        elif event.kind == "model_call_end":
+            thinking.stop()
+            stream_renderer.stop()
+        elif event.kind == "tool_call_start":
             call = event.call
             assert call is not None
-            console.print(f"[cyan]🔧 {call.name}[/cyan][dim]({call.arguments})[/dim]")
-        elif event.kind == "tool_call_end":
+            label = _tool_label(call.name)
+            console.print(f"[cyan]🔧 {label}[/cyan] [dim]({call.arguments})[/dim]")
+        elif event.kind in ("tool_call_end", "tool_call_failed"):
             result = event.result
             assert result is not None
             status = "[green]✓[/green]" if result.success else "[red]✗[/red]"
@@ -291,14 +689,94 @@ def chat(
         f"memories={memories if memory_store else 0} "
         f"facts={facts if semantic_store else 0} "
         f"tools={'on' if registry else 'off'}"
+        + (f" workspace={workspace_path}" if registry else "")
     )
-    console.print("[dim](ctrl-c to exit)[/dim]\n")
+    console.print("[dim](ctrl-c, /exit, /quit, or :q to exit)[/dim]\n")
+
+    def _load_history() -> tuple[ChatMessage | None, list[ChatMessage]]:
+        """Return (optional summary-system-message, turns-since-pointer).
+        When a compaction summary exists, turns before the pointer are
+        represented by the summary only; the raw rows stay in the
+        transcript for audit but never hit the model."""
+        record = compaction_store.latest_for_session(session) if compaction_store else None
+        if record is not None:
+            summary_msg = ChatMessage(
+                role="system",
+                content=(
+                    "Earlier conversation in this session (summarized; "
+                    f"{record.covered_turns} turns folded in):\n\n{record.summary}"
+                ),
+            )
+            rows = transcript.fetch_after(session, after_id=record.up_to_turn_id)
+            return summary_msg, [_decode_transcript_message(m) for m in rows]
+        rows = transcript.tail(session, limit=50)
+        return None, [_decode_transcript_message(m) for m in rows]
+
+    def _measure_ctx() -> int:
+        """Estimate tokens for what the NEXT turn will start with:
+        character.system_prompt() (cheap fallback — no retrieval yet),
+        plus any compaction summary, plus history since the pointer.
+        Undercounts slightly because retrieved memories/facts add text
+        per turn, but tracks transcript growth accurately."""
+        baseline_system = ChatMessage(role="system", content=character.system_prompt())
+        summary_msg, history_msgs = _load_history()
+        msgs: list[ChatMessage] = [baseline_system]
+        if summary_msg is not None:
+            msgs.append(summary_msg)
+        msgs.extend(history_msgs)
+        return count_tokens(adapter, msgs)
+
+    def _print_ctx_meter() -> None:
+        used = _measure_ctx()
+        meter = _format_ctx_meter(used, adapter.context_window)
+        if meter:
+            console.print(meter)
+
+    def _maybe_compact() -> None:
+        if compaction_store is None:
+            return
+        used = _measure_ctx()
+        if not should_compact(
+            used_tokens=used,
+            context_window=adapter.context_window,
+            threshold_pct=compact_at,
+        ):
+            return
+        console.print(
+            f"[dim]compacting history (ctx {used / 1000:.1f}k, threshold "
+            f"{compact_at * 100:.0f}%)…[/dim]"
+        )
+        thinking.start()
+        try:
+            outcome: CompactionOutcome = run_compaction(
+                adapter,
+                transcript,
+                compaction_store,
+                session_id=session,
+                keep_recent=compact_keep_recent,
+            )
+        finally:
+            thinking.stop()
+        if outcome.wrote:
+            console.print(
+                f"[dim]compacted {outcome.covered_turns} turns "
+                f"(pointer → #{outcome.new_up_to_turn_id})[/dim]"
+            )
+        else:
+            console.print(
+                "[yellow]compaction skipped — nothing qualified "
+                "(fewer turns than keep-recent, or model returned empty).[/yellow]"
+            )
 
     try:
         while True:
+            _maybe_compact()
+            _print_ctx_meter()
             user_input = console.input("[bold cyan]you › [/bold cyan]").strip()
             if not user_input:
                 continue
+            if user_input.lower() in _EXIT_COMMANDS:
+                break
             transcript.append(
                 session=session,
                 channel=channel,
@@ -306,61 +784,146 @@ def chat(
                 role="user",
                 content=user_input,
             )
+            # Start the spinner immediately so the user sees acknowledgement
+            # of their submission, not a blank cursor, while retrieval warms
+            # up and the model runs. The tool-loop observer drops/restarts it
+            # as needed across rounds; we stop it unconditionally before any
+            # interactive prompt or the final reply render.
+            thinking.start()
 
-            if retriever is not None:
-                examples = retriever.top_k(user_input, k=top_k)
+            examples, recalled, known_facts = _retrieve_turn_context(
+                user_input=user_input,
+                speaker=speaker,
+                retriever=retriever,
+                memory_store=memory_store,
+                semantic_store=semantic_store,
+                top_k=top_k,
+                memories=memories,
+                memories_threshold=memories_threshold,
+                facts=facts,
+                facts_threshold=facts_threshold,
+                state=retrieval_state,
+                warn=_warn_once,
+            )
+
+            if examples:
                 system_content = character.system_prompt(include_samples=examples)
             else:
                 system_content = character.system_prompt()
 
-            if memory_store is not None:
-                hits = memory_store.search(
-                    user_input,
-                    k=memories,
-                    min_score=memories_threshold,
-                    user_id=speaker,
-                )
-                if hits:
-                    recalled = [rec for rec, _score in hits]
-                    system_content = f"{system_content}\n\n{_render_memory_block(recalled)}"
+            if recalled:
+                system_content = f"{system_content}\n\n{_render_memory_block(recalled)}"
 
-            if semantic_store is not None:
-                fact_hits = semantic_store.search(
-                    user_input,
-                    k=facts,
-                    min_score=facts_threshold,
-                    user_id=speaker,
+            if registry is not None:
+                tool_names = ", ".join(registry.names())
+                system_content = (
+                    f"{system_content}\n\n"
+                    f"Workspace grounding — you are a real process on Mark's Mac. "
+                    f"The tool sandbox root is `{workspace_path}`. Available tools: "
+                    f"{tool_names}. Paths passed to `read_file` / `write_file` are "
+                    f"relative to the sandbox root; `shell` runs with it as cwd.\n\n"
+                    "RULES:\n"
+                    "- Never describe the contents of the workspace from memory. If "
+                    "the user asks what's in a directory, what a file contains, or "
+                    "what this project does, you MUST call a tool first (`shell ls`, "
+                    "`read_file`, etc.) and base your answer on the tool's output.\n"
+                    "- After tool results come back, respond with a substantive "
+                    "reply that uses them. Never return an empty reply — the user "
+                    "is waiting for your conclusion, not just the tool output.\n"
+                    "- The user CANNOT see raw tool output — only your final reply. "
+                    "Restate the key findings (names, numbers, quoted lines) in your "
+                    "reply. Do not answer with meta-phrases like 'awaiting input' or "
+                    "'the content is available'."
                 )
-                if fact_hits:
-                    known = [f for f, _score in fact_hits]
-                    system_content = f"{system_content}\n\n{_render_fact_block(known)}"
+
+            if known_facts:
+                system_content = f"{system_content}\n\n{_render_fact_block(known_facts)}"
 
             system = ChatMessage(role="system", content=system_content)
 
-            history = [
-                ChatMessage(role=cast(Role, m.role), content=m.content)
-                for m in transcript.tail(session, limit=50)
-            ]
+            summary_msg, history = _load_history()
+            history_messages: list[ChatMessage] = []
+            if summary_msg is not None:
+                history_messages.append(summary_msg)
+            history_messages.extend(history)
 
+            console.print(f"[bold green]{character.name} ›[/bold green]")
+            streamed = False
             if registry is not None:
-                # Tools active: drive the tool loop, then optionally apply
-                # the voice rewriter to the final text only.
+                # Tools active: drive the tool loop (observer handles live
+                # rendering per model call), then optionally apply the
+                # voice rewriter to the final text.
+                initial_messages: list[ChatMessage] = [system, *history_messages]
                 loop_result = run_tool_loop(
                     adapter,  # type: ignore[arg-type]
-                    [system, *history],
+                    initial_messages,
                     registry,
                     confirm=confirm_write_tool,
                     observe=render_tool_event,
                 )
+                streamed = True
+                # Persist the tool exchange (assistant tool-call turns +
+                # tool-role result turns) so the next user turn can see
+                # what was read / run. Without this, every turn is amnesia.
+                _persist_tool_exchange(
+                    transcript,
+                    session=session,
+                    channel=channel,
+                    character_name=character.name,
+                    initial_count=len(initial_messages),
+                    loop_messages=loop_result.messages,
+                )
                 draft = loop_result.content
-                if persona:
+                # Small models (gemma4 8B) sometimes bail after a tool
+                # result — empty content AND no further tool calls. Nudge
+                # them once with an explicit follow-up asking for the
+                # final answer before falling back to the sentinel.
+                if not draft.strip():
+                    nudge_msgs = [
+                        *loop_result.messages,
+                        ChatMessage(
+                            role="user",
+                            content=(
+                                "Your last reply was empty. Give me a final answer "
+                                "based on what the tools already returned. Restate "
+                                "the key findings in prose. Do not return empty."
+                            ),
+                        ),
+                    ]
+                    retry = adapter.complete_with_tools(  # type: ignore[attr-defined]
+                        nudge_msgs,
+                        tools=registry.specs(),
+                        max_tokens=2048,
+                        temperature=0.3,
+                    )
+                    if retry.content.strip():
+                        draft = retry.content
+                # Skip the rewriter when (a) rewrite-on-tools is off (default)
+                # because the rewriter compresses prose that summarize /
+                # investigate tasks need, or (b) the tool loop left no
+                # substantive draft — otherwise the rewriter sees an empty
+                # "Draft:" block and hallucinates "paste the text."
+                if persona and rewrite_on_tools and draft.strip():
+                    console.print("\n[dim]*— voice pass —*[/dim]")
                     rewrite_msgs = build_rewriter_messages(character, draft)
-                    reply = adapter.complete(rewrite_msgs, temperature=0.2)
+                    reply, _ = _stream_or_complete(
+                        adapter,
+                        rewrite_msgs,
+                        stream_renderer=stream_renderer,
+                        temperature=0.2,
+                        max_tokens=2048,
+                    )
                 else:
-                    reply = draft
+                    reply = draft or "(no reply — model returned empty text after tool calls)"
             else:
-                reply = adapter.complete([system, *history])
+                reply, streamed = _stream_or_complete(
+                    adapter,
+                    [system, *history_messages],
+                    stream_renderer=stream_renderer,
+                )
 
+            thinking.stop()
+            stream_renderer.stop()
             transcript.append(
                 session=session,
                 channel=channel,
@@ -368,13 +931,16 @@ def chat(
                 role="assistant",
                 content=reply,
             )
-            console.print(f"[bold green]{character.name} ›[/bold green]")
-            console.print(Markdown(reply))
+            if not streamed:
+                console.print(Markdown(reply))
             console.print()
     except (KeyboardInterrupt, EOFError):
         console.print("\n[dim]bye.[/dim]")
     finally:
+        thinking.stop()
         transcript.close()
+        if compaction_store is not None:
+            compaction_store.close()
         if memory_store is not None:
             memory_store.close()
         if semantic_store is not None:
@@ -402,11 +968,11 @@ def describe() -> None:
 
 @eval_app.command("voice")
 def eval_voice(
-    model: str = typer.Option("mlx", help="Adapter: echo | mlx"),
+    model: str = typer.Option("mlx", help="Adapter: echo | mlx | ollama"),
     model_repo: str | None = typer.Option(
         None,
         "--model-repo",
-        help="Override the MLX repo. Requires --model mlx.",
+        help="Override the model id. MLX: HF repo. Ollama: model tag.",
     ),
     lora_path: str | None = typer.Option(
         None,
@@ -683,9 +1249,9 @@ def memory_scribe(
         help="Write scribed memories as shared (user_id = NULL) rather "
         "than scoped to --user. Intended for character-level extractions.",
     ),
-    model: str = typer.Option("mlx", help="Adapter for extraction: echo | mlx"),
+    model: str = typer.Option("mlx", help="Adapter for extraction: echo | mlx | ollama"),
     model_repo: str | None = typer.Option(
-        None, "--model-repo", help="Override the MLX repo. Requires --model mlx."
+        None, "--model-repo", help="Override the model id. MLX: HF repo. Ollama: model tag."
     ),
     lora_path: str | None = typer.Option(
         None,
