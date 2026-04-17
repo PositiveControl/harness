@@ -83,7 +83,6 @@ Tracked as `bd` issues now — run `bd ready` for the live list. Summary of curr
 
 - **Refresh docs** (`harness-1ja`) — this pass. Keep CLAUDE.md + roadmap in sync with reality.
 - **LoRA fine-tune (Phase 1e)** (`harness-kr4`) — first permanent voice move. Eval suite is dialed in enough to judge the result. Gate on captured corpus size (currently 1 — too low; capture more first).
-- **Consolidator user-awareness** (`harness-4uh`) — clusters across users today; blocker before adding a second.
 - **In-chat `/edit` for voice capture** (`harness-dws`) — lower the friction of corpus growth. Small CLI change.
 - **Launchd daemon + scheduled consolidation + nightly backup** (`harness-bi3`, blocked on backup destination `harness-cxd`).
 - **Web gateway (epic)** (`harness-g7y`) — FastAPI + SvelteKit ops console. Blocked on auth (`harness-55p`), rate limit, and backup destination.
@@ -102,7 +101,6 @@ Deferred items from a 2026-04-16 critique pass. Not load-bearing for a single-us
 - **Auth / authz on gateways.** Tailscale covers the network layer today. When web / Slack / Matrix gateways land, each needs its own identity check before writes hit memory. Blocks any gateway that isn't terminal-local.
 - **Rate limiting.** Per-user throughput cap on turns + tool calls. Matters once something other than Mark can trigger generation.
 - **Backup / restore workflow.** Beyond the existing open decision on destination: need a tested restore path and a nightly job. Likely pairs with launchd daemon.
-- **Consolidator user-awareness.** Currently clusters across users; harmless with one user, incorrect before a second arrives. (Already on the next-up list — mirrored here because it's a robustness blocker, not a feature.)
 - **Error logging + structured telemetry.** Nothing emits structured events today. Minimum: a rotating JSONL log for tool-call outcomes and scribe runs. Scales up to OpenTelemetry if we grow out of that.
 - **Health check / readiness endpoint.** Needed for the launchd daemon and any gateway. Can start as `harness health` returning store + embedder + model status.
 - **Database corruption recovery.** SQLite WAL survives power loss, but we have no `integrity_check` + restore-from-backup runbook. Write one once backup destination is chosen.

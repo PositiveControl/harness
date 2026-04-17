@@ -108,7 +108,7 @@ Load-bearing invariants — they shape almost every decision:
     - `extractor.py` — `extract_candidates(adapter, character, turns)`; strict-JSON rubric, tolerates markdown fences + garbage.
     - `runner.py` — `run_scribe(..., user_id=)`; watermark-tracked per session; non-overlapping windows.
     - `locks.py` — `fcntl`-based per-session lock so concurrent scribe runs on the same session serialize instead of racing the watermark.
-  - `consolidate/consolidator.py` — `run_consolidation(episodic, semantic)`. Episodic uses single-link clustering at cosine ≥ 0.80, picks most-recent as representative. Semantic groups by case-insensitive `(subject, predicate)`, picks highest-confidence-then-recent. Originals marked `superseded_by → new_id`; retrieval filters them out. **Not yet user-aware** — clusters across `user_id` (fine with one user, broken before the second).
+  - `consolidate/consolidator.py` — `run_consolidation(episodic, semantic)`. Episodic partitions by `user_id` then single-link clusters at cosine ≥ 0.80 within each partition, picking most-recent as representative. Semantic groups by `(user_id, subject, predicate)` with the subject/predicate case-folded, picking highest-confidence-then-recent. Shared rows (`user_id IS NULL`) form their own partition — never merged with private memory. Originals marked `superseded_by → new_id`; retrieval filters them out.
   - `compaction/` — context-window management.
     - `store.py` — persists per-session compaction summaries so reruns don't re-summarize unchanged history.
     - `summarizer.py` — folds older turns into a single session summary using the same adapter.
@@ -176,7 +176,6 @@ Done:
 Available but not started (no priority implied — tracked as `bd` issues):
 
 - In-chat `/edit` invoking `$EDITOR` so captures don't require shell flags.
-- Consolidator user-awareness (currently clusters across users; harmless with one user, needs fixing before second user).
 - LoRA fine-tune on Qwen 2.5 32B using the voice suite as training data (roadmap Tier 3).
 - Web gateway (FastAPI + SvelteKit ops console). Blocked on auth + rate limit + backup decisions.
 - Slack + Matrix gateways.
@@ -214,5 +213,4 @@ Rules of engagement:
 
 - **Backup destination**: still TBD. Default until chosen: SQLite WAL + local Time Machine + nightly tarball of the `data/` dir. Candidates: Backblaze B2, iCloud Drive, S3, NAS, another Mac.
 - **LLM-judge model**: currently uses the same Qwen that generated the reply (circular). Swap in a different/stronger judge when we want orthogonal signal.
-- **Consolidator user-awareness**: currently clusters across users. Fix before adding a second user.
 - **Voice corpus held-out split**: once captured samples cross ~50, reserve ~20% for a true generalization eval that never appears in few-shot.

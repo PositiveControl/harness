@@ -335,3 +335,233 @@ def test_run_consolidation_does_not_touch_consolidated_tier(tmp_path: Path) -> N
         assert after[0].id == consolidated_before_id
     finally:
         store.close()
+
+
+# ---------- user-awareness (harness-4uh) ----------
+
+
+def test_consolidate_episodic_does_not_merge_across_users(tmp_path: Path) -> None:
+    """Two near-duplicate records belonging to different users must NOT
+    be merged. Shared (user_id IS NULL) counts as its own user for
+    this purpose — shared stays shared."""
+    pytest.importorskip("numpy")
+    dupe = _unit([1.0, 0.0, 0.0, 0.0])
+    embedder = _ControlledEmbedder(
+        table={
+            "mark's note\n\n\n\nsame body": dupe,
+            "alice's note\n\n\n\nsame body": dupe,
+        }
+    )
+    store = EpisodicStore(tmp_path / "h.sqlite", embedder=embedder)
+    try:
+        store.ingest(
+            external_id="mark-1",
+            title="mark's note",
+            body="same body",
+            tier="working",
+            source="t",
+            user_id="mark",
+        )
+        store.ingest(
+            external_id="alice-1",
+            title="alice's note",
+            body="same body",
+            tier="working",
+            source="t",
+            user_id="alice",
+        )
+
+        considered, merged, superseded = consolidate_episodic(store, threshold=0.90)
+        assert considered == 2
+        assert merged == 0
+        assert superseded == 0
+
+        # Both original records still active and scoped to their owners.
+        active = store.all()
+        by_user = {r.user_id: r for r in active}
+        assert by_user["mark"].external_id == "mark-1"
+        assert by_user["alice"].external_id == "alice-1"
+    finally:
+        store.close()
+
+
+def test_consolidate_episodic_merges_within_same_user(tmp_path: Path) -> None:
+    """Within one user's partition the normal clustering still fires."""
+    pytest.importorskip("numpy")
+    dupe = _unit([1.0, 0.0, 0.0, 0.0])
+    near = _unit([0.98, 0.05, 0.0, 0.0])
+    embedder = _ControlledEmbedder(
+        table={
+            "mark-1\n\n\n\nsame body": dupe,
+            "mark-2\n\n\n\nsame body": near,
+        }
+    )
+    store = EpisodicStore(tmp_path / "h.sqlite", embedder=embedder)
+    try:
+        store.ingest(
+            external_id="mark-1",
+            title="mark-1",
+            body="same body",
+            tier="working",
+            source="t",
+            user_id="mark",
+        )
+        store.ingest(
+            external_id="mark-2",
+            title="mark-2",
+            body="same body",
+            tier="working",
+            source="t",
+            user_id="mark",
+        )
+        considered, merged, superseded = consolidate_episodic(store, threshold=0.90)
+        assert considered == 2
+        assert merged == 1
+        assert superseded == 2
+
+        # Consolidated record inherits user_id=mark.
+        consolidated = [r for r in store.all() if r.tier == "consolidated"]
+        assert len(consolidated) == 1
+        assert consolidated[0].user_id == "mark"
+    finally:
+        store.close()
+
+
+def test_consolidate_episodic_shared_stays_shared(tmp_path: Path) -> None:
+    """Shared records (user_id IS NULL) form their own partition and
+    must not be merged with a user's private memory."""
+    pytest.importorskip("numpy")
+    dupe = _unit([1.0, 0.0, 0.0, 0.0])
+    embedder = _ControlledEmbedder(
+        table={
+            "shared-1\n\n\n\nsame body": dupe,
+            "mark-1\n\n\n\nsame body": dupe,
+        }
+    )
+    store = EpisodicStore(tmp_path / "h.sqlite", embedder=embedder)
+    try:
+        store.ingest(
+            external_id="shared-1",
+            title="shared-1",
+            body="same body",
+            tier="working",
+            source="t",
+            user_id=None,
+        )
+        store.ingest(
+            external_id="mark-1",
+            title="mark-1",
+            body="same body",
+            tier="working",
+            source="t",
+            user_id="mark",
+        )
+        _considered, merged, superseded = consolidate_episodic(store, threshold=0.90)
+        # Different partitions, no merge.
+        assert merged == 0
+        assert superseded == 0
+
+        active = store.all()
+        by_user = {r.user_id: r for r in active}
+        assert by_user[None].external_id == "shared-1"
+        assert by_user["mark"].external_id == "mark-1"
+    finally:
+        store.close()
+
+
+def test_consolidate_semantic_does_not_merge_across_users(tmp_path: Path) -> None:
+    """One user's (subject, predicate) partition must never merge with
+    another user's, even if the subject and predicate text match."""
+    embedder = _ControlledEmbedder(table={})
+    store = SemanticStore(tmp_path / "h.sqlite", embedder=embedder)
+    try:
+        store.add(
+            subject="mark",
+            predicate="prefers",
+            object="espresso",
+            confidence=0.9,
+            source="t",
+            user_id="mark",
+        )
+        store.add(
+            subject="mark",
+            predicate="prefers",
+            object="drip coffee",
+            confidence=0.9,
+            source="t",
+            user_id="alice",
+        )
+        considered, merged, superseded = consolidate_semantic(store)
+        assert considered == 2
+        assert merged == 0
+        assert superseded == 0
+
+        active = store.all()
+        by_user = {f.user_id: f.object for f in active}
+        assert by_user["mark"] == "espresso"
+        assert by_user["alice"] == "drip coffee"
+    finally:
+        store.close()
+
+
+def test_consolidate_semantic_merges_within_same_user(tmp_path: Path) -> None:
+    embedder = _ControlledEmbedder(table={})
+    store = SemanticStore(tmp_path / "h.sqlite", embedder=embedder)
+    try:
+        store.add(
+            subject="mark",
+            predicate="prefers",
+            object="A",
+            confidence=0.6,
+            source="t",
+            user_id="mark",
+        )
+        store.add(
+            subject="Mark",
+            predicate="Prefers",
+            object="B",
+            confidence=0.9,
+            source="t",
+            user_id="mark",
+        )
+        considered, merged, superseded = consolidate_semantic(store)
+        assert considered == 2
+        assert merged == 1
+        assert superseded == 2
+
+        # Promoted fact carries user_id=mark and keeps the higher-confidence object.
+        consolidated = [f for f in store.all() if f.tier == "consolidated"]
+        assert len(consolidated) == 1
+        assert consolidated[0].user_id == "mark"
+        assert consolidated[0].object == "B"
+    finally:
+        store.close()
+
+
+def test_consolidate_semantic_shared_stays_shared(tmp_path: Path) -> None:
+    embedder = _ControlledEmbedder(table={})
+    store = SemanticStore(tmp_path / "h.sqlite", embedder=embedder)
+    try:
+        store.add(
+            subject="airton",
+            predicate="uses",
+            object="mlx",
+            confidence=0.9,
+            source="t",
+            user_id=None,
+        )
+        store.add(
+            subject="airton",
+            predicate="uses",
+            object="ollama",
+            confidence=0.95,
+            source="t",
+            user_id="alice",
+        )
+        _considered, merged, superseded = consolidate_semantic(store)
+        # Different partitions — the same (subject, predicate) doesn't
+        # bridge the user_id boundary.
+        assert merged == 0
+        assert superseded == 0
+    finally:
+        store.close()

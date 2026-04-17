@@ -72,59 +72,83 @@ def consolidate_episodic(
     the most recent record is picked as the representative and a new
     consolidated copy is written; originals are marked superseded.
 
+    Partitions by `user_id` before clustering — records belonging to
+    different users (or shared vs private) are NEVER merged. The
+    consolidated record inherits the partition's user_id, so shared
+    stays shared and each user's relationship memory stays their own.
+
     Returns (considered, clusters_merged, superseded). A cluster with
     only one member is left alone (not enough signal to consolidate)."""
     working = store.all(tier="working")
     if len(working) < 2:
         return len(working), 0, 0
 
-    ids = [r.id for r in working]
-    records_by_id: dict[int, EpisodicRecord] = {r.id: r for r in working}
-    embeddings = [store.fetch_embedding(r.id) for r in working]
-
-    clusters = cluster_by_similarity(ids, embeddings, threshold=threshold)
+    # Partition by user scope. `None` (shared) is its own bucket.
+    partitions: dict[str | None, list[EpisodicRecord]] = defaultdict(list)
+    for rec in working:
+        partitions[rec.user_id].append(rec)
 
     superseded = 0
     merged = 0
-    for cluster_ids in clusters:
-        if len(cluster_ids) < 2:
+    for user_id, records in partitions.items():
+        if len(records) < 2:
             continue
-        cluster_records = [records_by_id[i] for i in cluster_ids]
-        # Pick the most recent as the representative. Recency is a rough
-        # proxy for "had the latest thinking"; if that turns out wrong
-        # we can switch to longest principle or an LLM judge.
-        rep = max(cluster_records, key=lambda r: r.created_at)
-        consolidated = store.ingest(
-            external_id=None,
-            title=rep.title,
-            body=rep.body,
-            principle=rep.principle,
-            tags=tuple({*rep.tags, "consolidated"}),
-            tier="consolidated",
-            source=f"consolidator:merged={','.join(str(i) for i in sorted(cluster_ids))}",
-        )
-        for cid in cluster_ids:
-            store.mark_superseded(cid, by=consolidated.id)
-        superseded += len(cluster_ids)
-        merged += 1
+        ids = [r.id for r in records]
+        records_by_id: dict[int, EpisodicRecord] = {r.id: r for r in records}
+        embeddings = [store.fetch_embedding(r.id) for r in records]
+        clusters = cluster_by_similarity(ids, embeddings, threshold=threshold)
+        for cluster_ids in clusters:
+            if len(cluster_ids) < 2:
+                continue
+            cluster_records = [records_by_id[i] for i in cluster_ids]
+            # Pick the most recent as the representative. Recency is a
+            # rough proxy for 'had the latest thinking'; if that turns
+            # out wrong we can switch to longest principle or an LLM
+            # judge.
+            rep = max(cluster_records, key=lambda r: r.created_at)
+            consolidated = store.ingest(
+                external_id=None,
+                title=rep.title,
+                body=rep.body,
+                principle=rep.principle,
+                tags=tuple({*rep.tags, "consolidated"}),
+                tier="consolidated",
+                source=f"consolidator:merged={','.join(str(i) for i in sorted(cluster_ids))}",
+                user_id=user_id,
+            )
+            for cid in cluster_ids:
+                store.mark_superseded(cid, by=consolidated.id)
+            superseded += len(cluster_ids)
+            merged += 1
     return len(working), merged, superseded
 
 
 # -------- Semantic consolidation --------
 
 
-def _fact_key(fact: SemanticFact) -> tuple[str, str]:
-    """Group semantic facts by case-insensitive (subject, predicate).
-    Two facts sharing a key are candidates for consolidation — take the
-    highest-confidence object, supersede the rest."""
-    return fact.subject.strip().lower(), fact.predicate.strip().lower()
+def _fact_key(fact: SemanticFact) -> tuple[str | None, str, str]:
+    """Group semantic facts by (user_id, subject, predicate), with the
+    (subject, predicate) parts case-folded. Including user_id in the
+    key means shared facts (user_id IS NULL) and per-user facts
+    are never merged with each other, and one user's relationship
+    memory is never merged with another's. Two facts sharing a key are
+    candidates for consolidation — take the highest-confidence object,
+    supersede the rest."""
+    return (
+        fact.user_id,
+        fact.subject.strip().lower(),
+        fact.predicate.strip().lower(),
+    )
 
 
 def consolidate_semantic(store: SemanticStore) -> tuple[int, int, int]:
     """Promote working-tier semantic facts to consolidated. Facts are
-    grouped by (subject, predicate). If a group has 2+ members, the one
-    with the highest confidence (tie-break: most recent) is picked as
-    the representative and promoted; the rest are marked superseded.
+    grouped by (user_id, subject, predicate). If a group has 2+ members,
+    the one with the highest confidence (tie-break: most recent) is
+    picked as the representative and promoted; the rest are marked
+    superseded. The consolidated fact inherits the group's user_id, so
+    shared facts stay shared and each user's relationship memory stays
+    their own.
 
     This does NOT handle the case where different objects under the
     same (subject, predicate) represent a real update — that needs
@@ -133,7 +157,7 @@ def consolidate_semantic(store: SemanticStore) -> tuple[int, int, int]:
     if len(working) < 2:
         return len(working), 0, 0
 
-    groups: dict[tuple[str, str], list[SemanticFact]] = defaultdict(list)
+    groups: dict[tuple[str | None, str, str], list[SemanticFact]] = defaultdict(list)
     for fact in working:
         groups[_fact_key(fact)].append(fact)
 
@@ -151,6 +175,7 @@ def consolidate_semantic(store: SemanticStore) -> tuple[int, int, int]:
             confidence=rep.confidence,
             source=f"consolidator:merged={member_ids}",
             tier="consolidated",
+            user_id=rep.user_id,
         )
         for fact in members:
             store.mark_superseded(fact.id, by=consolidated.id)
