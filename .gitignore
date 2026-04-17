@@ -17,3 +17,7 @@ logs/
 .env
 .env.local
 .DS_Store
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
