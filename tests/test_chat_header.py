@@ -52,6 +52,8 @@ def _render(**overrides: object) -> str:
         ],
         "workspace_path": Path("/Users/airton/workspace"),
         "rewrite_on_tools": False,
+        "router_enabled": False,
+        "router_repo": None,
         "compact_at": 0.8,
         "compact_keep_recent": 10,
         "dev": False,
@@ -148,6 +150,31 @@ def test_header_rewrite_on_tools_visible_when_set() -> None:
     out_off = _render(rewrite_on_tools=False)
     # Off state doesn't clutter the header.
     assert "rewrite-on-tools" not in out_off
+
+
+def test_header_router_visible_when_on() -> None:
+    out = _render(router_enabled=True, router_repo="mlx-community/Qwen2.5-1.5B-Instruct-4bit")
+    assert "router" in out
+    assert "on" in out
+    # Short repo name (no org prefix) is what we show.
+    assert "Qwen2.5-1.5B-Instruct-4bit" in out
+
+
+def test_header_router_hidden_when_off() -> None:
+    out = _render(router_enabled=False, router_repo=None)
+    assert "router" not in out
+
+
+def test_header_router_hidden_when_tools_off() -> None:
+    """Router row only appears under the tools block. With tools off it
+    would be noise (there's nothing to route to)."""
+    out = _render(
+        tools_enabled=False,
+        tool_names=[],
+        router_enabled=True,
+        router_repo="mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+    )
+    assert "router" not in out
 
 
 def test_header_compact_shows_percent_and_keep() -> None:

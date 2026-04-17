@@ -41,6 +41,7 @@ from harness.orchestrator import (
 from harness.persona import PersonaAdapter
 from harness.persona.rewriter import build_rewriter_messages
 from harness.retrieval import VoiceRetriever
+from harness.router import ModelRouter, Router
 from harness.scribe import run_scribe
 from harness.store import (
     EpisodicRecord,
@@ -382,6 +383,8 @@ def _render_chat_header(
     tool_names: list[str],
     workspace_path: Path | None,
     rewrite_on_tools: bool,
+    router_enabled: bool,
+    router_repo: str | None,
     compact_at: float,
     compact_keep_recent: int,
     dev: bool,
@@ -442,6 +445,10 @@ def _render_chat_header(
             grid.add_row("workspace", ws_display)
         if rewrite_on_tools:
             grid.add_row("rewrite-on-tools", "[green]on[/green]")
+        if router_enabled and router_repo:
+            # Strip the HF org prefix for a tighter display — full repo is in --help.
+            short_repo = router_repo.rsplit("/", 1)[-1]
+            grid.add_row("router", f"[green]on[/green] · [dim]{short_repo}[/dim]")
     else:
         grid.add_row("tools", "[dim]off[/dim]")
 
@@ -967,6 +974,23 @@ def chat(
         "see the model's self-inflicted noise; on for developers tuning "
         "the filter or debugging small-model behavior.",
     ),
+    router_enabled: bool = typer.Option(
+        False,
+        "--router/--no-router",
+        help="Front the tool loop with a small intent-router model. When "
+        "it classifies the user turn into a known read-tier tool with "
+        "valid args, the orchestrator executes the tool itself and the "
+        "main model only does a wrap-up round — no fabricate-and-nudge "
+        "rounds. Advisory: unparseable / null / write-tier intents fall "
+        "through to the normal loop. See harness-ut3.",
+    ),
+    router_repo: str = typer.Option(
+        "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+        "--router-repo",
+        help="HF repo for the router model. Default is Qwen 2.5 1.5B "
+        "Instruct 4-bit (~1GB RAM). Only used when --router is on. "
+        "Router is MLX-only for now.",
+    ),
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
     character = load_character(settings.character_path)
@@ -983,6 +1007,13 @@ def chat(
         model_repo=model_repo,
         lora_path=lora_path,
     )
+    router: Router | None = None
+    if router_enabled:
+        if not tools:
+            raise typer.BadParameter("--router requires --tools (nothing to route to otherwise).")
+        from harness.model.mlx import MLXAdapter
+
+        router = ModelRouter(adapter=MLXAdapter(repo=router_repo))
     retriever = _maybe_retriever(character, top_k)
     memory_store = _open_episodic_store(character) if memories > 0 else None
     semantic_store = _open_semantic_store() if facts > 0 else None
@@ -1121,7 +1152,11 @@ def chat(
         return answer.startswith("y")
 
     def render_tool_event(event: ToolLoopEvent) -> None:
-        if event.kind == "model_call_start":
+        if event.kind == "router_intent":
+            call = event.call
+            assert call is not None
+            console.print(f"[dim magenta]→ routed to {call.name}[/dim magenta]")
+        elif event.kind == "model_call_start":
             thinking.start()
         elif event.kind == "token_delta":
             # First token received — drop the spinner, open a Live region
@@ -1168,6 +1203,8 @@ def chat(
         tool_names=registry.names() if registry is not None else [],
         workspace_path=workspace_path if registry is not None else None,
         rewrite_on_tools=rewrite_on_tools,
+        router_enabled=router is not None,
+        router_repo=router_repo if router is not None else None,
         compact_at=compact_at,
         compact_keep_recent=compact_keep_recent,
         dev=dev,
@@ -1413,6 +1450,7 @@ def chat(
                     registry,
                     confirm=confirm_write_tool,
                     observe=render_tool_event,
+                    router=router,
                 )
                 streamed = True
                 # Persist the tool exchange (assistant tool-call turns +
