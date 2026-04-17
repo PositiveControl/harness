@@ -208,6 +208,28 @@ def test_renderer_suppresses_trailing_meta_confirm_fragment() -> None:
     assert "suppressed" in captured
 
 
+def test_renderer_force_flushes_runaway_paragraph() -> None:
+    """Regression: the 7B went into a degenerate loop that didn't emit
+    sentence terminators. Previously the renderer would buffer silently
+    until max_tokens fired, looking 'stuck' to the user. Now we force-
+    flush at _MAX_BUFFER chars so the tokens hit the screen."""
+    # A single 'sentence' of 500 chars with no terminator. Exceeds the
+    # 400-char buffer cap — must render rather than stay hidden.
+    junk = "alpha beta " * 50  # ~550 chars, no period
+    visible, captured = _render([junk])
+    assert junk.rstrip() in visible or "alpha beta" in captured
+
+
+def test_renderer_force_flush_still_drops_meta_confirm() -> None:
+    """The force-flush path must still apply the meta-confirm regex —
+    otherwise a runaway 'would you like me to would you like me to…'
+    loop would dump the whole mess to the user."""
+    runaway = "would you like me to proceed " * 20  # ~580 chars, no period
+    _, captured = _render([runaway])
+    assert "would you like" not in captured.lower()
+    assert "suppressed" in captured
+
+
 def test_renderer_handles_token_level_fragmentation() -> None:
     """Tokens often arrive sub-word. A meta-confirm phrase split across
     several tiny deltas must still be dropped as a unit at the sentence

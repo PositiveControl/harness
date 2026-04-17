@@ -416,7 +416,16 @@ class _StreamRenderer:
 
     Cost: sentence-level latency instead of token-level. The user sees
     one sentence appear at a time rather than token-by-token. Worth it
-    to keep small-model noise off the screen."""
+    to keep small-model noise off the screen. Guard against degenerate
+    no-punctuation loops by force-flushing the buffer at _MAX_BUFFER
+    chars — the user still sees something going wrong instead of a
+    silent terminal that looks stuck."""
+
+    # Cap on buffered characters before we force a flush. Long enough
+    # to include a whole paragraph; short enough that a runaway
+    # 'would you like me to would you like me to…' loop surfaces within
+    # ~a second rather than piling up invisibly until max_tokens fires.
+    _MAX_BUFFER = 400
 
     def __init__(self, console: Console) -> None:
         self._console = console
@@ -436,6 +445,11 @@ class _StreamRenderer:
             self.start()
         self._pending += delta
         self._flush_complete_sentences()
+        # No sentence boundary yet? Bail if the buffer is getting huge —
+        # that's either a very long paragraph or a degenerate loop. Either
+        # way the user wants tokens on screen, not silence.
+        if len(self._pending) >= self._MAX_BUFFER:
+            self._force_flush_pending()
 
     def _flush_complete_sentences(self) -> None:
         while True:
@@ -451,6 +465,17 @@ class _StreamRenderer:
                 self._suppressed_count += 1
                 continue
             self._emit(sentence)
+
+    def _force_flush_pending(self) -> None:
+        """Emit the pending buffer even without a sentence boundary.
+        Still runs the meta-confirm / false-success regexes so a
+        runaway hallucination gets dropped instead of spilling to
+        screen; the counter tells the user something was suppressed."""
+        if _META_CONFIRM_RE.search(self._pending) or _FALSE_SUCCESS_RE.search(self._pending):
+            self._suppressed_count += 1
+        else:
+            self._emit(self._pending)
+        self._pending = ""
 
     def _emit(self, text: str) -> None:
         self._visible += text
@@ -1225,7 +1250,13 @@ def chat(
     except (KeyboardInterrupt, EOFError):
         console.print("\n[dim]bye.[/dim]")
     finally:
+        # Order matters: stop anything that could still be painting the
+        # terminal first (spinner, stream) so a later exception doesn't
+        # leave a live region hanging. Store closes last — they're
+        # idempotent and safe under exceptions.
         thinking.stop()
+        if stream_renderer.active:
+            stream_renderer.stop()
         transcript.close()
         if compaction_store is not None:
             compaction_store.close()
@@ -1233,6 +1264,9 @@ def chat(
             memory_store.close()
         if semantic_store is not None:
             semantic_store.close()
+        # MLX and sentence-transformers hold their weights in Python
+        # attributes; normal GC releases them on process exit. No
+        # explicit unload call is needed and mlx_lm doesn't expose one.
 
 
 @app.command()
