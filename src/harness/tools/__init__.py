@@ -15,6 +15,9 @@ from harness.tools.base import (
     ToolSpec,
 )
 from harness.tools.edit_file import EditFileTool
+from harness.tools.glob import GlobTool
+from harness.tools.grep import GrepTool
+from harness.tools.list_dir import ListDirTool
 from harness.tools.profiles import (
     DEFAULT_PROFILE,
     TOOL_PROFILES,
@@ -30,6 +33,9 @@ __all__ = [
     "DEFAULT_PROFILE",
     "TOOL_PROFILES",
     "EditFileTool",
+    "GlobTool",
+    "GrepTool",
+    "ListDirTool",
     "ModelReply",
     "ReadFileTool",
     "SearchFactsTool",

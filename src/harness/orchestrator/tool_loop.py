@@ -34,17 +34,23 @@ _TEASER_RE = re.compile(
 # "has been added", "is now included", "I've created", "successfully updated",
 # etc. When the reply contains one of these AND no tool was executed in the
 # turn, the model is hallucinating success (harness-3fn).
+_ACTION_VERBS = (
+    r"(?:added|included|updated|created|written|modified|"
+    r"replaced|removed|set|appended|saved|deleted)"
+)
 _FALSE_SUCCESS_RE = re.compile(
     r"\b(?:"
-    r"has been\s+(?:added|included|updated|created|written|modified|replaced|removed|set|appended|saved|deleted)"
+    rf"has been\s+{_ACTION_VERBS}"
     r"|"
-    r"(?:is|are)\s+now\s+(?:in|included|added|excluded|set|present|updated|available|saved)"
+    r"(?:is|are)\s+now\s+(?:in|included|added|excluded|"
+    r"set|present|updated|available|saved)"
     r"|"
-    r"(?:i(?:'ve|\shave)|i(?:'ve|\shave)\s+(?:just|now|successfully))\s+(?:added|included|updated|created|written|modified|replaced|removed|set|appended|saved|deleted)"
+    rf"(?:i(?:'ve|\shave))(?:\s+(?:just|now|successfully))?\s+{_ACTION_VERBS}"
     r"|"
-    r"successfully\s+(?:added|included|updated|created|written|modified|replaced|saved|deleted|appended)"
+    rf"successfully\s+{_ACTION_VERBS}"
     r"|"
-    r"the\s+\S+\s+(?:has\s+been|is\s+now|will\s+be)\s+(?:added|included|updated|created|excluded|modified|replaced)"
+    r"the\s+\S+\s+(?:has\s+been|is\s+now|will\s+be)\s+"
+    r"(?:added|included|updated|created|excluded|modified|replaced)"
     r")\b",
     re.IGNORECASE,
 )

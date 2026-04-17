@@ -15,11 +15,12 @@ from __future__ import annotations
 
 TOOL_PROFILES: dict[str, tuple[str, ...]] = {
     "minimal": (),
-    # Read-only everyday chat: open a file, recall memory, recall facts.
-    # Filesystem list/grep will join once implemented (see bd issues
-    # harness-2bq, harness-4dq).
+    # Read-only everyday chat: open a file, find files, grep, recall.
     "core": (
         "read_file",
+        "list_dir",
+        "grep",
+        "glob",
         "search_memory",
         "search_facts",
     ),
@@ -27,6 +28,9 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
     # tools will join once implemented (see bd issue harness-d4d).
     "coding": (
         "read_file",
+        "list_dir",
+        "grep",
+        "glob",
         "edit_file",
         "write_file",
         "shell",

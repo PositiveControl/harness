@@ -46,6 +46,9 @@ from harness.tools import (
     DEFAULT_PROFILE,
     TOOL_PROFILES,
     EditFileTool,
+    GlobTool,
+    GrepTool,
+    ListDirTool,
     ReadFileTool,
     SearchFactsTool,
     SearchMemoryTool,
@@ -651,6 +654,9 @@ def chat(
             "edit_file": lambda: EditFileTool(root=workspace_path),
             "write_file": lambda: WriteFileTool(root=workspace_path),
             "shell": lambda: ShellTool(cwd=workspace_path),
+            "list_dir": lambda: ListDirTool(root=workspace_path),
+            "grep": lambda: GrepTool(root=workspace_path),
+            "glob": lambda: GlobTool(root=workspace_path),
             "search_memory": (
                 lambda: (
                     SearchMemoryTool(store=memory_store, user_id=speaker)
