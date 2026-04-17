@@ -51,11 +51,33 @@ def test_missing_match_raises(tmp_path: Path) -> None:
         _tool(tmp_path).call(path="doc.md", old_string="goodbye", new_string="bye")
 
 
-def test_empty_old_string_rejected(tmp_path: Path) -> None:
+def test_empty_old_string_appends(tmp_path: Path) -> None:
+    """Regression: 'add X to .gitignore' — the model reaches for
+    edit_file with empty old_string. We treat that as append."""
+    target = tmp_path / ".gitignore"
+    target.write_text(".venv/\ndata/\n")
+    result = _tool(tmp_path).call(
+        path=".gitignore",
+        old_string="",
+        new_string="scratch/\n",
+    )
+    assert target.read_text() == ".venv/\ndata/\nscratch/\n"
+    assert "appended" in result
+    assert "+9 bytes" in result
+
+
+def test_append_to_file_without_trailing_newline(tmp_path: Path) -> None:
+    target = tmp_path / "notes.md"
+    target.write_text("alpha")
+    _tool(tmp_path).call(path="notes.md", old_string="", new_string="\nbeta")
+    assert target.read_text() == "alpha\nbeta"
+
+
+def test_both_empty_rejected(tmp_path: Path) -> None:
     target = tmp_path / "doc.md"
     target.write_text("hello\n")
-    with pytest.raises(ValueError, match="old_string must not be empty"):
-        _tool(tmp_path).call(path="doc.md", old_string="", new_string="x")
+    with pytest.raises(ValueError, match="nothing to do"):
+        _tool(tmp_path).call(path="doc.md", old_string="", new_string="")
 
 
 def test_noop_rejected(tmp_path: Path) -> None:

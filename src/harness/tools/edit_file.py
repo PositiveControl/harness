@@ -8,18 +8,20 @@ from harness.tools.base import ToolSpec
 
 @dataclass
 class EditFileTool:
-    """Replace exact-string occurrences inside a workspace file.
-    Write-tier — requires user confirmation. Biggest win over
-    `write_file`: edits don't re-emit the whole file, so the model
-    spends ~hundreds of tokens instead of thousands and can't silently
-    drop content when its output truncates.
+    """Edit an existing workspace file: either replace an exact-string
+    occurrence, or append new text to the end of the file. Write-tier
+    — requires user confirmation. Biggest win over `write_file`: edits
+    don't re-emit the whole file, so the model spends ~hundreds of
+    tokens instead of thousands and can't silently drop content when
+    its output truncates.
 
-    Contract: `old_string` must appear in the file. By default it must
-    appear exactly once (the model should include enough surrounding
-    context to disambiguate) — pass `replace_all=true` to replace every
-    occurrence. A no-op (old == new) is an error: if the model thinks
-    it's editing but isn't, we want the tool loop to see it and try
-    again rather than declare success."""
+    Three modes:
+      1. Replace (default). `old_string` appears in the file; we
+         substitute `new_string`. Must be unique unless `replace_all`.
+      2. Append. `old_string` is empty; `new_string` is added to the
+         end of the file. Common case: 'add a line to .gitignore'.
+      3. No-op rejected. If old and new are both empty, or equal, the
+         tool errors so the model doesn't hallucinate success."""
 
     root: Path
 
@@ -28,15 +30,20 @@ class EditFileTool:
         return ToolSpec(
             name="edit_file",
             description=(
-                "Edit a file in the workspace by replacing an exact "
-                "string. Prefer this over write_file for changes to "
-                "existing files — it's cheaper in tokens and safer "
-                "against truncation. `old_string` must match the "
-                "current file contents exactly (whitespace included) "
-                "and must be unique unless `replace_all=true`. Include "
-                "surrounding lines to disambiguate when the literal "
-                "target repeats in the file. Returns a summary of how "
-                "many replacements were applied."
+                "Edit a file in the workspace. Prefer this over "
+                "write_file for changes to existing files — it's "
+                "cheaper in tokens and safer against truncation.\n\n"
+                "Two modes:\n"
+                "  • REPLACE: set `old_string` to the exact text to "
+                "find (including whitespace) and `new_string` to the "
+                "replacement. `old_string` must be unique in the file "
+                "unless `replace_all=true`. Include surrounding lines "
+                "when the literal target repeats.\n"
+                "  • APPEND: leave `old_string` empty and `new_string` "
+                "is added to the end of the file. Use this for "
+                "'add a line to .gitignore' / 'append an entry' style "
+                "requests.\n\n"
+                "Returns a summary of what changed."
             ),
             parameters={
                 "type": "object",
@@ -48,19 +55,23 @@ class EditFileTool:
                     "old_string": {
                         "type": "string",
                         "description": (
-                            "Exact text to replace. Must appear in the file "
-                            "verbatim, whitespace and newlines included."
+                            "Exact text to replace (including whitespace). "
+                            "Empty string = append `new_string` to end of file."
                         ),
                     },
                     "new_string": {
                         "type": "string",
-                        "description": "Replacement text. Must differ from old_string.",
+                        "description": (
+                            "Replacement or appended text. Must differ from "
+                            "old_string when replacing."
+                        ),
                     },
                     "replace_all": {
                         "type": "boolean",
                         "description": (
                             "If true, replace every occurrence. Default false — "
-                            "requires old_string to be unique in the file."
+                            "requires old_string to be unique in the file. "
+                            "Ignored when old_string is empty (append mode)."
                         ),
                     },
                 },
@@ -78,9 +89,9 @@ class EditFileTool:
         new_string: str,
         replace_all: bool = False,
     ) -> str:
-        if not old_string:
-            raise ValueError("old_string must not be empty; use write_file to create a file")
-        if old_string == new_string:
+        if not old_string and not new_string:
+            raise ValueError("old_string and new_string are both empty — nothing to do")
+        if old_string and old_string == new_string:
             raise ValueError("old_string and new_string are identical — edit is a no-op")
 
         root = self.root.resolve()
@@ -98,6 +109,12 @@ class EditFileTool:
             original = target.read_text()
         except UnicodeDecodeError as exc:
             raise ValueError(f"{path} is not a UTF-8 text file") from exc
+
+        # Append mode: empty old_string → new_string goes at the end.
+        if not old_string:
+            updated = original + new_string
+            target.write_text(updated)
+            return f"appended to {path}: +{len(new_string)} bytes"
 
         count = original.count(old_string)
         if count == 0:
