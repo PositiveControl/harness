@@ -21,3 +21,6 @@ logs/
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+
+# Local Claude Code per-clone settings and interaction state
+.claude/
