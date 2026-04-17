@@ -164,9 +164,7 @@ def run_tool_loop(
                     elif isinstance(chunk, StreamComplete):
                         reply = chunk.reply
                 if reply is None:
-                    raise RuntimeError(
-                        "stream_with_tools exhausted without StreamComplete"
-                    )
+                    raise RuntimeError("stream_with_tools exhausted without StreamComplete")
                 last_reply = reply
             else:
                 last_reply = adapter.complete_with_tools(

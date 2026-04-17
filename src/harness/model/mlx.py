@@ -335,9 +335,7 @@ class MLXAdapter:
         max_tokens: int = 512,
         temperature: float = 0.7,
     ) -> str:
-        return "".join(
-            self.stream(messages, max_tokens=max_tokens, temperature=temperature)
-        )
+        return "".join(self.stream(messages, max_tokens=max_tokens, temperature=temperature))
 
     def stream_with_tools(
         self,
@@ -401,9 +399,7 @@ class MLXAdapter:
         except Exception:
             # Heuristic only — never break a real turn over a tokenizer hiccup.
             was_truncated = False
-        had_unparseable_call = not tool_calls and (
-            "<tool_call>" in raw or "<function=" in raw
-        )
+        had_unparseable_call = not tool_calls and ("<tool_call>" in raw or "<function=" in raw)
         if tools and not tool_calls and raw.strip():
             _log_tool_bail(raw, content)
         yield StreamComplete(

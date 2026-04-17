@@ -225,9 +225,7 @@ class _StreamingRecordingAdapter:
 
 def test_persona_adapter_stream_yields_draft_then_rewrite() -> None:
     character = load_character(AIRTON)
-    base = _StreamingRecordingAdapter(
-        per_call_deltas=[["draft ", "text"], ["styled ", "text"]]
-    )
+    base = _StreamingRecordingAdapter(per_call_deltas=[["draft ", "text"], ["styled ", "text"]])
     adapter = PersonaAdapter(base, character, chain_rewrites=False)
 
     chunks = list(adapter.stream([ChatMessage(role="user", content="hi")]))
@@ -243,9 +241,7 @@ def test_persona_adapter_stream_yields_draft_then_rewrite() -> None:
 
 def test_persona_adapter_stream_chain_runs_three_calls() -> None:
     character = load_character(AIRTON)
-    base = _StreamingRecordingAdapter(
-        per_call_deltas=[["draft"], ["styled"], ["concrete"]]
-    )
+    base = _StreamingRecordingAdapter(per_call_deltas=[["draft"], ["styled"], ["concrete"]])
     adapter = PersonaAdapter(base, character, chain_rewrites=True)
 
     joined = "".join(adapter.stream([ChatMessage(role="user", content="hi")]))

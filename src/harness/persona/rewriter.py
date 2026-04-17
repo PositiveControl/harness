@@ -215,9 +215,7 @@ class PersonaAdapter:
         if not callable(base_stream):
             # Base adapter has no streaming — fall back to one-shot output
             # of the fully-composed complete(). Streams as one chunk.
-            yield self.complete(
-                messages, max_tokens=max_tokens, temperature=temperature
-            )
+            yield self.complete(messages, max_tokens=max_tokens, temperature=temperature)
             return
 
         rewrite_cap = self.rewriter_max_tokens if self.rewriter_max_tokens else max_tokens

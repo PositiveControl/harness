@@ -139,9 +139,7 @@ def test_compaction_store_sessions_are_isolated(tmp_path: Path) -> None:
         store.append(
             session_id="a", summary="alpha", up_to_turn_id=1, covered_turns=1, model_id="m"
         )
-        store.append(
-            session_id="b", summary="beta", up_to_turn_id=1, covered_turns=1, model_id="m"
-        )
+        store.append(session_id="b", summary="beta", up_to_turn_id=1, covered_turns=1, model_id="m")
         assert store.latest_for_session("a") is not None
         assert store.latest_for_session("a").summary == "alpha"  # type: ignore[union-attr]
         assert store.latest_for_session("b").summary == "beta"  # type: ignore[union-attr]
