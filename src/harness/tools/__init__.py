@@ -19,6 +19,7 @@ from harness.tools.git import GitDiffTool, GitLogTool, GitStatusTool
 from harness.tools.glob import GlobTool
 from harness.tools.grep import GrepTool
 from harness.tools.list_dir import ListDirTool
+from harness.tools.ops import ConsolidateMemoryTool, ScribeSessionTool
 from harness.tools.profiles import (
     DEFAULT_PROFILE,
     TOOL_PROFILES,
@@ -34,6 +35,7 @@ from harness.tools.write_file import WriteFileTool
 __all__ = [
     "DEFAULT_PROFILE",
     "TOOL_PROFILES",
+    "ConsolidateMemoryTool",
     "EditFileTool",
     "GitDiffTool",
     "GitLogTool",
@@ -45,6 +47,7 @@ __all__ = [
     "ReadFileTool",
     "RememberEventTool",
     "RememberFactTool",
+    "ScribeSessionTool",
     "SearchFactsTool",
     "SearchMemoryTool",
     "ShellTool",

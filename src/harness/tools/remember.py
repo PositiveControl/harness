@@ -65,7 +65,7 @@ class RememberFactTool:
                     "confidence": {
                         "type": "number",
                         "description": (
-                            "How certain you are, 0.0–1.0. Default 0.9. Use <0.7 for guesses."
+                            "How certain you are, 0.0-1.0. Default 0.9. Use <0.7 for guesses."
                         ),
                     },
                 },
@@ -137,7 +137,7 @@ class RememberEventTool:
                     },
                     "body": {
                         "type": "string",
-                        "description": "The narrative itself, 1–5 sentences.",
+                        "description": "The narrative itself, 1-5 sentences.",
                     },
                     "principle": {
                         "type": "string",

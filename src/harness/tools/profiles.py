@@ -46,6 +46,8 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_facts",
         "remember_fact",
         "remember_event",
+        "scribe_session",
+        "consolidate_memory",
     ),
     # Self-inspection. `stats` and `transcript_recent` will join once
     # implemented (see bd issues harness-m2e, harness-2mi).

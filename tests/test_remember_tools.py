@@ -53,13 +53,13 @@ def test_fact_insert_and_retrieve(tmp_path: Path) -> None:
 def test_fact_confidence_respected(tmp_path: Path) -> None:
     tool = _fact_tool(tmp_path / "mem.sqlite")
     tool.call(subject="a", predicate="b", object="c", confidence=0.55)
-    f = list(tool.store.all())[0]
+    f = next(iter(tool.store.all()))
     assert f.confidence == 0.55
 
 
 def test_fact_confidence_bounds(tmp_path: Path) -> None:
     tool = _fact_tool(tmp_path / "mem.sqlite")
-    with pytest.raises(ValueError, match="between 0.0 and 1.0"):
+    with pytest.raises(ValueError, match=r"between 0\.0 and 1\.0"):
         tool.call(subject="a", predicate="b", object="c", confidence=1.5)
 
 
@@ -73,7 +73,7 @@ def test_fact_shared_when_user_none(tmp_path: Path) -> None:
     tool = _fact_tool(tmp_path / "mem.sqlite", user_id=None)
     out = tool.call(subject="project", predicate="name", object="harness")
     assert "shared" in out
-    f = list(tool.store.all())[0]
+    f = next(iter(tool.store.all()))
     assert f.user_id is None
 
 
@@ -115,7 +115,7 @@ def test_event_shared_when_user_none(tmp_path: Path) -> None:
     tool = _event_tool(tmp_path / "mem.sqlite", user_id=None)
     out = tool.call(title="project-wide note", body="applies to everyone")
     assert "shared" in out
-    r = list(tool.store.all())[0]
+    r = next(iter(tool.store.all()))
     assert r.user_id is None
 
 

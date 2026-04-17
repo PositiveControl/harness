@@ -45,6 +45,7 @@ from harness.store.transcript import Transcript, TranscriptMessage
 from harness.tools import (
     DEFAULT_PROFILE,
     TOOL_PROFILES,
+    ConsolidateMemoryTool,
     EditFileTool,
     GitDiffTool,
     GitLogTool,
@@ -55,6 +56,7 @@ from harness.tools import (
     ReadFileTool,
     RememberEventTool,
     RememberFactTool,
+    ScribeSessionTool,
     SearchFactsTool,
     SearchMemoryTool,
     ShellTool,
@@ -690,6 +692,30 @@ def chat(
                 lambda: (
                     RememberEventTool(store=memory_store, user_id=speaker, session_id=session)
                     if memory_store is not None
+                    else None
+                )
+            ),
+            "scribe_session": (
+                lambda: (
+                    ScribeSessionTool(
+                        adapter=adapter,
+                        character=character,
+                        transcript=transcript,
+                        episodic_store=memory_store,
+                        semantic_store=semantic_store,
+                        default_user_id=speaker,
+                    )
+                    if memory_store is not None and semantic_store is not None
+                    else None
+                )
+            ),
+            "consolidate_memory": (
+                lambda: (
+                    ConsolidateMemoryTool(
+                        episodic_store=memory_store,
+                        semantic_store=semantic_store,
+                    )
+                    if memory_store is not None and semantic_store is not None
                     else None
                 )
             ),
