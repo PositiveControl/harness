@@ -26,6 +26,47 @@ def test_voice_samples_have_unique_ids() -> None:
     assert len(ids) == len(set(ids))
 
 
+def test_voice_sample_counts_sum_to_total(tmp_path: Path) -> None:
+    """harness-46z: the introspect tool needs the canonical/captured
+    split. Load Airton as-is (no captured corpus in the repo by default)
+    and assert the invariant canonical + captured == len(voice_samples).
+    Then synthesize a character dir with a captured.yaml and assert the
+    split is picked up."""
+    character = load_character(AIRTON)
+    assert character.canonical_voice_count + character.captured_voice_count == len(
+        character.voice_samples
+    )
+    # Repo carries canonical only by default — bootstrapping sanity.
+    assert character.canonical_voice_count >= 20
+
+
+def test_captured_samples_counted_separately(tmp_path: Path) -> None:
+    """Synthesize a mini character directory with both canonical and
+    captured samples; assert the counts line up and the merged tuple
+    puts canonical first."""
+    import shutil
+
+    fake = tmp_path / "airton"
+    shutil.copytree(AIRTON, fake)
+    captured_path = fake / "voice" / "captured.yaml"
+    captured_path.write_text(
+        "samples:\n"
+        "  - id: captured-1\n"
+        "    prompt: test prompt\n"
+        "    gold: test gold\n"
+        "  - id: captured-2\n"
+        "    prompt: another prompt\n"
+        "    gold: another gold\n"
+    )
+
+    character = load_character(fake)
+    assert character.captured_voice_count == 2
+    assert character.canonical_voice_count + 2 == len(character.voice_samples)
+    # Merged order: canonical first, captured appended.
+    tail_ids = [s.id for s in character.voice_samples[-2:]]
+    assert tail_ids == ["captured-1", "captured-2"]
+
+
 def test_self_awareness_is_explicit() -> None:
     character = load_character(AIRTON)
     assert "program on your Mac" in character.self_awareness

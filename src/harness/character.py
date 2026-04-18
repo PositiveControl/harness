@@ -48,6 +48,13 @@ class Character:
     on_being_wrong: str
     constitution: str
     voice_samples: tuple[VoiceSample, ...]
+    # Canonical = curated samples in voice/canonical.yaml; captured =
+    # live edits harvested from chat into voice/captured.yaml. `voice_samples`
+    # is the merged tuple (canonical first, captured appended) that retrieval
+    # uses; these counts let the introspect tool report the split without
+    # re-reading disk. Invariant: canonical + captured = len(voice_samples).
+    canonical_voice_count: int
+    captured_voice_count: int
     seed_memories: tuple[SeedMemory, ...]
 
     def system_prompt(
@@ -181,5 +188,7 @@ def load_character(path: Path) -> Character:
         on_being_wrong=core["on_being_wrong"].strip(),
         constitution=constitution,
         voice_samples=voice_samples,
+        canonical_voice_count=len(canonical_samples),
+        captured_voice_count=len(captured_samples),
         seed_memories=tuple(seeds),
     )
