@@ -169,6 +169,7 @@ class ChatApp(App[None]):
         router: Router | None = None,
         workspace_path: Path | None = None,
         max_history_replay: int = 20,
+        startup_warnings: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
         self._character = character
@@ -197,6 +198,7 @@ class ChatApp(App[None]):
         # persistence across sessions, matching the classic REPL's
         # behavior.
         self._approved_tools: set[str] = set()
+        self._startup_warnings = startup_warnings
         self._state = _ChatAppState()
 
     # ---------- compose / mount ----------
@@ -221,8 +223,9 @@ class ChatApp(App[None]):
             f"adapter={self._adapter.id} session={self._session}. "
             f"{tools_note}. /exit /quit :q to leave.[/dim]"
         )
+        for w in self._startup_warnings:
+            log.write(f"[yellow]⚠ {w}[/yellow]")
         self._replay_history(log)
-        self.query_one("#prompt", Input).focus()
         # Baseline ctx count — just the system prompt framing is not
         # known before the first turn, so seed the meter at 0. It
         # updates after each turn completes.
@@ -231,6 +234,68 @@ class ChatApp(App[None]):
         # so the elapsed-time field feels identical. A faster tick is
         # wasted work; a slower one makes the counter feel stuck.
         self.set_interval(0.25, self._refresh_metrics)
+        # MLX adapters lazy-load on first complete(). On a 32GB box with
+        # --router that's two cold loads on the first turn (router 2GB +
+        # main 4-5GB) with nothing but a silent 'thinking N.Ns' counter
+        # — looks hung for 1-3 min. Kick a worker to preload both now so
+        # the user sees progress in the log and the first turn's latency
+        # is just generation, not load. Input stays disabled until warm
+        # to avoid a race between the load and an eager first prompt.
+        if self._needs_preload():
+            self._set_input_enabled(False)
+            self.run_worker(self._preload_sync, thread=True, exclusive=False, group="warmup")
+        else:
+            self.query_one("#prompt", Input).focus()
+
+    def _needs_preload(self) -> bool:
+        """True iff at least one adapter we're about to use exposes a
+        load() worth doing off the UI thread. Echo / Ollama fall through
+        — their load paths are either no-ops or trivially fast, so
+        firing a worker just to move focus is overhead."""
+        main_has_load = callable(getattr(self._adapter, "load", None))
+        router_adapter = (
+            getattr(self._router, "adapter", None) if self._router is not None else None
+        )
+        router_has_load = callable(getattr(router_adapter, "load", None))
+        return main_has_load or router_has_load
+
+    def _preload_sync(self) -> None:
+        """Worker-thread. Load the main (and router, if present) MLX
+        model so the first real turn doesn't eat the cold-load cost
+        invisibly. Adapters that don't expose `load()` (echo, ollama)
+        are fine — the getattr just returns None and we skip. Any
+        load failure is surfaced as a warning line but does NOT block
+        the session: on OOM or download hiccup the first turn will
+        retry via the normal lazy path."""
+        try:
+            self.call_from_thread(self._render_loading, f"loading {self._adapter.id}…")
+            load_main = getattr(self._adapter, "load", None)
+            if callable(load_main):
+                load_main()
+            self.call_from_thread(self._render_loading, f"✓ {self._adapter.id} ready")
+            if self._router is not None:
+                router_adapter = getattr(self._router, "adapter", None)
+                router_id = getattr(router_adapter, "id", "router")
+                self.call_from_thread(self._render_loading, f"loading {router_id}…")
+                load_router = getattr(router_adapter, "load", None)
+                if callable(load_router):
+                    load_router()
+                self.call_from_thread(self._render_loading, f"✓ {router_id} ready")
+        except Exception as exc:
+            self.call_from_thread(
+                self._render_warning,
+                f"preload failed ({type(exc).__name__}: {exc}); first turn will retry",
+            )
+        finally:
+            self.call_from_thread(self._finish_warmup)
+
+    def _render_loading(self, msg: str) -> None:
+        log = self.query_one("#output", RichLog)
+        log.write(f"[dim]{msg}[/dim]")
+
+    def _finish_warmup(self) -> None:
+        self._set_input_enabled(True)
+        self.query_one("#prompt", Input).focus()
 
     def _replay_history(self, log: RichLog) -> None:
         """Tail the session transcript and render up to

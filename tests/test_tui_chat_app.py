@@ -502,7 +502,88 @@ async def test_chat_app_error_in_adapter_shows_red_line(tmp_path) -> None:  # ty
         assert not prompt.disabled
 
 
+@pytest.mark.asyncio
+async def test_chat_app_renders_startup_warnings(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Warnings handed to ChatApp (from the tool-registry builder)
+    must appear in the mount banner so --tools-add silently dropping
+    profile names stops biting the user (harness-akq)."""
+    app = _build_app(
+        tmp_path,
+        startup_warnings=("tool 'research' not yet implemented — skipping",),
+    )
+    async with app.run_test() as pilot:
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "research" in rendered
+        assert "not yet implemented" in rendered
+
+
+@pytest.mark.asyncio
+async def test_chat_app_preloads_mlx_like_adapter(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """An adapter that exposes load() triggers the warmup worker on
+    mount: input starts disabled, the log shows a 'loading …' line,
+    and both fire before the first turn so the cold-load cost doesn't
+    hide behind a silent 'thinking' counter (harness-o5g)."""
+    adapter = _LoadingAdapter()
+    app = _build_app(tmp_path, adapter=adapter)
+    async with app.run_test() as pilot:
+        # Warmup hasn't finished yet — input should be disabled to
+        # prevent a prompt racing the load.
+        assert pilot.app.query_one("#prompt", Input).disabled
+        await _wait_for_workers(pilot)
+        assert adapter.load_calls == 1
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "loading test:loading" in rendered
+        assert "test:loading ready" in rendered
+        prompt = pilot.app.query_one("#prompt", Input)
+        assert not prompt.disabled
+        assert prompt.has_focus
+
+
+@pytest.mark.asyncio
+async def test_chat_app_skips_preload_for_adapters_without_load(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Echo / Ollama adapters have no load() worth deferring — the
+    warmup worker is not spawned and input gets focus immediately so
+    existing tests stay fast and hermetic."""
+    app = _build_app(tmp_path)  # EchoAdapter
+    async with app.run_test() as pilot:
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "loading" not in rendered
+        prompt = pilot.app.query_one("#prompt", Input)
+        assert not prompt.disabled
+        assert prompt.has_focus
+
+
 # ---------- helpers ----------
+
+
+class _LoadingAdapter:
+    """Echo-like adapter that also exposes a load() hook so the TUI
+    preload worker has something to call. Tracks call count so tests
+    can assert the preload fired exactly once."""
+
+    id = "test:loading"
+    context_window = 4096
+
+    def __init__(self) -> None:
+        self.load_calls = 0
+
+    def load(self) -> None:
+        self.load_calls += 1
+
+    def complete(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+    ) -> str:
+        return "[loaded] ok"
+
+    def count_tokens(self, messages: Iterable[ChatMessage]) -> int:
+        return approx_token_count(messages)
 
 
 class _ToolScriptedAdapter:
@@ -657,6 +738,8 @@ def _build_app(  # type: ignore[no-untyped-def]
     adapter: object | None = None,
     registry: ToolRegistry | None = None,
     workspace=None,
+    startup_warnings: tuple[str, ...] = (),
+    router: object | None = None,
 ) -> ChatApp:
     """Construct a ChatApp with a real Transcript (SQLite in tmp_path),
     the real Airton character, and by default an EchoAdapter. Tests
@@ -681,6 +764,8 @@ def _build_app(  # type: ignore[no-untyped-def]
         facts=0,
         registry=registry,
         workspace_path=workspace,
+        startup_warnings=startup_warnings,
+        router=router,  # type: ignore[arg-type]
     )
 
 

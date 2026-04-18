@@ -71,6 +71,24 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
 DEFAULT_PROFILE = "core"
 
 
+def _expand(tokens: tuple[str, ...]) -> set[str]:
+    """Expand a comma-split list of add/drop tokens. A token that names a
+    profile contributes every tool in that profile; everything else
+    passes through as a literal tool name (possibly a future tool not
+    yet implemented — warned at registration time, not here). Empty
+    strings dropped so CLI split of "" → ("",) is a no-op."""
+    out: set[str] = set()
+    for raw in tokens:
+        t = raw.strip()
+        if not t:
+            continue
+        if t in TOOL_PROFILES:
+            out.update(TOOL_PROFILES[t])
+        else:
+            out.add(t)
+    return out
+
+
 def resolve_tool_names(
     profile: str,
     *,
@@ -81,10 +99,11 @@ def resolve_tool_names(
     user overrides from `add` / `drop` applied. Unknown profile raises
     ValueError; unknown tool names in add/drop pass through (they'll be
     caught + warned at registration time, which is forward-compatible
-    with tools that haven't shipped yet)."""
+    with tools that haven't shipped yet). Profile names in add/drop
+    expand to every member tool."""
     if profile not in TOOL_PROFILES:
         raise ValueError(f"unknown tool-set {profile!r}; available: {sorted(TOOL_PROFILES)}")
     names = set(TOOL_PROFILES[profile])
-    names.update(n.strip() for n in add if n.strip())
-    names.difference_update(n.strip() for n in drop if n.strip())
+    names.update(_expand(add))
+    names.difference_update(_expand(drop))
     return tuple(sorted(names))

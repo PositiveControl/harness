@@ -863,14 +863,16 @@ def _build_tool_registry_for_tui(
     semantic_store: SemanticStore | None,
     speaker: str,
     session: str,
+    warnings_out: list[str] | None = None,
 ) -> ToolRegistry | None:
     """Build a ToolRegistry for the Textual app. Subset of the
     classic REPL's setup — skips scribe_session and
     consolidate_memory (they require the resolved adapter +
     character + transcript; the TUI can add them later if they show
-    up in real use). Unknown or store-dependent tools fall through
-    silently since the TUI has no Console to warn into here; add a
-    startup warnings path in harness-01o if it matters."""
+    up in real use). Unknown or store-dependent tools that get dropped
+    push a line into `warnings_out` so ChatApp can render them on mount
+    — silent drops bit a user who'd passed profile names to --tools-add
+    and got nothing back (harness-akq)."""
     if not tools:
         return None
     try:
@@ -920,13 +922,15 @@ def _build_tool_registry_for_tui(
     for name in wanted_names:
         builder = builders.get(name)
         if builder is None:
-            # Unknown / deferred (scribe_session, consolidate_memory) —
-            # skip silently. The TUI's mount banner surfaces the
-            # final registered tool list so the user can see what
-            # landed vs. what was dropped.
+            if warnings_out is not None:
+                warnings_out.append(f"tool {name!r} not yet implemented — skipping")
             continue
         tool = builder()
         if tool is None:
+            if warnings_out is not None:
+                warnings_out.append(
+                    f"tool {name!r} needs a store that isn't enabled (check --memories / --facts)"
+                )
             continue
         registry.register(tool)
 
@@ -1270,6 +1274,7 @@ def chat(
                 else ModelRouter(adapter=tui_router_adapter)
             )
 
+        tui_registry_warnings: list[str] = []
         tui_registry: ToolRegistry | None = _build_tool_registry_for_tui(
             tools=tools,
             tool_set=tool_set,
@@ -1280,6 +1285,7 @@ def chat(
             semantic_store=tui_semantic_store,
             speaker=speaker,
             session=session,
+            warnings_out=tui_registry_warnings,
         )
 
         ChatApp(
@@ -1300,6 +1306,7 @@ def chat(
             registry=tui_registry,
             router=tui_router,
             workspace_path=tui_workspace_path,
+            startup_warnings=tuple(tui_registry_warnings),
         ).run()
         return
 
