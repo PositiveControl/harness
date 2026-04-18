@@ -18,6 +18,7 @@ from harness.tools.edit_file import EditFileTool
 from harness.tools.git import GitDiffTool, GitLogTool, GitStatusTool
 from harness.tools.glob import GlobTool
 from harness.tools.grep import GrepTool
+from harness.tools.introspect import IntrospectContext, IntrospectTool
 from harness.tools.list_dir import ListDirTool
 from harness.tools.ops import ConsolidateMemoryTool, ScribeSessionTool
 from harness.tools.profiles import (
@@ -43,6 +44,8 @@ __all__ = [
     "GitStatusTool",
     "GlobTool",
     "GrepTool",
+    "IntrospectContext",
+    "IntrospectTool",
     "ListDirTool",
     "ModelReply",
     "ReadFileTool",
