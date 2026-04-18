@@ -1,23 +1,34 @@
-"""Textual chat app — Phase 4 adds tool-loop integration
-(harness-1r4) on top of Phase 3's metrics footer (harness-17v).
+"""Textual chat app — Phase 5 adds token-delta streaming
+(harness-lrg) on top of Phase 4's tool-loop wiring (harness-1r4).
 
-Scope of Phase 4:
-- When a `registry: ToolRegistry` is passed, the worker drives
-  `run_tool_loop` instead of calling `adapter.complete` directly.
-- Observer callback translates ToolLoopEvent → rich.Text lines and
-  hops onto the UI thread via `call_from_thread` to append them to
-  the RichLog in real time (router_intent, tool_call_start/end/
-  failed/declined/deduped).
-- Write-tier tools always decline for now — the confirmation modal
-  lands in harness-mz2. This keeps Phase 4 observable without
-  introducing a modal-screen dependency.
+Scope of Phase 5:
+- Non-tools path switches from `adapter.complete(...)` (blocking
+  one-shot) to `adapter.stream(...)` which yields token deltas. The
+  worker feeds each delta through a sentence-boundary buffer on the
+  UI thread via `call_from_thread`. Completed sentences write to
+  the RichLog as they complete; the tail flushes when the adapter
+  is done.
+- Tools path: the existing `token_delta` ToolLoopEvent (emitted by
+  adapter.stream_with_tools via the orchestrator) is now observed
+  and fed through the same sentence buffer, so the final wrap-up
+  reply streams in live instead of arriving as one blob after the
+  last tool call.
+- First streamed chunk is prefixed with 'airton ›'; subsequent
+  sentences are continuation lines. Classic-CLI style.
+
+The sentence-boundary strategy matches the existing _StreamRenderer
+in cli.py — token-level streaming repaints too often and leaks
+raw tool-call tag fragments while the adapter hasn't closed them
+yet. Sentence-level gives responsive feedback while keeping per-
+line output aligned with what eventually lands in the transcript.
 
 Scope of earlier phases still applies: retrieval, transcript
-persistence, metrics footer.
+persistence, metrics footer, tool observer.
 """
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
@@ -78,6 +89,19 @@ class _ChatAppState:
     retrieval_health: _RetrievalHealth = field(default_factory=_RetrievalHealth)
     turn_started_at: float | None = None
     ctx_used: int = 0
+    # Per-turn streaming buffer. Reset at turn start; written to
+    # from `_feed_stream` (UI thread only) as token deltas arrive;
+    # flushed at turn end. `stream_first_chunk` tracks whether the
+    # 'airton ›' prefix has been emitted yet.
+    stream_buffer: str = ""
+    stream_first_chunk: bool = True
+
+
+# Sentence boundary: `.!?` followed by whitespace / closing quote /
+# paren, OR a literal newline. Same heuristic as cli._StreamRenderer;
+# tuned so URLs like www.example.com/path don't split at the dot
+# inside the host.
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?:[.!?][\s)\]'\"]+|\n)")
 
 
 class ChatApp(App[None]):
@@ -196,9 +220,8 @@ class ChatApp(App[None]):
         log.write(
             f"[dim]Chat with {self._character.name}. "
             f"adapter={self._adapter.id} session={self._session}. "
-            f"{tools_note}. Phase 4: tool loop wired; streaming "
-            f"lands in harness-lrg, write-tier confirmation in "
-            f"harness-mz2.[/dim]"
+            f"{tools_note}. Phase 5: streaming + tools wired; "
+            f"write-tier confirmation lands in harness-mz2.[/dim]"
         )
         self.query_one("#prompt", Input).focus()
         # Baseline ctx count — just the system prompt framing is not
@@ -227,6 +250,12 @@ class ChatApp(App[None]):
         log.write(line)
         event.input.value = ""
         self._set_input_enabled(False)
+        # Reset per-turn streaming state on the UI thread so the first
+        # token arrives into a fresh buffer. stream_first_chunk flips
+        # to False after the first sentence is rendered with the
+        # 'airton ›' prefix; subsequent sentences are continuations.
+        self._state.stream_buffer = ""
+        self._state.stream_first_chunk = True
         # Start the elapsed-time clock on the UI thread so the metrics
         # tick sees it immediately — no 'thinking 0.0s' → 'thinking 0.3s'
         # gap where the spinner hasn't caught up yet.
@@ -303,8 +332,10 @@ class ChatApp(App[None]):
                 # Tools active: drive the orchestrator loop. Observer
                 # hops every ToolLoopEvent onto the UI thread so the
                 # RichLog shows router_intent / 🔧 calls / results
-                # inline. Write-tier tools always decline for now —
-                # the modal-screen confirmation lives in harness-mz2.
+                # inline. token_delta events feed the stream buffer
+                # so the final wrap-up reply streams in live. Write-
+                # tier tools always decline for now — the modal
+                # confirmation lives in harness-mz2.
                 initial_messages = [system, *self._state.history]
                 loop_result = run_tool_loop(
                     self._adapter,  # type: ignore[arg-type]
@@ -314,6 +345,18 @@ class ChatApp(App[None]):
                     observe=self._observe_tool_event,
                     router=self._router,
                 )
+                # The observer streamed tokens as they arrived; the
+                # tail may still be in the buffer if the final reply
+                # didn't end on a sentence boundary.
+                self.call_from_thread(self._flush_stream_buffer)
+                # If the stream observer didn't surface any tokens
+                # (e.g. the loop exhausted without tool calls, or the
+                # adapter doesn't support stream_with_tools), fall
+                # back to rendering the blocking reply content so the
+                # user isn't staring at a silent log.
+                if self._state.stream_first_chunk and loop_result.content:
+                    self.call_from_thread(self._feed_stream, loop_result.content)
+                    self.call_from_thread(self._flush_stream_buffer)
                 reply = loop_result.content or "(no reply)"
                 # Persist the full tool exchange + update in-memory
                 # history so subsequent turns see the tool results.
@@ -330,11 +373,32 @@ class ChatApp(App[None]):
                 # prompt fresh each turn.
                 self._state.history = list(loop_result.messages[1:])
             else:
-                reply = self._adapter.complete(
-                    messages,
-                    max_tokens=self._max_tokens,
-                    temperature=self._temperature,
-                )
+                # Stream when the adapter exposes stream(); fall back
+                # to blocking complete() for adapters that don't.
+                # Every built-in adapter (echo, mlx, ollama) supplies
+                # stream(), so this is the hot path.
+                stream_fn = getattr(self._adapter, "stream", None)
+                if callable(stream_fn):
+                    reply_parts: list[str] = []
+                    for delta in stream_fn(
+                        messages,
+                        max_tokens=self._max_tokens,
+                        temperature=self._temperature,
+                    ):
+                        reply_parts.append(delta)
+                        self.call_from_thread(self._feed_stream, delta)
+                    reply = "".join(reply_parts)
+                else:
+                    reply = self._adapter.complete(
+                        messages,
+                        max_tokens=self._max_tokens,
+                        temperature=self._temperature,
+                    )
+                    self.call_from_thread(self._feed_stream, reply)
+                # Push any trailing tail (last non-sentence fragment)
+                # into the log so nothing is swallowed between the
+                # final period and the next user turn.
+                self.call_from_thread(self._flush_stream_buffer)
                 self._state.history.append(user_msg)
                 self._state.history.append(ChatMessage(role="assistant", content=reply))
                 self._transcript.append(
@@ -344,8 +408,6 @@ class ChatApp(App[None]):
                     role="assistant",
                     content=reply,
                 )
-
-            self.call_from_thread(self._render_reply, reply)
         except Exception as exc:
             self.call_from_thread(self._render_error, exc)
         finally:
@@ -357,13 +419,47 @@ class ChatApp(App[None]):
 
     # ---------- UI-thread helpers (all run via call_from_thread) ----------
 
-    def _render_reply(self, reply: str) -> None:
+    def _feed_stream(self, delta: str) -> None:
+        """UI-thread only. Append a token delta to the per-turn
+        buffer and emit every completed sentence as a RichLog line.
+        Called from the no-tools stream path via call_from_thread,
+        and from _render_tool_event when a token_delta observer
+        event fires."""
+        if not delta:
+            return
+        self._state.stream_buffer += delta
+        while True:
+            match = _SENTENCE_BOUNDARY_RE.search(self._state.stream_buffer)
+            if match is None:
+                return
+            end = match.end()
+            sentence = self._state.stream_buffer[:end]
+            self._state.stream_buffer = self._state.stream_buffer[end:]
+            self._emit_stream_sentence(sentence)
+
+    def _flush_stream_buffer(self) -> None:
+        """UI-thread only. Emit whatever is left in the buffer even
+        without a trailing sentence boundary — the model may stop
+        mid-sentence, or the reply may end with an incomplete quote
+        the regex won't match."""
+        if self._state.stream_buffer:
+            self._emit_stream_sentence(self._state.stream_buffer)
+            self._state.stream_buffer = ""
+
+    def _emit_stream_sentence(self, sentence: str) -> None:
+        """UI-thread only. Write one sentence of the assistant's
+        reply to the log, prefixing the first emission of this turn
+        with 'airton ›' so the user can see the model started
+        speaking. Subsequent sentences land as continuation lines."""
         log = self.query_one("#output", RichLog)
         line = Text()
-        line.append(f"{self._character.name} ›", style="bold green")
-        line.append(" ")
-        # Reply goes in as plain text so the model can't inject markup.
-        line.append(reply)
+        if self._state.stream_first_chunk:
+            line.append(f"{self._character.name} ›", style="bold green")
+            line.append(" ")
+            self._state.stream_first_chunk = False
+        # rstrip the trailing newline the regex captured — RichLog
+        # adds its own line break and double newlines look off.
+        line.append(sentence.rstrip("\n"))
         log.write(line)
 
     def _render_error(self, exc: BaseException) -> None:
@@ -502,10 +598,16 @@ class ChatApp(App[None]):
                     style="dim",
                 )
             )
+        elif event.kind == "token_delta":
+            # Orchestrator / adapter already masked tool-call tag
+            # spans; whatever survives is visible reply text. Feed
+            # through the sentence buffer so the wrap-up reply
+            # streams in live.
+            if event.delta:
+                self._feed_stream(event.delta)
         # Other event kinds (round_start, model_call_start/end,
-        # token_delta, round_complete) are internal book-keeping —
-        # the metrics footer covers 'model is thinking'; streaming
-        # lands in harness-lrg.
+        # round_complete) are internal book-keeping — the metrics
+        # footer already covers 'model is thinking'.
 
     # ---------- metrics ----------
 

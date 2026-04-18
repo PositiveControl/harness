@@ -146,6 +146,75 @@ async def test_metrics_shows_thinking_elapsed_during_turn(tmp_path) -> None:  # 
 
 
 @pytest.mark.asyncio
+async def test_chat_app_streams_sentences_as_tokens_arrive(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-lrg: in the no-tools path, the worker uses
+    adapter.stream() and each completed sentence writes to the log
+    as it arrives. Assert the 'airton ›' prefix appears once and
+    both sentences land (one via the sentence-boundary flush during
+    streaming, one via the final tail flush)."""
+    app = _build_app(tmp_path, adapter=_StreamingAdapter())
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "go"
+        await pilot.press("enter")
+        await _wait_for_workers(pilot)
+        # Give the UI a nudge in case a call_from_thread callback is
+        # still draining — the thread-pool worker finishes before
+        # the UI has painted its final frame.
+        await pilot.pause(0.05)
+
+        log = pilot.app.query_one("#output", RichLog)
+        joined = " ".join(str(line) for line in log.lines)
+        # Both streamed sentences land in the log.
+        assert "first sentence" in joined
+        assert "second sentence" in joined
+        # 'airton ›' prefix appears exactly once for this turn —
+        # continuation sentences are unprefixed. The mount-banner
+        # mentions airton by name but not the '›' glyph; assertion
+        # on the combination narrows to the streamed prefix.
+        assert joined.count("airton ›") == 1
+
+
+@pytest.mark.asyncio
+async def test_feed_stream_buffers_partial_until_sentence_boundary(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Direct test of the sentence buffer: two half-sentences
+    shouldn't emit; once the period arrives, the full sentence does.
+    Exercises the UI-thread invariant without racing a worker."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        log = pilot.app.query_one("#output", RichLog)
+        lines_before = len(log.lines)
+
+        tui_app._feed_stream("Hello, ")
+        assert len(log.lines) == lines_before  # still pending
+        tui_app._feed_stream("world. ")
+        # Sentence boundary hit — one line emitted.
+        assert len(log.lines) == lines_before + 1
+        rendered = str(log.lines[-1])
+        assert "Hello, world." in rendered
+        # First chunk of the turn carries the 'airton ›' prefix.
+        assert "airton" in rendered
+
+
+@pytest.mark.asyncio
+async def test_flush_stream_buffer_emits_trailing_fragment(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A reply that ends mid-sentence (no trailing period) must
+    still make it to the log when the worker flushes."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        log = pilot.app.query_one("#output", RichLog)
+        lines_before = len(log.lines)
+
+        tui_app._feed_stream("partial without terminator")
+        assert len(log.lines) == lines_before  # buffered
+        tui_app._flush_stream_buffer()
+        assert len(log.lines) == lines_before + 1
+        assert "partial without terminator" in str(log.lines[-1])
+
+
+@pytest.mark.asyncio
 async def test_chat_app_renders_tool_events_inline(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """harness-1r4: when the registry is set, the worker drives
     run_tool_loop. Observer events (router_intent omitted here since
@@ -276,6 +345,40 @@ class _ToolScriptedAdapter:
         if self._replies:
             return self._replies.pop(0)
         return ModelReply(content="(exhausted)")
+
+
+class _StreamingAdapter:
+    """Adapter that yields two sentence-terminated chunks from
+    stream(). Used to verify the TUI renders streamed sentences as
+    they land, with the 'airton ›' prefix only on the first."""
+
+    id = "test:streaming"
+    context_window = 8192
+
+    def count_tokens(self, messages: Iterable[ChatMessage]) -> int:
+        return approx_token_count(messages)
+
+    def stream(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+    ) -> Iterable[str]:
+        # Yielding pre-split sentences mirrors how a real adapter
+        # emits tokens — the sentence boundary is what drives the
+        # per-line flush, not chunk boundaries.
+        yield "first sentence. "
+        yield "second sentence."
+
+    def complete(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+    ) -> str:
+        return "first sentence. second sentence."
 
 
 class _WriteOnlyTool:
