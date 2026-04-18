@@ -45,7 +45,16 @@ class Transcript:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path, isolation_level=None)
+        # `check_same_thread=False`: the Textual TUI runs the worker
+        # that writes turns on a background thread while the main
+        # thread composes the UI. SQLite itself is thread-safe when
+        # built with threadsafe=1 (the Python default) and the
+        # per-connection Python lock + PRAGMA busy_timeout already
+        # serialize writes; the check_same_thread guard is a Python-
+        # side safety rail we opt out of intentionally. No cursors
+        # are shared across threads — each .execute() here uses an
+        # implicit fresh cursor.
+        self._conn = sqlite3.connect(self.db_path, isolation_level=None, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
         # Wait up to 5s for other writers (chat + launchd scribe on same

@@ -72,7 +72,10 @@ class EpisodicStore:
         self.db_path = db_path
         self.embedder = embedder
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path, isolation_level=None)
+        # See transcript.py for the `check_same_thread=False` rationale:
+        # the TUI worker and main thread share this connection; SQLite
+        # + Python's per-connection lock already serialize writes.
+        self._conn = sqlite3.connect(self.db_path, isolation_level=None, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
         self._conn.execute("PRAGMA busy_timeout = 5000")

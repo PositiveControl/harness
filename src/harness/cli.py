@@ -1078,10 +1078,20 @@ def chat(
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
     if tui:
-        # Phase 1 scaffold: launch the Textual app and exit when it
-        # does. Deliberately skips adapter / retrieval / tools wiring
-        # — those arrive in follow-up phases so this first commit
-        # lands a visible UI shell without blocking on full parity.
+        # Phase 2: adapter + persona + retrieval wired. Tools,
+        # router, compaction, and voice-capture land in later
+        # phases — reject flags the TUI can't honor yet so the
+        # user isn't surprised when they're silently ignored.
+        if tools:
+            raise typer.BadParameter(
+                "--tui does not support --tools yet (lands in harness-1r4). "
+                "Drop --tools or use the classic REPL for now."
+            )
+        if router_enabled:
+            raise typer.BadParameter(
+                "--tui does not support --router yet (lands in harness-1r4). "
+                "Drop --router or use the classic REPL for now."
+            )
         try:
             from harness.tui import ChatApp
         except ImportError as exc:
@@ -1089,7 +1099,33 @@ def chat(
                 "--tui requires the `tui` extra. Install it with: uv sync --extra tui"
             ) from exc
         character_for_tui = load_character(settings.character_path)
-        ChatApp(character_name=character_for_tui.name, speaker=speaker).run()
+        tui_adapter = _resolve_adapter(
+            model,
+            persona=persona,
+            character=character_for_tui,
+            model_repo=model_repo,
+            lora_path=lora_path,
+        )
+        tui_retriever = _maybe_retriever(character_for_tui, top_k)
+        tui_memory_store = _open_episodic_store(character_for_tui) if memories > 0 else None
+        tui_semantic_store = _open_semantic_store() if facts > 0 else None
+        tui_transcript = Transcript(settings.db_path)
+        ChatApp(
+            character=character_for_tui,
+            speaker=speaker,
+            session=session,
+            channel=channel,
+            adapter=tui_adapter,
+            transcript=tui_transcript,
+            retriever=tui_retriever,
+            top_k=top_k,
+            memory_store=tui_memory_store,
+            memories=memories,
+            memories_threshold=memories_threshold,
+            semantic_store=tui_semantic_store,
+            facts=facts,
+            facts_threshold=facts_threshold,
+        ).run()
         return
 
     character = load_character(settings.character_path)
