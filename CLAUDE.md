@@ -14,7 +14,7 @@ For daily-use workflow (how Mark actually talks to Airton), see `docs/usage.md`.
 
 Environment setup (one time):
 
-- `uv sync --extra dev --extra mlx --extra retrieval` — install runtime + dev + MLX + retrieval.
+- `uv sync --extra dev --extra mlx --extra retrieval --extra grammar` — install runtime + dev + MLX + retrieval.
 - `uv run hf download mlx-community/Qwen2.5-7B-Instruct-4bit` — pull the default MLX model (~4 GB). For the fuller 32B model: `uv run hf download mlx-community/Qwen2.5-32B-Instruct-4bit` (~18 GB).
 - `uv run pre-commit install --install-hooks && uv run pre-commit install --hook-type pre-push` — install git hooks.
 
@@ -207,7 +207,7 @@ Rules of engagement:
 
 - Don't silence a failing check with blanket `# noqa` / `# type: ignore`. Fix it, or add a targeted per-file ignore with a comment explaining why.
 - `ruff format` owns layout; don't hand-format. If formatter and rule disagree, change the rule.
-- New deps go in `pyproject.toml`. Run `uv sync --extra dev --extra mlx --extra retrieval` after.
+- New deps go in `pyproject.toml`. Run `uv sync --extra dev --extra mlx --extra retrieval --extra grammar` after.
 
 ## Open threads
 
