@@ -31,6 +31,7 @@ from textual.binding import Binding, BindingType
 from textual.widgets import Input, RichLog, Static
 
 from harness.cli import (
+    _TOOL_CALLS_SENTINEL,
     _build_tool_grounding_block,
     _format_ctx_meter,
     _persist_tool_exchange,
@@ -334,7 +335,16 @@ class ChatApp(App[None]):
         clutter the scroll-back. Historical tool *results* are
         already condensed into the assistant replies that follow
         them — the model's next turn sees that context via the
-        assistant message."""
+        assistant message.
+
+        Assistant turns carrying the `__TOOL_CALLS_V1__` sentinel
+        (harness-4fc) are also skipped. Those are persisted with the
+        structured tool-call payload appended to the content; without
+        their paired tool-role result rows (which we already skip) the
+        history is orphaned, and rendering the encoded content dumps
+        raw JSON into the log. Dropping them keeps replay coherent at
+        the cost of an occasional gap in the scroll-back when a prior
+        session ended mid-tool-exchange."""
         tail = self._transcript.tail(self._session, limit=self._max_history_replay)
         if not tail:
             return
@@ -353,6 +363,8 @@ class ChatApp(App[None]):
                 log.write(line)
                 self._state.history.append(ChatMessage(role="user", content=msg.content))
             elif msg.role == "assistant":
+                if _TOOL_CALLS_SENTINEL in msg.content:
+                    continue  # tool-call turn — skip to mirror tool-role skipping
                 line = Text()
                 line.append(f"{msg.speaker} ›", style="bold green")
                 line.append(" ")

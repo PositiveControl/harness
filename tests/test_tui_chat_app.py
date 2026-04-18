@@ -567,6 +567,72 @@ async def test_chat_app_replay_skips_tool_role_turns(tmp_path) -> None:  # type:
 
 
 @pytest.mark.asyncio
+async def test_chat_app_replay_skips_sentinel_encoded_assistant_turns(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-4fc: assistant turns persisted by the classic CLI with
+    the `__TOOL_CALLS_V1__` sentinel must not appear in replay. Before
+    the fix the TUI rendered the sentinel + JSON payload verbatim into
+    the chat log AND parked the encoded content on the model-visible
+    history, making it look like the assistant had emitted raw tool-call
+    JSON as prose."""
+    from harness.cli import _TOOL_CALLS_SENTINEL
+
+    encoded = (
+        f"{_TOOL_CALLS_SENTINEL}"
+        '{"tool_calls": [{"name": "search_web", '
+        '"arguments": {"query": "most popular search engine"}}]}'
+    )
+    transcript = Transcript(tmp_path / "t.sqlite")
+    transcript.append(
+        session="test",
+        channel="cli",
+        speaker="mark",
+        role="user",
+        content="search the web",
+    )
+    transcript.append(
+        session="test",
+        channel="cli",
+        speaker="airton",
+        role="assistant",
+        content=encoded,
+    )
+    transcript.append(
+        session="test",
+        channel="cli",
+        speaker="search_web",
+        role="tool",
+        content="result blob",
+    )
+    transcript.append(
+        session="test",
+        channel="cli",
+        speaker="airton",
+        role="assistant",
+        content="google is still on top",
+    )
+
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "search the web" in rendered
+        assert "google is still on top" in rendered
+        # Neither the sentinel string nor the encoded JSON payload
+        # should leak into the log.
+        assert "__TOOL_CALLS_V1__" not in rendered
+        assert "tool_calls" not in rendered
+        assert "search_web" not in rendered
+
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        history = tui_app._state.history
+        # The sentinel-encoded assistant turn is dropped too so the
+        # model doesn't see its own encoded payload as prior context.
+        assert [m.role for m in history] == ["user", "assistant"]
+        assert all("__TOOL_CALLS_V1__" not in m.content for m in history)
+        assert history[-1].content == "google is still on top"
+
+
+@pytest.mark.asyncio
 async def test_chat_app_slash_exit_quits(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """/exit, /quit, :q all call app.exit. No worker is spawned —
     the intercept runs before on_input_submitted reaches
