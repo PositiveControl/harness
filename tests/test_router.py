@@ -106,6 +106,15 @@ def test_parse_empty_tool_string_becomes_none() -> None:
     assert intent == RouterIntent(tool_name=None, arguments={})
 
 
+def test_parse_literal_null_string_becomes_none() -> None:
+    """harness-0bu: Hermes-3-3B sometimes emits {"tool": "null", ...}
+    (literal string) instead of JSON null. Treat case-folded 'null' and
+    'none' as equivalent to Python None so these get scored correctly."""
+    for variant in ('"null"', '"NULL"', '"None"', '"  null  "'):
+        intent = parse_router_output(f'{{"tool": {variant}, "arguments": {{}}}}')
+        assert intent == RouterIntent(tool_name=None, arguments={}), variant
+
+
 def test_parse_returns_none_on_invalid_json() -> None:
     assert parse_router_output("just some prose, no json at all") is None
 

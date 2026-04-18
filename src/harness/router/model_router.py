@@ -131,7 +131,11 @@ def _extract_json_block(text: str) -> str | None:
 def _coerce_intent(data: Any) -> RouterIntent | None:
     """Validate shape. Missing `arguments` is tolerated (defaults to
     empty dict — small models often drop it when there are no args).
-    Wrong types for `tool` or `arguments` are not."""
+    Wrong types for `tool` or `arguments` are not.
+
+    The string forms `"null"` / `"none"` (case-insensitive) are folded
+    to Python None — Hermes-3-3B and other tuned-for-JSON models will
+    sometimes emit the literal word instead of real JSON null."""
     if not isinstance(data, dict):
         return None
     tool = data.get("tool", ...)
@@ -140,7 +144,8 @@ def _coerce_intent(data: Any) -> RouterIntent | None:
     if tool is not None and not isinstance(tool, str):
         return None
     if isinstance(tool, str):
-        tool = tool.strip() or None
+        stripped = tool.strip()
+        tool = None if not stripped or stripped.lower() in {"null", "none"} else stripped
     arguments = data.get("arguments", {})
     if not isinstance(arguments, dict):
         return None
