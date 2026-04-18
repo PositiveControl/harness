@@ -157,6 +157,42 @@ def run(args: argparse.Namespace) -> _Run:
             )
         )
 
+    # Long-generation probe: 8-token completions barely exercise the
+    # allocator. A 256-token reply with a non-trivial system prompt
+    # churns many more transient tensors through the free-cache pool,
+    # which is what set_cache_limit actually bounds. Repeat twice to
+    # catch any cache-hot-vs-cold difference.
+    if args.heavy:
+        for i in range(args.heavy):
+            t0 = time.monotonic()
+            reply_long = main.complete(
+                [
+                    ChatMessage(
+                        role="system",
+                        content=(
+                            "You are Airton, a gruff senior engineer. Answer in "
+                            "two sentences."
+                        ),
+                    ),
+                    ChatMessage(
+                        role="user",
+                        content=(
+                            "Walk through how a quantized Qwen 7B actually "
+                            "stores its weights in memory."
+                        ),
+                    ),
+                ],
+                max_tokens=args.heavy_max_tokens,
+                temperature=0.0,
+            )
+            result.probes.append(
+                _snapshot(
+                    f"main heavy turn {i + 1} ({args.heavy_max_tokens}t)",
+                    time.monotonic() - t0,
+                    notes=f"reply_len={len(reply_long)}",
+                )
+            )
+
     return result
 
 
@@ -200,6 +236,19 @@ def main() -> None:
         help="MLX free-cache cap in MB. Applied to both main and router "
         "adapters (set_cache_limit is process-global). None = no cap, "
         "0 = disable cache entirely.",
+    )
+    parser.add_argument(
+        "--heavy",
+        type=int,
+        default=0,
+        help="Number of long-generation turns to run on the main adapter "
+        "after the short probes. 0 = skip (default).",
+    )
+    parser.add_argument(
+        "--heavy-max-tokens",
+        type=int,
+        default=256,
+        help="Max tokens per heavy turn.",
     )
     parser.add_argument(
         "--json-out",

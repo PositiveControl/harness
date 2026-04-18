@@ -1,0 +1,71 @@
+{
+  "main_repo": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+  "router_repo": "mlx-community/Hermes-3-Llama-3.2-3B-4bit",
+  "embedder_repo": "BAAI/bge-small-en-v1.5",
+  "cache_limit_mb": 1024,
+  "probes": [
+    {
+      "stage": "startup",
+      "rss_mb": 58.015625,
+      "wall_s": 0.0,
+      "mlx_peak_mb": 7.62939453125e-06,
+      "mlx_active_mb": 7.62939453125e-06,
+      "mlx_cache_mb": 0.0,
+      "notes": ""
+    },
+    {
+      "stage": "embedder BAAI/bge-small-en-v1.5",
+      "rss_mb": 557.546875,
+      "wall_s": 6.8954304170038085,
+      "mlx_peak_mb": 7.62939453125e-06,
+      "mlx_active_mb": 7.62939453125e-06,
+      "mlx_cache_mb": 0.0,
+      "notes": "dim=384"
+    },
+    {
+      "stage": "main mlx-community/Qwen2.5-7B-Instruct-4bit",
+      "rss_mb": 4817.484375,
+      "wall_s": 0.9237611660064431,
+      "mlx_peak_mb": 4163.370429992676,
+      "mlx_active_mb": 4088.8857498168945,
+      "mlx_cache_mb": 17.794370651245117,
+      "notes": "reply='Hello! How can I assist you to'"
+    },
+    {
+      "stage": "router mlx-community/Hermes-3-Llama-3.2-3B-4bit",
+      "rss_mb": 6800.640625,
+      "wall_s": 0.9898980839934666,
+      "mlx_peak_mb": 5861.451225280762,
+      "mlx_active_mb": 5812.7197341918945,
+      "mlx_cache_mb": 30.988447189331055,
+      "notes": ""
+    },
+    {
+      "stage": "main post-router turn",
+      "rss_mb": 6800.640625,
+      "wall_s": 0.20382770799915306,
+      "mlx_peak_mb": 5892.188800811768,
+      "mlx_active_mb": 5812.7197341918945,
+      "mlx_cache_mb": 17.79436683654785,
+      "notes": "reply='One.'"
+    },
+    {
+      "stage": "main heavy turn 1 (256t)",
+      "rss_mb": 6800.640625,
+      "wall_s": 1.2776410829974338,
+      "mlx_peak_mb": 5923.048229217529,
+      "mlx_active_mb": 5812.7197341918945,
+      "mlx_cache_mb": 17.79442024230957,
+      "notes": "reply_len=387"
+    },
+    {
+      "stage": "main heavy turn 2 (256t)",
+      "rss_mb": 6800.640625,
+      "wall_s": 1.2723957920024986,
+      "mlx_peak_mb": 5923.048229217529,
+      "mlx_active_mb": 5812.7197341918945,
+      "mlx_cache_mb": 17.7944278717041,
+      "notes": "reply_len=387"
+    }
+  ]
+}
