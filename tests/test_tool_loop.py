@@ -1060,6 +1060,14 @@ def test_wrap_up_cap_widens_on_truncated_recovery() -> None:
     #   that needs > 128 tokens would re-truncate indefinitely.
     assert adapter.calls == [1024, 128, 256]
     assert result.content == "complete summary"
+    # harness-6rl: a truncated_retry event must fire between rounds 1
+    # and 2 so renderers can drop the partial-reply stream buffer
+    # before the retry re-streams the full reply. Without the event,
+    # the CLI / TUI show the partial and the full back-to-back and it
+    # looks like the model answered twice.
+    retry_events = [e for e in result.events if e.kind == "truncated_retry"]
+    assert len(retry_events) == 1
+    assert retry_events[0].round_index == 1
 
 
 def test_loop_catches_bare_tool_intent() -> None:

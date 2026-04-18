@@ -757,6 +757,14 @@ def _render_tool_event(
         # clutter the transcript. Result is the stock nudge; no need
         # to echo it.
         console.print(f"[dim]⇢ {label} {call.arguments} — duplicate call skipped[/dim]")
+    elif event.kind == "truncated_retry":
+        # Wrap-up round hit the token cap mid-reply; orchestrator
+        # widened the budget and is about to re-run. Drop the
+        # in-flight stream buffer so we don't keep a partial-then-
+        # full double and flag the break so the user knows the
+        # upcoming reply supersedes the partial they just saw.
+        stream_renderer.stop()
+        console.print("[dim]⋯ truncated, retrying with wider budget…[/dim]")
 
 
 def _stream_or_complete(

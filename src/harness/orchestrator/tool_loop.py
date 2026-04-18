@@ -245,7 +245,14 @@ class ToolLoopEvent:
     print inline status. Kind is one of: router_intent, round_start,
     model_call_start, token_delta, model_call_end, tool_call_start,
     tool_call_end, tool_call_failed, tool_call_declined,
-    tool_call_deduped, round_complete.
+    tool_call_deduped, truncated_retry, round_complete.
+
+    `truncated_retry` fires when a wrap-up round stopped mid-stream at
+    the token cap and the orchestrator is about to re-run it with a
+    doubled budget. Renderers should discard their in-flight stream
+    buffer and print a dim marker so the user knows the upcoming reply
+    replaces the partial one they just saw, not appends to it
+    (harness-6rl).
 
     `router_intent` fires at most once per turn, before round 0, when a
     Router pre-pass routed to a tool. `call` carries the ToolCall the
@@ -367,7 +374,7 @@ def run_tool_loop(
     confirm: ConfirmFn | None = None,
     observe: ObserverFn | None = None,
     max_tokens: int = 1024,
-    wrap_up_max_tokens: int = 384,
+    wrap_up_max_tokens: int = 1024,
     temperature: float = 0.5,
     router: Router | None = None,
 ) -> ToolLoopResult:
@@ -506,6 +513,7 @@ def run_tool_loop(
                     current_wrap_up_max_tokens = min(
                         current_wrap_up_max_tokens * 2, _MAX_TOKENS_CEILING
                     )
+                    emit(ToolLoopEvent(kind="truncated_retry", round_index=round_idx))
                 else:
                     working.append(ChatMessage(role="user", content=recovery))
                 continue

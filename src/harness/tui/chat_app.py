@@ -874,6 +874,15 @@ class ChatApp(App[None]):
             # streams in live.
             if event.delta:
                 self._feed_stream(event.delta)
+        elif event.kind == "truncated_retry":
+            # Wrap-up round stopped at the token cap; orchestrator is
+            # re-running with a doubled budget. Drop any unflushed
+            # partial in the stream buffer and flag the break so the
+            # user knows the next reply replaces the partial above,
+            # not appends to it (harness-6rl).
+            self._state.stream_buffer = ""
+            self._state.stream_first_chunk = True
+            log.write(Text("⋯ truncated, retrying with wider budget…", style="dim"))
         # Other event kinds (round_start, model_call_start/end,
         # round_complete) are internal book-keeping — the metrics
         # footer already covers 'model is thinking'.

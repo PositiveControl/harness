@@ -108,3 +108,23 @@
 
 - prompt: explain what a merkle tree is
   expected_tool: null
+
+# Creative-writing requests that reference our prior chat. Hermes-3
+# latches on phrases like "from our conversation" / "based on what we
+# discussed" and mis-routes these to introspect(scope=all). They're
+# generation tasks, not self-reflection — the main model answers from
+# its own working context, no tool needed (harness-798).
+- prompt: make up a science fiction story in 500 words derived entirely from our conversation
+  expected_tool: null
+
+- prompt: write a short story based on what we discussed today
+  expected_tool: null
+
+- prompt: compose a poem using the themes from our chat
+  expected_tool: null
+
+- prompt: turn our conversation into a parable
+  expected_tool: null
+
+- prompt: summarize our conversation as a limerick
+  expected_tool: null

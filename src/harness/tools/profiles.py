@@ -69,6 +69,34 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_facts",
         "introspect",
     ),
+    # Kitchen-sink — every built-in tool the registry knows about.
+    # Intended as the starting point for scripts/chat.sh + power users
+    # who prefer to prune with --tools-drop rather than opt in to each
+    # tool with --tools-add. Overshoots the ~1,500-token schema budget;
+    # trim write-tier / web / shell for everyday chat. Ordering here
+    # mirrors the other profiles (fs read → fs write → shell → git →
+    # memory → web → self) so a side-by-side diff is readable
+    # (harness-1nu).
+    "full": (
+        "read_file",
+        "list_dir",
+        "grep",
+        "glob",
+        "edit_file",
+        "write_file",
+        "shell",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "search_memory",
+        "search_facts",
+        "remember_fact",
+        "remember_event",
+        "scribe_session",
+        "consolidate_memory",
+        "search_web",
+        "introspect",
+    ),
 }
 
 DEFAULT_PROFILE = "core"
