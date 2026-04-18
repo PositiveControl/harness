@@ -18,6 +18,7 @@ confirmation modal.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import time
 from collections import deque
@@ -26,7 +27,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.binding import BindingType
+from textual.binding import Binding, BindingType
 from textual.widgets import Input, RichLog, Static
 
 from harness.cli import (
@@ -99,6 +100,14 @@ class _ChatAppState:
     # '· last N.Ns' instead of blanking back to '· idle'. Cleared
     # only at app start — overwritten at every turn completion.
     last_elapsed: float | None = None
+    # Interrupt plumbing (harness-xuh): every start-of-turn bumps
+    # `turn_seq` and the worker captures its value at kickoff.
+    # Cancellation bumps it again so any trailing call_from_thread
+    # updates from the doomed worker (stream deltas, _finish_turn)
+    # compare against the new value and no-op. Textual's thread
+    # workers can't be killed mid-execution; the seq gate is how we
+    # make their late updates harmless.
+    turn_seq: int = 0
 
 
 # Sentence boundary: `.!?` followed by whitespace / closing quote /
@@ -155,6 +164,10 @@ class ChatApp(App[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         ("ctrl+c", "quit", "quit"),
         ("ctrl+d", "quit", "quit"),
+        # priority=True so the focused Input doesn't swallow the
+        # keypress — interrupt has to be reachable mid-turn when the
+        # prompt is where the user's hands already are.
+        Binding("ctrl+x", "interrupt", "interrupt", priority=True),
     ]
 
     def __init__(
@@ -404,6 +417,8 @@ class ChatApp(App[None]):
         self._state.stream_buffer = ""
         self._state.stream_first_chunk = True
         self._state.is_busy = True
+        self._state.turn_seq += 1
+        seq = self._state.turn_seq
         # Start the elapsed-time clock on the UI thread so the metrics
         # tick sees it immediately — no 'thinking 0.0s' → 'thinking 0.3s'
         # gap where the spinner hasn't caught up yet.
@@ -412,20 +427,40 @@ class ChatApp(App[None]):
         # `thread=True` runs the sync adapter off the UI thread so
         # token generation doesn't block the event loop. `exclusive=False`
         # because we serialize manually via is_busy + pending_prompts;
-        # there is never a second worker we'd want to cancel.
+        # there is never a second worker we'd want to cancel. `group="turn"`
+        # so interrupt can target turn workers without touching warmup.
         self.run_worker(
-            lambda: self._run_turn_sync(text),
+            lambda: self._run_turn_sync(text, seq),
             thread=True,
             exclusive=False,
+            group="turn",
         )
 
     # ---------- worker (thread; no UI access except call_from_thread) ----------
 
-    def _run_turn_sync(self, user_input: str) -> None:
+    def _run_turn_sync(self, user_input: str, seq: int) -> None:
         """Executed on the worker thread. All UI updates go through
         call_from_thread so Textual's reactive tree stays single-
         threaded. Any exception becomes a red log line — we don't
-        tear down the app on a per-turn failure."""
+        tear down the app on a per-turn failure.
+
+        `seq` is the turn sequence captured at kickoff. UI updates
+        and transcript writes compare against the live
+        `_state.turn_seq`; on a mismatch (the turn was interrupted
+        or a newer turn started) they no-op so the dying worker
+        can't mutate state belonging to a later turn."""
+
+        def hop(fn: Any, *args: Any) -> None:
+            """Hop to the UI thread only if this turn is still the
+            current one. The guard runs on the UI thread too — safe
+            because turn_seq is only ever mutated there."""
+
+            def guarded() -> None:
+                if self._state.turn_seq == seq:
+                    fn(*args)
+
+            self.call_from_thread(guarded)
+
         try:
             # Retrieval + system prompt + messages. Any single source
             # raising disables it on _state.retrieval_health; the
@@ -484,26 +519,32 @@ class ChatApp(App[None]):
                 # tier tools always decline for now — the modal
                 # confirmation lives in harness-mz2.
                 initial_messages = [system, *self._state.history]
+
+                def observe(event: ToolLoopEvent) -> None:
+                    hop(self._render_tool_event, event)
+
                 loop_result = run_tool_loop(
                     self._adapter,  # type: ignore[arg-type]
                     [*initial_messages, user_msg],
                     self._tool_registry,
                     confirm=self._confirm_write_tool,
-                    observe=self._observe_tool_event,
+                    observe=observe,
                     router=self._router,
                 )
+                if self._state.turn_seq != seq:
+                    return  # interrupted; drop partial reply + skip persistence
                 # The observer streamed tokens as they arrived; the
                 # tail may still be in the buffer if the final reply
                 # didn't end on a sentence boundary.
-                self.call_from_thread(self._flush_stream_buffer)
+                hop(self._flush_stream_buffer)
                 # If the stream observer didn't surface any tokens
                 # (e.g. the loop exhausted without tool calls, or the
                 # adapter doesn't support stream_with_tools), fall
                 # back to rendering the blocking reply content so the
                 # user isn't staring at a silent log.
                 if self._state.stream_first_chunk and loop_result.content:
-                    self.call_from_thread(self._feed_stream, loop_result.content)
-                    self.call_from_thread(self._flush_stream_buffer)
+                    hop(self._feed_stream, loop_result.content)
+                    hop(self._flush_stream_buffer)
                 reply = loop_result.content or "(no reply)"
                 # Persist the full tool exchange + update in-memory
                 # history so subsequent turns see the tool results.
@@ -532,8 +573,10 @@ class ChatApp(App[None]):
                         max_tokens=self._max_tokens,
                         temperature=self._temperature,
                     ):
+                        if self._state.turn_seq != seq:
+                            break  # interrupted: stop pulling tokens from the generator
                         reply_parts.append(delta)
-                        self.call_from_thread(self._feed_stream, delta)
+                        hop(self._feed_stream, delta)
                     reply = "".join(reply_parts)
                 else:
                     reply = self._adapter.complete(
@@ -541,11 +584,13 @@ class ChatApp(App[None]):
                         max_tokens=self._max_tokens,
                         temperature=self._temperature,
                     )
-                    self.call_from_thread(self._feed_stream, reply)
+                    hop(self._feed_stream, reply)
+                if self._state.turn_seq != seq:
+                    return  # interrupted; drop partial reply + skip persistence
                 # Push any trailing tail (last non-sentence fragment)
                 # into the log so nothing is swallowed between the
                 # final period and the next user turn.
-                self.call_from_thread(self._flush_stream_buffer)
+                hop(self._flush_stream_buffer)
                 self._state.history.append(user_msg)
                 self._state.history.append(ChatMessage(role="assistant", content=reply))
                 self._transcript.append(
@@ -556,13 +601,15 @@ class ChatApp(App[None]):
                     content=reply,
                 )
         except Exception as exc:
-            self.call_from_thread(self._render_error, exc)
+            hop(self._render_error, exc)
         finally:
             # Stop the elapsed-time counter and re-enable input from
             # the UI thread. Order matters: clear the timer BEFORE
             # refreshing metrics so the next tick shows 'idle' rather
-            # than a stale final elapsed-time string.
-            self.call_from_thread(self._finish_turn)
+            # than a stale final elapsed-time string. If this turn was
+            # interrupted, the UI-thread action_interrupt already did
+            # the teardown — the seq-gated hop no-ops here.
+            hop(self._finish_turn)
 
     # ---------- UI-thread helpers (all run via call_from_thread) ----------
 
@@ -631,6 +678,41 @@ class ChatApp(App[None]):
         prompt.disabled = not enabled
         if enabled:
             prompt.focus()
+
+    def action_interrupt(self) -> None:
+        """Ctrl-X binding: cancel the running turn (harness-xuh).
+
+        Bumps `turn_seq` so the doomed worker's trailing
+        call_from_thread updates no-op. Cancels the `turn` worker
+        group (Textual thread workers can't be killed mid-syscall —
+        the generator loop checks the seq each iteration and breaks
+        voluntarily; the seq gate makes any late UI updates harmless).
+        Renders an '⏹ interrupted' marker, drops the in-flight stream
+        buffer so partial output doesn't leak into the next turn,
+        and drains the pending queue the same way _finish_turn does
+        so queued prompts aren't stranded."""
+        if not self._state.is_busy:
+            return
+        self._state.turn_seq += 1
+        self._state.stream_buffer = ""
+        self._state.stream_first_chunk = True
+        if self._state.turn_started_at is not None:
+            self._state.last_elapsed = time.monotonic() - self._state.turn_started_at
+        self._state.turn_started_at = None
+        self._state.is_busy = False
+        # Cancellation is best-effort — Textual's API surface has
+        # shifted between versions. A missed cancel is fine because
+        # the seq gate neutralises trailing updates.
+        with contextlib.suppress(Exception):
+            self.workers.cancel_group(self, "turn")
+        log = self.query_one("#output", RichLog)
+        log.write(Text("⏹ interrupted", style="bold red"))
+        self.query_one("#prompt", Input).focus()
+        if self._state.pending_prompts:
+            next_text = self._state.pending_prompts.popleft()
+            self._start_turn(next_text)
+            return
+        self._refresh_metrics()
 
     def _finish_turn(self) -> None:
         """Worker-completion hook on the UI thread. Stops the elapsed

@@ -113,6 +113,54 @@ async def test_metrics_shows_last_elapsed_after_turn(tmp_path) -> None:  # type:
 
 
 @pytest.mark.asyncio
+async def test_chat_app_interrupt_drops_partial_and_drains_queue(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-xuh: Ctrl-X during a running turn bumps turn_seq so the
+    worker's late updates no-op, clears is_busy + stream buffer,
+    renders '⏹ interrupted', and auto-runs the next queued prompt."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        # Plant an in-flight turn with a queued follow-up and a
+        # half-buffered stream. action_interrupt should not need the
+        # real worker to be running — the seq bump is what matters.
+        tui_app._state.is_busy = True
+        tui_app._state.turn_started_at = __import__("time").monotonic()
+        tui_app._state.stream_buffer = "half a sen"
+        tui_app._state.stream_first_chunk = False
+        tui_app._state.pending_prompts.append("follow-up")
+        before_seq = tui_app._state.turn_seq
+
+        await pilot.press("ctrl+x")
+        await _wait_for_workers(pilot)
+
+        assert tui_app._state.turn_seq > before_seq
+        # Buffer was dropped and the queued prompt ran (echo adapter
+        # answers immediately; is_busy is False and queue drained).
+        assert not tui_app._state.is_busy
+        assert not tui_app._state.pending_prompts
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "interrupted" in rendered
+        assert "follow-up" in rendered  # queued prompt ran after interrupt
+        assert "[echo]" in rendered
+
+
+@pytest.mark.asyncio
+async def test_chat_app_interrupt_is_noop_when_idle(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Pressing Ctrl-X with no turn running is harmless: no marker
+    line, no seq bump, no queue drain."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        before_seq = tui_app._state.turn_seq
+        await pilot.press("ctrl+x")
+        assert tui_app._state.turn_seq == before_seq
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "interrupted" not in rendered
+
+
+@pytest.mark.asyncio
 async def test_chat_app_enqueues_submit_while_busy(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """harness-4sm: while a turn is running, Enter enqueues the text
     into pending_prompts instead of kicking a second worker. The log
