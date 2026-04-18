@@ -14,14 +14,16 @@ For daily-use workflow (how Mark actually talks to Airton), see `docs/usage.md`.
 
 Environment setup (one time):
 
-- `uv sync --extra dev --extra mlx --extra retrieval --extra grammar` — install runtime + dev + MLX + retrieval.
+- `uv sync --extra dev --extra mlx --extra retrieval --extra grammar --extra tui` — install runtime + dev + MLX + retrieval + grammar-router + Textual TUI.
 - `uv run hf download mlx-community/Qwen2.5-7B-Instruct-4bit` — pull the default MLX model (~4 GB). For the fuller 32B model: `uv run hf download mlx-community/Qwen2.5-32B-Instruct-4bit` (~18 GB).
 - `uv run pre-commit install --install-hooks && uv run pre-commit install --hook-type pre-push` — install git hooks.
 
 Daily chat (see `docs/usage.md` for the intended workflow):
 
 - `uv run harness chat --model mlx --persona --memories 3 --facts 5` — full-stack chat: MLX + persona rewriter + 3 episodic memories + 5 semantic facts + retrieval-picked voice few-shot.
-- `uv run harness chat --model mlx --persona --tools` — same, plus the tool-use orchestrator (defaults to the `core` tool-set; pass `--tool-set coding` for full read/write/shell, `memory` for recall-only, etc.). Add `--workspace DIR` to point the filesystem tools at another repo. Escape hatches: `--tools-add X,Y` and `--tools-drop Z`.
+- `uv run harness chat --model mlx --persona --tools` — same, plus the tool-use orchestrator (defaults to the `core` tool-set; pass `--tool-set coding` for full read/write/shell/git, `memory` for recall-plus-write, `research` for read + search_web, etc.). Add `--workspace DIR` to point the filesystem tools at another repo. Escape hatches: `--tools-add X,Y` and `--tools-drop Z`.
+- `uv run harness chat --model mlx --persona --tools --router` — same, with a small-model intent router (default `mlx-community/Hermes-3-Llama-3.2-3B-4bit`) fronting the tool loop: when it confidently classifies the turn into a read-tier tool call, the orchestrator executes the tool itself and the main model only does a wrap-up round. `--router-mode grammar` switches to JSON-schema-constrained decoding via `outlines` (requires the `grammar` extra). `--router-repo` overrides the router model.
+- `uv run harness chat --model mlx --persona --tui` — launch the Textual chat app instead of the classic REPL: persistent input at the bottom, scrolling RichLog above, live context + elapsed metrics footer, write-tier confirmation modal, history replay on mount, `/exit` + `:q` slash commands. Requires `--extra tui`.
 - `uv run harness chat --model mlx --model-repo mlx-community/Qwen2.5-Coder-32B-Instruct-4bit --persona` — override the default model repo. Works for `chat`, `eval voice`, and `memory scribe`.
 - `uv run harness chat --model mlx --lora-path ./adapters/airton --persona` — apply a LoRA adapter (directory from `mlx_lm.lora`) on top of the base MLX model.
 - `uv run harness chat --model ollama --model-repo qwen2.5-coder:32b-instruct --persona` — Ollama backend.
@@ -31,6 +33,7 @@ Daily chat (see `docs/usage.md` for the intended workflow):
 Voice corpus:
 
 - `uv run harness voice capture --session X --gold "…"` — capture a corrected reply as a new voice sample for session X's last user prompt. Goes to `character/<name>/voice/captured.yaml`.
+- Inside chat, type `/edit` at the `you ›` prompt — `$EDITOR` opens with Airton's last reply pre-loaded; save edits to capture a new voice sample without leaving the session.
 - `uv run harness voice list-captured` — inspect the captured set.
 
 Memory operations:
@@ -55,12 +58,18 @@ Voice + persona evals:
 - `uv run harness eval voice --model mlx --sample SAMPLE_ID` — run one sample.
 - Append `--json` for machine-readable output.
 
+Router evals:
+
+- `uv run harness eval router` — replay `character/<name>/router_eval.yaml` through the configured router and score tool-selection accuracy. Locks in quality before swapping router models or editing the router prompt.
+- `uv run harness eval router --router-mode grammar --tool-set coding` — grammar-constrained router scored against a different profile's tool set.
+- Append `--json` for machine-readable output.
+
 Quality gates (all must stay green; pre-commit runs them on every commit):
 
 - `uv run ruff check .` — lint.
 - `uv run ruff format .` — format in place.
 - `uv run mypy src tests` — strict type-check (src + tests).
-- `uv run pytest` — full test suite (currently ~217 tests).
+- `uv run pytest` — full test suite (currently ~470 tests).
 - `uv run pytest tests/test_character.py::test_load_airton_shape` — single test.
 - `uv run pre-commit run --all-files` — run all hooks against the working tree.
 
@@ -113,21 +122,33 @@ Load-bearing invariants — they shape almost every decision:
     - `store.py` — persists per-session compaction summaries so reruns don't re-summarize unchanged history.
     - `summarizer.py` — folds older turns into a single session summary using the same adapter.
     - `runner.py` — `maybe_compact(messages, tokens_used, window, compact_at, keep_recent)`; fires when the context meter crosses `--compact-at` (default 0.8 of the window) and leaves `--compact-keep-recent` turns verbatim.
-  - `tools/` — built-in tools for the agent loop.
+  - `tools/` — built-in tools for the agent loop. Currently 17 tools across filesystem, shell, git, memory, and web domains.
     - `base.py` — `Tool` protocol + `ToolResult`; tools declare schema, execute given a workspace-scoped context, return content + optional metadata. Write-tier tools are marked and trigger per-session user confirmation.
-    - `profiles.py` — named tool-set profiles (`minimal`, `core`, `coding`, `memory`, `diagnostic`) that group tools by use case. `resolve_tool_names(profile, add=, drop=)` returns the final set. Profiles may list forward-compatible names that don't exist yet; the CLI warns + skips.
-    - `read_file.py` / `write_file.py` / `shell.py` — filesystem + shell, all sandboxed to `--workspace`.
-    - `search_memory.py` / `search_facts.py` — read-only retrieval over episodic + semantic stores, scoped to the speaker.
-  - `orchestrator/tool_loop.py` — runs the adapter's `complete_with_tools` loop: model → tool calls → execute → feed results back → repeat until no more tool calls. Handles display labels, token counting, streaming, retrieval degradation (skips retrieval when a tool run is clearly on rails).
+    - `profiles.py` — named tool-set profiles (`minimal`, `core`, `coding`, `memory`, `diagnostic`, `research`) that group tools by use case. `resolve_tool_names(profile, add=, drop=)` returns the final set. Profiles may list forward-compatible names that don't exist yet; the CLI warns + skips. Each profile targets ≤ ~1,500 tokens of schema overhead.
+    - Filesystem read: `read_file.py`, `list_dir.py`, `grep.py`, `glob.py`.
+    - Filesystem write: `edit_file.py` (partial edits; empty `old_string` = append), `write_file.py` (refuses overwrite by default; nudges toward `edit_file`), `shell.py`. All sandboxed to `--workspace`.
+    - Git read: `git.py` — `git_status`, `git_diff`, `git_log`.
+    - Memory read: `search_memory.py`, `search_facts.py` — scoped to the speaker.
+    - Memory write: `remember.py` — `remember_fact`, `remember_event`. Ops: `ops.py` — `scribe_session`, `consolidate_memory`.
+    - Web read: `search_web.py` — stdlib DuckDuckGo HTML scrape.
+  - `router/` — small-model intent router that fronts the tool loop.
+    - `intent.py` — `Router` protocol + `RouterResult`. Advisory: `null` / write-tier / unparseable intents fall through to the main loop.
+    - `model_router.py` — free-form JSON router (tolerant parse, tool-name + arg validation against the active tool set). System prompt has few-shots + a null rubric.
+    - `grammar_router.py` — JSON-schema-constrained decoding via `outlines` and MLX. Guarantees valid output + valid tool name by construction; costs ~1 GB RAM for the FSM. Warns once and falls back to free mode if outlines is missing or the schema fails.
+  - `orchestrator/tool_loop.py` — runs the adapter's `complete_with_tools` loop: model → tool calls → execute → feed results back → repeat until no more tool calls. Handles display labels, token counting, streaming, retrieval degradation (skips retrieval when a tool run is clearly on rails), duplicate-call short-circuit, wrap-up cap (default 384 tokens) with a widened cap on truncated recovery, and hallucination catchers (fabricated tool-call success, fabricated search results, bare tool-intent with no call, quoted-snippet numbered lists, paired meta-confirm).
+  - `tui/` — Textual chat app (optional, behind the `tui` extra and `--tui` flag).
+    - `chat_app.py` — scaffold → live adapter wiring → streaming RichLog → tool-loop inline event rendering → live ctx + elapsed footer → write-tier confirmation modal → history replay on mount + `/exit` / `:q` slash commands.
+    - `confirm_screen.py` — modal screen that asks for write-tier confirmation.
   - `evals/` — offline evals.
     - `voice.py` — `run_voice_eval(..., retriever=, persona=, use_judge=, chain_rewrites=)`.
     - `voice_score.py` — heuristic scorer: length / openers / bullet-discipline / bullet-density / filler. Aggregate is the mean.
     - `voice_judge.py` — LLM-as-judge; parses 1-10 from the adapter.
-  - `cli.py` — Typer app: `chat` (with `--tools`, `--workspace`, `--model-repo`, `--lora-path`, `--rewrite-on-tools`, `--compact-at`, `--compact-keep-recent`), `describe`, `eval voice`, `memory {list,search,scribe,consolidate,wipe,rebuild-embeddings,fact-*,ingest}`, `voice {capture,list-captured}`.
+    - `router.py` — fixture-based router eval: loads `character/<name>/router_eval.yaml`, runs each prompt through the router, scores tool-name accuracy + arg-shape match.
+  - `cli.py` — Typer app: `chat` (with `--tools`, `--tool-set`, `--tools-add/drop`, `--workspace`, `--model-repo`, `--lora-path`, `--rewrite-on-tools`, `--compact-at`, `--compact-keep-recent`, `--router`, `--router-repo`, `--router-mode`, `--tui`, `--dev`, in-chat `/edit` + `/capture` for voice capture), `describe`, `eval {voice,router}`, `memory {list,search,scribe,consolidate,wipe,rebuild-embeddings,fact-*,ingest}`, `voice {capture,list-captured}`.
 
-- `tests/` — pytest. Tests hit real stores (SQLite in `tmp_path`) rather than mocks. ~217 tests across character, stores, retrieval, scribe, consolidator, persona, voice eval, dimension tracking, relationship memory, voice capture, tool loop, tools, compaction, Ollama adapter, CLI helpers.
+- `tests/` — pytest. Tests hit real stores (SQLite in `tmp_path`) rather than mocks. ~470 tests across character, stores, retrieval, scribe, consolidator, persona, voice eval, dimension tracking, relationship memory, voice capture, tool loop, all 17 tools, compaction, Ollama adapter, CLI helpers, router (model + grammar), router eval, TUI chat app.
 
-- `scripts/` — benchmarks and one-offs (model-speed benchmark, tool-use benchmark).
+- `scripts/` — benchmarks and one-offs (model-speed benchmark, tool-use benchmark with `--measure-tokens` for per-tool schema + result cost, router-on-vs-off benchmark with RAM tracking).
 
 ### Voice stack
 
@@ -161,7 +182,9 @@ When `--tools` is set, the chat loop hands the adapter a tool schema and enters 
 4. Persona rewrite is **off by default** when tools ran — the rewriter compresses, which is wrong for multi-step investigations. `--rewrite-on-tools` opts back in for casual tool use.
 5. If the prompt + tool results approach `--compact-at × context_window` tokens, `compaction/` folds older turns into a session summary. The transcript is unchanged — only the model-visible history shrinks.
 
-Filesystem tools (`read_file` / `write_file` / `shell`) are sandboxed to `--workspace` (default: the harness repo root). Memory + transcripts stay under the harness data dir regardless.
+Filesystem tools (`read_file` / `list_dir` / `grep` / `glob` / `edit_file` / `write_file` / `shell`) and git-read tools (`git_status` / `git_diff` / `git_log`) are sandboxed to `--workspace` (default: the harness repo root). Memory + transcripts stay under the harness data dir regardless.
+
+When `--router` is on, the orchestrator hands the turn to a small-model intent router *before* round 0: on a confident read-tier classification it executes the tool itself and the main model only does a wrap-up round — skipping the fabricate-and-nudge rounds that small models are prone to. `null` / write-tier / unparseable router results fall through to the normal loop.
 
 ### Phase progress
 
@@ -171,11 +194,14 @@ Done:
 - **Phase 1a/b/d** — MLX adapter, voice eval suite, few-shot + retrieval, persona rewriter, heuristic + judge scoring, chain-of-rewrite, episodic store, semantic store, scribe, consolidator, dimension tracking.
 - **Phase 2.0** — Relationship memory (per-user scoping).
 - **Phase 2.1** — Corpus growth via `voice capture`.
-- **Phase 3.0+3.1** — Tool use: 5 built-in tools (read_file, write_file, shell, search_memory, search_facts), orchestrator loop, `--tools` flag, `--workspace` sandbox, write-tier confirmation, streaming tokens, context meter, automatic compaction, retrieval degradation when on-rails, Ollama adapter with tool-call support. Robustness hardening: scribe fcntl session lock, SQLite `busy_timeout` pragma, HF/transformers startup noise suppression, `--model-repo` and `--lora-path` flags across chat/eval/scribe.
+- **Phase 3.0+3.1** — Tool use: initial 5 built-in tools (read_file, write_file, shell, search_memory, search_facts), orchestrator loop, `--tools` flag, `--workspace` sandbox, write-tier confirmation, streaming tokens, context meter, automatic compaction, retrieval degradation when on-rails, Ollama adapter with tool-call support. Robustness hardening: scribe fcntl session lock, SQLite `busy_timeout` pragma, HF/transformers startup noise suppression, `--model-repo` and `--lora-path` flags across chat/eval/scribe.
+- **Phase 3.2 — Tool expansion + hardening.** 17 tools across filesystem read/write (`list_dir`, `grep`, `glob`, `edit_file` with append semantics, `write_file` overwrite refusal), shell, git read (`git_status`, `git_diff`, `git_log`), memory write (`remember_fact`, `remember_event`, `scribe_session`, `consolidate_memory`), and web (`search_web`). Tool-set profiles (`minimal` / `core` / `coding` / `memory` / `diagnostic` / `research`) with `--tool-set`, `--tools-add`, `--tools-drop`. Orchestrator hallucination catchers (fabricated tool-call success, fabricated search results, bare tool-intent, numbered-list quoted snippets, paired meta-confirm), wrap-up round cap, duplicate-call short-circuit, stream-level meta-confirm filter gated behind `--dev`, structured loading header.
+- **Phase 3.3 — Intent router.** `Router` protocol + `ModelRouter` (free-form JSON + tolerant parse) + `GrammarRouter` (JSON-schema-constrained decoding via `outlines`). `--router`, `--router-repo`, `--router-mode` flags. Default router model: `mlx-community/Hermes-3-Llama-3.2-3B-4bit`. `harness eval router` with fixture-based scoring.
+- **Phase 3.4 — Textual TUI.** `--tui` flag launches a full Textual chat app: persistent input, scrolling RichLog, live ctx + elapsed footer, tool-loop inline event rendering, token-delta streaming, write-tier confirmation modal, history replay on mount, `/exit` + `:q` slash commands. Behind the optional `tui` extra.
+- **Voice-capture ergonomics.** In-chat `/edit` (and alias `/capture`) opens `$EDITOR` with Airton's last reply pre-loaded; saving captures a new voice sample without leaving the session.
 
 Available but not started (no priority implied — tracked as `bd` issues):
 
-- In-chat `/edit` invoking `$EDITOR` so captures don't require shell flags.
 - LoRA fine-tune on Qwen 2.5 32B using the voice suite as training data (roadmap Tier 3).
 - Web gateway (FastAPI + SvelteKit ops console). Blocked on auth + rate limit + backup decisions.
 - Slack + Matrix gateways.

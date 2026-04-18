@@ -12,10 +12,13 @@ Living document. Authoritative architecture + commands reference is `CLAUDE.md`;
 - Episodic and semantic memory: seed + scribe-written + consolidator-promoted tiers, all retrieval-indexed with mxbai-embed-large-v1 (1024 dim).
 - Per-user relationship scoping — Alice can't see Bob's private memories; shared seeds reach everyone.
 - Corpus growth: `harness voice capture` turns a corrected reply into a new voice sample; the loader picks it up on next start; retrieval surfaces it on similar future prompts.
-- **Tool use (Phase 3)**: `--tools` hands the model 5 built-in tools (read_file, write_file, shell, search_memory, search_facts); the orchestrator runs the tool-call loop, confirms write-tier tools once per session, streams tokens, renders a context meter, and auto-compacts older turns when the context window crosses `--compact-at`. Filesystem tools are sandboxed to `--workspace`.
-- Robustness hardening: scribe `fcntl` session lock (no overlapping scribe runs corrupting the watermark); `PRAGMA busy_timeout = 5000` across all SQLite stores; HF/transformers/ST startup noise suppressed; Ollama adapter supports tool calls + token streaming.
+- **Tool use (Phase 3)**: `--tools` hands the model 17 built-in tools across filesystem read (`read_file`, `list_dir`, `grep`, `glob`), filesystem write (`edit_file`, `write_file`, `shell`), git read (`git_status`, `git_diff`, `git_log`), memory (`search_memory`, `search_facts`, `remember_fact`, `remember_event`, `scribe_session`, `consolidate_memory`), and web (`search_web`). Named profiles (`minimal` / `core` / `coding` / `memory` / `diagnostic` / `research`) group them by use case; escape hatches `--tools-add` / `--tools-drop`. The orchestrator runs the tool-call loop, confirms write-tier tools once per session, streams tokens, renders a context meter, auto-compacts older turns, short-circuits duplicate calls, catches fabricated tool-call successes / bare tool-intent / meta-confirm, and caps wrap-up rounds. Filesystem + git tools are sandboxed to `--workspace`.
+- **Intent router**: `--router` fronts the tool loop with a small model (default `mlx-community/Hermes-3-Llama-3.2-3B-4bit`). `--router-mode free` does tolerant JSON parsing; `--router-mode grammar` does JSON-schema-constrained decoding via `outlines`. Advisory: `null` / write-tier / unparseable router results fall through. `harness eval router` scores tool-selection accuracy against a YAML fixture.
+- **Textual TUI**: `--tui` launches a full chat app — persistent input, scrolling RichLog, live ctx + elapsed footer, inline tool-loop event rendering, token-delta streaming, write-tier confirmation modal, history replay on mount, `/exit` + `:q` slash commands. Behind the optional `tui` extra.
+- **Voice-capture ergonomics**: in-chat `/edit` / `/capture` opens `$EDITOR` on the last reply; saving captures a new voice sample without leaving the session.
+- Robustness hardening: scribe `fcntl` session lock (no overlapping scribe runs corrupting the watermark); `PRAGMA busy_timeout = 5000` across all SQLite stores; HF/transformers/ST startup noise suppressed; Ollama adapter supports tool calls + token streaming; stream-level meta-confirm filter gated behind `--dev`.
 - Validated end-to-end: the "junior asks for the fix" and "transceiver bug" validation turns both reproduced seed-memory specifics; the onboarding prompt demonstrated corpus growth fixing a previously-generic response.
-- ~217 tests green under ruff + mypy strict + pre-commit.
+- ~470 tests green under ruff + mypy strict + pre-commit.
 
 **What you can't do yet**: talk to Airton from anywhere but a terminal on the M4. No always-on daemon, no gateway, no multi-agent roles.
 
@@ -34,7 +37,10 @@ Living document. Authoritative architecture + commands reference is `CLAUDE.md`;
   - **1b.3** — Dimension tracking on stores + `rebuild-embeddings` for non-destructive embedder switches.
 - **Phase 2.0 — Relationship memory.** Per-user scoping on episodic + semantic search; scribe tags candidates by user; CLI `--user` / `--shared` flags.
 - **Phase 2.1 — Corpus growth.** `harness voice capture` writes captured YAML; character loader merges canonical + captured.
-- **Phase 3.0 + 3.1 — Tool use.** 5 built-in tools (read_file, write_file, shell, search_memory, search_facts), `--tools` flag, orchestrator loop, Ollama adapter with tool-call + token-streaming support, streaming tokens, spinner, context meter, automatic compaction (`--compact-at`, `--compact-keep-recent`), retrieval degradation when a turn is clearly on-rails, `--workspace` sandbox, write-tier confirmation, `--rewrite-on-tools` toggle for the persona rewriter. Alongside: `--model-repo` and `--lora-path` flags across chat / eval / scribe, scribe fcntl session lock, SQLite `busy_timeout` pragma, HF/transformers noise suppression.
+- **Phase 3.0 + 3.1 — Tool use.** Initial 5 built-in tools (read_file, write_file, shell, search_memory, search_facts), `--tools` flag, orchestrator loop, Ollama adapter with tool-call + token-streaming support, streaming tokens, spinner, context meter, automatic compaction (`--compact-at`, `--compact-keep-recent`), retrieval degradation when a turn is clearly on-rails, `--workspace` sandbox, write-tier confirmation, `--rewrite-on-tools` toggle for the persona rewriter. Alongside: `--model-repo` and `--lora-path` flags across chat / eval / scribe, scribe fcntl session lock, SQLite `busy_timeout` pragma, HF/transformers noise suppression.
+- **Phase 3.2 — Tool expansion + orchestrator hardening.** Grew from 5 to 17 tools: filesystem read trio (`list_dir`, `grep`, `glob`), partial-file `edit_file` (empty `old_string` = append), `write_file` now refuses overwrite by default (nudges toward `edit_file`), git read (`git_status`, `git_diff`, `git_log`), memory write (`remember_fact`, `remember_event`, `scribe_session`, `consolidate_memory`), web (`search_web` — DuckDuckGo HTML, stdlib only). Tool-set profiles (`minimal` / `core` / `coding` / `memory` / `diagnostic` / `research`) with `--tool-set`, `--tools-add`, `--tools-drop`. Orchestrator catches fabricated tool-call success, fabricated search results, bare tool-intent with no call, numbered-list quoted snippets, paired meta-confirm; caps wrap-up rounds (default 384 tokens) with widened cap on truncated recovery; short-circuits duplicate calls within a turn. `consolidate` partitions by user_id before clustering. Stream-level meta-confirm filter + pre-validated approve UX (dev markers gated behind `--dev`). Structured loading header shows every active flag. In-chat `/edit` slash command for voice capture.
+- **Phase 3.3 — Intent router.** `Router` protocol + `ModelRouter` (free-form JSON + tolerant parse, tool-name + arg validation, system prompt with null rubric + few-shots) + `GrammarRouter` (JSON-schema-constrained decoding via `outlines` and MLX, warn-once fallback on failure). `--router`, `--router-repo`, `--router-mode` flags; default repo `mlx-community/Hermes-3-Llama-3.2-3B-4bit`. `harness eval router` fixture-based accuracy scoring; `scripts/` router-on-vs-off benchmark with RAM tracking. `outlines` pinned `<1.0` with the `datasets` transitive pin. Grammar extra in `pyproject.toml`.
+- **Phase 3.4 — Textual TUI.** Seven-phase build: scaffold → adapter + persona + retrieval wiring → live metrics footer → tool loop + inline event rendering → token-delta streaming into RichLog → write-tier confirmation modal → history replay on mount + `/exit` / `:q` slash commands. Behind the optional `tui` extra and `--tui` flag; classic REPL untouched.
 
 ## Voice durability — the permanent path
 
@@ -66,7 +72,6 @@ First permanent move. Train a LoRA on Qwen 2.5 32B using the voice suite (canoni
 Infrastructure in place. Compounds every time Mark captures an edit.
 
 Remaining niceties:
-- In-chat `/edit` command invoking `$EDITOR` with Airton's reply pre-loaded — currently the capture flow requires leaving chat to run the CLI command.
 - Automatic capture prompt after each Airton turn (opt-in; keystroke to skip).
 
 ### Tier 5 — Preference learning (DPO)
@@ -81,9 +86,7 @@ With 1000+ Airton-voiced responses, do a full supervised fine-tune (not LoRA). V
 
 Tracked as `bd` issues now — run `bd ready` for the live list. Summary of current open candidates:
 
-- **Refresh docs** (`harness-1ja`) — this pass. Keep CLAUDE.md + roadmap in sync with reality.
 - **LoRA fine-tune (Phase 1e)** (`harness-kr4`) — first permanent voice move. Eval suite is dialed in enough to judge the result. Gate on captured corpus size (currently 1 — too low; capture more first).
-- **In-chat `/edit` for voice capture** (`harness-dws`) — lower the friction of corpus growth. Small CLI change.
 - **Launchd daemon + scheduled consolidation + nightly backup** (`harness-bi3`, blocked on backup destination `harness-cxd`).
 - **Web gateway (epic)** (`harness-g7y`) — FastAPI + SvelteKit ops console. Blocked on auth (`harness-55p`), rate limit, and backup destination.
 

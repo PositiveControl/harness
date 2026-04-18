@@ -25,13 +25,17 @@ Primary runtime is **MLX on Apple Silicon** (tested on M4 Pro 48 GB). A local **
 - Semantic triples (`subject`, `predicate`, `object`) with confidence, provenance, and supersession.
 
 **Agent loop**
-- Tool-use orchestrator with 5 built-in tools: `read_file`, `write_file`, `shell`, `search_memory`, `search_facts`.
-- Streaming token output, spinner, context-window meter, automatic compaction.
+- Tool-use orchestrator with 17 built-in tools across filesystem (`read_file`, `list_dir`, `grep`, `glob`, `edit_file`, `write_file`, `shell`), git (`git_status`, `git_diff`, `git_log`), memory (`search_memory`, `search_facts`, `remember_fact`, `remember_event`, `scribe_session`, `consolidate_memory`), and web (`search_web`).
+- Named tool-set profiles (`minimal`, `core`, `coding`, `memory`, `diagnostic`, `research`) — each ≤ ~1,500 tokens of schema overhead.
+- Optional small-model intent router (`--router`) that fronts the tool loop: confident read-tier classifications skip the fabricate-and-nudge rounds. Free-form JSON or JSON-schema-constrained decoding via `outlines`.
+- Streaming token output, spinner, context-window meter, automatic compaction, duplicate-call short-circuit, fabricate-and-nudge catchers.
+- Optional Textual TUI (`--tui`) — persistent input, scrolling RichLog, live metrics footer, write-tier confirmation modal, history replay.
 - Scribe lock prevents concurrent extraction runs from corrupting the watermark.
 
 **Evals + quality**
 - Voice eval suite: leave-one-out retrieval scoring + heuristic scorer + LLM-as-judge.
-- ~110 tests against real SQLite stores — no mocks.
+- Router eval: fixture-based tool-selection accuracy check (`harness eval router`).
+- ~470 tests against real SQLite stores — no mocks.
 - `ruff` + `mypy --strict` + `pytest` wired into pre-commit and pre-push hooks.
 
 **Character as configuration**
@@ -45,8 +49,8 @@ Primary runtime is **MLX on Apple Silicon** (tested on M4 Pro 48 GB). A local **
 Requirements: macOS (Apple Silicon for MLX), Python 3.11+, [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-# 1. Install dependencies
-uv sync --extra dev --extra mlx --extra retrieval
+# 1. Install dependencies (grammar + tui extras are optional — see below)
+uv sync --extra dev --extra mlx --extra retrieval --extra grammar --extra tui
 
 # 2. Pull the default MLX model (~4 GB, 4-bit quantized Qwen 2.5 7B Instruct)
 uv run hf download mlx-community/Qwen2.5-7B-Instruct-4bit
@@ -58,6 +62,13 @@ uv run pre-commit install --hook-type pre-push
 # 4. Seed episodic memory from the character's formative narratives
 uv run harness memory ingest
 ```
+
+Optional extras:
+
+- `--extra grammar` — pulls `outlines` + `datasets`. Required for `--router-mode grammar` (JSON-schema-constrained router decoding).
+- `--extra tui` — pulls `textual`. Required for `--tui` chat.
+
+Both can be omitted for a smaller headless install.
 
 ### Running a different model
 
@@ -160,6 +171,11 @@ Key flags:
 | `--rewrite-on-tools` | When tools ran in a turn, also run the persona rewriter on the final reply. Off by default — the rewriter compresses, which is wrong for summarize / investigate tasks. |
 | `--compact-at F` | Fraction of context window at which to auto-summarize older turns (default 0.8, set 0 to disable). |
 | `--compact-keep-recent N` | Number of most-recent turns to leave verbatim when compaction fires (default 10). |
+| `--router` | Front the tool loop with a small-model intent router. Confident read-tier classifications run the tool directly, skipping fabricate-and-nudge rounds. |
+| `--router-repo REPO` | HF repo for the router model. Default `mlx-community/Hermes-3-Llama-3.2-3B-4bit` (~2 GB RAM). |
+| `--router-mode {free,grammar}` | Routing strategy. `free` = tolerant JSON parse. `grammar` = JSON-schema-constrained decoding via `outlines` (requires `--extra grammar`, ~1 GB extra RAM). |
+| `--tui` | Launch the Textual chat app instead of the classic REPL. Requires `--extra tui`. |
+| `--dev` | Surface internal signals (stream-filter suppression markers, etc.) — for tuning, not daily use. |
 
 ### Working in another repo (`--workspace`)
 
@@ -176,12 +192,14 @@ Memory, transcripts, and the character's voice corpus still live under the harne
 ### Voice corpus
 
 ```bash
-# Capture a corrected reply as a new voice training sample
+# Capture a corrected reply as a new voice training sample (from the shell)
 uv run harness voice capture --session <id> --gold "What the character should have said."
 
 # Inspect captured samples
 uv run harness voice list-captured
 ```
+
+Inside chat, type `/edit` (or `/capture`) at the `you ›` prompt — `$EDITOR` opens with the last assistant reply pre-loaded. Save edits to capture a new sample without leaving the session.
 
 ### Memory
 
@@ -210,17 +228,21 @@ uv run harness memory wipe --yes
 ### Evals
 
 ```bash
-# Current best config
+# Voice — current best config
 uv run harness eval voice --model mlx --top-k 6 --persona
 
-# Full eval: chain rewrites + LLM judge
+# Voice — full eval: chain rewrites + LLM judge
 uv run harness eval voice --model mlx --persona --chain-rewrites --judge
 
-# Single sample
+# Voice — single sample
 uv run harness eval voice --model mlx --sample SAMPLE_ID
 
-# Machine-readable
+# Voice — machine-readable
 uv run harness eval voice --model mlx --persona --json
+
+# Router — replay the router-eval fixture and score tool-selection accuracy
+uv run harness eval router
+uv run harness eval router --router-mode grammar --tool-set coding
 ```
 
 ### Quality gates
@@ -249,9 +271,11 @@ src/harness/
   scribe/                batch extract transcript → memory candidates
   consolidate/           cluster + merge near-duplicates; promote tier
   compaction/            context-window management
-  tools/                 built-in tools for the agent loop
+  tools/                 17 built-in tools for the agent loop (fs/git/memory/web) + profiles
   orchestrator/          tool-use loop
-  evals/                 voice eval + scorer + judge
+  router/                small-model intent router (free-form + grammar)
+  tui/                   Textual chat app (optional, behind `--extra tui`)
+  evals/                 voice + router evals, scorer + judge
   cli.py                 Typer entrypoint
 ```
 

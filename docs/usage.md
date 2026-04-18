@@ -145,8 +145,7 @@ uv run harness memory fact-search "some question"
 ## Known limits
 
 - Chat is interactive-only. No web, Slack, or Matrix yet.
-- Memory doesn't auto-scribe; you run `memory scribe` manually.
-- Consolidator ignores user scoping — fine with one user, needs fixing before inviting another.
+- Memory doesn't auto-scribe; you run `memory scribe` manually (or call `scribe_session` as a tool if `--tool-set memory`).
 - Voice only covers prompts near existing samples. Off-piste prompts regress to Qwen's default register until you capture them.
 - No backup destination set — local only, no off-box copies yet.
 
