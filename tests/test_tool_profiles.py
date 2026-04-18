@@ -111,3 +111,19 @@ def test_add_mixed_profile_and_literal() -> None:
     names = set(resolve_tool_names("minimal", add=("research", "edit_file")))
     assert "search_web" in names  # from research profile
     assert "edit_file" in names  # literal
+
+
+def test_introspect_included_in_default_profiles() -> None:
+    """harness-e9i: introspect is a read-tier tool the agent calls to
+    describe its own capabilities. It ships in the default chat
+    profiles (core, coding, diagnostic) so 'what can you do?' doesn't
+    hallucinate."""
+    for profile in ("core", "coding", "diagnostic"):
+        assert "introspect" in resolve_tool_names(profile), profile
+
+
+def test_introspect_not_in_minimal_or_research() -> None:
+    """Minimal is deliberately empty; research is web-focused. Neither
+    carries introspect — opt in via --tools-add."""
+    assert "introspect" not in resolve_tool_names("minimal")
+    assert "introspect" not in resolve_tool_names("research")

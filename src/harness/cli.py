@@ -19,6 +19,7 @@ from rich.table import Table
 
 import harness._quiet  # noqa: F401 — side-effect import: silences HF/transformers/sentence-transformers noise before they load
 from harness.character import Character, VoiceSample, load_character
+from harness.cli_introspect import list_cli_commands
 from harness.compaction import (
     CompactionOutcome,
     CompactionStore,
@@ -67,6 +68,8 @@ from harness.tools import (
     GitStatusTool,
     GlobTool,
     GrepTool,
+    IntrospectContext,
+    IntrospectTool,
     ListDirTool,
     ReadFileTool,
     RememberEventTool,
@@ -863,6 +866,8 @@ def _build_tool_registry_for_tui(
     semantic_store: SemanticStore | None,
     speaker: str,
     session: str,
+    adapter: ModelAdapter | None = None,
+    character: Character | None = None,
     warnings_out: list[str] | None = None,
 ) -> ToolRegistry | None:
     """Build a ToolRegistry for the Textual app. Subset of the
@@ -920,6 +925,8 @@ def _build_tool_registry_for_tui(
 
     registry = ToolRegistry()
     for name in wanted_names:
+        if name == "introspect":
+            continue  # handled after the main loop — needs the populated registry
         builder = builders.get(name)
         if builder is None:
             if warnings_out is not None:
@@ -934,7 +941,51 @@ def _build_tool_registry_for_tui(
             continue
         registry.register(tool)
 
+    if "introspect" in wanted_names:
+        if adapter is None or character is None:
+            if warnings_out is not None:
+                warnings_out.append("tool 'introspect' needs adapter + character — skipping")
+        else:
+            registry.register(
+                _make_introspect_tool(
+                    registry,
+                    adapter,
+                    character,
+                    workspace_path,
+                    episodic=memory_store,
+                    semantic=semantic_store,
+                    user_id=speaker,
+                )
+            )
+
     return registry if registry.names() else None
+
+
+def _make_introspect_tool(
+    registry: ToolRegistry,
+    adapter: ModelAdapter,
+    character: Character,
+    workspace_path: Path | None,
+    *,
+    episodic: EpisodicStore | None = None,
+    semantic: SemanticStore | None = None,
+    user_id: str | None = None,
+) -> IntrospectTool:
+    """Construct an IntrospectTool bound to the already-populated
+    registry. Pre-enumerates the CLI commands from the Typer app so
+    the tool doesn't have to import harness.cli at runtime."""
+    ctx = IntrospectContext(
+        registry=registry,
+        adapter=adapter,
+        character=character,
+        settings=settings,
+        episodic=episodic,
+        semantic=semantic,
+        workspace=workspace_path,
+        user_id=user_id,
+        commands=tuple(list_cli_commands(app)),
+    )
+    return IntrospectTool(context=ctx)
 
 
 def _build_tool_grounding_block(registry: ToolRegistry, workspace_path: Path) -> str:
@@ -943,7 +994,7 @@ def _build_tool_grounding_block(registry: ToolRegistry, workspace_path: Path) ->
     app (harness-1r4) can reuse it verbatim — small model behavior
     is sensitive enough that maintaining two copies would drift."""
     tool_names = ", ".join(registry.names())
-    return (
+    base = (
         f"Workspace grounding — you are a real process on Mark's Mac. "
         f"The tool sandbox root is `{workspace_path}`. Available tools: "
         f"{tool_names}. Paths passed to `read_file` / `write_file` / "
@@ -997,6 +1048,19 @@ def _build_tool_grounding_block(registry: ToolRegistry, workspace_path: Path) ->
         "reply. Do not answer with meta-phrases like 'awaiting input' or "
         "'the content is available'."
     )
+    if "introspect" in registry:
+        # Small belt-and-suspenders nudge (harness-u71). The tool's own
+        # schema already describes it, but models prone to hallucinating
+        # their own abilities benefit from an explicit directive to call
+        # it instead of guessing.
+        base += (
+            "\n- When asked what you can do, what tools you have, what "
+            "model you are running, what your context window is, how "
+            "much you remember, or what CLI commands exist, call the "
+            "`introspect` tool with the matching scope. Do not guess "
+            "your capabilities from the character sheet or training."
+        )
+    return base
 
 
 def _render_memory_block(memories: list[EpisodicRecord]) -> str:
@@ -1287,6 +1351,8 @@ def chat(
             semantic_store=tui_semantic_store,
             speaker=speaker,
             session=session,
+            adapter=tui_adapter,
+            character=character_for_tui,
             warnings_out=tui_registry_warnings,
         )
 
@@ -1431,6 +1497,8 @@ def chat(
 
         registry = ToolRegistry()
         for name in wanted_names:
+            if name == "introspect":
+                continue  # deferred until after the registry is populated
             builder = builders.get(name)
             if builder is None:
                 console.print(f"[yellow]⚠ tool {name!r} not yet implemented — skipping[/yellow]")
@@ -1443,6 +1511,19 @@ def chat(
                 )
                 continue
             registry.register(tool)
+
+        if "introspect" in wanted_names:
+            registry.register(
+                _make_introspect_tool(
+                    registry,
+                    adapter,
+                    character,
+                    workspace_path,
+                    episodic=memory_store,
+                    semantic=semantic_store,
+                    user_id=speaker,
+                )
+            )
 
         if not registry.names():
             registry = None  # empty profile → same as --no-tools

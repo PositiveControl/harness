@@ -34,6 +34,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "glob",
         "search_memory",
         "search_facts",
+        "introspect",
     ),
     # Active code collaboration — full read/write/shell/memory/git.
     "coding": (
@@ -49,6 +50,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "git_log",
         "search_memory",
         "search_facts",
+        "introspect",
     ),
     # Memory-curation sessions. supersede_fact will join once
     # implemented (see bd issue harness-5tz).
@@ -65,6 +67,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
     "diagnostic": (
         "search_memory",
         "search_facts",
+        "introspect",
     ),
 }
 
