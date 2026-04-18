@@ -21,6 +21,7 @@ from harness.config import settings
 from harness.model.adapter import ChatMessage, approx_token_count
 from harness.model.echo import EchoAdapter
 from harness.store.transcript import Transcript
+from harness.tools import ModelReply, ReadFileTool, ToolCall, ToolRegistry, ToolSpec
 from harness.tui import ChatApp
 
 
@@ -145,6 +146,77 @@ async def test_metrics_shows_thinking_elapsed_during_turn(tmp_path) -> None:  # 
 
 
 @pytest.mark.asyncio
+async def test_chat_app_renders_tool_events_inline(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-1r4: when the registry is set, the worker drives
+    run_tool_loop. Observer events (router_intent omitted here since
+    no router is passed, tool_call_start + tool_call_end) must
+    appear in the RichLog before the final assistant reply."""
+    (tmp_path / "hello.txt").write_text("world")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    # Scripted adapter: first reply emits a read_file tool call,
+    # second reply emits the final text answer.
+    scripted = _ToolScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "hello.txt"}),),
+            ),
+            ModelReply(content="the file says 'world'"),
+        ]
+    )
+    app = _build_app(tmp_path, adapter=scripted, registry=registry, workspace=tmp_path)
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "what's in hello.txt?"
+        await pilot.press("enter")
+        await _wait_for_workers(pilot)
+
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        # Tool call's headline + result line + the final reply all
+        # show up in order in the log.
+        assert "🔧" in rendered
+        assert "read_file" in rendered
+        assert "✓" in rendered
+        assert "the file says" in rendered
+
+
+@pytest.mark.asyncio
+async def test_chat_app_declines_write_tier_tools_for_now(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-1r4: write-tier tools auto-decline until the modal
+    confirmation lands in harness-mz2. Each decline emits a log
+    line so the user knows what happened."""
+    registry = ToolRegistry()
+    registry.register(_WriteOnlyTool())
+
+    scripted = _ToolScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="dangerous_write", arguments={"target": "file.txt"}),),
+            ),
+            ModelReply(content="ok, nothing written."),
+        ]
+    )
+    app = _build_app(tmp_path, adapter=scripted, registry=registry, workspace=tmp_path)
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "write to file.txt"
+        await pilot.press("enter")
+        await _wait_for_workers(pilot)
+
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        # Our yellow placeholder notice + the orchestrator's
+        # 'declined' line both land in the log.
+        assert "declined automatically" in rendered
+        assert "harness-mz2" in rendered
+        assert "ok, nothing written" in rendered
+
+
+@pytest.mark.asyncio
 async def test_chat_app_error_in_adapter_shows_red_line(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """A broken adapter must not crash the app — the turn reports an
     error in the log and the input re-enables for the user to retry."""
@@ -162,6 +234,73 @@ async def test_chat_app_error_in_adapter_shows_red_line(tmp_path) -> None:  # ty
 
 
 # ---------- helpers ----------
+
+
+class _ToolScriptedAdapter:
+    """Adapter that returns pre-queued ModelReply objects from
+    complete_with_tools. Used to drive the tool loop deterministically
+    without spinning up a real model."""
+
+    id = "test:scripted"
+    context_window = 8192
+
+    def __init__(self, replies: list[ModelReply]) -> None:
+        self._replies = list(replies)
+
+    def count_tokens(self, messages: Iterable[ChatMessage]) -> int:
+        return approx_token_count(messages)
+
+    def complete(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+    ) -> str:
+        # Tool-less path isn't exercised by these tests, but the
+        # adapter protocol requires it.
+        reply = self._next()
+        return reply.content
+
+    def complete_with_tools(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        tools: object = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.5,
+    ) -> ModelReply:
+        return self._next()
+
+    def _next(self) -> ModelReply:
+        if self._replies:
+            return self._replies.pop(0)
+        return ModelReply(content="(exhausted)")
+
+
+class _WriteOnlyTool:
+    """Write-tier tool stub: never actually writes. Used to verify
+    that the Phase 4 auto-decline path short-circuits before the
+    tool's call() method runs. A real assertion that the body never
+    runs happens via the declined-branch tool result."""
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="dangerous_write",
+            description="would modify the workspace, but we auto-decline in phase 4",
+            parameters={
+                "type": "object",
+                "properties": {"target": {"type": "string"}},
+                "required": ["target"],
+            },
+            tier="write",
+        )
+
+    def call(self, *, target: str) -> str:
+        raise AssertionError(
+            f"write-tier tool should have been declined before reaching call(); target={target!r}"
+        )
 
 
 class _RaisingAdapter:
@@ -185,10 +324,19 @@ class _RaisingAdapter:
         raise RuntimeError("adapter exploded on purpose")
 
 
-def _build_app(tmp_path, adapter: object | None = None) -> ChatApp:  # type: ignore[no-untyped-def]
+def _build_app(  # type: ignore[no-untyped-def]
+    tmp_path,
+    adapter: object | None = None,
+    registry: ToolRegistry | None = None,
+    workspace=None,
+) -> ChatApp:
     """Construct a ChatApp with a real Transcript (SQLite in tmp_path),
     the real Airton character, and by default an EchoAdapter. Tests
-    stay fast + hermetic — no model weights, no HF downloads."""
+    stay fast + hermetic — no model weights, no HF downloads.
+
+    `registry` + `workspace` pass through to the tool-loop path
+    (Phase 4 and later); omit both to exercise the classic
+    adapter.complete() path."""
     character = load_character(settings.character_path)
     return ChatApp(
         character=character,
@@ -203,6 +351,8 @@ def _build_app(tmp_path, adapter: object | None = None) -> ChatApp:  # type: ign
         memories=0,
         semantic_store=None,
         facts=0,
+        registry=registry,
+        workspace_path=workspace,
     )
 
 

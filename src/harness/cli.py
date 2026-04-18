@@ -852,6 +852,149 @@ def _retrieve_turn_context(
     return examples, recalled, known_facts
 
 
+def _build_tool_registry_for_tui(
+    *,
+    tools: bool,
+    tool_set: str,
+    tools_add: str | None,
+    tools_drop: str | None,
+    workspace_path: Path,
+    memory_store: EpisodicStore | None,
+    semantic_store: SemanticStore | None,
+    speaker: str,
+    session: str,
+) -> ToolRegistry | None:
+    """Build a ToolRegistry for the Textual app. Subset of the
+    classic REPL's setup — skips scribe_session and
+    consolidate_memory (they require the resolved adapter +
+    character + transcript; the TUI can add them later if they show
+    up in real use). Unknown or store-dependent tools fall through
+    silently since the TUI has no Console to warn into here; add a
+    startup warnings path in harness-01o if it matters."""
+    if not tools:
+        return None
+    try:
+        wanted_names = resolve_tool_names(
+            tool_set,
+            add=tuple((tools_add or "").split(",")),
+            drop=tuple((tools_drop or "").split(",")),
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    builders: dict[str, Callable[[], Tool | None]] = {
+        "read_file": lambda: ReadFileTool(root=workspace_path),
+        "edit_file": lambda: EditFileTool(root=workspace_path),
+        "write_file": lambda: WriteFileTool(root=workspace_path),
+        "shell": lambda: ShellTool(cwd=workspace_path),
+        "list_dir": lambda: ListDirTool(root=workspace_path),
+        "grep": lambda: GrepTool(root=workspace_path),
+        "glob": lambda: GlobTool(root=workspace_path),
+        "git_status": lambda: GitStatusTool(root=workspace_path),
+        "git_diff": lambda: GitDiffTool(root=workspace_path),
+        "git_log": lambda: GitLogTool(root=workspace_path),
+        "search_memory": lambda: (
+            SearchMemoryTool(store=memory_store, user_id=speaker)
+            if memory_store is not None
+            else None
+        ),
+        "search_facts": lambda: (
+            SearchFactsTool(store=semantic_store, user_id=speaker)
+            if semantic_store is not None
+            else None
+        ),
+        "search_web": lambda: SearchWebTool(),
+        "remember_fact": lambda: (
+            RememberFactTool(store=semantic_store, user_id=speaker, session_id=session)
+            if semantic_store is not None
+            else None
+        ),
+        "remember_event": lambda: (
+            RememberEventTool(store=memory_store, user_id=speaker, session_id=session)
+            if memory_store is not None
+            else None
+        ),
+    }
+
+    registry = ToolRegistry()
+    for name in wanted_names:
+        builder = builders.get(name)
+        if builder is None:
+            # Unknown / deferred (scribe_session, consolidate_memory) —
+            # skip silently. The TUI's mount banner surfaces the
+            # final registered tool list so the user can see what
+            # landed vs. what was dropped.
+            continue
+        tool = builder()
+        if tool is None:
+            continue
+        registry.register(tool)
+
+    return registry if registry.names() else None
+
+
+def _build_tool_grounding_block(registry: ToolRegistry, workspace_path: Path) -> str:
+    """The long tool-use grounding block the system prompt grows when
+    tools are active. Lifted out of the chat command so the Textual
+    app (harness-1r4) can reuse it verbatim — small model behavior
+    is sensitive enough that maintaining two copies would drift."""
+    tool_names = ", ".join(registry.names())
+    return (
+        f"Workspace grounding — you are a real process on Mark's Mac. "
+        f"The tool sandbox root is `{workspace_path}`. Available tools: "
+        f"{tool_names}. Paths passed to `read_file` / `write_file` / "
+        f"`edit_file` are relative to the sandbox root; `shell` runs "
+        f"with it as cwd.\n\n"
+        "TOOL-USE RULES (follow these EVERY turn):\n"
+        "- The user's request IS the instruction. Act on it immediately.\n"
+        "- FORBIDDEN PHRASES — never emit any of these in your reply:\n"
+        '    • "Would you like to / Would you like me to"\n'
+        '    • "Should I proceed / Shall I / Do you want me to"\n'
+        '    • "Please confirm / Let\'s confirm / confirm your approval"\n'
+        '    • "we need to make sure the user confirms"\n'
+        "  If you catch yourself typing any of these, STOP — delete "
+        "the sentence and call the tool instead. The tool layer runs "
+        "its own approve/decline UX for write-tier tools; chat-level "
+        "meta-confirm just wastes the user's time.\n"
+        "- NEVER claim you did something (added/updated/created/wrote/"
+        "edited/appended a file, ran a command, etc.) unless you actually "
+        "called the corresponding write-tier tool on this turn AND the "
+        "tool's result message says it succeeded. If you don't have a "
+        "tool for the action the user asked for, say so plainly.\n"
+        "- ADDING a line or block to an existing file (e.g. 'add scratch "
+        "to .gitignore', 'append an import', 'add this to the config') → "
+        "use `edit_file` with an EMPTY `old_string` and `new_string` = the "
+        "text to append. Example: "
+        'edit_file(path=".gitignore", old_string="", new_string="scratch\\n"). '
+        "Do NOT use `write_file` for this — `write_file` replaces the "
+        "ENTIRE file and will destroy the existing content.\n"
+        "- CHANGING an existing line → `edit_file(path=..., old_string=..., "
+        "new_string=...)` with enough context in `old_string` to make it "
+        "unique.\n"
+        "- CREATING a brand-new file → `write_file(path=..., content=...)`. "
+        "Only use `overwrite=true` when the user explicitly asked you to "
+        "regenerate the file from scratch.\n"
+        "- Never describe the contents of the workspace from memory. If "
+        "the user asks what's in a directory, what a file contains, or "
+        "what this project does, you MUST call a tool first (`list_dir`, "
+        "`read_file`, `grep`) and base your answer on the tool's output.\n"
+        "- NEVER fabricate tool output. If the user asks you to search "
+        "the web, fetch a URL, read a file, or look up a fact in memory, "
+        "you MUST call the corresponding tool first. Do NOT invent "
+        "URLs, titles, snippets, file contents, or search results — "
+        "placeholder domains (example.com, your-site.com, localhost) "
+        "are forbidden. If the right tool isn't available this turn, "
+        "say so plainly.\n"
+        "- After tool results come back, respond with a substantive "
+        "reply that uses them. Never return an empty reply — the user "
+        "is waiting for your conclusion, not just the tool output.\n"
+        "- The user CANNOT see raw tool output — only your final reply. "
+        "Restate the key findings (names, numbers, quoted lines) in your "
+        "reply. Do not answer with meta-phrases like 'awaiting input' or "
+        "'the content is available'."
+    )
+
+
 def _render_memory_block(memories: list[EpisodicRecord]) -> str:
     """Render retrieved memories as a section of the system prompt. One
     block per memory, title as heading, principle italicized, body as
@@ -1078,20 +1221,9 @@ def chat(
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
     if tui:
-        # Phase 2: adapter + persona + retrieval wired. Tools,
-        # router, compaction, and voice-capture land in later
-        # phases — reject flags the TUI can't honor yet so the
-        # user isn't surprised when they're silently ignored.
-        if tools:
-            raise typer.BadParameter(
-                "--tui does not support --tools yet (lands in harness-1r4). "
-                "Drop --tools or use the classic REPL for now."
-            )
-        if router_enabled:
-            raise typer.BadParameter(
-                "--tui does not support --router yet (lands in harness-1r4). "
-                "Drop --router or use the classic REPL for now."
-            )
+        # Phase 4: tools + router wired. Compaction, voice-capture,
+        # and rewrite-on-tools still pending. Reject flags the TUI
+        # can't honor so the user isn't surprised by silent drops.
         try:
             from harness.tui import ChatApp
         except ImportError as exc:
@@ -1099,9 +1231,17 @@ def chat(
                 "--tui requires the `tui` extra. Install it with: uv sync --extra tui"
             ) from exc
         character_for_tui = load_character(settings.character_path)
+        tui_workspace_path = Path(workspace).expanduser().resolve() if workspace else settings.root
+        if tools and not tui_workspace_path.is_dir():
+            raise typer.BadParameter(f"workspace {tui_workspace_path} is not a directory")
+        # Tools-active path runs persona *after* the loop in the classic
+        # REPL; the TUI currently skips post-loop persona rewrite (the
+        # rewriter tends to compress investigate-style replies we want
+        # verbatim). So persona goes to _resolve_adapter only when tools
+        # are off.
         tui_adapter = _resolve_adapter(
             model,
-            persona=persona,
+            persona=persona and not tools,
             character=character_for_tui,
             model_repo=model_repo,
             lora_path=lora_path,
@@ -1110,6 +1250,38 @@ def chat(
         tui_memory_store = _open_episodic_store(character_for_tui) if memories > 0 else None
         tui_semantic_store = _open_semantic_store() if facts > 0 else None
         tui_transcript = Transcript(settings.db_path)
+
+        tui_router: Router | None = None
+        if router_enabled:
+            if not tools:
+                raise typer.BadParameter(
+                    "--router requires --tools (nothing to route to otherwise)."
+                )
+            if router_mode not in {"free", "grammar"}:
+                raise typer.BadParameter(
+                    f"--router-mode must be 'free' or 'grammar' (got {router_mode!r})."
+                )
+            from harness.model.mlx import MLXAdapter
+
+            tui_router_adapter = MLXAdapter(repo=router_repo)
+            tui_router = (
+                GrammarRouter(adapter=tui_router_adapter)
+                if router_mode == "grammar"
+                else ModelRouter(adapter=tui_router_adapter)
+            )
+
+        tui_registry: ToolRegistry | None = _build_tool_registry_for_tui(
+            tools=tools,
+            tool_set=tool_set,
+            tools_add=tools_add,
+            tools_drop=tools_drop,
+            workspace_path=tui_workspace_path,
+            memory_store=tui_memory_store,
+            semantic_store=tui_semantic_store,
+            speaker=speaker,
+            session=session,
+        )
+
         ChatApp(
             character=character_for_tui,
             speaker=speaker,
@@ -1125,6 +1297,9 @@ def chat(
             semantic_store=tui_semantic_store,
             facts=facts,
             facts_threshold=facts_threshold,
+            registry=tui_registry,
+            router=tui_router,
+            workspace_path=tui_workspace_path,
         ).run()
         return
 
@@ -1491,61 +1666,8 @@ def chat(
                 system_content = f"{system_content}\n\n{_render_memory_block(recalled)}"
 
             if registry is not None:
-                tool_names = ", ".join(registry.names())
                 system_content = (
-                    f"{system_content}\n\n"
-                    f"Workspace grounding — you are a real process on Mark's Mac. "
-                    f"The tool sandbox root is `{workspace_path}`. Available tools: "
-                    f"{tool_names}. Paths passed to `read_file` / `write_file` / "
-                    f"`edit_file` are relative to the sandbox root; `shell` runs "
-                    f"with it as cwd.\n\n"
-                    "TOOL-USE RULES (follow these EVERY turn):\n"
-                    "- The user's request IS the instruction. Act on it immediately.\n"
-                    "- FORBIDDEN PHRASES — never emit any of these in your reply:\n"
-                    '    • "Would you like to / Would you like me to"\n'
-                    '    • "Should I proceed / Shall I / Do you want me to"\n'
-                    '    • "Please confirm / Let\'s confirm / confirm your approval"\n'
-                    '    • "we need to make sure the user confirms"\n'
-                    "  If you catch yourself typing any of these, STOP — delete "
-                    "the sentence and call the tool instead. The tool layer runs "
-                    "its own approve/decline UX for write-tier tools; chat-level "
-                    "meta-confirm just wastes the user's time.\n"
-                    "- NEVER claim you did something (added/updated/created/wrote/"
-                    "edited/appended a file, ran a command, etc.) unless you actually "
-                    "called the corresponding write-tier tool on this turn AND the "
-                    "tool's result message says it succeeded. If you don't have a "
-                    "tool for the action the user asked for, say so plainly.\n"
-                    "- ADDING a line or block to an existing file (e.g. 'add scratch "
-                    "to .gitignore', 'append an import', 'add this to the config') → "
-                    "use `edit_file` with an EMPTY `old_string` and `new_string` = the "
-                    "text to append. Example: "
-                    'edit_file(path=".gitignore", old_string="", new_string="scratch\\n"). '
-                    "Do NOT use `write_file` for this — `write_file` replaces the "
-                    "ENTIRE file and will destroy the existing content.\n"
-                    "- CHANGING an existing line → `edit_file(path=..., old_string=..., "
-                    "new_string=...)` with enough context in `old_string` to make it "
-                    "unique.\n"
-                    "- CREATING a brand-new file → `write_file(path=..., content=...)`. "
-                    "Only use `overwrite=true` when the user explicitly asked you to "
-                    "regenerate the file from scratch.\n"
-                    "- Never describe the contents of the workspace from memory. If "
-                    "the user asks what's in a directory, what a file contains, or "
-                    "what this project does, you MUST call a tool first (`list_dir`, "
-                    "`read_file`, `grep`) and base your answer on the tool's output.\n"
-                    "- NEVER fabricate tool output. If the user asks you to search "
-                    "the web, fetch a URL, read a file, or look up a fact in memory, "
-                    "you MUST call the corresponding tool first. Do NOT invent "
-                    "URLs, titles, snippets, file contents, or search results — "
-                    "placeholder domains (example.com, your-site.com, localhost) "
-                    "are forbidden. If the right tool isn't available this turn, "
-                    "say so plainly.\n"
-                    "- After tool results come back, respond with a substantive "
-                    "reply that uses them. Never return an empty reply — the user "
-                    "is waiting for your conclusion, not just the tool output.\n"
-                    "- The user CANNOT see raw tool output — only your final reply. "
-                    "Restate the key findings (names, numbers, quoted lines) in your "
-                    "reply. Do not answer with meta-phrases like 'awaiting input' or "
-                    "'the content is available'."
+                    f"{system_content}\n\n{_build_tool_grounding_block(registry, workspace_path)}"
                 )
 
             if known_facts:

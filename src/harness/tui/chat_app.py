@@ -1,17 +1,19 @@
-"""Textual chat app — Phase 3 adds a live metrics footer
-(harness-17v) on top of Phase 2's model wiring (harness-29c).
+"""Textual chat app — Phase 4 adds tool-loop integration
+(harness-1r4) on top of Phase 3's metrics footer (harness-17v).
 
-Scope of Phase 3:
-- The placeholder Static becomes a running ctx meter + an
-  elapsed-time indicator that ticks while the model is generating.
-- `set_interval(0.25, ...)` drives the tick so the display updates
-  smoothly without the worker needing to push updates per second.
-- Token counts are computed once per turn (before and after the
-  adapter call) via `adapter.count_tokens` when the adapter exposes
-  it; approx fallback otherwise.
+Scope of Phase 4:
+- When a `registry: ToolRegistry` is passed, the worker drives
+  `run_tool_loop` instead of calling `adapter.complete` directly.
+- Observer callback translates ToolLoopEvent → rich.Text lines and
+  hops onto the UI thread via `call_from_thread` to append them to
+  the RichLog in real time (router_intent, tool_call_start/end/
+  failed/declined/deduped).
+- Write-tier tools always decline for now — the confirmation modal
+  lands in harness-mz2. This keeps Phase 4 observable without
+  introducing a modal-screen dependency.
 
-Scope of earlier phases still applies: retrieval, adapter, and
-transcript persistence run on a thread-backed exclusive worker.
+Scope of earlier phases still applies: retrieval, transcript
+persistence, metrics footer.
 """
 
 from __future__ import annotations
@@ -26,20 +28,27 @@ from textual.binding import BindingType
 from textual.widgets import Input, RichLog, Static
 
 from harness.cli import (
+    _build_tool_grounding_block,
     _format_ctx_meter,
+    _persist_tool_exchange,
     _render_fact_block,
     _render_memory_block,
     _retrieve_turn_context,
 )
 from harness.cli import _RetrievalState as _RetrievalHealth
 from harness.model.adapter import ChatMessage, approx_token_count
+from harness.orchestrator import ToolLoopEvent, run_tool_loop
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from harness.character import Character
     from harness.model.adapter import ModelAdapter
     from harness.retrieval import VoiceRetriever
+    from harness.router import Router
     from harness.store import EpisodicStore, SemanticStore
     from harness.store.transcript import Transcript
+    from harness.tools import ToolCall, ToolRegistry
 
 
 @dataclass
@@ -141,6 +150,9 @@ class ChatApp(App[None]):
         facts_threshold: float = 0.45,
         max_tokens: int = 1024,
         temperature: float = 0.7,
+        registry: ToolRegistry | None = None,
+        router: Router | None = None,
+        workspace_path: Path | None = None,
     ) -> None:
         super().__init__()
         self._character = character
@@ -159,6 +171,9 @@ class ChatApp(App[None]):
         self._facts_threshold = facts_threshold
         self._max_tokens = max_tokens
         self._temperature = temperature
+        self._tool_registry = registry
+        self._router = router
+        self._workspace_path = workspace_path
         self._state = _ChatAppState()
 
     # ---------- compose / mount ----------
@@ -173,11 +188,17 @@ class ChatApp(App[None]):
 
     def on_mount(self) -> None:
         log = self.query_one("#output", RichLog)
+        tools_note = (
+            f"tools={self._tool_registry.names()}"
+            if self._tool_registry is not None
+            else "no tools"
+        )
         log.write(
             f"[dim]Chat with {self._character.name}. "
             f"adapter={self._adapter.id} session={self._session}. "
-            f"Phase 3: live metrics footer wired; tools land in "
-            f"harness-1r4.[/dim]"
+            f"{tools_note}. Phase 4: tool loop wired; streaming "
+            f"lands in harness-lrg, write-tier confirmation in "
+            f"harness-mz2.[/dim]"
         )
         self.query_one("#prompt", Input).focus()
         # Baseline ctx count — just the system prompt framing is not
@@ -255,6 +276,11 @@ class ChatApp(App[None]):
             )
             if recalled:
                 system_content = f"{system_content}\n\n{_render_memory_block(recalled)}"
+            if self._tool_registry is not None and self._workspace_path is not None:
+                system_content = (
+                    f"{system_content}\n\n"
+                    f"{_build_tool_grounding_block(self._tool_registry, self._workspace_path)}"
+                )
             if known_facts:
                 system_content = f"{system_content}\n\n{_render_fact_block(known_facts)}"
 
@@ -273,24 +299,51 @@ class ChatApp(App[None]):
                 content=user_input,
             )
 
-            reply = self._adapter.complete(
-                messages,
-                max_tokens=self._max_tokens,
-                temperature=self._temperature,
-            )
-
-            # Persist + update history only on success; a failed call
-            # leaves history as-is so the user can retry without the
-            # thread getting a ghost assistant turn.
-            self._transcript.append(
-                session=self._session,
-                channel=self._channel,
-                speaker=self._character.name,
-                role="assistant",
-                content=reply,
-            )
-            self._state.history.append(user_msg)
-            self._state.history.append(ChatMessage(role="assistant", content=reply))
+            if self._tool_registry is not None:
+                # Tools active: drive the orchestrator loop. Observer
+                # hops every ToolLoopEvent onto the UI thread so the
+                # RichLog shows router_intent / 🔧 calls / results
+                # inline. Write-tier tools always decline for now —
+                # the modal-screen confirmation lives in harness-mz2.
+                initial_messages = [system, *self._state.history]
+                loop_result = run_tool_loop(
+                    self._adapter,  # type: ignore[arg-type]
+                    [*initial_messages, user_msg],
+                    self._tool_registry,
+                    confirm=self._decline_write_tools,
+                    observe=self._observe_tool_event,
+                    router=self._router,
+                )
+                reply = loop_result.content or "(no reply)"
+                # Persist the full tool exchange + update in-memory
+                # history so subsequent turns see the tool results.
+                _persist_tool_exchange(
+                    self._transcript,
+                    session=self._session,
+                    channel=self._channel,
+                    character_name=self._character.name,
+                    initial_count=len(initial_messages),
+                    loop_messages=loop_result.messages,
+                )
+                # initial_messages[0] is system; drop it from the
+                # history carry-over since we rebuild the system
+                # prompt fresh each turn.
+                self._state.history = list(loop_result.messages[1:])
+            else:
+                reply = self._adapter.complete(
+                    messages,
+                    max_tokens=self._max_tokens,
+                    temperature=self._temperature,
+                )
+                self._state.history.append(user_msg)
+                self._state.history.append(ChatMessage(role="assistant", content=reply))
+                self._transcript.append(
+                    session=self._session,
+                    channel=self._channel,
+                    speaker=self._character.name,
+                    role="assistant",
+                    content=reply,
+                )
 
             self.call_from_thread(self._render_reply, reply)
         except Exception as exc:
@@ -362,6 +415,99 @@ class ChatApp(App[None]):
                 self._state.ctx_used = approx_token_count(self._state.history)
         except Exception:
             self._state.ctx_used = approx_token_count(self._state.history)
+
+    # ---------- tool loop plumbing ----------
+
+    def _tool_label(self, name: str) -> str:
+        """Friendly label for a tool — the spec's display_name when
+        registered, the raw name otherwise (e.g. for a tool the model
+        hallucinated that isn't actually in the registry)."""
+        if self._tool_registry is None:
+            return name
+        if name in self._tool_registry:
+            return self._tool_registry.get(name).spec.label
+        return name
+
+    def _decline_write_tools(self, call: ToolCall) -> bool:
+        """Phase 4 placeholder: write-tier tools always decline until
+        harness-mz2 replaces this with a modal confirmation screen.
+        Emit a log line so the user can see the call was rejected.
+
+        Returning False here tells run_tool_loop to inject a
+        'user declined' tool-role message; the model adapts and
+        (usually) reports inability to the user."""
+        self.call_from_thread(
+            self._emit_decline_notice,
+            call.name,
+        )
+        return False
+
+    def _emit_decline_notice(self, tool_name: str) -> None:
+        log = self.query_one("#output", RichLog)
+        line = Text()
+        line.append(
+            f"   ⚠ {self._tool_label(tool_name)} declined automatically — "
+            f"write-tier confirmation modal lands in harness-mz2.",
+            style="yellow",
+        )
+        log.write(line)
+
+    def _observe_tool_event(self, event: ToolLoopEvent) -> None:
+        """Observer callback passed to run_tool_loop. Runs on the
+        worker thread — must hop to the UI thread before touching
+        RichLog. Text-only events (model_call_start/end, round_start/
+        complete, token_delta) are ignored here; streaming is
+        harness-lrg's job."""
+        self.call_from_thread(self._render_tool_event, event)
+
+    def _render_tool_event(self, event: ToolLoopEvent) -> None:
+        """UI-thread handler: translate a ToolLoopEvent into one or
+        two lines in the RichLog. Uses rich.Text (not markup strings)
+        so tool arguments / output snippets can't inject styles."""
+        log = self.query_one("#output", RichLog)
+        if event.kind == "router_intent":
+            call = event.call
+            assert call is not None
+            line = Text(f"→ routed to {call.name}", style="dim magenta")
+            log.write(line)
+        elif event.kind == "tool_call_start":
+            call = event.call
+            assert call is not None
+            line = Text()
+            line.append("🔧 ", style="cyan")
+            line.append(self._tool_label(call.name), style="bold cyan")
+            line.append(f" {call.arguments}", style="dim")
+            log.write(line)
+        elif event.kind in ("tool_call_end", "tool_call_failed"):
+            result = event.result
+            assert result is not None
+            success = event.kind == "tool_call_end"
+            mark = "✓" if success else "✗"
+            style = "green" if success else "red"
+            snippet = result.output[:120].replace("\n", " ")
+            more = "…" if len(result.output) > 120 else ""
+            line = Text()
+            line.append(f"   {mark} ", style=style)
+            line.append(f"{snippet}{more}", style="dim")
+            log.write(line)
+        elif event.kind == "tool_call_declined":
+            log.write(Text("   ✗ declined", style="yellow"))
+        elif event.kind == "tool_call_deduped":
+            call = event.call
+            assert call is not None
+            label = self._tool_label(call.name)
+            log.write(
+                Text(
+                    f"⇢ {label} {call.arguments} — duplicate call skipped",
+                    style="dim",
+                )
+            )
+        # Other event kinds (round_start, model_call_start/end,
+        # token_delta, round_complete) are internal book-keeping —
+        # the metrics footer covers 'model is thinking'; streaming
+        # lands in harness-lrg.
+
+    # ---------- metrics ----------
 
     def _refresh_metrics(self) -> None:
         """Render the metrics strip. Idle state shows just the ctx
