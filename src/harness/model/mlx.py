@@ -337,6 +337,49 @@ class MLXAdapter:
     ) -> str:
         return "".join(self.stream(messages, max_tokens=max_tokens, temperature=temperature))
 
+    def complete_grammar(
+        self,
+        messages: Iterable[ChatMessage],
+        schema: dict[str, object],
+        *,
+        max_tokens: int = 256,
+        temperature: float = 0.0,
+    ) -> str:
+        """Generate JSON output constrained to `schema` via outlines.
+        Requires the `grammar` extra. Shares the already-loaded mlx
+        model + tokenizer with the rest of this adapter so the router
+        doesn't cost a second copy of weights.
+
+        Returns the raw JSON string (callers parse + coerce). Any
+        outlines / runtime failure bubbles as an exception — the
+        caller (GrammarRouter) catches and returns None to preserve
+        the advisory contract."""
+        self._ensure_loaded()
+        try:
+            from outlines.generate import json as outlines_json
+            from outlines.models.mlxlm import MLXLM
+        except ImportError as exc:
+            raise RuntimeError(
+                "complete_grammar requires the `grammar` extra. "
+                "Install with: uv sync --extra grammar"
+            ) from exc
+
+        dicts = _messages_to_dicts(messages)
+        assert self._tokenizer is not None
+        prompt = self._tokenizer.apply_chat_template(
+            dicts, tokenize=False, add_generation_prompt=True
+        )
+        # MLXLM wraps our pre-loaded model + tokenizer; no extra load.
+        wrapped = MLXLM(model=self._model, tokenizer=self._tokenizer)
+        generator = outlines_json(wrapped, schema)
+        raw = generator(prompt, max_tokens=max_tokens, temperature=temperature)
+        # outlines can return either a Python object (dict) or the raw
+        # JSON string depending on version. Normalize to a string so the
+        # caller's parser path stays identical to the free-form path.
+        if isinstance(raw, str):
+            return raw
+        return json.dumps(raw)
+
     def stream_with_tools(
         self,
         messages: Iterable[ChatMessage],

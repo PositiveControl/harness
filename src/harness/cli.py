@@ -47,7 +47,7 @@ from harness.orchestrator import (
 from harness.persona import PersonaAdapter
 from harness.persona.rewriter import build_rewriter_messages
 from harness.retrieval import VoiceRetriever
-from harness.router import ModelRouter, Router
+from harness.router import GrammarRouter, ModelRouter, Router
 from harness.scribe import run_scribe
 from harness.store import (
     EpisodicRecord,
@@ -998,6 +998,15 @@ def chat(
         "Hermes-3-Llama-3.2-3B-4bit (~2GB RAM, function-call-tuned). "
         "Only used when --router is on. Router is MLX-only for now.",
     ),
+    router_mode: str = typer.Option(
+        "free",
+        "--router-mode",
+        help="Routing strategy. 'free' = free-form JSON + tolerant parse "
+        "(current behavior). 'grammar' = JSON-schema-constrained decoding "
+        "that guarantees valid output + valid tool name by construction "
+        "(requires the `grammar` extra, adds ~1GB RAM for outlines' FSM "
+        "machinery).",
+    ),
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
     character = load_character(settings.character_path)
@@ -1018,9 +1027,18 @@ def chat(
     if router_enabled:
         if not tools:
             raise typer.BadParameter("--router requires --tools (nothing to route to otherwise).")
+        if router_mode not in {"free", "grammar"}:
+            raise typer.BadParameter(
+                f"--router-mode must be 'free' or 'grammar' (got {router_mode!r})."
+            )
         from harness.model.mlx import MLXAdapter
 
-        router = ModelRouter(adapter=MLXAdapter(repo=router_repo))
+        router_adapter = MLXAdapter(repo=router_repo)
+        router = (
+            GrammarRouter(adapter=router_adapter)
+            if router_mode == "grammar"
+            else ModelRouter(adapter=router_adapter)
+        )
     retriever = _maybe_retriever(character, top_k)
     memory_store = _open_episodic_store(character) if memories > 0 else None
     semantic_store = _open_semantic_store() if facts > 0 else None
@@ -1754,6 +1772,11 @@ def eval_router(
         "--router-repo",
         help="HF repo for the router model under test.",
     ),
+    router_mode: str = typer.Option(
+        "free",
+        "--router-mode",
+        help="'free' (default) or 'grammar' (JSON-schema-constrained).",
+    ),
     tool_set: str = typer.Option(
         "research",
         "--tool-set",
@@ -1793,9 +1816,16 @@ def eval_router(
 
     tool_specs = _resolve_router_tool_specs(wanted_names, settings.root)
 
+    if router_mode not in {"free", "grammar"}:
+        raise typer.BadParameter(
+            f"--router-mode must be 'free' or 'grammar' (got {router_mode!r})."
+        )
     from harness.model.mlx import MLXAdapter
 
-    router = ModelRouter(adapter=MLXAdapter(repo=router_repo))
+    adapter = MLXAdapter(repo=router_repo)
+    router = (
+        GrammarRouter(adapter=adapter) if router_mode == "grammar" else ModelRouter(adapter=adapter)
+    )
     result = run_router_eval(router, tool_specs, fixture)
 
     if as_json:

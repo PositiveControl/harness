@@ -21,6 +21,14 @@ retrieval = [
     "sentence-transformers>=3.0",
     "numpy>=2.0",
 ]
+grammar = [
+    # Constrained JSON-schema decoding for the GrammarRouter. Lives
+    # behind the adapter boundary (only src/harness/model/mlx.py
+    # imports it). Keep pinned loosely — outlines has had API churn
+    # and we exercise a narrow surface (generate.json + MLXLM wrap
+    # over a pre-loaded model + tokenizer).
+    "outlines>=0.1",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -107,4 +115,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["sentence_transformers", "sentence_transformers.*", "torch", "torch.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["outlines", "outlines.*"]
 ignore_missing_imports = true

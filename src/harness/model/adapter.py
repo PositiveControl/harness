@@ -42,6 +42,30 @@ class ModelAdapter(Protocol):
     ) -> str: ...
 
 
+@runtime_checkable
+class GrammarCapableAdapter(Protocol):
+    """Optional extension for adapters that support grammar-constrained
+    decoding — generation where every sampled token must continue a
+    valid parse of the supplied JSON schema.
+
+    Used by the GrammarRouter to guarantee valid JSON + valid
+    `tool_name` choice by construction. Adapters that don't support
+    this don't need to implement it; GrammarRouter checks for the
+    method structurally and falls through if it isn't present."""
+
+    id: str
+    context_window: int
+
+    def complete_grammar(
+        self,
+        messages: Iterable[ChatMessage],
+        schema: dict[str, object],
+        *,
+        max_tokens: int = 256,
+        temperature: float = 0.0,
+    ) -> str: ...
+
+
 def approx_token_count(messages: Iterable[ChatMessage]) -> int:
     """Char-heuristic token count: ~4 chars per token plus ~4 tokens of
     role/delimiter overhead per message. Shared fallback for adapters
