@@ -1,8 +1,11 @@
-"""Character-load shape tests for ab (airton_b) — harness-inj.1.
+"""Character-load shape tests for ab (airton_b) — harness-inj.1 +
+harness-inj.2.
 
-Verifies the persona-data files load cleanly with the expected surface
-and that ab's identity is distinct from Airton's (no accidental copy).
-Voice corpus is stubbed by design in this task; harness-inj.2 fills it.
+Verifies the persona-data files load cleanly with the expected surface,
+that ab's identity is distinct from Airton's (no accidental copy), and
+that the voice corpus meets the shipped minimum (26 gold samples
+covering every taboo). A later pass (live voice capture) will accrue
+additional samples into voice/captured.yaml.
 """
 
 from __future__ import annotations
@@ -33,13 +36,44 @@ def test_load_airton_b_shape() -> None:
     assert ab.on_being_wrong
 
 
-def test_ab_voice_corpus_is_stubbed() -> None:
-    """harness-inj.2 fills the corpus. Until then canonical + captured
-    are empty; character load must still succeed."""
+def test_ab_voice_corpus_ships_minimum() -> None:
+    """ab's canonical corpus must carry at least 26 gold samples — the
+    v1 spec allocation across plan / capture / re-plan / drift / status
+    / clarifying / auto-clarity / retraction / register-stress. Live
+    captures accrue separately into voice/captured.yaml over time."""
     ab = load_character(AIRTON_B)
-    assert ab.canonical_voice_count == 0
+    assert ab.canonical_voice_count >= 26
     assert ab.captured_voice_count == 0
-    assert len(ab.voice_samples) == 0
+    assert len(ab.voice_samples) >= 26
+
+
+def test_ab_voice_samples_have_unique_ids() -> None:
+    ab = load_character(AIRTON_B)
+    ids = [s.id for s in ab.voice_samples]
+    assert len(ids) == len(set(ids))
+
+
+def test_ab_voice_corpus_covers_surfaces() -> None:
+    """The corpus must include at least one sample per first-class
+    surface so the voice eval exercises every register intensity the
+    rewriter supports."""
+    ab = load_character(AIRTON_B)
+    ids = {s.id for s in ab.voice_samples}
+    required_prefixes = {
+        "plan_",
+        "capture_",
+        "replan_",
+        "drift_",
+        "status_",
+        "ambiguous_",
+        "confirm_",
+        "retraction_",
+        "stress_",
+    }
+    for prefix in required_prefixes:
+        assert any(sample_id.startswith(prefix) for sample_id in ids), (
+            f"no sample with id prefix {prefix!r} — register coverage gap"
+        )
 
 
 def test_ab_seed_principles_match_values() -> None:
