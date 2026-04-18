@@ -745,6 +745,15 @@ def _render_tool_event(
         console.print(f"   {status} [dim]{snippet}{more}[/dim]")
     elif event.kind == "tool_call_declined":
         console.print("   [yellow]✗ declined[/yellow]")
+    elif event.kind == "tool_call_deduped":
+        call = event.call
+        assert call is not None
+        label = tool_label(call.name)
+        # One dim line noting the dedup — enough to show the user the
+        # model tried to re-call the same tool, but not enough to
+        # clutter the transcript. Result is the stock nudge; no need
+        # to echo it.
+        console.print(f"[dim]⇢ {label} {call.arguments} — duplicate call skipped[/dim]")
 
 
 def _stream_or_complete(

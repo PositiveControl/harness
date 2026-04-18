@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -14,6 +15,23 @@ from harness.tools.base import (
     ToolRegistry,
     ToolResult,
 )
+
+_DUPLICATE_CALL_NUDGE = (
+    "[duplicate call — identical arguments to an earlier call this turn. "
+    "Result is unchanged from the earlier tool message. Give the user your "
+    "final answer now; do NOT emit any more tool calls.]"
+)
+
+
+def _call_key(call: ToolCall) -> tuple[str, str]:
+    """Canonical (name, arguments-json) key for duplicate detection.
+    Sorting keys means argument order doesn't create false-positive
+    uniqueness ({'a':1,'b':2} == {'b':2,'a':1}); default=str keeps the
+    key stable if a model emits exotic-but-JSON-stringifiable types
+    (dates, Paths). We never decode the key back — only equality
+    matters — so lossy coercion is fine."""
+    return (call.name, json.dumps(call.arguments, sort_keys=True, default=str))
+
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -226,12 +244,20 @@ class ToolLoopEvent:
     """Emitted synchronously to the optional observer so the CLI can
     print inline status. Kind is one of: router_intent, round_start,
     model_call_start, token_delta, model_call_end, tool_call_start,
-    tool_call_end, tool_call_failed, tool_call_declined, round_complete.
+    tool_call_end, tool_call_failed, tool_call_declined,
+    tool_call_deduped, round_complete.
 
     `router_intent` fires at most once per turn, before round 0, when a
     Router pre-pass routed to a tool. `call` carries the ToolCall the
     router chose; a tool_call_start/end pair follows immediately as the
     orchestrator executes it itself.
+
+    `tool_call_deduped` fires (in place of tool_call_start+end) when
+    the model re-emits a (name, arguments) pair that already ran this
+    turn. The call is NOT executed again — the orchestrator appends a
+    stock nudge as the tool-role message so the next round sees 'stop
+    calling, give the final answer'. `result` carries that nudge so
+    the CLI can render an inline 'duplicate; skipped' line.
 
     `model_call_start` fires just before the adapter is invoked;
     `model_call_end` fires once it returns. When the adapter supports
@@ -276,6 +302,7 @@ def _router_prelude(
     registry: ToolRegistry,
     confirm: ConfirmFn | None,
     emit: Callable[[ToolLoopEvent], None],
+    seen_calls: set[tuple[str, str]],
 ) -> bool:
     """Classify the last user turn and, on a usable intent, append a
     synthetic assistant tool-call turn + the tool result to `working`
@@ -286,7 +313,12 @@ def _router_prelude(
     main model's richer context + its own confirmation UX), intent
     tool must exist in the registry, all required arguments must be
     present. Any failure falls through silently — the router is
-    advisory, never blocking."""
+    advisory, never blocking.
+
+    `seen_calls` is mutated: on success, the router's (name, args-json)
+    key is recorded so a downstream main-model re-invocation with
+    identical arguments gets short-circuited by the main loop's
+    duplicate guard."""
     user_message = _last_user_message(working)
     if user_message is None:
         return False
@@ -320,6 +352,7 @@ def _router_prelude(
         kind = "tool_call_end" if result.success else "tool_call_failed"
         emit(ToolLoopEvent(kind=kind, call=call, result=result, round_index=0))
 
+    seen_calls.add(_call_key(call))
     working.append(ChatMessage(role="assistant", content="", tool_calls=(call,)))
     working.append(ChatMessage(role="tool", content=result.output, name=call.name))
     return True
@@ -366,6 +399,15 @@ def run_tool_loop(
     last_reply: ModelReply = ModelReply(content="", tool_calls=())
     bail_retries = _BAIL_RETRIES_PER_TURN
     current_max_tokens = max_tokens
+    # Duplicate-call guard. Small models sometimes wrap a real answer
+    # around a redundant re-call ("here's the summary" + same list_dir
+    # with same args as a prior round). Each round the call runs,
+    # returns identical output, and the model rewrites the summary —
+    # wasting rounds and making the TUI look like it's stuck. Tracking
+    # (name, args-json) per turn lets us skip execution on repeats and
+    # feed a 'stop, finalize' nudge to the model instead. See
+    # harness-pun.
+    seen_calls: set[tuple[str, str]] = set()
 
     def emit(event: ToolLoopEvent) -> None:
         events.append(event)
@@ -373,7 +415,7 @@ def run_tool_loop(
             observe(event)
 
     if router is not None:
-        _router_prelude(router, working, registry, confirm, emit)
+        _router_prelude(router, working, registry, confirm, emit, seen_calls)
 
     stream_fn = getattr(adapter, "stream_with_tools", None)
 
@@ -470,6 +512,28 @@ def run_tool_loop(
         )
 
         for call in last_reply.tool_calls:
+            key = _call_key(call)
+            if key in seen_calls:
+                # Duplicate of an earlier call this turn — skip execution.
+                # Emit the deduped event for CLI visibility and feed the
+                # nudge back as the tool-role message so the next round
+                # sees 'finalize, don't re-call'.
+                result = ToolResult(
+                    tool_name=call.name,
+                    output=_DUPLICATE_CALL_NUDGE,
+                    success=True,
+                )
+                emit(
+                    ToolLoopEvent(
+                        kind="tool_call_deduped",
+                        call=call,
+                        result=result,
+                        round_index=round_idx,
+                    )
+                )
+                working.append(ChatMessage(role="tool", content=result.output, name=call.name))
+                continue
+
             emit(ToolLoopEvent(kind="tool_call_start", call=call, round_index=round_idx))
 
             spec = registry.get(call.name).spec if call.name in registry else None
@@ -487,6 +551,7 @@ def run_tool_loop(
                 kind = "tool_call_end" if result.success else "tool_call_failed"
             emit(ToolLoopEvent(kind=kind, call=call, result=result, round_index=round_idx))
 
+            seen_calls.add(key)
             working.append(ChatMessage(role="tool", content=result.output, name=call.name))
 
     # Loop exhausted — return what we have.

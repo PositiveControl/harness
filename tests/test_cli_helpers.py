@@ -383,6 +383,32 @@ def test_render_tool_event_renders_router_intent_then_tool_pair() -> None:
     assert "🔧 search_web" in output
 
 
+def test_render_tool_event_marks_deduped_call() -> None:
+    """harness-pun: when the orchestrator short-circuits a duplicate
+    call, the CLI emits a dim one-liner so the user sees the tool was
+    skipped rather than re-run. The nudge result itself isn't echoed —
+    it's only there for the model's next round."""
+    call = ToolCall(name="list_dir", arguments={"path": "", "recursive": True})
+    events = [
+        ToolLoopEvent(
+            kind="tool_call_deduped",
+            call=call,
+            result=ToolResult(
+                tool_name="list_dir",
+                output="[duplicate call — identical arguments…]",
+                success=True,
+            ),
+            round_index=1,
+        ),
+    ]
+    output = _render_all(events)
+    assert "duplicate call skipped" in output
+    assert "list_dir" in output
+    # 🔧 start-of-call glyph must NOT appear — that would imply the
+    # call ran; deduped calls get a distinct arrow glyph instead.
+    assert "🔧" not in output
+
+
 def test_render_tool_event_marks_failed_and_declined() -> None:
     call = ToolCall(name="shell", arguments={"cmd": "ls"})
     events = [

@@ -283,6 +283,237 @@ def test_loop_observer_receives_events_for_every_round(tmp_path: Path) -> None:
     assert [e.round_index for e in starts] == [0, 1]
 
 
+def test_loop_dedupes_identical_call_across_rounds(tmp_path: Path) -> None:
+    """harness-pun: when the model re-emits an identical call across
+    two rounds, the second invocation must be short-circuited — no
+    second execution, a tool_call_deduped event instead of start+end,
+    and a nudge tool-role message feeding 'finalize, don't re-call'
+    back to the model."""
+    (tmp_path / "a.txt").write_text("A")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    call_count = 0
+
+    @dataclass
+    class _CountingReadFile:
+        inner: ReadFileTool
+
+        @property
+        def spec(self) -> ToolSpec:
+            return self.inner.spec
+
+        def call(self, *, path: str) -> str:
+            nonlocal call_count
+            call_count += 1
+            return self.inner.call(path=path)
+
+    registry = ToolRegistry()
+    registry.register(_CountingReadFile(inner=ReadFileTool(root=tmp_path)))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "a.txt"}),),
+            ),
+            ModelReply(
+                content="here is a summary",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "a.txt"}),),
+            ),
+            ModelReply(content="final answer"),
+        ]
+    )
+
+    observed: list[ToolLoopEvent] = []
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read a")],
+        registry,
+        observe=lambda e: observed.append(e),
+    )
+
+    assert call_count == 1, "second identical call should not have executed"
+    kinds = [e.kind for e in observed]
+    assert kinds.count("tool_call_start") == 1
+    assert kinds.count("tool_call_end") == 1
+    assert kinds.count("tool_call_deduped") == 1
+    # The nudge message is appended as a tool-role turn so the next
+    # round's model context includes 'stop, finalize'.
+    tool_msgs = [m for m in result.messages if m.role == "tool"]
+    assert len(tool_msgs) == 2
+    assert "duplicate call" in tool_msgs[1].content
+    assert result.content == "final answer"
+
+
+def test_loop_dedupes_identical_call_in_same_round(tmp_path: Path) -> None:
+    """Two identical tool_calls in a single ModelReply: first executes,
+    second is deduped. Guards against the pathological case where a
+    model emits a list with repeated entries."""
+    (tmp_path / "a.txt").write_text("A")
+
+    call_count = 0
+
+    @dataclass
+    class _CountingReadFile:
+        inner: ReadFileTool
+
+        @property
+        def spec(self) -> ToolSpec:
+            return self.inner.spec
+
+        def call(self, *, path: str) -> str:
+            nonlocal call_count
+            call_count += 1
+            return self.inner.call(path=path)
+
+    registry = ToolRegistry()
+    registry.register(_CountingReadFile(inner=ReadFileTool(root=tmp_path)))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(
+                    ToolCall(name="read_file", arguments={"path": "a.txt"}),
+                    ToolCall(name="read_file", arguments={"path": "a.txt"}),
+                ),
+            ),
+            ModelReply(content="done"),
+        ]
+    )
+
+    observed: list[ToolLoopEvent] = []
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read a twice")],
+        registry,
+        observe=lambda e: observed.append(e),
+    )
+
+    assert call_count == 1
+    kinds = [e.kind for e in observed]
+    assert kinds.count("tool_call_start") == 1
+    assert kinds.count("tool_call_deduped") == 1
+
+
+def test_loop_does_not_dedupe_different_args(tmp_path: Path) -> None:
+    """Same tool with different arguments is not a duplicate — both
+    must execute. Guards against an over-aggressive dedup that breaks
+    legitimate multi-file reads."""
+    (tmp_path / "a.txt").write_text("A")
+    (tmp_path / "b.txt").write_text("B")
+
+    call_count = 0
+
+    @dataclass
+    class _CountingReadFile:
+        inner: ReadFileTool
+
+        @property
+        def spec(self) -> ToolSpec:
+            return self.inner.spec
+
+        def call(self, *, path: str) -> str:
+            nonlocal call_count
+            call_count += 1
+            return self.inner.call(path=path)
+
+    registry = ToolRegistry()
+    registry.register(_CountingReadFile(inner=ReadFileTool(root=tmp_path)))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(
+                    ToolCall(name="read_file", arguments={"path": "a.txt"}),
+                    ToolCall(name="read_file", arguments={"path": "b.txt"}),
+                ),
+            ),
+            ModelReply(content="both read"),
+        ]
+    )
+
+    observed: list[ToolLoopEvent] = []
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read both")],
+        registry,
+        observe=lambda e: observed.append(e),
+    )
+
+    assert call_count == 2
+    kinds = [e.kind for e in observed]
+    assert kinds.count("tool_call_start") == 2
+    assert kinds.count("tool_call_deduped") == 0
+
+
+def test_loop_dedupes_argument_order_insensitive(tmp_path: Path) -> None:
+    """Argument-key order must not defeat the dedup. {'a': 1, 'b': 2}
+    and {'b': 2, 'a': 1} are the same call. A naive equality check
+    that compared repr() would pass this; a dict-set check would miss
+    it. Canonical json.dumps(sort_keys=True) handles it."""
+    (tmp_path / "a.txt").write_text("A")
+
+    call_count = 0
+
+    @dataclass
+    class _CountingReadFile:
+        inner: ReadFileTool
+
+        @property
+        def spec(self) -> ToolSpec:
+            return ToolSpec(
+                name="read_file",
+                description="read a file",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "max_bytes": {"type": "integer"},
+                    },
+                    "required": ["path"],
+                },
+                tier="read",
+                display_name="Read",
+            )
+
+        def call(self, *, path: str, max_bytes: int = 200_000) -> str:
+            nonlocal call_count
+            call_count += 1
+            return self.inner.call(path=path)
+
+    registry = ToolRegistry()
+    registry.register(_CountingReadFile(inner=ReadFileTool(root=tmp_path)))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        name="read_file",
+                        arguments={"path": "a.txt", "max_bytes": 100},
+                    ),
+                    ToolCall(
+                        name="read_file",
+                        arguments={"max_bytes": 100, "path": "a.txt"},
+                    ),
+                ),
+            ),
+            ModelReply(content="done"),
+        ]
+    )
+
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read a")],
+        registry,
+    )
+    assert call_count == 1
+
+
 def test_loop_observer_receives_events_for_each_call_in_one_round(tmp_path: Path) -> None:
     """Same invariant as above but within a single round: if the model
     emits two tool_calls in one ModelReply, both must fire their own
@@ -1344,6 +1575,45 @@ def test_router_passes_only_last_user_message() -> None:
         router=router,  # type: ignore[arg-type]
     )
     assert router.classify_calls[0][0] == "now search for pho"
+
+
+def test_router_prelude_call_seeds_dedup_set() -> None:
+    """harness-pun: if the router ran a tool in the prelude, the main
+    model must not be able to re-invoke the same (name, args) — that
+    would just re-run a read the orchestrator already answered. The
+    dedup set is seeded with the router's call, so a main-model
+    re-emission gets short-circuited on the first round."""
+    from harness.router.intent import RouterIntent
+
+    registry = ToolRegistry()
+    registry.register(_ReadTool(name="search_web", output="weak hits"))
+    router = _ScriptedRouter(
+        intents=[RouterIntent(tool_name="search_web", arguments={"query": "pho"})]
+    )
+    # Main model re-emits the same call (identical args). Second reply
+    # wraps up with text.
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="search_web", arguments={"query": "pho"}),),
+            ),
+            ModelReply(content="final"),
+        ]
+    )
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="find pho places")],
+        registry,
+        router=router,  # type: ignore[arg-type]
+    )
+
+    kinds = [e.kind for e in result.events]
+    # Router prelude ran the call once (tool_call_start + tool_call_end).
+    # Main model's attempt is short-circuited (tool_call_deduped).
+    assert kinds.count("tool_call_start") == 1
+    assert kinds.count("tool_call_deduped") == 1
 
 
 # Explicit import to confirm we can pass pytest from the tests folder
