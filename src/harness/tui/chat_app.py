@@ -1,29 +1,20 @@
-"""Textual chat app — Phase 5 adds token-delta streaming
-(harness-lrg) on top of Phase 4's tool-loop wiring (harness-1r4).
+"""Textual chat app — Phase 6 replaces the write-tier auto-decline
+stub with a real modal confirmation screen (harness-mz2).
 
-Scope of Phase 5:
-- Non-tools path switches from `adapter.complete(...)` (blocking
-  one-shot) to `adapter.stream(...)` which yields token deltas. The
-  worker feeds each delta through a sentence-boundary buffer on the
-  UI thread via `call_from_thread`. Completed sentences write to
-  the RichLog as they complete; the tail flushes when the adapter
-  is done.
-- Tools path: the existing `token_delta` ToolLoopEvent (emitted by
-  adapter.stream_with_tools via the orchestrator) is now observed
-  and fed through the same sentence buffer, so the final wrap-up
-  reply streams in live instead of arriving as one blob after the
-  last tool call.
-- First streamed chunk is prefixed with 'airton ›'; subsequent
-  sentences are continuation lines. Classic-CLI style.
-
-The sentence-boundary strategy matches the existing _StreamRenderer
-in cli.py — token-level streaming repaints too often and leaks
-raw tool-call tag fragments while the adapter hasn't closed them
-yet. Sentence-level gives responsive feedback while keeping per-
-line output aligned with what eventually lands in the transcript.
+Scope of Phase 6:
+- Write-tier tool calls now push `ConfirmToolScreen` over the chat
+  view instead of being auto-declined. User approves with `y` /
+  declines with `n` / approves + marks the tool as always-allowed-
+  for-session with `a`. Escape also declines.
+- Session-scoped `_approved_tools: set[str]` skips the modal for
+  any tool the user has already marked always-allowed.
+- Run from the worker thread via `call_from_thread(...)` so the
+  blocking `confirm(call) -> bool` contract run_tool_loop expects
+  still works — the worker parks until the user dismisses the
+  modal on the UI thread.
 
 Scope of earlier phases still applies: retrieval, transcript
-persistence, metrics footer, tool observer.
+persistence, metrics footer, tool observer, streaming.
 """
 
 from __future__ import annotations
@@ -31,7 +22,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -49,6 +40,7 @@ from harness.cli import (
 from harness.cli import _RetrievalState as _RetrievalHealth
 from harness.model.adapter import ChatMessage, approx_token_count
 from harness.orchestrator import ToolLoopEvent, run_tool_loop
+from harness.tui.confirm_screen import ALWAYS, APPROVE, ConfirmToolScreen
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -198,6 +190,12 @@ class ChatApp(App[None]):
         self._tool_registry = registry
         self._router = router
         self._workspace_path = workspace_path
+        # Session-scoped always-approve set. The modal writes into
+        # this when the user picks 'always' so subsequent calls to
+        # the same tool skip the modal. Cleared on app exit — no
+        # persistence across sessions, matching the classic REPL's
+        # behavior.
+        self._approved_tools: set[str] = set()
         self._state = _ChatAppState()
 
     # ---------- compose / mount ----------
@@ -220,8 +218,8 @@ class ChatApp(App[None]):
         log.write(
             f"[dim]Chat with {self._character.name}. "
             f"adapter={self._adapter.id} session={self._session}. "
-            f"{tools_note}. Phase 5: streaming + tools wired; "
-            f"write-tier confirmation lands in harness-mz2.[/dim]"
+            f"{tools_note}. Phase 6: write-tier confirmation modal "
+            f"wired — [y] approve, [n] decline, [a] always.[/dim]"
         )
         self.query_one("#prompt", Input).focus()
         # Baseline ctx count — just the system prompt framing is not
@@ -341,7 +339,7 @@ class ChatApp(App[None]):
                     self._adapter,  # type: ignore[arg-type]
                     [*initial_messages, user_msg],
                     self._tool_registry,
-                    confirm=self._decline_write_tools,
+                    confirm=self._confirm_write_tool,
                     observe=self._observe_tool_event,
                     router=self._router,
                 )
@@ -524,29 +522,41 @@ class ChatApp(App[None]):
             return self._tool_registry.get(name).spec.label
         return name
 
-    def _decline_write_tools(self, call: ToolCall) -> bool:
-        """Phase 4 placeholder: write-tier tools always decline until
-        harness-mz2 replaces this with a modal confirmation screen.
-        Emit a log line so the user can see the call was rejected.
+    def _confirm_write_tool(self, call: ToolCall) -> bool:
+        """Worker-thread confirm callback for write-tier tool calls.
+        If the tool has been marked always-allowed for this session,
+        approve silently. Otherwise block the worker until the user
+        dismisses the modal on the UI thread.
 
-        Returning False here tells run_tool_loop to inject a
-        'user declined' tool-role message; the model adapts and
-        (usually) reports inability to the user."""
-        self.call_from_thread(
-            self._emit_decline_notice,
-            call.name,
-        )
+        `call_from_thread(coro)` schedules the coroutine on the
+        Textual event loop and blocks this thread until it returns
+        — which is exactly what we need to give run_tool_loop the
+        sync `bool` it expects."""
+        if call.name in self._approved_tools:
+            return True
+        # Textual stubs Callable[..., Awaitable[Never]] for
+        # call_from_thread's arg, which doesn't line up with an async
+        # method that returns str | None — even though the runtime
+        # supports exactly this. Cast via Any locally so the calling
+        # site stays readable.
+        call_from_thread: Any = self.call_from_thread
+        decision: str | None = call_from_thread(self._prompt_for_confirm, call)
+        if decision == APPROVE:
+            return True
+        if decision == ALWAYS:
+            self._approved_tools.add(call.name)
+            return True
+        # DECLINE, None (modal cancelled), or any unexpected value.
         return False
 
-    def _emit_decline_notice(self, tool_name: str) -> None:
-        log = self.query_one("#output", RichLog)
-        line = Text()
-        line.append(
-            f"   ⚠ {self._tool_label(tool_name)} declined automatically — "
-            f"write-tier confirmation modal lands in harness-mz2.",
-            style="yellow",
-        )
-        log.write(line)
+    async def _prompt_for_confirm(self, call: ToolCall) -> str | None:
+        """UI-thread coroutine: push the modal and await its result.
+        Returns the dismiss payload verbatim ('approve' / 'decline'
+        / 'always'), or None if the screen was dismissed without a
+        value (shouldn't happen with the normal bindings but we
+        handle it defensively)."""
+        screen = ConfirmToolScreen(call, label=self._tool_label(call.name))
+        return await self.push_screen_wait(screen)
 
     def _observe_tool_event(self, event: ToolLoopEvent) -> None:
         """Observer callback passed to run_tool_loop. Runs on the

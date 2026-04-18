@@ -12,6 +12,7 @@ tests are deterministic, fast, and don't mock anything load-bearing.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 import pytest
 from textual.widgets import Input, RichLog, Static
@@ -23,6 +24,7 @@ from harness.model.echo import EchoAdapter
 from harness.store.transcript import Transcript
 from harness.tools import ModelReply, ReadFileTool, ToolCall, ToolRegistry, ToolSpec
 from harness.tui import ChatApp
+from harness.tui.confirm_screen import ConfirmToolScreen
 
 
 @pytest.mark.asyncio
@@ -253,10 +255,12 @@ async def test_chat_app_renders_tool_events_inline(tmp_path) -> None:  # type: i
 
 
 @pytest.mark.asyncio
-async def test_chat_app_declines_write_tier_tools_for_now(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """harness-1r4: write-tier tools auto-decline until the modal
-    confirmation lands in harness-mz2. Each decline emits a log
-    line so the user knows what happened."""
+async def test_chat_app_confirm_modal_declined_via_escape(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-mz2: write-tier tool pushes the confirm modal.
+    Pressing escape dismisses with DECLINE → run_tool_loop injects
+    a 'user declined' tool-role message → the scripted adapter's
+    wrap-up reply still shows up in the log, and the WriteOnlyTool
+    .call() is never reached (its body raises AssertionError)."""
     registry = ToolRegistry()
     registry.register(_WriteOnlyTool())
 
@@ -274,15 +278,92 @@ async def test_chat_app_declines_write_tier_tools_for_now(tmp_path) -> None:  # 
         prompt = pilot.app.query_one("#prompt", Input)
         prompt.value = "write to file.txt"
         await pilot.press("enter")
+        await _wait_for_modal(pilot)
+        await pilot.press("escape")
         await _wait_for_workers(pilot)
+        await pilot.pause(0.05)
 
         log = pilot.app.query_one("#output", RichLog)
         rendered = "\n".join(str(line) for line in log.lines)
-        # Our yellow placeholder notice + the orchestrator's
-        # 'declined' line both land in the log.
-        assert "declined automatically" in rendered
-        assert "harness-mz2" in rendered
+        assert "declined" in rendered
         assert "ok, nothing written" in rendered
+
+
+@pytest.mark.asyncio
+async def test_chat_app_confirm_modal_approved_via_y(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Pressing `y` on the modal approves — the tool runs, result
+    flows back, wrap-up reply renders normally."""
+    calls_made: list[dict[str, object]] = []
+    registry = ToolRegistry()
+    registry.register(_RecordingWriteTool(calls_made=calls_made))
+
+    scripted = _ToolScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="record_write", arguments={"note": "approved"}),),
+            ),
+            ModelReply(content="wrote the note"),
+        ]
+    )
+    app = _build_app(tmp_path, adapter=scripted, registry=registry, workspace=tmp_path)
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "do it"
+        await pilot.press("enter")
+        await _wait_for_modal(pilot)
+        await pilot.press("y")
+        await _wait_for_workers(pilot)
+        await pilot.pause(0.05)
+
+        assert calls_made == [{"note": "approved"}]
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "wrote the note" in rendered
+
+
+@pytest.mark.asyncio
+async def test_chat_app_confirm_modal_always_skips_future_prompts(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Pressing `a` approves AND marks the tool always-allowed for
+    the session. A second call to the same tool next turn must run
+    without re-prompting."""
+    calls_made: list[dict[str, object]] = []
+    registry = ToolRegistry()
+    registry.register(_RecordingWriteTool(calls_made=calls_made))
+
+    scripted = _ToolScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="record_write", arguments={"note": "first"}),),
+            ),
+            ModelReply(content="one done"),
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="record_write", arguments={"note": "second"}),),
+            ),
+            ModelReply(content="two done"),
+        ]
+    )
+    app = _build_app(tmp_path, adapter=scripted, registry=registry, workspace=tmp_path)
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "first"
+        await pilot.press("enter")
+        await _wait_for_modal(pilot)
+        await pilot.press("a")
+        await _wait_for_workers(pilot)
+        await pilot.pause(0.05)
+
+        # Turn 2: no modal should appear. Running the turn completes
+        # end-to-end; if a modal had popped we'd time out in
+        # _wait_for_workers because the worker parks on it.
+        prompt.value = "second"
+        await pilot.press("enter")
+        await _wait_for_workers(pilot)
+        await pilot.pause(0.05)
+
+        assert calls_made == [{"note": "first"}, {"note": "second"}]
 
 
 @pytest.mark.asyncio
@@ -382,16 +463,15 @@ class _StreamingAdapter:
 
 
 class _WriteOnlyTool:
-    """Write-tier tool stub: never actually writes. Used to verify
-    that the Phase 4 auto-decline path short-circuits before the
-    tool's call() method runs. A real assertion that the body never
-    runs happens via the declined-branch tool result."""
+    """Write-tier tool stub: never actually writes. Body raises so
+    the test fails loudly if the decline path regresses and lets a
+    call through."""
 
     @property
     def spec(self) -> ToolSpec:
         return ToolSpec(
             name="dangerous_write",
-            description="would modify the workspace, but we auto-decline in phase 4",
+            description="would modify the workspace, but we decline in the test",
             parameters={
                 "type": "object",
                 "properties": {"target": {"type": "string"}},
@@ -404,6 +484,32 @@ class _WriteOnlyTool:
         raise AssertionError(
             f"write-tier tool should have been declined before reaching call(); target={target!r}"
         )
+
+
+@dataclass
+class _RecordingWriteTool:
+    """Benign write-tier tool that records each call instead of
+    actually mutating anything. Used to verify the approve and
+    always-approve paths let the tool through."""
+
+    calls_made: list[dict[str, object]]
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="record_write",
+            description="records the call arguments, no side effects",
+            parameters={
+                "type": "object",
+                "properties": {"note": {"type": "string"}},
+                "required": ["note"],
+            },
+            tier="write",
+        )
+
+    def call(self, *, note: str) -> str:
+        self.calls_made.append({"note": note})
+        return f"recorded {note!r}"
 
 
 class _RaisingAdapter:
@@ -467,3 +573,22 @@ async def _wait_for_workers(pilot) -> None:  # type: ignore[no-untyped-def]
     await pilot.app.workers.wait_for_complete()
     # Let the call_from_thread callbacks run on the event loop.
     await pilot.pause()
+
+
+async def _wait_for_modal(pilot, *, timeout: float = 2.0) -> None:  # type: ignore[no-untyped-def]
+    """Poll until ConfirmToolScreen is on the screen stack or the
+    timeout expires. Tests can't use _wait_for_workers here because
+    the worker is deliberately parked on call_from_thread while the
+    modal is open."""
+    import asyncio
+
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        for screen in pilot.app.screen_stack:
+            if isinstance(screen, ConfirmToolScreen):
+                return
+        await pilot.pause(0.02)
+    raise AssertionError(
+        f"ConfirmToolScreen never appeared within {timeout}s — "
+        f"current screen stack: {pilot.app.screen_stack}"
+    )
