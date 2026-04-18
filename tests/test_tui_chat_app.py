@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 import pytest
-from textual.widgets import Input, RichLog
+from textual.widgets import Input, RichLog, Static
 
 from harness.character import load_character
 from harness.config import settings
@@ -82,6 +82,66 @@ async def test_chat_app_disables_input_during_turn(tmp_path) -> None:  # type: i
         await _wait_for_workers(pilot)
         assert not prompt.disabled
         assert prompt.has_focus
+
+
+@pytest.mark.asyncio
+async def test_metrics_idle_on_mount_then_updates_after_turn(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-17v: on mount the footer reads 'idle' with an empty
+    ctx (no history yet). After one turn the ctx field carries a
+    non-zero token count — adapter.count_tokens on the growing
+    history."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        metrics = pilot.app.query_one("#metrics", Static)
+        initial_text = str(metrics.render()).lower()
+        assert "idle" in initial_text
+
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "tell me something"
+        await pilot.press("enter")
+        await _wait_for_workers(pilot)
+
+        final_text = str(metrics.render())
+        # After the turn: idle again, and the ctx field has moved off
+        # the '—' placeholder because there's real history now.
+        assert "idle" in final_text.lower()
+        assert "ctx" in final_text.lower()
+        # Echo adapter produced meaningful tokens in history; the
+        # meter should show at least 1 token (rendered as 0.0k once
+        # divided by 1000, but the ctx total is real so the string
+        # changes from the pre-turn placeholder).
+        assert "—" not in final_text  # '—' is the no-ctx placeholder
+
+
+@pytest.mark.asyncio
+async def test_metrics_shows_thinking_elapsed_during_turn(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """While the worker runs, the footer must show 'thinking Ns'.
+    Exercise _refresh_metrics directly by planting a start time
+    rather than racing a real worker — timing-dependent assertions
+    flake on slow CI and CPU-bound test runs. This test guards the
+    render contract; the state-transition test above guards the
+    worker-sets-it-correctly path."""
+    import time as _time
+
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        # Simulate an in-flight turn: plant a start time ~1.2s ago.
+        tui_app._state.turn_started_at = _time.monotonic() - 1.2
+        tui_app._refresh_metrics()
+        metrics = pilot.app.query_one("#metrics", Static)
+        text = str(metrics.render()).lower()
+        assert "thinking" in text
+        # Elapsed is formatted to one decimal; ~1.2s should appear
+        # as some X.Y number — not 0.0.
+        assert "0.0s" not in text
+
+        # Clear and re-render: idle.
+        tui_app._state.turn_started_at = None
+        tui_app._refresh_metrics()
+        idle_text = str(metrics.render()).lower()
+        assert "idle" in idle_text
+        assert "thinking" not in idle_text
 
 
 @pytest.mark.asyncio

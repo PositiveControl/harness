@@ -1,21 +1,22 @@
-"""Textual chat app — Phase 2 wires model + persona + retrieval
-(harness-29c) on top of the Phase 1 scaffold (harness-1o8).
+"""Textual chat app — Phase 3 adds a live metrics footer
+(harness-17v) on top of Phase 2's model wiring (harness-29c).
 
-Scope of this phase:
-- Input submissions kick off a thread-backed worker that runs voice /
-  episodic / semantic retrieval, assembles a ChatMessage thread, and
-  calls the adapter (blocking, non-streaming) for a reply.
-- Reply is written back into the RichLog via `call_from_thread`.
-- User + assistant turns are appended to the Transcript so sessions
-  survive restart (history replay itself lands in Phase 7, harness-01o).
-- Input is disabled while the worker runs so a user can't submit a
-  second turn mid-generation and race the thread.
-- No tools, no router, no compaction, no voice capture — those land
-  in later phases.
+Scope of Phase 3:
+- The placeholder Static becomes a running ctx meter + an
+  elapsed-time indicator that ticks while the model is generating.
+- `set_interval(0.25, ...)` drives the tick so the display updates
+  smoothly without the worker needing to push updates per second.
+- Token counts are computed once per turn (before and after the
+  adapter call) via `adapter.count_tokens` when the adapter exposes
+  it; approx fallback otherwise.
+
+Scope of earlier phases still applies: retrieval, adapter, and
+transcript persistence run on a thread-backed exclusive worker.
 """
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
@@ -24,9 +25,14 @@ from textual.app import App, ComposeResult
 from textual.binding import BindingType
 from textual.widgets import Input, RichLog, Static
 
-from harness.cli import _render_fact_block, _render_memory_block, _retrieve_turn_context
+from harness.cli import (
+    _format_ctx_meter,
+    _render_fact_block,
+    _render_memory_block,
+    _retrieve_turn_context,
+)
 from harness.cli import _RetrievalState as _RetrievalHealth
-from harness.model.adapter import ChatMessage
+from harness.model.adapter import ChatMessage, approx_token_count
 
 if TYPE_CHECKING:
     from harness.character import Character
@@ -47,10 +53,22 @@ class _ChatAppState:
     fresh per turn; only user + assistant turns accumulate here).
     `retrieval_health` disables a retrieval source for the rest of
     the session once it raises so the user doesn't get the same
-    warning on every turn."""
+    warning on every turn.
+
+    `turn_started_at` is a monotonic timestamp set when the worker
+    kicks off and cleared when it finishes. `None` means 'idle' —
+    the metrics tick renders nothing for the elapsed-time slot in
+    that state.
+
+    `ctx_used` is the most recent prompt+history token count,
+    recomputed once per turn (after the reply is in) so the user
+    sees the post-turn size without the metrics tick having to
+    retokenize every 250ms."""
 
     history: list[ChatMessage] = field(default_factory=list)
     retrieval_health: _RetrievalHealth = field(default_factory=_RetrievalHealth)
+    turn_started_at: float | None = None
+    ctx_used: int = 0
 
 
 class ChatApp(App[None]):
@@ -158,10 +176,18 @@ class ChatApp(App[None]):
         log.write(
             f"[dim]Chat with {self._character.name}. "
             f"adapter={self._adapter.id} session={self._session}. "
-            f"Phase 2: model + persona + retrieval wired; tools land "
-            f"in harness-1r4.[/dim]"
+            f"Phase 3: live metrics footer wired; tools land in "
+            f"harness-1r4.[/dim]"
         )
         self.query_one("#prompt", Input).focus()
+        # Baseline ctx count — just the system prompt framing is not
+        # known before the first turn, so seed the meter at 0. It
+        # updates after each turn completes.
+        self._refresh_metrics()
+        # 250ms tick matches the classic CLI's thinking-spinner cadence
+        # so the elapsed-time field feels identical. A faster tick is
+        # wasted work; a slower one makes the counter feel stuck.
+        self.set_interval(0.25, self._refresh_metrics)
 
     # ---------- input path ----------
 
@@ -180,6 +206,11 @@ class ChatApp(App[None]):
         log.write(line)
         event.input.value = ""
         self._set_input_enabled(False)
+        # Start the elapsed-time clock on the UI thread so the metrics
+        # tick sees it immediately — no 'thinking 0.0s' → 'thinking 0.3s'
+        # gap where the spinner hasn't caught up yet.
+        self._state.turn_started_at = time.monotonic()
+        self._refresh_metrics()
         # `thread=True` runs the sync adapter off the UI thread so
         # token generation doesn't block the event loop. `exclusive`
         # ensures a stray second submission cancels the older worker
@@ -265,7 +296,11 @@ class ChatApp(App[None]):
         except Exception as exc:
             self.call_from_thread(self._render_error, exc)
         finally:
-            self.call_from_thread(self._set_input_enabled, True)
+            # Stop the elapsed-time counter and re-enable input from
+            # the UI thread. Order matters: clear the timer BEFORE
+            # refreshing metrics so the next tick shows 'idle' rather
+            # than a stale final elapsed-time string.
+            self.call_from_thread(self._finish_turn)
 
     # ---------- UI-thread helpers (all run via call_from_thread) ----------
 
@@ -300,3 +335,44 @@ class ChatApp(App[None]):
         prompt.disabled = not enabled
         if enabled:
             prompt.focus()
+
+    def _finish_turn(self) -> None:
+        """Worker-completion hook on the UI thread. Stops the elapsed
+        clock, recomputes the ctx meter against the now-updated
+        history, re-enables input, and pushes a metrics refresh so
+        the user sees the final state immediately instead of waiting
+        for the next tick."""
+        self._state.turn_started_at = None
+        self._recompute_ctx_used()
+        self._set_input_enabled(True)
+        self._refresh_metrics()
+
+    def _recompute_ctx_used(self) -> None:
+        """Cached per-turn token count for the metrics footer.
+        Prefer the adapter's tokenizer (exact) when it exposes one;
+        fall back to the char-heuristic used by approx_token_count.
+        Any exception (e.g. a tokenizer that panics on bad input) is
+        swallowed — we don't want a metrics hiccup to take out the
+        whole turn."""
+        count_fn = getattr(self._adapter, "count_tokens", None)
+        try:
+            if callable(count_fn):
+                self._state.ctx_used = int(count_fn(self._state.history))
+            else:
+                self._state.ctx_used = approx_token_count(self._state.history)
+        except Exception:
+            self._state.ctx_used = approx_token_count(self._state.history)
+
+    def _refresh_metrics(self) -> None:
+        """Render the metrics strip. Idle state shows just the ctx
+        meter; active turn appends 'thinking N.Ns' so the user can
+        see the model is alive even when streaming tokens hasn't
+        started yet. Elapsed time is formatted to one decimal place
+        so the ticker visibly advances at the 0.25s tick cadence."""
+        metrics = self.query_one("#metrics", Static)
+        meter = _format_ctx_meter(self._state.ctx_used, self._adapter.context_window) or "ctx —"
+        if self._state.turn_started_at is not None:
+            elapsed = time.monotonic() - self._state.turn_started_at
+            metrics.update(Text.from_markup(f"{meter} · thinking {elapsed:.1f}s"))
+        else:
+            metrics.update(Text.from_markup(f"{meter} · idle"))
