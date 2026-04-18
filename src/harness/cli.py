@@ -871,6 +871,7 @@ def _build_tool_registry_for_tui(
     retrieval_health: object | None = None,
     persona_active: bool = False,
     router_id: str | None = None,
+    transcript: Transcript | None = None,
     warnings_out: list[str] | None = None,
 ) -> ToolRegistry | None:
     """Build a ToolRegistry for the Textual app. Subset of the
@@ -961,6 +962,8 @@ def _build_tool_registry_for_tui(
                     retrieval_health=retrieval_health,
                     persona_active=persona_active,
                     router_id=router_id,
+                    transcript=transcript,
+                    session_id=session,
                 )
             )
 
@@ -979,6 +982,8 @@ def _make_introspect_tool(
     retrieval_health: object | None = None,
     persona_active: bool = False,
     router_id: str | None = None,
+    transcript: Transcript | None = None,
+    session_id: str | None = None,
 ) -> IntrospectTool:
     """Construct an IntrospectTool bound to the already-populated
     registry. Pre-enumerates the CLI commands from the Typer app so
@@ -1002,6 +1007,8 @@ def _make_introspect_tool(
         retrieval_health=retrieval_health,
         persona_active=persona_active,
         router_id=router_id,
+        transcript=transcript,
+        session_id=session_id,
     )
     return IntrospectTool(context=ctx)
 
@@ -1388,6 +1395,7 @@ def chat(
             retrieval_health=tui_retrieval_health,
             persona_active=persona and not tools,
             router_id=_router_id_label(tui_router),
+            transcript=tui_transcript,
             warnings_out=tui_registry_warnings,
         )
 
@@ -1564,6 +1572,8 @@ def chat(
                     retrieval_health=retrieval_state,
                     persona_active=persona and not tools,
                     router_id=_router_id_label(router),
+                    transcript=transcript,
+                    session_id=session,
                 )
             )
 

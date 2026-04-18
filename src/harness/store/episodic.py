@@ -305,10 +305,12 @@ class EpisodicStore:
         *,
         tier: str | None = None,
         user_id: str | None = None,
+        source: str | None = None,
     ) -> datetime | None:
         """Most recent `created_at` among active rows matching the same
-        scope as `count()`. Returns None when the filter matches no rows
-        (fresh store, or user hasn't produced any memories yet)."""
+        scope as `count()`. `source` narrows further (e.g. 'scribe' for
+        last-scribe-run watermark, 'consolidator' for last
+        consolidation). Returns None when the filter matches no rows."""
         conditions: list[str] = ["superseded_by IS NULL"]
         params: list[object] = []
         if tier is not None:
@@ -317,6 +319,9 @@ class EpisodicStore:
         if user_id is not None:
             conditions.append("(user_id IS NULL OR user_id = ?)")
             params.append(user_id)
+        if source is not None:
+            conditions.append("source = ?")
+            params.append(source)
         where = " WHERE " + " AND ".join(conditions)
         row = self._conn.execute(
             f"SELECT MAX(created_at) FROM episodic{where}",  # noqa: S608

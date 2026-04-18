@@ -274,10 +274,11 @@ class SemanticStore:
         *,
         tier: str | None = None,
         user_id: str | None = None,
+        source: str | None = None,
     ) -> datetime | None:
         """Most recent `created_at` among active facts matching the same
-        scope as `count()`. Returns None when the filter matches no
-        rows."""
+        scope as `count()`. `source` narrows further (e.g. 'scribe',
+        'consolidator'). Returns None when the filter matches no rows."""
         conditions: list[str] = ["superseded_by IS NULL"]
         params: list[object] = []
         if tier is not None:
@@ -286,6 +287,9 @@ class SemanticStore:
         if user_id is not None:
             conditions.append("(user_id IS NULL OR user_id = ?)")
             params.append(user_id)
+        if source is not None:
+            conditions.append("source = ?")
+            params.append(source)
         where = " WHERE " + " AND ".join(conditions)
         row = self._conn.execute(
             f"SELECT MAX(created_at) FROM semantic{where}",  # noqa: S608

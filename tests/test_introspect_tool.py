@@ -20,6 +20,7 @@ from harness.config import settings
 from harness.model.adapter import ChatMessage
 from harness.store.episodic import EpisodicStore
 from harness.store.semantic import SemanticStore
+from harness.store.transcript import Transcript
 from harness.tools import IntrospectContext, IntrospectTool, ReadFileTool, ToolRegistry
 
 
@@ -191,7 +192,15 @@ def test_spec_shape(ctx: IntrospectContext) -> None:
     assert spec.tier == "read"
     assert spec.parameters["required"] == ["scope"]
     enum = spec.parameters["properties"]["scope"]["enum"]
-    assert set(enum) == {"tools", "model", "memory", "character", "commands", "all"}
+    assert set(enum) == {
+        "tools",
+        "model",
+        "memory",
+        "character",
+        "commands",
+        "session",
+        "all",
+    }
 
 
 def test_scope_tools_reports_capability_gaps(ctx: IntrospectContext) -> None:
@@ -330,6 +339,107 @@ def test_scope_memory_surfaces_retrieval_health(tmp_path: Path) -> None:
     assert "episodic" in out_bad
     assert "semantic" in out_bad
     assert "disabled this session" in out_bad
+
+
+def test_scope_memory_surfaces_watermarks(tmp_path: Path) -> None:
+    """harness-l62: scope=memory reports last-scribe-run and last-
+    consolidation timestamps derived from source/tier filters on the
+    episodic store. 'never' when no matching rows exist."""
+    repo = Path(__file__).resolve().parents[1]
+    character = load_character(repo / "character" / "airton")
+    registry = ToolRegistry()
+    episodic = EpisodicStore(tmp_path / "ep.sqlite", embedder=_FakeEmbedder())
+    # Fresh store: watermarks should read 'never'.
+    ctx_empty = IntrospectContext(
+        registry=registry,
+        adapter=_StubAdapter(),
+        character=character,
+        settings=settings,
+        episodic=episodic,
+    )
+    out_empty = IntrospectTool(context=ctx_empty).call(scope="memory")
+    assert "last scribe run: never" in out_empty
+    assert "last consolidation: never" in out_empty
+
+    # Add a scribe-sourced row and a consolidated tier row; watermarks
+    # flip to real timestamps.
+    episodic.ingest(external_id="scribe-1", title="t", body="b", tier="working", source="scribe")
+    episodic.ingest(
+        external_id="consolidated-1",
+        title="t",
+        body="b",
+        tier="consolidated",
+        source="consolidator",
+    )
+    out_hot = IntrospectTool(context=ctx_empty).call(scope="memory")
+    assert "last scribe run: never" not in out_hot
+    assert "last consolidation: never" not in out_hot
+
+
+def test_scope_session_reports_transcript_stats(tmp_path: Path) -> None:
+    """harness-l62: scope=session derives turns + start/last activity
+    from the transcript's aggregate query. No in-memory accumulator."""
+    repo = Path(__file__).resolve().parents[1]
+    character = load_character(repo / "character" / "airton")
+    registry = ToolRegistry()
+    transcript = Transcript(tmp_path / "t.sqlite")
+    transcript.append(session="sess-1", channel="cli", speaker="mark", role="user", content="hi")
+    transcript.append(
+        session="sess-1", channel="cli", speaker="airton", role="assistant", content="hello"
+    )
+    transcript.append(session="sess-1", channel="cli", speaker="mark", role="user", content="again")
+
+    ctx = IntrospectContext(
+        registry=registry,
+        adapter=_StubAdapter(),
+        character=character,
+        settings=settings,
+        transcript=transcript,
+        session_id="sess-1",
+    )
+    out = IntrospectTool(context=ctx).call(scope="session")
+    assert "id: sess-1" in out
+    assert "2 user" in out
+    assert "1 assistant" in out
+    assert "started:" in out
+    assert "last activity:" in out
+
+
+def test_scope_session_handles_empty_session(tmp_path: Path) -> None:
+    """A session with no rows yet renders cleanly — no crash, no
+    lies about turns."""
+    repo = Path(__file__).resolve().parents[1]
+    character = load_character(repo / "character" / "airton")
+    registry = ToolRegistry()
+    transcript = Transcript(tmp_path / "t.sqlite")
+    ctx = IntrospectContext(
+        registry=registry,
+        adapter=_StubAdapter(),
+        character=character,
+        settings=settings,
+        transcript=transcript,
+        session_id="fresh",
+    )
+    out = IntrospectTool(context=ctx).call(scope="session")
+    assert "id: fresh" in out
+    assert "turns: 0" in out
+
+
+def test_scope_session_unwired_fallback(tmp_path: Path) -> None:
+    """When transcript / session_id aren't passed into the context —
+    e.g. scripts that bypass the CLI wiring — scope=session stays
+    informative rather than crashing."""
+    repo = Path(__file__).resolve().parents[1]
+    character = load_character(repo / "character" / "airton")
+    registry = ToolRegistry()
+    ctx = IntrospectContext(
+        registry=registry,
+        adapter=_StubAdapter(),
+        character=character,
+        settings=settings,
+    )
+    out = IntrospectTool(context=ctx).call(scope="session")
+    assert "transcript" in out.lower()
 
 
 def test_retrieval_health_is_live_reference(tmp_path: Path) -> None:

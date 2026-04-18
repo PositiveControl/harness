@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from harness.model.adapter import ModelAdapter
     from harness.store.episodic import EpisodicStore
     from harness.store.semantic import SemanticStore
+    from harness.store.transcript import Transcript
     from harness.tools.base import ToolRegistry
 
 
@@ -35,6 +36,7 @@ _VALID_SCOPES: tuple[str, ...] = (
     "memory",
     "character",
     "commands",
+    "session",
     "all",
 )
 
@@ -112,6 +114,8 @@ class IntrospectContext:
     retrieval_health: Any | None = None
     persona_active: bool = False
     router_id: str | None = None
+    transcript: Transcript | None = None
+    session_id: str | None = None
 
 
 @dataclass
@@ -146,10 +150,12 @@ class IntrospectTool:
                         "description": (
                             "Which surface to describe. tools=loaded "
                             "tools + tier; model=adapter/model info; "
-                            "memory=episodic + semantic stats; "
+                            "memory=episodic + semantic stats + "
+                            "scribe/consolidation watermarks; "
                             "character=name, persona, voice corpus "
                             "size; commands=CLI commands; "
-                            "all=everything."
+                            "session=current session stats (turns, "
+                            "start, last activity); all=everything."
                         ),
                     },
                 },
@@ -164,7 +170,8 @@ class IntrospectTool:
             return f"unknown scope {scope!r}; valid: {', '.join(_VALID_SCOPES)}"
         if scope == "all":
             return "\n\n".join(
-                self._render(s) for s in ("tools", "model", "memory", "character", "commands")
+                self._render(s)
+                for s in ("tools", "model", "memory", "character", "commands", "session")
             )
         return self._render(scope)
 
@@ -179,6 +186,8 @@ class IntrospectTool:
             return self._render_character()
         if scope == "commands":
             return self._render_commands()
+        if scope == "session":
+            return self._render_session()
         # Guarded by call()'s scope check above — kept for mypy.
         return f"unknown scope {scope!r}"
 
@@ -277,6 +286,23 @@ class IntrospectTool:
                 )
             else:
                 lines.append("  retrieval health: all sources ok")
+        # Watermarks (harness-l62): surface when the curation pipeline
+        # last ran so the model can answer 'when was memory last
+        # cleaned up' without guessing. Derive from max(created_at)
+        # filtered by source/tier — no dedicated watermark table yet.
+        if self.context.episodic is not None:
+            scribe_watermark = self.context.episodic.last_created_at(source="scribe")
+            consolidation_watermark = self.context.episodic.last_created_at(tier="consolidated")
+            if scribe_watermark is not None:
+                lines.append(f"  last scribe run: {scribe_watermark.isoformat(timespec='seconds')}")
+            else:
+                lines.append("  last scribe run: never")
+            if consolidation_watermark is not None:
+                lines.append(
+                    f"  last consolidation: {consolidation_watermark.isoformat(timespec='seconds')}"
+                )
+            else:
+                lines.append("  last consolidation: never")
         return "\n".join(lines)
 
     def _render_character(self) -> str:
@@ -300,4 +326,24 @@ class IntrospectTool:
         for cmd in self.context.commands:
             summary = f" — {cmd.summary}" if cmd.summary else ""
             lines.append(f"  harness {cmd.path}{summary}")
+        return "\n".join(lines)
+
+    def _render_session(self) -> str:
+        """Session stats from the transcript (harness-l62). Derives
+        start/last/turn counts with a single aggregate query — no
+        per-session in-memory accumulator required."""
+        if self.context.transcript is None or self.context.session_id is None:
+            return "Session: (transcript / session id not wired)"
+        stats = self.context.transcript.session_stats(self.context.session_id)
+        lines = ["Session:"]
+        lines.append(f"  id: {self.context.session_id}")
+        if stats is None:
+            lines.append("  turns: 0 (session just started)")
+            return "\n".join(lines)
+        lines.append(f"  started: {stats.first_at.isoformat(timespec='seconds')}")
+        lines.append(f"  last activity: {stats.last_at.isoformat(timespec='seconds')}")
+        lines.append(
+            f"  turns: {stats.user_turns} user / {stats.assistant_turns} assistant "
+            f"({stats.total_rows} total rows, tool results included)"
+        )
         return "\n".join(lines)

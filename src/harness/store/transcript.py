@@ -39,6 +39,20 @@ class TranscriptMessage:
     created_at: datetime
 
 
+@dataclass(frozen=True)
+class SessionStats:
+    """Aggregate stats for one transcript session. Used by the
+    introspect tool (harness-l62) so scope=session can report how
+    long the session has been running and how many turns landed
+    without needing any in-memory accumulator."""
+
+    first_at: datetime
+    last_at: datetime
+    total_rows: int
+    user_turns: int
+    assistant_turns: int
+
+
 class Transcript:
     """Append-only transcript store. Single-file SQLite with WAL."""
 
@@ -96,6 +110,28 @@ class Transcript:
         ).fetchall()
         rows.reverse()
         return [_row_to_message(r) for r in rows]
+
+    def session_stats(self, session: str) -> SessionStats | None:
+        """Return aggregate stats for `session`, or None when the
+        session has no rows yet. Single-query MIN/MAX/COUNT so the
+        introspect tool doesn't have to pull every row just to count
+        turns."""
+        row = self._conn.execute(
+            """SELECT MIN(created_at), MAX(created_at), COUNT(*),
+                      SUM(CASE WHEN role='user' THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN role='assistant' THEN 1 ELSE 0 END)
+               FROM transcript WHERE session = ?""",
+            (session,),
+        ).fetchone()
+        if row is None or row[2] == 0:
+            return None
+        return SessionStats(
+            first_at=datetime.fromisoformat(row[0]),
+            last_at=datetime.fromisoformat(row[1]),
+            total_rows=int(row[2]),
+            user_turns=int(row[3] or 0),
+            assistant_turns=int(row[4] or 0),
+        )
 
     def fetch_after(self, session: str, *, after_id: int) -> list[TranscriptMessage]:
         """Fetch every message in `session` whose id > `after_id`, in
