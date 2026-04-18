@@ -13,7 +13,7 @@ unit-testable with stub dependencies.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from harness.tools.base import ToolSpec
 
@@ -36,6 +36,44 @@ _VALID_SCOPES: tuple[str, ...] = (
     "character",
     "commands",
     "all",
+)
+
+# Capability-gap detection (harness-8is). Each entry names a human-
+# readable capability, the set of tool names that would provide it,
+# and a one-line hint that tells the user how to turn it on. When
+# NONE of the required tools are in the registry the gap is reported
+# in scope=tools so the model can answer 'can you do X?' truthfully.
+_CAPABILITY_GAPS: tuple[tuple[str, frozenset[str], str], ...] = (
+    (
+        "browse the web",
+        frozenset({"search_web"}),
+        "--tools-add search_web (or --tool-set research)",
+    ),
+    (
+        "edit or write files",
+        frozenset({"edit_file", "write_file"}),
+        "read-only workspace this session; --tool-set coding for editing",
+    ),
+    (
+        "run shell commands",
+        frozenset({"shell"}),
+        "--tools-add shell",
+    ),
+    (
+        "inspect git history",
+        frozenset({"git_status", "git_diff", "git_log"}),
+        "--tool-set coding",
+    ),
+    (
+        "record new memories or facts",
+        frozenset({"remember_fact", "remember_event"}),
+        "--tool-set memory",
+    ),
+    (
+        "curate or consolidate memory",
+        frozenset({"scribe_session", "consolidate_memory"}),
+        "--tool-set memory",
+    ),
 )
 
 
@@ -64,6 +102,16 @@ class IntrospectContext:
     workspace: Path | None = None
     user_id: str | None = None
     commands: tuple[CommandInfo, ...] = field(default_factory=tuple)
+    # Live references — read at call time, not snapshot at context
+    # build. retrieval_health is the CLI's _RetrievalState dataclass
+    # (voice_ok / episodic_ok / semantic_ok booleans). persona_active
+    # mirrors the --persona flag's effective state; router_id is a
+    # user-facing short label like 'grammar:Hermes-3-3B' or None when
+    # the router isn't loaded. Kept as Any / bool / str rather than
+    # importing CLI types to keep the tool layer cycle-free.
+    retrieval_health: Any | None = None
+    persona_active: bool = False
+    router_id: str | None = None
 
 
 @dataclass
@@ -144,7 +192,24 @@ class IntrospectTool:
                 (spec.description or "").strip().splitlines()[0] if spec.description else ""
             )
             lines.append(f"  - {spec.name} [{spec.tier}] — {first_line}")
+        gaps = self._capability_gaps()
+        if gaps:
+            lines.append("")
+            lines.append("Capability gaps (cannot do this session):")
+            for capability, hint in gaps:
+                lines.append(f"  - {capability} — {hint}")
         return "\n".join(lines)
+
+    def _capability_gaps(self) -> list[tuple[str, str]]:
+        """Walk the capability map and return (capability, hint) tuples
+        for any whose required tools are entirely absent from the
+        registry. Answers 'can you do X?' honestly."""
+        loaded = set(self.context.registry.names())
+        out: list[tuple[str, str]] = []
+        for capability, required, hint in _CAPABILITY_GAPS:
+            if required.isdisjoint(loaded):
+                out.append((capability, hint))
+        return out
 
     def _render_model(self) -> str:
         adapter = self.context.adapter
@@ -158,6 +223,12 @@ class IntrospectTool:
         if adapter_path:
             lines.append(f"  LoRA adapter: {adapter_path}")
         lines.append(f"  embedder: {self.context.settings.embedder_repo}")
+        lines.append(f"  persona rewriter: {'on' if self.context.persona_active else 'off'}")
+        lines.append(
+            f"  intent router: {self.context.router_id}"
+            if self.context.router_id
+            else "  intent router: off"
+        )
         return "\n".join(lines)
 
     def _render_memory(self) -> str:
@@ -185,6 +256,27 @@ class IntrospectTool:
             "shared only" if self.context.user_id is None else f"shared + {self.context.user_id}"
         )
         lines.append(f"  scope: {scope}")
+        health = self.context.retrieval_health
+        if health is not None:
+            # Duck-typed: CLI's _RetrievalState exposes voice_ok /
+            # episodic_ok / semantic_ok booleans. Any source that
+            # raised earlier this session is flipped False; we surface
+            # those so 'why didn't you recall X' has an answer.
+            disabled = [
+                name
+                for name, attr in (
+                    ("voice", "voice_ok"),
+                    ("episodic", "episodic_ok"),
+                    ("semantic", "semantic_ok"),
+                )
+                if not getattr(health, attr, True)
+            ]
+            if disabled:
+                lines.append(
+                    f"  retrieval health: {', '.join(disabled)} disabled this session (prior error)"
+                )
+            else:
+                lines.append("  retrieval health: all sources ok")
         return "\n".join(lines)
 
     def _render_character(self) -> str:

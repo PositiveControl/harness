@@ -195,6 +195,7 @@ class ChatApp(App[None]):
         workspace_path: Path | None = None,
         max_history_replay: int = 20,
         startup_warnings: tuple[str, ...] = (),
+        retrieval_health: _RetrievalHealth | None = None,
     ) -> None:
         super().__init__()
         self._character = character
@@ -224,7 +225,13 @@ class ChatApp(App[None]):
         # behavior.
         self._approved_tools: set[str] = set()
         self._startup_warnings = startup_warnings
+        # Accept an external retrieval_health reference so the
+        # IntrospectTool (harness-8is) can see live voice/episodic/
+        # semantic health without a callback plumbing. When None the
+        # default factory produces a fresh all-ok state.
         self._state = _ChatAppState()
+        if retrieval_health is not None:
+            self._state.retrieval_health = retrieval_health
 
     # ---------- compose / mount ----------
 

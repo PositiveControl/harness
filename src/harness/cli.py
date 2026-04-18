@@ -868,6 +868,9 @@ def _build_tool_registry_for_tui(
     session: str,
     adapter: ModelAdapter | None = None,
     character: Character | None = None,
+    retrieval_health: object | None = None,
+    persona_active: bool = False,
+    router_id: str | None = None,
     warnings_out: list[str] | None = None,
 ) -> ToolRegistry | None:
     """Build a ToolRegistry for the Textual app. Subset of the
@@ -955,6 +958,9 @@ def _build_tool_registry_for_tui(
                     episodic=memory_store,
                     semantic=semantic_store,
                     user_id=speaker,
+                    retrieval_health=retrieval_health,
+                    persona_active=persona_active,
+                    router_id=router_id,
                 )
             )
 
@@ -970,10 +976,19 @@ def _make_introspect_tool(
     episodic: EpisodicStore | None = None,
     semantic: SemanticStore | None = None,
     user_id: str | None = None,
+    retrieval_health: object | None = None,
+    persona_active: bool = False,
+    router_id: str | None = None,
 ) -> IntrospectTool:
     """Construct an IntrospectTool bound to the already-populated
     registry. Pre-enumerates the CLI commands from the Typer app so
-    the tool doesn't have to import harness.cli at runtime."""
+    the tool doesn't have to import harness.cli at runtime.
+
+    `retrieval_health` is passed by reference so scope=memory reads
+    the live state — sources flip to disabled mid-session when they
+    raise, and introspect should reflect that. persona_active /
+    router_id are snapshots captured at session start (they don't
+    change mid-session)."""
     ctx = IntrospectContext(
         registry=registry,
         adapter=adapter,
@@ -984,8 +999,22 @@ def _make_introspect_tool(
         workspace=workspace_path,
         user_id=user_id,
         commands=tuple(list_cli_commands(app)),
+        retrieval_health=retrieval_health,
+        persona_active=persona_active,
+        router_id=router_id,
     )
     return IntrospectTool(context=ctx)
+
+
+def _router_id_label(router: Router | None) -> str | None:
+    """Short human-readable label for introspect's model scope.
+    Returns 'grammar:Hermes-3-3B-4bit' style string or None when the
+    router isn't loaded this session."""
+    if router is None:
+        return None
+    mode = "grammar" if isinstance(router, GrammarRouter) else "free"
+    adapter_id = getattr(getattr(router, "adapter", None), "id", "router")
+    return f"{mode}:{adapter_id}"
 
 
 def _build_tool_grounding_block(registry: ToolRegistry, workspace_path: Path) -> str:
@@ -1341,6 +1370,9 @@ def chat(
             )
 
         tui_registry_warnings: list[str] = []
+        # Shared between ChatApp (which mutates it when retrieval raises)
+        # and the introspect tool (which reads live status).
+        tui_retrieval_health = _RetrievalState()
         tui_registry: ToolRegistry | None = _build_tool_registry_for_tui(
             tools=tools,
             tool_set=tool_set,
@@ -1353,6 +1385,9 @@ def chat(
             session=session,
             adapter=tui_adapter,
             character=character_for_tui,
+            retrieval_health=tui_retrieval_health,
+            persona_active=persona and not tools,
+            router_id=_router_id_label(tui_router),
             warnings_out=tui_registry_warnings,
         )
 
@@ -1375,6 +1410,7 @@ def chat(
             router=tui_router,
             workspace_path=tui_workspace_path,
             startup_warnings=tuple(tui_registry_warnings),
+            retrieval_health=tui_retrieval_health,
         ).run()
         return
 
@@ -1414,6 +1450,9 @@ def chat(
     transcript = Transcript(settings.db_path)
     compaction_store = CompactionStore(settings.db_path) if compact_at > 0 else None
 
+    # Created early so the introspect tool (harness-8is) can hold a
+    # live reference to the same object the turn loop mutates.
+    retrieval_state = _RetrievalState()
     registry: ToolRegistry | None = None
     approved_tools: set[str] = set()
     if tools:
@@ -1522,13 +1561,18 @@ def chat(
                     episodic=memory_store,
                     semantic=semantic_store,
                     user_id=speaker,
+                    retrieval_health=retrieval_state,
+                    persona_active=persona and not tools,
+                    router_id=_router_id_label(router),
                 )
             )
 
         if not registry.names():
             registry = None  # empty profile → same as --no-tools
 
-    retrieval_state = _RetrievalState()
+    # retrieval_state is created earlier so the introspect tool (built
+    # during registry assembly above) holds a live reference to the
+    # same object the turn loop mutates.
     thinking = _ThinkingSpinner(console)
     stream_renderer = _StreamRenderer(console, show_suppressions=dev)
 
