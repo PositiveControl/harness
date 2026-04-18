@@ -360,6 +360,7 @@ class MLXAdapter:
             # not-explicitly-exported even though it's the public API.
             from outlines.generate import json as outlines_json  # type: ignore[attr-defined]
             from outlines.models.mlxlm import MLXLM
+            from outlines.samplers import greedy, multinomial
         except ImportError as exc:
             raise RuntimeError(
                 "complete_grammar requires the `grammar` extra. "
@@ -373,12 +374,26 @@ class MLXAdapter:
         )
         # MLXLM wraps our pre-loaded model + tokenizer; no extra load.
         wrapped = MLXLM(model=self._model, tokenizer=self._tokenizer)
+        # outlines 0.2.x does not forward `temperature` to MLXLM.generate
+        # (it silently lost its **kwargs path somewhere in the 0.1→0.2
+        # rewrite). Temperature must be set at generator-construction
+        # time via the sampler instead. Greedy when temp == 0 matches
+        # our router's deterministic-decode contract.
+        # outlines lacks py.typed; greedy()/multinomial() return concrete
+        # sampler subclasses that mypy doesn't recognize as the Sampler
+        # protocol expected by outlines_json. Same pattern as the
+        # outlines_json attr-defined ignore above.
+        sampler = (
+            greedy()  # type: ignore[no-untyped-call]
+            if temperature <= 0
+            else multinomial(temperature=temperature)
+        )
         # outlines 0.1.x expects the schema as a JSON string (not a dict) —
         # docstring says it accepts a Pydantic class, a function, or a
         # string containing the JSON Schema spec. Dump the dict here so
         # the caller (GrammarRouter) can keep working with dicts.
-        generator = outlines_json(wrapped, json.dumps(schema))
-        raw = generator(prompt, max_tokens=max_tokens, temperature=temperature)
+        generator = outlines_json(wrapped, json.dumps(schema), sampler=sampler)  # type: ignore[arg-type]
+        raw = generator(prompt, max_tokens=max_tokens)
         # outlines can return either a Python object (dict) or the raw
         # JSON string depending on version. Normalize to a string so the
         # caller's parser path stays identical to the free-form path.

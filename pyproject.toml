@@ -29,6 +29,12 @@ grammar = [
     # harness-22f. Migrate to 1.x when we're ready to touch the
     # adapter's complete_grammar method.
     "outlines>=0.1,<1.0",
+    # outlines 0.2.x uses TransformerTokenizer.__hash__ as the cache
+    # key for its FSM lru_cache, and that __hash__ imports
+    # `datasets.fingerprint.Hasher`. HF's `datasets` is no longer a
+    # transitive dep of outlines 0.2.3, so every grammar classify()
+    # would ModuleNotFoundError without this pin (see harness-eeo).
+    "datasets>=2.20",
 ]
 dev = [
     "pytest>=8.3",
