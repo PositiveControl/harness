@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -86,6 +87,13 @@ class _ChatAppState:
     # 'airton ›' prefix has been emitted yet.
     stream_buffer: str = ""
     stream_first_chunk: bool = True
+    # Always-on input (harness-c93): while a worker is running,
+    # Enter enqueues into `pending_prompts` instead of kicking a
+    # second worker. `is_busy` is the single source of truth for
+    # 'a turn is running' — toggled on the UI thread in _start_turn
+    # and _finish_turn so reads are race-free.
+    pending_prompts: deque[str] = field(default_factory=deque)
+    is_busy: bool = False
 
 
 # Sentence boundary: `.!?` followed by whitespace / closing quote /
@@ -351,6 +359,30 @@ class ChatApp(App[None]):
             event.input.value = ""
             self.exit()
             return
+        event.input.value = ""
+        # Always-on prompt: if a turn is in flight, enqueue instead of
+        # starting a second worker. _finish_turn drains the queue.
+        if self._state.is_busy:
+            self._enqueue_prompt(text)
+            return
+        self._start_turn(text)
+
+    def _enqueue_prompt(self, text: str) -> None:
+        """UI-thread. Append a prompt to the pending queue, echo a dim
+        placeholder in the log so the user sees it was captured, and
+        refresh metrics to show the updated queue count."""
+        self._state.pending_prompts.append(text)
+        log = self.query_one("#output", RichLog)
+        line = Text()
+        line.append(f"queued [{len(self._state.pending_prompts)}] ", style="dim yellow")
+        line.append(text, style="dim")
+        log.write(line)
+        self._refresh_metrics()
+
+    def _start_turn(self, text: str) -> None:
+        """UI-thread. Echo the user turn into the log and kick the
+        worker. Separated from on_input_submitted so _finish_turn can
+        drain the pending queue without re-entering the event handler."""
         log = self.query_one("#output", RichLog)
         # Build a Text object so the user's content can't be parsed as
         # Rich markup — `[echo]` etc. in free-form text would otherwise
@@ -360,28 +392,26 @@ class ChatApp(App[None]):
         line.append(" ")
         line.append(text)
         log.write(line)
-        event.input.value = ""
-        self._set_input_enabled(False)
         # Reset per-turn streaming state on the UI thread so the first
         # token arrives into a fresh buffer. stream_first_chunk flips
         # to False after the first sentence is rendered with the
         # 'airton ›' prefix; subsequent sentences are continuations.
         self._state.stream_buffer = ""
         self._state.stream_first_chunk = True
+        self._state.is_busy = True
         # Start the elapsed-time clock on the UI thread so the metrics
         # tick sees it immediately — no 'thinking 0.0s' → 'thinking 0.3s'
         # gap where the spinner hasn't caught up yet.
         self._state.turn_started_at = time.monotonic()
         self._refresh_metrics()
         # `thread=True` runs the sync adapter off the UI thread so
-        # token generation doesn't block the event loop. `exclusive`
-        # ensures a stray second submission cancels the older worker
-        # rather than queueing — we don't want two concurrent
-        # transcripts writes to the same row.
+        # token generation doesn't block the event loop. `exclusive=False`
+        # because we serialize manually via is_busy + pending_prompts;
+        # there is never a second worker we'd want to cancel.
         self.run_worker(
             lambda: self._run_turn_sync(text),
             thread=True,
-            exclusive=True,
+            exclusive=False,
         )
 
     # ---------- worker (thread; no UI access except call_from_thread) ----------
@@ -600,12 +630,18 @@ class ChatApp(App[None]):
     def _finish_turn(self) -> None:
         """Worker-completion hook on the UI thread. Stops the elapsed
         clock, recomputes the ctx meter against the now-updated
-        history, re-enables input, and pushes a metrics refresh so
-        the user sees the final state immediately instead of waiting
-        for the next tick."""
+        history, clears the busy flag, and either drains the pending
+        queue into the next turn or just refreshes metrics so the user
+        sees the final state immediately instead of waiting for the
+        next tick."""
         self._state.turn_started_at = None
+        self._state.is_busy = False
         self._recompute_ctx_used()
-        self._set_input_enabled(True)
+        self.query_one("#prompt", Input).focus()
+        if self._state.pending_prompts:
+            next_text = self._state.pending_prompts.popleft()
+            self._start_turn(next_text)
+            return
         self._refresh_metrics()
 
     def _recompute_ctx_used(self) -> None:
@@ -740,11 +776,17 @@ class ChatApp(App[None]):
         meter; active turn appends 'thinking N.Ns' so the user can
         see the model is alive even when streaming tokens hasn't
         started yet. Elapsed time is formatted to one decimal place
-        so the ticker visibly advances at the 0.25s tick cadence."""
+        so the ticker visibly advances at the 0.25s tick cadence.
+        When the always-on prompt has queued submissions, append
+        'queued N' so the user can see the backlog depth."""
         metrics = self.query_one("#metrics", Static)
         meter = _format_ctx_meter(self._state.ctx_used, self._adapter.context_window) or "ctx —"
+        parts = [meter]
         if self._state.turn_started_at is not None:
             elapsed = time.monotonic() - self._state.turn_started_at
-            metrics.update(Text.from_markup(f"{meter} · thinking {elapsed:.1f}s"))
+            parts.append(f"thinking {elapsed:.1f}s")
         else:
-            metrics.update(Text.from_markup(f"{meter} · idle"))
+            parts.append("idle")
+        if self._state.pending_prompts:
+            parts.append(f"queued {len(self._state.pending_prompts)}")
+        metrics.update(Text.from_markup(" · ".join(parts)))

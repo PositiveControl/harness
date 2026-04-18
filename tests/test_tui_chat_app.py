@@ -70,10 +70,10 @@ async def test_chat_app_runs_model_turn_and_persists(tmp_path) -> None:  # type:
 
 
 @pytest.mark.asyncio
-async def test_chat_app_disables_input_during_turn(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """While the worker is running, the input is disabled so the user
-    can't pile up turns mid-generation. After the worker finishes,
-    the input re-enables and regains focus."""
+async def test_chat_app_keeps_input_enabled_during_turn(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-c93/4sm: the always-on prompt stays enabled while a
+    worker runs so the user can type ahead. After the worker finishes
+    the input retains focus."""
     app = _build_app(tmp_path)
     async with app.run_test() as pilot:
         prompt = pilot.app.query_one("#prompt", Input)
@@ -81,10 +81,45 @@ async def test_chat_app_disables_input_during_turn(tmp_path) -> None:  # type: i
         await pilot.press("enter")
 
         # With echo adapter the turn completes nearly instantly; by
-        # the time _wait_for_workers returns it's already re-enabled.
+        # the time _wait_for_workers returns it's already done.
         await _wait_for_workers(pilot)
         assert not prompt.disabled
         assert prompt.has_focus
+
+
+@pytest.mark.asyncio
+async def test_chat_app_enqueues_submit_while_busy(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-4sm: while a turn is running, Enter enqueues the text
+    into pending_prompts instead of kicking a second worker. The log
+    shows a 'queued [N]' marker and the metrics strip appends
+    'queued N'. When the running turn finishes, the queued prompt
+    runs automatically."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        prompt = pilot.app.query_one("#prompt", Input)
+        # Simulate an in-flight turn without actually running one —
+        # the plant-flag approach sidesteps needing a blocking adapter
+        # and keeps the test hermetic.
+        tui_app._state.is_busy = True
+
+        prompt.value = "typed ahead"
+        await pilot.press("enter")
+
+        assert list(tui_app._state.pending_prompts) == ["typed ahead"]
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "queued [1]" in rendered
+        assert "typed ahead" in rendered
+        metrics = pilot.app.query_one("#metrics", Static)
+        assert "queued 1" in str(metrics.render())
+
+        # Release the plant and let _finish_turn drain the queue.
+        tui_app._finish_turn()
+        await _wait_for_workers(pilot)
+        assert not tui_app._state.pending_prompts
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "[echo]" in rendered  # echo adapter answered the queued prompt
 
 
 @pytest.mark.asyncio
