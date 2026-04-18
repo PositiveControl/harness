@@ -733,6 +733,100 @@ async def test_chat_app_skips_preload_for_adapters_without_load(tmp_path) -> Non
         assert prompt.has_focus
 
 
+# ---------- slash palette (harness-kg9) ----------
+
+
+@pytest.mark.asyncio
+async def test_slash_palette_hidden_by_default(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from harness.tui.chat_app import SlashPalette
+
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        palette = pilot.app.query_one("#slash_palette", SlashPalette)
+        assert not palette.is_open
+
+
+@pytest.mark.asyncio
+async def test_slash_palette_opens_on_slash_and_filters(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from harness.tui.chat_app import SlashPalette
+
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        palette = pilot.app.query_one("#slash_palette", SlashPalette)
+
+        prompt.value = "/"
+        await pilot.pause()
+        assert palette.is_open
+        # Default highlight on first entry; both /exit and /quit match "/".
+        assert palette.selected_name() == "/exit"
+
+        prompt.value = "/q"
+        await pilot.pause()
+        assert palette.is_open
+        assert palette.selected_name() == "/quit"
+
+        # Typing a non-slash char closes the palette.
+        prompt.value = "hello"
+        await pilot.pause()
+        assert not palette.is_open
+
+
+@pytest.mark.asyncio
+async def test_slash_palette_arrow_and_enter_select(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from harness.tui.chat_app import SlashPalette
+
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        palette = pilot.app.query_one("#slash_palette", SlashPalette)
+
+        prompt.value = "/"
+        await pilot.pause()
+        assert palette.selected_name() == "/exit"
+
+        await pilot.press("down")
+        assert palette.selected_name() == "/quit"
+
+        # Enter selects the highlighted command and fires Submitted,
+        # which exits the app.
+        await pilot.press("enter")
+        await pilot.pause()
+        assert pilot.app._return_value is None  # exit() was called
+
+
+@pytest.mark.asyncio
+async def test_slash_palette_enter_falls_through_when_hidden(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """check_action must disable the palette bindings when the palette
+    is closed so Enter still submits the normal way (no regression to
+    the plain-text turn path)."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "hello airton"
+        await pilot.press("enter")
+        await _wait_for_workers(pilot)
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "hello airton" in rendered
+        assert "[echo]" in rendered
+
+
+@pytest.mark.asyncio
+async def test_slash_palette_escape_closes(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from harness.tui.chat_app import SlashPalette
+
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        palette = pilot.app.query_one("#slash_palette", SlashPalette)
+        prompt.value = "/"
+        await pilot.pause()
+        assert palette.is_open
+        await pilot.press("escape")
+        assert not palette.is_open
+
+
 # ---------- helpers ----------
 
 

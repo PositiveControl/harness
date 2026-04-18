@@ -118,6 +118,88 @@ class _ChatAppState:
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?:[.!?][\s)\]'\"]+|\n)")
 
 
+# Slash-command registry for the palette. Alpha order is the contract
+# the palette relies on — keep it sorted by name. Descriptions are
+# rendered dim next to the name. `:q` is NOT in the palette: the
+# palette triggers on `/` as the first char; `:q` stays as a hidden
+# vim-muscle-memory alias handled only in on_input_submitted.
+# harness-kg9.
+_SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("/exit", "leave chat"),
+    ("/quit", "leave chat"),
+)
+
+
+class SlashPalette(Static):
+    """Inline picker for slash commands (harness-kg9).
+
+    Shown directly above the Input when the Input's value starts with
+    `/`. Hidden otherwise. Filters `_SLASH_COMMANDS` by case-insensitive
+    prefix as the user types; arrow keys move the highlight, Enter
+    fills the Input with the highlighted command and triggers submit.
+    Escape closes without a selection.
+
+    Rendered as a Static (not an OptionList) so the Input keeps focus
+    — no focus juggling mid-keystroke, and the user's cursor position
+    stays where they expect. Navigation + selection go through App
+    bindings with `check_action` gating them to palette-visible state
+    so Enter/Up/Down behave normally when the palette is closed."""
+
+    def __init__(self, commands: tuple[tuple[str, str], ...]) -> None:
+        # Seed with a plain string (not Text) so Textual's visual cache
+        # doesn't trip over an empty rich Text during the initial layout
+        # pass — which measures hidden widgets too.
+        super().__init__(" ", id="slash_palette", markup=True)
+        self._all = tuple(sorted(commands, key=lambda c: c[0]))
+        self._filtered: list[tuple[str, str]] = []
+        self._highlight: int = -1
+        self.display = False
+
+    @property
+    def is_open(self) -> bool:
+        """True while the palette is visible. Named `is_open` (not
+        `visible`) to avoid shadowing Widget.visible, which is a
+        read/write reactive the base class owns."""
+        return bool(self.display)
+
+    def filter_to(self, prefix: str) -> None:
+        """Update filtered list for `prefix` and re-render. Called from
+        on_input_changed — cheap enough to run on every keystroke."""
+        key = prefix.lower()
+        self._filtered = [(n, d) for (n, d) in self._all if n.lower().startswith(key)]
+        self._highlight = 0 if self._filtered else -1
+        self._refresh_list()
+        self.display = bool(self._filtered)
+
+    def move(self, delta: int) -> None:
+        if not self._filtered:
+            return
+        self._highlight = (self._highlight + delta) % len(self._filtered)
+        self._refresh_list()
+
+    def selected_name(self) -> str | None:
+        if 0 <= self._highlight < len(self._filtered):
+            return self._filtered[self._highlight][0]
+        return None
+
+    def close(self) -> None:
+        self.display = False
+        self._filtered = []
+        self._highlight = -1
+
+    def _refresh_list(self) -> None:
+        lines: list[str] = []
+        for i, (name, desc) in enumerate(self._filtered):
+            if i == self._highlight:
+                lines.append(f"[bold cyan reverse]▸ {name}[/] [dim]— {desc}[/dim]")
+            else:
+                lines.append(f"[cyan]  {name}[/cyan] [dim]— {desc}[/dim]")
+        # Fall back to a space so the Static always has non-empty
+        # content; empty-Text content has tripped Textual's visual
+        # cache during layout in 8.x.
+        self.update("\n".join(lines) if lines else " ")
+
+
 class ChatApp(App[None]):
     """Persistent-input chat TUI.
 
@@ -160,6 +242,14 @@ class ChatApp(App[None]):
     Input:disabled {
         border: tall $warning-muted;
     }
+
+    #slash_palette {
+        padding: 0 2;
+        background: $boost;
+        color: $text;
+        border-top: wide $primary;
+        max-height: 8;
+    }
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -169,6 +259,15 @@ class ChatApp(App[None]):
         # keypress — interrupt has to be reachable mid-turn when the
         # prompt is where the user's hands already are.
         Binding("ctrl+x", "interrupt", "interrupt", priority=True),
+        # Slash-palette navigation (harness-kg9). priority=True so
+        # Enter is intercepted before Input's Submitted fires, letting
+        # us replace the input value with the highlighted command.
+        # check_action gates these to palette-visible state so Enter /
+        # Up / Down / Escape behave normally when the palette is hidden.
+        Binding("up", "palette_prev", show=False, priority=True),
+        Binding("down", "palette_next", show=False, priority=True),
+        Binding("enter", "palette_select", show=False, priority=True),
+        Binding("escape", "palette_close", show=False, priority=True),
     ]
 
     def __init__(
@@ -242,6 +341,7 @@ class ChatApp(App[None]):
         # border got clipped by the stat bar.
         yield RichLog(id="output", wrap=True, markup=True, highlight=False)
         yield Static("ctx — · elapsed —", id="metrics")
+        yield SlashPalette(_SLASH_COMMANDS)
         yield Input(id="prompt", placeholder="type a message… (ctrl+c to quit)")
 
     def on_mount(self) -> None:
@@ -382,10 +482,26 @@ class ChatApp(App[None]):
 
     # ---------- input path ----------
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Keep the slash-palette in sync with the input. Any value
+        starting with `/` opens / filters the palette; anything else
+        closes it. Runs on every keystroke — cheap because the filter
+        is a prefix scan over a handful of entries."""
+        palette = self.query_one("#slash_palette", SlashPalette)
+        value = event.value
+        if value.startswith("/"):
+            palette.filter_to(value)
+        elif palette.is_open:
+            palette.close()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         if not text:
             return
+        # Close the palette on every submit — if the user typed a
+        # command that isn't in the registry, we fall through to the
+        # model and the palette no longer applies to the next turn.
+        self.query_one("#slash_palette", SlashPalette).close()
         # Slash-command intercept. Parity with the classic REPL:
         # /exit, /quit, :q all exit; unrecognized commands fall
         # through to the model so a user who types '/anything' into
@@ -403,6 +519,52 @@ class ChatApp(App[None]):
             self._enqueue_prompt(text)
             return
         self._start_turn(text)
+
+    # ---------- slash-palette actions (harness-kg9) ----------
+
+    def _palette_visible(self) -> bool:
+        """True iff the slash-palette is currently shown. Used by
+        check_action so Enter / Up / Down / Escape only intercept when
+        the palette is active — otherwise they must fall through to
+        their default handlers (Input submit, no-op, no-op)."""
+        try:
+            palette = self.query_one("#slash_palette", SlashPalette)
+        except Exception:
+            return False
+        return palette.is_open
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Gate palette-scoped bindings by visibility. Returning False
+        disables the binding so the keypress propagates to its default
+        handler (Input.Submitted for Enter, cursor motion otherwise)."""
+        if action in {"palette_prev", "palette_next", "palette_select", "palette_close"}:
+            return self._palette_visible()
+        return True
+
+    def action_palette_prev(self) -> None:
+        self.query_one("#slash_palette", SlashPalette).move(-1)
+
+    def action_palette_next(self) -> None:
+        self.query_one("#slash_palette", SlashPalette).move(1)
+
+    def action_palette_close(self) -> None:
+        self.query_one("#slash_palette", SlashPalette).close()
+
+    def action_palette_select(self) -> None:
+        """Fill the Input with the highlighted command and submit.
+        Runs only while the palette is visible (check_action gate).
+        If nothing is highlighted — user typed `/` but then kept typing
+        past any match so `_filtered` is empty — just close and let the
+        user keep typing; nothing to select."""
+        palette = self.query_one("#slash_palette", SlashPalette)
+        name = palette.selected_name()
+        palette.close()
+        prompt = self.query_one("#prompt", Input)
+        if name is None:
+            return
+        prompt.value = name
+        # Fire Submitted so all the usual slash-command routing runs.
+        prompt.post_message(Input.Submitted(prompt, name))
 
     def _enqueue_prompt(self, text: str) -> None:
         """UI-thread. Append a prompt to the pending queue, echo a dim
