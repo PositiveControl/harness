@@ -153,6 +153,46 @@ def test_build_system_prompt_handles_empty_specs() -> None:
     assert "no tools available" in prompt
 
 
+def test_build_system_prompt_has_tool_vs_null_rubric() -> None:
+    """harness-ve7: the prompt must carry an explicit 'when to use a
+    tool' vs 'when to return null' rubric so the 1.5B doesn't
+    over-route creative / explanatory prompts to search_web."""
+    prompt = _build_system_prompt([_spec("search_web")])
+    assert "A tool is needed ONLY when" in prompt
+    assert "Return null (no tool)" in prompt
+    # Specific failure modes we're defending against:
+    assert "Creative writing" in prompt  # haiku / joke over-routing
+    assert "Explanations" in prompt  # merkle-tree over-routing
+    assert "Greetings" in prompt
+
+
+def test_build_system_prompt_has_tool_overlap_notes() -> None:
+    """The router was collapsing read_file / list_dir / glob all to
+    glob. The disambiguation notes in the prompt distinguish
+    CONTENTS vs LISTING vs FINDING vs SEARCHING."""
+    prompt = _build_system_prompt([_spec("search_web")])
+    assert "CONTENTS" in prompt
+    assert "LISTING" in prompt or "IN a directory" in prompt
+    assert "FIND" in prompt
+    assert "SEARCH INSIDE" in prompt
+
+
+def test_build_system_prompt_covers_each_failure_mode_with_an_example() -> None:
+    """Each of the three failure modes from the eval has a dedicated
+    few-shot now. Small models imitate examples more reliably than they
+    follow instructions — these lock in the desired behavior."""
+    prompt = _build_system_prompt([_spec("search_web")])
+    # Read-tool disambiguation
+    assert "read_file" in prompt
+    assert "list_dir" in prompt
+    # Memory intent
+    assert "search_memory" in prompt
+    assert "recall" in prompt
+    # Creative / explanatory null cases
+    assert "haiku" in prompt
+    assert "hash table" in prompt
+
+
 # ---------- ModelRouter ----------
 
 

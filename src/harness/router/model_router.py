@@ -33,18 +33,54 @@ Return STRICT JSON only — no prose, no markdown fences — in exactly
 this shape:
 {{"tool": "<tool_name>" or null, "arguments": {{...}}}}
 
-Use null when no tool is needed (casual chat, greeting, or a question
-the main assistant can answer from general knowledge).
+A tool is needed ONLY when the answer depends on:
+- Live web data (current prices, news, weather, events, real-world entities)
+- Specific file contents, directory listings, or filename searches
+- Searching inside files for text
+- Memory of past conversations or stored facts about people/projects
+
+Return null (no tool) for:
+- Greetings, thanks, acknowledgements, casual chat
+- Creative writing (haikus, poems, jokes, stories)
+- Explanations of general concepts, definitions, how things work
+- Opinion or judgment requests ("what do you think", "which is better")
+- Arithmetic, logic, riddles, or anything answerable from general knowledge
+
+Only use tools that appear under "Available tools". If the right tool is
+not listed, return null.
 
 Available tools:
 {tool_list}
+
+Disambiguation for common overlaps:
+- read_file: user wants the CONTENTS of a specific named file.
+- list_dir: user wants to see what's IN a directory.
+- glob: user wants to FIND files matching a name pattern (no content).
+- grep: user wants to SEARCH INSIDE files for a text pattern.
+- search_memory / search_facts: user says "remember", "recall", asks
+  about past conversations, or asks what you know about a person/topic.
 
 Examples:
 
 User message: search the web for bbq restaurants in 85048
 Output: {{"tool": "search_web", "arguments": {{"query": "bbq restaurants 85048"}}}}
 
+User message: show me the contents of src/main.py
+Output: {{"tool": "read_file", "arguments": {{"path": "src/main.py"}}}}
+
+User message: list the files in src/tests
+Output: {{"tool": "list_dir", "arguments": {{"path": "src/tests"}}}}
+
+User message: recall what we discussed about retrieval thresholds
+Output: {{"tool": "search_memory", "arguments": {{"query": "retrieval thresholds"}}}}
+
 User message: hey how's it going
+Output: {{"tool": null, "arguments": {{}}}}
+
+User message: write a haiku about autumn
+Output: {{"tool": null, "arguments": {{}}}}
+
+User message: explain how a hash table works
 Output: {{"tool": null, "arguments": {{}}}}"""
 
 
