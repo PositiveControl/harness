@@ -58,6 +58,30 @@
   expected_tool: search_facts
   expected_args: [query]
 
+# Self-introspection (harness-dbu). The router should pick the
+# introspect tool with the matching scope when the user asks about
+# the agent's own capabilities. Scope is a required arg so a right-
+# tool / wrong-args mismatch is still caught by partial-credit scoring.
+- prompt: what can you do
+  expected_tool: introspect
+  expected_args: [scope]
+
+- prompt: what tools do you have
+  expected_tool: introspect
+  expected_args: [scope]
+
+- prompt: what's your context window
+  expected_tool: introspect
+  expected_args: [scope]
+
+- prompt: how much do you remember about me
+  expected_tool: introspect
+  expected_args: [scope]
+
+- prompt: what CLI commands are there
+  expected_tool: introspect
+  expected_args: [scope]
+
 # Null cases — casual chat, greetings, things the main model can
 # answer without a tool. The 1.5B has a bias toward over-routing, so
 # these are load-bearing for catching regressions.
