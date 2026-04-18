@@ -997,6 +997,71 @@ def test_wrap_up_rounds_use_tighter_max_tokens() -> None:
     assert adapter.calls == [1024, 128]
 
 
+def test_wrap_up_cap_widens_on_truncated_recovery() -> None:
+    """harness-jly: when a wrap-up summary truncates, the retry must
+    use a wider budget. Before this fix, current_max_tokens doubled
+    but the wrap_up_max_tokens floor stayed put, so every retry
+    re-truncated at the original cap and the user saw the same
+    partial summary streamed up to bail_retries+1 times."""
+
+    @dataclass
+    class _CapturingAdapter:
+        calls: list[int] = field(default_factory=list)
+
+        def complete_with_tools(
+            self,
+            messages: Iterable[ChatMessage],
+            *,
+            tools: list[ToolSpec] | None = None,
+            max_tokens: int = 1024,
+            temperature: float = 0.5,
+        ) -> ModelReply:
+            self.calls.append(max_tokens)
+            # Round 0 (pre-tool): emit a tool call.
+            if len(self.calls) == 1:
+                return ModelReply(
+                    content="",
+                    tool_calls=(ToolCall(name="nullop", arguments={}),),
+                )
+            # Round 1 (wrap-up): truncated summary — triggers recovery.
+            if len(self.calls) == 2:
+                return ModelReply(content="partial summary", was_truncated=True)
+            # Round 2 (wrap-up retry): complete summary.
+            return ModelReply(content="complete summary")
+
+    class _Noop:
+        @property
+        def spec(self) -> ToolSpec:
+            return ToolSpec(
+                name="nullop",
+                description="d",
+                parameters={"type": "object", "properties": {}},
+                tier="read",
+            )
+
+        def call(self) -> str:
+            return ""
+
+    registry = ToolRegistry()
+    registry.register(_Noop())
+    adapter = _CapturingAdapter()
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="summarize the big thing")],
+        registry,
+        max_tokens=1024,
+        wrap_up_max_tokens=128,
+    )
+    # Round 0: 1024 (no tool run yet).
+    # Round 1: 128 (wrap-up, initial cap).
+    # Round 2: 256 (wrap-up cap doubled after truncated recovery). If
+    #   the cap hadn't widened, this would still be 128 — and a model
+    #   that needs > 128 tokens would re-truncate indefinitely.
+    assert adapter.calls == [1024, 128, 256]
+    assert result.content == "complete summary"
+
+
 def test_loop_catches_bare_tool_intent() -> None:
     """Regression follow-up (harness-q27): 7B says 'I will search the
     web for ...' and then fabricates a numbered list without ever

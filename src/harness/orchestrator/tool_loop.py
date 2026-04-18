@@ -399,6 +399,13 @@ def run_tool_loop(
     last_reply: ModelReply = ModelReply(content="", tool_calls=())
     bail_retries = _BAIL_RETRIES_PER_TURN
     current_max_tokens = max_tokens
+    # Wrap-up cap lives alongside the main cap so the truncated-recovery
+    # branch can widen it too. Earlier bug (harness-jly): only
+    # current_max_tokens was doubled on retry — round_max_tokens was
+    # still min(current_max_tokens, wrap_up_max_tokens) in wrap-up
+    # rounds, so every retry re-truncated at the original cap and the
+    # user saw the same partial summary streamed 3x.
+    current_wrap_up_max_tokens = wrap_up_max_tokens
     # Duplicate-call guard. Small models sometimes wrap a real answer
     # around a redundant re-call ("here's the summary" + same list_dir
     # with same args as a prior round). Each round the call runs,
@@ -423,7 +430,9 @@ def run_tool_loop(
         # Post-tool rounds are wrap-up rounds — tighter cap.
         tools_already_ran = any(m.role == "tool" for m in working[initial_count:])
         round_max_tokens = (
-            min(current_max_tokens, wrap_up_max_tokens) if tools_already_ran else current_max_tokens
+            min(current_max_tokens, current_wrap_up_max_tokens)
+            if tools_already_ran
+            else current_max_tokens
         )
         emit(ToolLoopEvent(kind="round_start", round_index=round_idx))
         emit(ToolLoopEvent(kind="model_call_start", round_index=round_idx))
@@ -490,6 +499,13 @@ def run_tool_loop(
                 bail_retries -= 1
                 if recovery == "truncated":
                     current_max_tokens = min(current_max_tokens * 2, _MAX_TOKENS_CEILING)
+                    # Wrap-up rounds need the widened budget too, else
+                    # the round_max_tokens clamp still truncates at the
+                    # old wrap_up cap and the retry re-truncates at the
+                    # same spot (harness-jly).
+                    current_wrap_up_max_tokens = min(
+                        current_wrap_up_max_tokens * 2, _MAX_TOKENS_CEILING
+                    )
                 else:
                     working.append(ChatMessage(role="user", content=recovery))
                 continue
