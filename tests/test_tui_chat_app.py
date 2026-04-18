@@ -847,6 +847,43 @@ async def test_slash_edit_without_exchange_warns(tmp_path) -> None:  # type: ign
 
 
 @pytest.mark.asyncio
+async def test_turn_has_blank_separator_and_badges(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-nrx: each turn is preceded by a blank line and wears a
+    reverse-video colored badge so sent / received are distinguishable
+    at a glance, without touching the message body (code + lists + rich
+    structures survive untouched)."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "hello"
+        await pilot.press("enter")
+        await _wait_for_workers(pilot)
+
+        log = pilot.app.query_one("#output", RichLog)
+        # RichLog keeps each write() as its own line (a Strip). Pull
+        # segment text out explicitly so the assertions don't rely on
+        # Strip.__repr__.
+        lines = list(log.lines)
+        plain = ["".join(seg.text for seg in line._segments) for line in lines]
+        assert any("mark ›" in s for s in plain)
+        assert any("airton ›" in s for s in plain)
+        mark_idx = next(i for i, s in enumerate(plain) if "mark ›" in s)
+        # Blank breathing line directly above the user badge.
+        assert plain[mark_idx - 1].strip() == ""
+        # Style sanity: the user-badge segment should carry the
+        # configured reverse-cyan style, and airton the reverse-green.
+        mark_styles = {
+            str(seg.style).lower() for seg in lines[mark_idx]._segments if seg.style is not None
+        }
+        assert any("reverse" in s and "cyan" in s for s in mark_styles)
+        airton_idx = next(i for i, s in enumerate(plain) if "airton ›" in s)
+        airton_styles = {
+            str(seg.style).lower() for seg in lines[airton_idx]._segments if seg.style is not None
+        }
+        assert any("reverse" in s and "green" in s for s in airton_styles)
+
+
+@pytest.mark.asyncio
 async def test_slash_consolidate_without_stores_reports(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """/consolidate without memory+fact stores should emit an error
     line, not a traceback."""

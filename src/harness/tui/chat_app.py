@@ -124,6 +124,33 @@ class _ChatAppState:
 # inside the host.
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?:[.!?][\s)\]'\"]+|\n)")
 
+# Speaker-badge styles (harness-nrx). Reverse-video bold colored pads
+# draw the eye to turn boundaries without touching the message body —
+# code blocks, bullet lists, and other structure stay untouched.
+_USER_BADGE_STYLE = "reverse bold cyan"
+_ASSISTANT_BADGE_STYLE = "reverse bold green"
+
+
+def _make_user_line(speaker: str, content: str) -> Text:
+    """Build `[badge] speaker › [/badge] content` as a single rich
+    Text. Extracted so live turns, replayed turns, and tests all
+    produce identical shape."""
+    line = Text()
+    line.append(f" {speaker} › ", style=_USER_BADGE_STYLE)
+    line.append(" ")
+    line.append(content)
+    return line
+
+
+def _make_assistant_badge(speaker: str) -> Text:
+    """Return a Text seeded with the assistant badge. Caller appends
+    the body, either a full line (replay) or a streamed sentence
+    (live turn)."""
+    line = Text()
+    line.append(f" {speaker} › ", style=_ASSISTANT_BADGE_STYLE)
+    line.append(" ")
+    return line
+
 
 # Slash-command registry for the palette. Alpha order is the contract
 # the palette relies on — keep it sorted by name. Descriptions are
@@ -485,18 +512,17 @@ class ChatApp(App[None]):
         )
         for msg in tail:
             if msg.role == "user":
-                line = Text()
-                line.append(f"{msg.speaker} ›", style="bold cyan")
-                line.append(" ")
-                line.append(msg.content)
-                log.write(line)
+                # Blank line before each user turn groups the prior
+                # assistant turn's work (reply + any tool calls) into
+                # one block and gives the next pair breathing room.
+                # harness-nrx.
+                log.write("")
+                log.write(_make_user_line(msg.speaker, msg.content))
                 self._state.history.append(ChatMessage(role="user", content=msg.content))
             elif msg.role == "assistant":
                 if _TOOL_CALLS_SENTINEL in msg.content:
                     continue  # tool-call turn — skip to mirror tool-role skipping
-                line = Text()
-                line.append(f"{msg.speaker} ›", style="bold green")
-                line.append(" ")
+                line = _make_assistant_badge(msg.speaker)
                 line.append(msg.content)
                 log.write(line)
                 self._state.history.append(ChatMessage(role="assistant", content=msg.content))
@@ -784,14 +810,12 @@ class ChatApp(App[None]):
         worker. Separated from on_input_submitted so _finish_turn can
         drain the pending queue without re-entering the event handler."""
         log = self.query_one("#output", RichLog)
-        # Build a Text object so the user's content can't be parsed as
-        # Rich markup — `[echo]` etc. in free-form text would otherwise
-        # get eaten as an unknown style tag.
-        line = Text()
-        line.append(f"{self._speaker} ›", style="bold cyan")
-        line.append(" ")
-        line.append(text)
-        log.write(line)
+        # Blank line between turns + reverse-video speaker badge gives
+        # the eye a clear boundary without touching the message body.
+        # Body text goes through a rich Text (not markup) so '[echo]'
+        # etc. in user input can't be parsed as style tags. harness-nrx.
+        log.write("")
+        log.write(_make_user_line(self._speaker, text))
         # Reset per-turn streaming state on the UI thread so the first
         # token arrives into a fresh buffer. stream_first_chunk flips
         # to False after the first sentence is rendered with the
@@ -1025,14 +1049,15 @@ class ChatApp(App[None]):
     def _emit_stream_sentence(self, sentence: str) -> None:
         """UI-thread only. Write one sentence of the assistant's
         reply to the log, prefixing the first emission of this turn
-        with 'airton ›' so the user can see the model started
-        speaking. Subsequent sentences land as continuation lines."""
+        with the assistant badge so the user can see who is speaking.
+        Subsequent sentences land as continuation lines (no badge) so
+        code blocks and wrapped prose stay clean."""
         log = self.query_one("#output", RichLog)
-        line = Text()
         if self._state.stream_first_chunk:
-            line.append(f"{self._character.name} ›", style="bold green")
-            line.append(" ")
+            line = _make_assistant_badge(self._character.name)
             self._state.stream_first_chunk = False
+        else:
+            line = Text()
         # rstrip the trailing newline the regex captured — RichLog
         # adds its own line break and double newlines look off.
         line.append(sentence.rstrip("\n"))
