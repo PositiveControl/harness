@@ -154,7 +154,14 @@ _TOOL_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
-_MAX_TOKENS_CEILING = 8192
+# Upper bound on the auto-widen loop triggered by _diagnose_bail=="truncated".
+# 32k is deep into safe territory for the 131k-window Qwen 2.5 7B we ship —
+# the real UX wall shows up well before: ~40-60 tok/s on an M4 Pro means an
+# 8k reply already takes 2-3 minutes. See harness-cs9 for the architectural
+# follow-up when wrap-ups consistently want > ~4k tokens (chunked output /
+# model-splitting); this ceiling is just an anti-runaway guard, not a design
+# target.
+_MAX_TOKENS_CEILING = 32768
 _BAIL_RETRIES_PER_TURN = 2
 
 
