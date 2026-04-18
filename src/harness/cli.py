@@ -1066,8 +1066,32 @@ def chat(
         "(requires the `grammar` extra, adds ~1GB RAM for outlines' FSM "
         "machinery).",
     ),
+    tui: bool = typer.Option(
+        False,
+        "--tui/--no-tui",
+        help="Launch the Textual chat app instead of the classic REPL. "
+        "Persistent input at the bottom, scrolling output above, live "
+        "ctx + elapsed metrics. Phase 1 is a scaffold (echo only); "
+        "model wiring lands in harness-29c. Requires the `tui` extra: "
+        "uv sync --extra tui.",
+    ),
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
+    if tui:
+        # Phase 1 scaffold: launch the Textual app and exit when it
+        # does. Deliberately skips adapter / retrieval / tools wiring
+        # — those arrive in follow-up phases so this first commit
+        # lands a visible UI shell without blocking on full parity.
+        try:
+            from harness.tui import ChatApp
+        except ImportError as exc:
+            raise typer.BadParameter(
+                "--tui requires the `tui` extra. Install it with: uv sync --extra tui"
+            ) from exc
+        character_for_tui = load_character(settings.character_path)
+        ChatApp(character_name=character_for_tui.name, speaker=speaker).run()
+        return
+
     character = load_character(settings.character_path)
     workspace_path = Path(workspace).expanduser().resolve() if workspace else settings.root
     if tools and not workspace_path.is_dir():

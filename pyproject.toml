@@ -36,6 +36,13 @@ grammar = [
     # would ModuleNotFoundError without this pin (see harness-eeo).
     "datasets>=2.20",
 ]
+tui = [
+    # Textual drives the --tui chat app (persistent input + scrolling
+    # output + live metrics footer). Rich is already a hard dep;
+    # Textual is optional so a non-TUI install (headless, CI) stays
+    # small. See harness-56b.
+    "textual>=0.86",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -83,7 +90,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "src/harness/cli.py" = ["RUF001"]  # prompt glyphs are intentional
+"src/harness/tui/*.py" = ["RUF001", "RUF002"]  # same `›` / `—` glyphs as the classic CLI
 "tests/**" = ["PLR2004"]           # magic numbers are fine in tests
+"tests/test_tui_*.py" = ["PLR2004", "RUF001", "RUF002"]  # same rationale as src/harness/tui/
 
 [tool.ruff.lint.flake8-bugbear]
 # typer builds arg defaults via Option/Argument calls — that's the whole API.
@@ -126,4 +135,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["outlines", "outlines.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["textual", "textual.*"]
 ignore_missing_imports = true
