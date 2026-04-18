@@ -237,6 +237,64 @@ class SemanticStore:
             raise KeyError(f"semantic fact {record_id} not found")
         return np.frombuffer(row[0], dtype=np.float32)
 
+    def count(
+        self,
+        *,
+        tier: str | None = None,
+        subject: str | None = None,
+        user_id: str | None = None,
+        include_superseded: bool = False,
+    ) -> int:
+        """Row count scoped the same way `search()` is: when `user_id` is
+        given, counts shared rows plus that user's private rows. Used by
+        the introspect tool to report fact-store size without pulling
+        every record via `all()`."""
+        conditions: list[str] = []
+        params: list[object] = []
+        if tier is not None:
+            conditions.append("tier = ?")
+            params.append(tier)
+        if subject is not None:
+            conditions.append("subject = ?")
+            params.append(subject)
+        if user_id is not None:
+            conditions.append("(user_id IS NULL OR user_id = ?)")
+            params.append(user_id)
+        if not include_superseded:
+            conditions.append("superseded_by IS NULL")
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        row = self._conn.execute(
+            f"SELECT COUNT(*) FROM semantic{where}",  # noqa: S608
+            params,
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def last_created_at(
+        self,
+        *,
+        tier: str | None = None,
+        user_id: str | None = None,
+    ) -> datetime | None:
+        """Most recent `created_at` among active facts matching the same
+        scope as `count()`. Returns None when the filter matches no
+        rows."""
+        conditions: list[str] = ["superseded_by IS NULL"]
+        params: list[object] = []
+        if tier is not None:
+            conditions.append("tier = ?")
+            params.append(tier)
+        if user_id is not None:
+            conditions.append("(user_id IS NULL OR user_id = ?)")
+            params.append(user_id)
+        where = " WHERE " + " AND ".join(conditions)
+        row = self._conn.execute(
+            f"SELECT MAX(created_at) FROM semantic{where}",  # noqa: S608
+            params,
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return datetime.fromisoformat(row[0])
+
     def count_mismatched_embeddings(self) -> int:
         row = self._conn.execute(
             """SELECT COUNT(*) FROM semantic

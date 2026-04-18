@@ -100,6 +100,45 @@ def test_all_filters_by_tier(store: EpisodicStore) -> None:
     assert seeds_only[0].tier == "seed"
 
 
+def test_count_matches_all_and_scopes_by_user(store: EpisodicStore) -> None:
+    """harness-qw4: count() is a cheap alternative to len(all()) for the
+    introspect tool. Honours user_id scoping the same way search does —
+    a per-user count sees shared rows plus that user's private rows but
+    not other users'."""
+    store.ingest(external_id="shared", title="s", body="", tier="seed", source="yaml")
+    store.ingest(
+        external_id="mine", title="m", body="", tier="working", source="user", user_id="mark"
+    )
+    store.ingest(
+        external_id="yours", title="y", body="", tier="working", source="user", user_id="alex"
+    )
+
+    assert store.count() == len(store.all()) == 3
+    assert store.count(tier="seed") == 1
+    # Scoped count: shared (1) + mark's own (1) = 2, excludes alex's row.
+    assert store.count(user_id="mark") == 2
+    assert store.count(user_id="alex") == 2  # shared + alex's
+
+
+def test_count_excludes_superseded_by_default(store: EpisodicStore) -> None:
+    first = store.ingest(external_id="a", title="a", body="", tier="working", source="user")
+    second = store.ingest(external_id="b", title="b", body="", tier="consolidated", source="user")
+    store.mark_superseded(first.id, by=second.id)
+
+    assert store.count() == 1
+    assert store.count(include_superseded=True) == 2
+
+
+def test_last_created_at_returns_newest_row(store: EpisodicStore) -> None:
+    """Newest row's created_at wins. None on an empty filter."""
+    assert store.last_created_at() is None
+    first = store.ingest(external_id="first", title="a", body="", tier="working", source="user")
+    second = store.ingest(external_id="second", title="b", body="", tier="working", source="user")
+    last = store.last_created_at()
+    assert last is not None
+    assert last == max(first.created_at, second.created_at)
+
+
 def test_ensure_seeds_ingested_loads_character_seeds(store: EpisodicStore) -> None:
     character = load_character(AIRTON)
     inserted = ensure_seeds_ingested(character, store)

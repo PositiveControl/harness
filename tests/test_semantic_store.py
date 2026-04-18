@@ -93,6 +93,40 @@ def test_search_on_empty_store_returns_empty(store: SemanticStore) -> None:
     assert store.search("anything") == []
 
 
+def test_count_matches_all_and_scopes_by_user(store: SemanticStore) -> None:
+    """harness-qw4: count() is a cheap alternative to len(all()) for the
+    introspect tool. Honours user_id scoping — a per-user count sees
+    shared rows plus that user's private facts but not other users'."""
+    store.add(subject="airton", predicate="knows", object="python", source="yaml", tier="seed")
+    store.add(subject="mark", predicate="uses", object="macOS", source="user", user_id="mark")
+    store.add(subject="alex", predicate="uses", object="linux", source="user", user_id="alex")
+
+    assert store.count() == len(store.all()) == 3
+    assert store.count(tier="seed") == 1
+    assert store.count(subject="mark") == 1
+    # Scoped count: shared (1) + mark's own (1) = 2.
+    assert store.count(user_id="mark") == 2
+    assert store.count(user_id="alex") == 2
+
+
+def test_count_excludes_superseded_by_default(store: SemanticStore) -> None:
+    first = store.add(subject="s", predicate="p", object="old", source="user")
+    second = store.add(subject="s", predicate="p", object="new", source="user")
+    store.mark_superseded(first.id, by=second.id)
+
+    assert store.count() == 1
+    assert store.count(include_superseded=True) == 2
+
+
+def test_last_created_at_returns_newest_row(store: SemanticStore) -> None:
+    assert store.last_created_at() is None
+    first = store.add(subject="a", predicate="b", object="x", source="u")
+    second = store.add(subject="c", predicate="d", object="y", source="u")
+    last = store.last_created_at()
+    assert last is not None
+    assert last == max(first.created_at, second.created_at)
+
+
 def test_supersedes_is_nullable_and_stored(store: SemanticStore) -> None:
     first = store.add(subject="s", predicate="p", object="old", source="u")
     second = store.add(subject="s", predicate="p", object="new", source="u", supersedes=first.id)

@@ -272,6 +272,60 @@ class EpisodicStore:
         scored.sort(key=lambda t: t[1], reverse=True)
         return scored[:k]
 
+    def count(
+        self,
+        *,
+        tier: str | None = None,
+        user_id: str | None = None,
+        include_superseded: bool = False,
+    ) -> int:
+        """Row count scoped the same way `search()` is: when `user_id` is
+        given, counts shared rows plus that user's private rows. Used by
+        the introspect tool to report memory size without pulling every
+        record via `all()`."""
+        conditions: list[str] = []
+        params: list[object] = []
+        if tier is not None:
+            conditions.append("tier = ?")
+            params.append(tier)
+        if user_id is not None:
+            conditions.append("(user_id IS NULL OR user_id = ?)")
+            params.append(user_id)
+        if not include_superseded:
+            conditions.append("superseded_by IS NULL")
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        row = self._conn.execute(
+            f"SELECT COUNT(*) FROM episodic{where}",  # noqa: S608
+            params,
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def last_created_at(
+        self,
+        *,
+        tier: str | None = None,
+        user_id: str | None = None,
+    ) -> datetime | None:
+        """Most recent `created_at` among active rows matching the same
+        scope as `count()`. Returns None when the filter matches no rows
+        (fresh store, or user hasn't produced any memories yet)."""
+        conditions: list[str] = ["superseded_by IS NULL"]
+        params: list[object] = []
+        if tier is not None:
+            conditions.append("tier = ?")
+            params.append(tier)
+        if user_id is not None:
+            conditions.append("(user_id IS NULL OR user_id = ?)")
+            params.append(user_id)
+        where = " WHERE " + " AND ".join(conditions)
+        row = self._conn.execute(
+            f"SELECT MAX(created_at) FROM episodic{where}",  # noqa: S608
+            params,
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return datetime.fromisoformat(row[0])
+
     def count_mismatched_embeddings(self) -> int:
         """How many active rows carry embeddings from a prior embedder
         generation. Use to tell the user whether a rebuild is worth it."""
