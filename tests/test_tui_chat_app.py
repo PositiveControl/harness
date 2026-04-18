@@ -367,6 +367,125 @@ async def test_chat_app_confirm_modal_always_skips_future_prompts(tmp_path) -> N
 
 
 @pytest.mark.asyncio
+async def test_chat_app_replays_prior_session_history(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-01o: on mount, the app tails the current session's
+    transcript and rehydrates _state.history so the model sees
+    continuity across restarts. Tool-role turns are skipped."""
+    # Pre-populate the transcript before the app opens so mount's
+    # replay has something to pull.
+    transcript = Transcript(tmp_path / "t.sqlite")
+    transcript.append(
+        session="test", channel="cli", speaker="mark", role="user", content="first turn"
+    )
+    transcript.append(
+        session="test", channel="cli", speaker="airton", role="assistant", content="ok"
+    )
+    transcript.append(
+        session="test", channel="cli", speaker="mark", role="user", content="second turn"
+    )
+    transcript.append(
+        session="test",
+        channel="cli",
+        speaker="airton",
+        role="assistant",
+        content="sure thing",
+    )
+
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        # Banner + replay header + all four turns should be in log.
+        assert "replaying 4 prior turns" in rendered
+        assert "first turn" in rendered
+        assert "second turn" in rendered
+        assert "sure thing" in rendered
+
+        # _state.history now contains the four messages the model
+        # needs for continuity. Retrieval-worker code reads this, so
+        # a regression that drops replay would silently blow away
+        # context.
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        history = tui_app._state.history
+        assert [m.role for m in history] == [
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+        ]
+        assert history[-1].content == "sure thing"
+
+
+@pytest.mark.asyncio
+async def test_chat_app_replay_skips_tool_role_turns(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Tool-role rows in the transcript (the result messages the
+    orchestrator persists mid-tool-loop) must not reappear in the
+    replayed log — they'd duplicate the 🔧 / ✓ lines that were
+    written when the tool originally ran."""
+    transcript = Transcript(tmp_path / "t.sqlite")
+    transcript.append(
+        session="test", channel="cli", speaker="mark", role="user", content="use a tool"
+    )
+    transcript.append(
+        session="test",
+        channel="cli",
+        speaker="read_file",
+        role="tool",
+        content="raw file contents — should not appear in replay",
+    )
+    transcript.append(
+        session="test",
+        channel="cli",
+        speaker="airton",
+        role="assistant",
+        content="done",
+    )
+
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "use a tool" in rendered
+        assert "done" in rendered
+        assert "raw file contents" not in rendered
+
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        # history only contains user + assistant, not the tool row.
+        history = tui_app._state.history
+        assert [m.role for m in history] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_chat_app_slash_exit_quits(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """/exit, /quit, :q all call app.exit. No worker is spawned —
+    the intercept runs before on_input_submitted reaches
+    run_worker."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "/exit"
+        await pilot.press("enter")
+        # After exit() the app marks itself as exited but Pilot
+        # keeps the context manager alive; checking _exit is the
+        # most reliable signal.
+        await pilot.pause(0.05)
+        assert pilot.app._exit is True
+
+
+@pytest.mark.asyncio
+async def test_chat_app_slash_commands_case_insensitive(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Classic REPL accepted /Exit, :Q, etc. Lowercase comparison
+    keeps that tolerant behavior."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = ":Q"
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+        assert pilot.app._exit is True
+
+
+@pytest.mark.asyncio
 async def test_chat_app_error_in_adapter_shows_red_line(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """A broken adapter must not crash the app — the turn reports an
     error in the log and the input re-enables for the user to retry."""

@@ -1,20 +1,19 @@
-"""Textual chat app — Phase 6 replaces the write-tier auto-decline
-stub with a real modal confirmation screen (harness-mz2).
+"""Textual chat app — Phase 7 adds history replay on mount +
+slash-command parity with the classic REPL (harness-01o).
 
-Scope of Phase 6:
-- Write-tier tool calls now push `ConfirmToolScreen` over the chat
-  view instead of being auto-declined. User approves with `y` /
-  declines with `n` / approves + marks the tool as always-allowed-
-  for-session with `a`. Escape also declines.
-- Session-scoped `_approved_tools: set[str]` skips the modal for
-  any tool the user has already marked always-allowed.
-- Run from the worker thread via `call_from_thread(...)` so the
-  blocking `confirm(call) -> bool` contract run_tool_loop expects
-  still works — the worker parks until the user dismisses the
-  modal on the UI thread.
+Scope of Phase 7:
+- On mount, tail the current session's transcript (capped at
+  `max_history_replay`) and replay user + assistant turns into
+  the RichLog. `_state.history` is populated in the same pass so
+  the model sees continuity across app restarts.
+- Slash commands handled in on_input_submitted before the worker
+  is kicked off: `/exit`, `/quit`, `:q` all call `self.exit()`.
+  Empty/whitespace submissions stay a no-op (unchanged from
+  earlier phases).
 
 Scope of earlier phases still applies: retrieval, transcript
-persistence, metrics footer, tool observer, streaming.
+persistence, metrics footer, tool observer, streaming, write-tier
+confirmation modal.
 """
 
 from __future__ import annotations
@@ -169,6 +168,7 @@ class ChatApp(App[None]):
         registry: ToolRegistry | None = None,
         router: Router | None = None,
         workspace_path: Path | None = None,
+        max_history_replay: int = 20,
     ) -> None:
         super().__init__()
         self._character = character
@@ -190,6 +190,7 @@ class ChatApp(App[None]):
         self._tool_registry = registry
         self._router = router
         self._workspace_path = workspace_path
+        self._max_history_replay = max_history_replay
         # Session-scoped always-approve set. The modal writes into
         # this when the user picks 'always' so subsequent calls to
         # the same tool skip the modal. Cleared on app exit — no
@@ -218,9 +219,9 @@ class ChatApp(App[None]):
         log.write(
             f"[dim]Chat with {self._character.name}. "
             f"adapter={self._adapter.id} session={self._session}. "
-            f"{tools_note}. Phase 6: write-tier confirmation modal "
-            f"wired — [y] approve, [n] decline, [a] always.[/dim]"
+            f"{tools_note}. /exit /quit :q to leave.[/dim]"
         )
+        self._replay_history(log)
         self.query_one("#prompt", Input).focus()
         # Baseline ctx count — just the system prompt framing is not
         # known before the first turn, so seed the meter at 0. It
@@ -231,11 +232,60 @@ class ChatApp(App[None]):
         # wasted work; a slower one makes the counter feel stuck.
         self.set_interval(0.25, self._refresh_metrics)
 
+    def _replay_history(self, log: RichLog) -> None:
+        """Tail the session transcript and render up to
+        `max_history_replay` user + assistant turns into the log on
+        mount. Populates `_state.history` in the same pass so the
+        model sees continuity across app restarts.
+
+        Tool-role turns are intentionally skipped here: the log
+        already contained the 🔧 / ✓ lines when those tools ran in
+        a prior session, and replaying the raw tool outputs would
+        clutter the scroll-back. Historical tool *results* are
+        already condensed into the assistant replies that follow
+        them — the model's next turn sees that context via the
+        assistant message."""
+        tail = self._transcript.tail(self._session, limit=self._max_history_replay)
+        if not tail:
+            return
+        log.write(
+            Text(
+                f"— replaying {len(tail)} prior turns from session '{self._session}' —",
+                style="dim",
+            )
+        )
+        for msg in tail:
+            if msg.role == "user":
+                line = Text()
+                line.append(f"{msg.speaker} ›", style="bold cyan")
+                line.append(" ")
+                line.append(msg.content)
+                log.write(line)
+                self._state.history.append(ChatMessage(role="user", content=msg.content))
+            elif msg.role == "assistant":
+                line = Text()
+                line.append(f"{msg.speaker} ›", style="bold green")
+                line.append(" ")
+                line.append(msg.content)
+                log.write(line)
+                self._state.history.append(ChatMessage(role="assistant", content=msg.content))
+            # tool-role rows are not replayed — see docstring.
+
     # ---------- input path ----------
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         if not text:
+            return
+        # Slash-command intercept. Parity with the classic REPL:
+        # /exit, /quit, :q all exit; unrecognized commands fall
+        # through to the model so a user who types '/anything' into
+        # a prompt isn't silently dropped. More commands (e.g.
+        # /edit) land in later follow-ups — they need
+        # app.suspend() for $EDITOR and feel out of scope here.
+        if text.lower() in {"/exit", "/quit", ":q"}:
+            event.input.value = ""
+            self.exit()
             return
         log = self.query_one("#output", RichLog)
         # Build a Text object so the user's content can't be parsed as
