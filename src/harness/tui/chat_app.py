@@ -94,6 +94,11 @@ class _ChatAppState:
     # and _finish_turn so reads are race-free.
     pending_prompts: deque[str] = field(default_factory=deque)
     is_busy: bool = False
+    # Persistent elapsed-time (harness-jsu): the most recent turn's
+    # wall-clock duration, retained so the idle metrics strip reads
+    # '· last N.Ns' instead of blanking back to '· idle'. Cleared
+    # only at app start — overwritten at every turn completion.
+    last_elapsed: float | None = None
 
 
 # Sentence boundary: `.!?` followed by whitespace / closing quote /
@@ -629,11 +634,14 @@ class ChatApp(App[None]):
 
     def _finish_turn(self) -> None:
         """Worker-completion hook on the UI thread. Stops the elapsed
-        clock, recomputes the ctx meter against the now-updated
-        history, clears the busy flag, and either drains the pending
-        queue into the next turn or just refreshes metrics so the user
-        sees the final state immediately instead of waiting for the
-        next tick."""
+        clock, snapshots the final duration into last_elapsed so the
+        idle metrics strip can keep showing it, recomputes the ctx
+        meter against the now-updated history, clears the busy flag,
+        and either drains the pending queue into the next turn or
+        just refreshes metrics so the user sees the final state
+        immediately instead of waiting for the next tick."""
+        if self._state.turn_started_at is not None:
+            self._state.last_elapsed = time.monotonic() - self._state.turn_started_at
         self._state.turn_started_at = None
         self._state.is_busy = False
         self._recompute_ctx_used()
@@ -785,6 +793,8 @@ class ChatApp(App[None]):
         if self._state.turn_started_at is not None:
             elapsed = time.monotonic() - self._state.turn_started_at
             parts.append(f"thinking {elapsed:.1f}s")
+        elif self._state.last_elapsed is not None:
+            parts.append(f"last {self._state.last_elapsed:.1f}s")
         else:
             parts.append("idle")
         if self._state.pending_prompts:

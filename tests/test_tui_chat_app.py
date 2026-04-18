@@ -88,6 +88,31 @@ async def test_chat_app_keeps_input_enabled_during_turn(tmp_path) -> None:  # ty
 
 
 @pytest.mark.asyncio
+async def test_metrics_shows_last_elapsed_after_turn(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-jsu: after a turn finishes, the metrics strip keeps
+    showing the most recent wall-clock duration via 'last N.Ns'
+    instead of blanking back to 'idle'. Exercise the state machine
+    directly so the assertion doesn't race a 0.0s formatted value."""
+    import time as _time
+
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        # Simulate a turn that just finished: plant the start time
+        # ~2.5s ago and call _finish_turn on the UI thread.
+        tui_app._state.turn_started_at = _time.monotonic() - 2.5
+        tui_app._state.is_busy = True
+        tui_app._finish_turn()
+
+        metrics = pilot.app.query_one("#metrics", Static)
+        text = str(metrics.render()).lower()
+        assert "last" in text
+        # ~2.5s should render with a non-zero one-decimal number.
+        assert "0.0s" not in text
+        assert "idle" not in text
+
+
+@pytest.mark.asyncio
 async def test_chat_app_enqueues_submit_while_busy(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """harness-4sm: while a turn is running, Enter enqueues the text
     into pending_prompts instead of kicking a second worker. The log
@@ -140,9 +165,12 @@ async def test_metrics_idle_on_mount_then_updates_after_turn(tmp_path) -> None: 
         await _wait_for_workers(pilot)
 
         final_text = str(metrics.render())
-        # After the turn: idle again, and the ctx field has moved off
-        # the '—' placeholder because there's real history now.
-        assert "idle" in final_text.lower()
+        # After the turn: the persistent last-elapsed indicator
+        # (harness-jsu) replaces 'idle' so the user can still see how
+        # long the most recent turn took. ctx has moved off the '—'
+        # placeholder because there's real history now.
+        assert "last" in final_text.lower()
+        assert "s" in final_text.lower()
         assert "ctx" in final_text.lower()
         # Echo adapter produced meaningful tokens in history; the
         # meter should show at least 1 token (rendered as 0.0k once
