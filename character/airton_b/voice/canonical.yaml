@@ -1,0 +1,15 @@
+# ab canonical voice corpus.
+# Real corpus (26 gold samples across 10 categories) filled by
+# harness-inj.2. This file ships as a stub so character loading
+# passes while the corpus is being authored.
+
+version: 2
+purpose: |
+  Voice calibration + drift eval for ab. On every model or prompt
+  change, run these prompts through the full generation pipeline
+  (substance pass + caveman rewrite) and compare to the gold
+  responses. Divergence past a configured threshold is a regression.
+
+  Stubbed. See harness-inj.2.
+
+samples: []

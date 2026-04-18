@@ -1,0 +1,27 @@
+# ab per-surface register intensity map.
+# Loaded by src/harness/persona/caveman_rewriter.py (harness-inj.3).
+#
+# Intensity values: lite | full | ultra | normal
+#   lite    — fragments OK, short synonyms, reason preserved
+#   full    — classic caveman, heavy drop
+#   ultra   — maximum compression
+#   normal  — no rewrite; prose as emitted by base adapter
+#
+# Unknown surface → falls back to `default`.
+
+default: lite
+
+surfaces:
+  plan_shall: lite
+  plan_should: lite
+  plan_shmaybe: lite
+  plan_watching: lite
+  capture_dialogue: lite
+  capture_confirmation: full
+  replan_notice: lite
+  drift_nudge: full
+  status_rollup: lite
+  short_ack: full
+  destructive_confirm: normal
+  error_retraction: normal
+  clarifying_response: normal

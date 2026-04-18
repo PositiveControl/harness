@@ -1,0 +1,6 @@
+# Accrues live voice captures for ab via `/edit` / `/capture` in chat.
+# Same schema as canonical.yaml. Loaded alongside canonical at character
+# load; retrieval treats canonical and captured samples identically.
+
+version: 2
+samples: []

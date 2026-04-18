@@ -1,0 +1,80 @@
+# Router eval fixture for ab — prompts the intent router should classify
+# correctly when HARNESS_CHARACTER_NAME=airton_b and the ops tool profile
+# is active. Loaded by `harness eval router`.
+#
+# Tool names match the ab tool set (harness-inj.5). Null entries catch
+# over-routing on casual acks and greetings.
+
+- prompt: what's on today
+  expected_tool: plan
+
+- prompt: run /plan
+  expected_tool: plan
+
+- prompt: morning
+  expected_tool: plan
+
+- prompt: show me the path for today
+  expected_tool: plan
+
+- prompt: I need to renew my passport before June
+  expected_tool: capture
+  expected_args: [raw]
+
+- prompt: capture "prep slides for Friday"
+  expected_tool: capture
+  expected_args: [raw]
+
+- prompt: what's the status of the retrieval refactor
+  expected_tool: status
+  expected_args: [id]
+
+- prompt: show me passport-renewal
+  expected_tool: status
+  expected_args: [id]
+
+- prompt: what's slipping
+  expected_tool: drift
+
+- prompt: anything drifting
+  expected_tool: drift
+
+- prompt: how did today go
+  expected_tool: retro
+
+- prompt: run the retro
+  expected_tool: retro
+
+- prompt: reprioritize
+  expected_tool: reprioritize
+
+- prompt: re-rank with reasons
+  expected_tool: reprioritize
+
+- prompt: close retrieval-refactor
+  expected_tool: close
+  expected_args: [id]
+
+- prompt: mark passport-renewal done
+  expected_tool: close
+  expected_args: [id]
+
+- prompt: defer tax-2025 to next week
+  expected_tool: defer
+  expected_args: [id, when]
+
+- prompt: push slides out to Monday
+  expected_tool: defer
+  expected_args: [id, when]
+
+- prompt: thanks
+  expected_tool: null
+
+- prompt: got it
+  expected_tool: null
+
+- prompt: yes
+  expected_tool: null
+
+- prompt: morning, how's it going
+  expected_tool: null
