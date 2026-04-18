@@ -3,17 +3,23 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from rich.console import Console
+
 from harness.cli import (
     _decode_transcript_message,
     _encode_assistant_with_tool_calls,
     _format_ctx_meter,
+    _render_tool_event,
     _RetrievalState,
     _retrieve_turn_context,
+    _StreamRenderer,
+    _ThinkingSpinner,
 )
 from harness.model.adapter import ChatMessage, approx_token_count, count_tokens
 from harness.model.echo import EchoAdapter
+from harness.orchestrator import ToolLoopEvent
 from harness.store.transcript import TranscriptMessage
-from harness.tools import ToolCall
+from harness.tools import ToolCall, ToolResult
 
 
 def _msg(role: str, content: str, speaker: str = "airton") -> TranscriptMessage:
@@ -288,3 +294,110 @@ def test_decode_malformed_sentinel_payload_is_tolerated() -> None:
     decoded = _decode_transcript_message(_msg("assistant", bogus))
     assert decoded.tool_calls == ()
     assert "some text" in decoded.content
+
+
+# ---------- _render_tool_event ----------
+
+
+def _build_render_deps() -> tuple[Console, _ThinkingSpinner, _StreamRenderer]:
+    """Rich Console wired for in-memory capture. `record=True` lets us
+    read back everything printed via `export_text()`. `force_terminal`
+    + `color_system=None` keep output plain so assertions match on
+    literal substrings without ANSI escapes."""
+    console = Console(record=True, force_terminal=False, color_system=None, width=200)
+    return console, _ThinkingSpinner(console), _StreamRenderer(console)
+
+
+def _render_all(events: list[ToolLoopEvent]) -> str:
+    console, thinking, stream_renderer = _build_render_deps()
+    for event in events:
+        _render_tool_event(
+            event,
+            console=console,
+            thinking=thinking,
+            stream_renderer=stream_renderer,
+            tool_label=lambda name: name,
+        )
+    thinking.stop()
+    return console.export_text()
+
+
+def test_render_tool_event_prints_one_line_per_tool_call() -> None:
+    """harness-cx2: the CLI renderer must render every tool_call_start
+    event. Earlier report implied a 'first call only' guard; this locks
+    in that two tool_call_start events produce two 🔧 lines and two
+    tool_call_end events produce two ✓ lines."""
+    call_a = ToolCall(name="read_file", arguments={"path": "a.txt"})
+    call_b = ToolCall(name="search_web", arguments={"query": "q"})
+    events = [
+        ToolLoopEvent(kind="tool_call_start", call=call_a, round_index=0),
+        ToolLoopEvent(
+            kind="tool_call_end",
+            call=call_a,
+            result=ToolResult(tool_name="read_file", output="hello", success=True),
+            round_index=0,
+        ),
+        ToolLoopEvent(kind="tool_call_start", call=call_b, round_index=1),
+        ToolLoopEvent(
+            kind="tool_call_end",
+            call=call_b,
+            result=ToolResult(tool_name="search_web", output="world", success=True),
+            round_index=1,
+        ),
+    ]
+    output = _render_all(events)
+    assert output.count("🔧 read_file") == 1
+    assert output.count("🔧 search_web") == 1
+    # Two distinct ✓ lines — bugged renderers might print one and drop
+    # the other on dedup; this guards against that regression.
+    assert output.count("✓") == 2
+
+
+def test_render_tool_event_renders_router_intent_then_tool_pair() -> None:
+    """Router-prelude scenario from harness-cx2 repro: router fires a
+    tool, then the main model fires another. All three headline lines
+    (→ routed, 🔧 first, 🔧 second) must appear."""
+    router_call = ToolCall(name="search_facts", arguments={"query": "x"})
+    model_call = ToolCall(name="search_web", arguments={"query": "x"})
+    events = [
+        ToolLoopEvent(kind="router_intent", call=router_call, round_index=0),
+        ToolLoopEvent(kind="tool_call_start", call=router_call, round_index=0),
+        ToolLoopEvent(
+            kind="tool_call_end",
+            call=router_call,
+            result=ToolResult(tool_name="search_facts", output="weak", success=True),
+            round_index=0,
+        ),
+        ToolLoopEvent(kind="tool_call_start", call=model_call, round_index=1),
+        ToolLoopEvent(
+            kind="tool_call_end",
+            call=model_call,
+            result=ToolResult(tool_name="search_web", output="results", success=True),
+            round_index=1,
+        ),
+    ]
+    output = _render_all(events)
+    assert "→ routed to search_facts" in output
+    assert output.count("🔧") == 2
+    assert "🔧 search_facts" in output
+    assert "🔧 search_web" in output
+
+
+def test_render_tool_event_marks_failed_and_declined() -> None:
+    call = ToolCall(name="shell", arguments={"cmd": "ls"})
+    events = [
+        ToolLoopEvent(kind="tool_call_start", call=call, round_index=0),
+        ToolLoopEvent(
+            kind="tool_call_failed",
+            call=call,
+            result=ToolResult(
+                tool_name="shell", output="permission denied", success=False, error="eacces"
+            ),
+            round_index=0,
+        ),
+        ToolLoopEvent(kind="tool_call_start", call=call, round_index=1),
+        ToolLoopEvent(kind="tool_call_declined", call=call, round_index=1),
+    ]
+    output = _render_all(events)
+    assert "✗" in output
+    assert "declined" in output

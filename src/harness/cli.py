@@ -697,6 +697,56 @@ class _StreamRenderer:
         return self._active
 
 
+def _render_tool_event(
+    event: ToolLoopEvent,
+    *,
+    console: Console,
+    thinking: _ThinkingSpinner,
+    stream_renderer: _StreamRenderer,
+    tool_label: Callable[[str], str],
+) -> None:
+    """Render a single ToolLoopEvent to the console. Lifted out of the
+    chat command closure so tests can capture the per-event output and
+    verify that every tool call in a turn produces its own 🔧 line
+    (harness-cx2 regression — the description suspected a 'first call
+    only' guard; this makes absence-of-guard testable).
+
+    Each event is independent: no dedup, no once-per-turn gating. A
+    tool_call_start event always prints, a tool_call_end always prints
+    a ✓/✗ line. The spinner + stream_renderer state-machine lives here
+    because the renderer is the only thing that knows when the model
+    is thinking vs. streaming vs. done."""
+    if event.kind == "router_intent":
+        call = event.call
+        assert call is not None
+        console.print(f"[dim magenta]→ routed to {call.name}[/dim magenta]")
+    elif event.kind == "model_call_start":
+        thinking.start()
+    elif event.kind == "token_delta":
+        # First token received — drop the spinner, open a Live region
+        # (if not already) and append. Subsequent deltas just append.
+        thinking.stop()
+        if event.delta:
+            stream_renderer.append(event.delta)
+    elif event.kind == "model_call_end":
+        thinking.stop()
+        stream_renderer.stop()
+    elif event.kind == "tool_call_start":
+        call = event.call
+        assert call is not None
+        label = tool_label(call.name)
+        console.print(f"[cyan]🔧 {label}[/cyan] [dim]({call.arguments})[/dim]")
+    elif event.kind in ("tool_call_end", "tool_call_failed"):
+        result = event.result
+        assert result is not None
+        status = "[green]✓[/green]" if result.success else "[red]✗[/red]"
+        snippet = result.output[:120].replace("\n", " ")
+        more = "…" if len(result.output) > 120 else ""
+        console.print(f"   {status} [dim]{snippet}{more}[/dim]")
+    elif event.kind == "tool_call_declined":
+        console.print("   [yellow]✗ declined[/yellow]")
+
+
 def _stream_or_complete(
     adapter: object,
     messages: list[ChatMessage],
@@ -1177,35 +1227,13 @@ def chat(
         return answer.startswith("y")
 
     def render_tool_event(event: ToolLoopEvent) -> None:
-        if event.kind == "router_intent":
-            call = event.call
-            assert call is not None
-            console.print(f"[dim magenta]→ routed to {call.name}[/dim magenta]")
-        elif event.kind == "model_call_start":
-            thinking.start()
-        elif event.kind == "token_delta":
-            # First token received — drop the spinner, open a Live region
-            # (if not already) and append. Subsequent deltas just append.
-            thinking.stop()
-            if event.delta:
-                stream_renderer.append(event.delta)
-        elif event.kind == "model_call_end":
-            thinking.stop()
-            stream_renderer.stop()
-        elif event.kind == "tool_call_start":
-            call = event.call
-            assert call is not None
-            label = _tool_label(call.name)
-            console.print(f"[cyan]🔧 {label}[/cyan] [dim]({call.arguments})[/dim]")
-        elif event.kind in ("tool_call_end", "tool_call_failed"):
-            result = event.result
-            assert result is not None
-            status = "[green]✓[/green]" if result.success else "[red]✗[/red]"
-            snippet = result.output[:120].replace("\n", " ")
-            more = "…" if len(result.output) > 120 else ""
-            console.print(f"   {status} [dim]{snippet}{more}[/dim]")
-        elif event.kind == "tool_call_declined":
-            console.print("   [yellow]✗ declined[/yellow]")
+        _render_tool_event(
+            event,
+            console=console,
+            thinking=thinking,
+            stream_renderer=stream_renderer,
+            tool_label=_tool_label,
+        )
 
     _render_chat_header(
         console=console,

@@ -238,6 +238,89 @@ def test_loop_observer_receives_events(tmp_path: Path) -> None:
     assert len(observed) == len(result.events)
 
 
+def test_loop_observer_receives_events_for_every_round(tmp_path: Path) -> None:
+    """harness-cx2: when the model chains multiple tool calls across
+    rounds, each invocation must reach the observer. Earlier bug report
+    (TUI only showed the first 🔧 line per turn) implied a 'first call
+    only' guard; this locks in that the orchestrator emits one
+    start+end pair per tool call, regardless of round."""
+    (tmp_path / "a.txt").write_text("A")
+    (tmp_path / "b.txt").write_text("B")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "a.txt"}),),
+            ),
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "b.txt"}),),
+            ),
+            ModelReply(content="done"),
+        ]
+    )
+
+    observed: list[ToolLoopEvent] = []
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read both")],
+        registry,
+        observe=lambda e: observed.append(e),
+    )
+
+    starts = [e for e in observed if e.kind == "tool_call_start"]
+    ends = [e for e in observed if e.kind == "tool_call_end"]
+    assert len(starts) == 2, [e.kind for e in observed]
+    assert len(ends) == 2
+    # Distinct arguments visible on each event (not just the first call
+    # echoed twice).
+    start_paths = [e.call.arguments["path"] for e in starts if e.call is not None]
+    assert start_paths == ["a.txt", "b.txt"]
+    # round_index advances between the two calls.
+    assert [e.round_index for e in starts] == [0, 1]
+
+
+def test_loop_observer_receives_events_for_each_call_in_one_round(tmp_path: Path) -> None:
+    """Same invariant as above but within a single round: if the model
+    emits two tool_calls in one ModelReply, both must fire their own
+    start+end pair."""
+    (tmp_path / "a.txt").write_text("A")
+    (tmp_path / "b.txt").write_text("B")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(
+                    ToolCall(name="read_file", arguments={"path": "a.txt"}),
+                    ToolCall(name="read_file", arguments={"path": "b.txt"}),
+                ),
+            ),
+            ModelReply(content="both read"),
+        ]
+    )
+
+    observed: list[ToolLoopEvent] = []
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read both at once")],
+        registry,
+        observe=lambda e: observed.append(e),
+    )
+
+    starts = [e for e in observed if e.kind == "tool_call_start"]
+    assert len(starts) == 2
+    assert [e.call.arguments["path"] for e in starts if e.call is not None] == [
+        "a.txt",
+        "b.txt",
+    ]
+
+
 def test_loop_respects_max_rounds() -> None:
     # Model always wants to call read_file, never finishes
     from harness.tools import ReadFileTool
