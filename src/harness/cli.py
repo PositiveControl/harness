@@ -1198,11 +1198,13 @@ def chat(
         "through to the normal loop. See harness-ut3.",
     ),
     router_repo: str = typer.Option(
-        "mlx-community/Hermes-3-Llama-3.2-3B-4bit",
+        settings.router_repo,
         "--router-repo",
-        help="HF repo for the router model. Default is "
-        "Hermes-3-Llama-3.2-3B-4bit (~2GB RAM, function-call-tuned). "
-        "Only used when --router is on. Router is MLX-only for now.",
+        help="HF repo for the router model. Default from Settings."
+        "router_repo (currently Hermes-3-Llama-3.2-3B-4bit, ~2 GB, "
+        "function-call-tuned — generic small routers under-route). "
+        "Override via HARNESS_ROUTER_REPO or this flag. Only used "
+        "when --router is on. Router is MLX-only for now.",
     ),
     router_mode: str = typer.Option(
         "free",
@@ -1994,9 +1996,10 @@ def _resolve_router_tool_specs(tool_names: Sequence[str], workspace: Path) -> li
 @eval_app.command("router")
 def eval_router(
     router_repo: str = typer.Option(
-        "mlx-community/Hermes-3-Llama-3.2-3B-4bit",
+        settings.router_repo,
         "--router-repo",
-        help="HF repo for the router model under test.",
+        help="HF repo for the router model under test (default from "
+        "Settings.router_repo / HARNESS_ROUTER_REPO).",
     ),
     router_mode: str = typer.Option(
         "free",

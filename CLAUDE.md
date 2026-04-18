@@ -105,7 +105,7 @@ Load-bearing invariants — they shape almost every decision:
   - `persona/rewriter.py` — `PersonaAdapter` wraps a base adapter with a voice-rewrite post-pass. Optional chain-of-rewrite (`chain_rewrites=True`) adds a second concrete-substitution pass. Off by default when a turn used tools (`rewrite_on_tools=False`) — rewriter compresses, which is wrong for investigate/summarize replies.
   - `retrieval/` — embedding-backed similarity search.
     - `embed.py` — `Embedder` Protocol. Implementations return L2-normalized vectors so cosine similarity is a dot product.
-    - `st_embedder.py` — `SentenceTransformersEmbedder`; default `mixedbread-ai/mxbai-embed-large-v1` (1024 dim, MPS on Mac).
+    - `st_embedder.py` — `SentenceTransformersEmbedder`; default from `Settings.embedder_repo` (currently `BAAI/bge-small-en-v1.5`, 384 dim, ~130 MB, MPS on Mac). Override via `HARNESS_EMBEDDER_REPO` env or ctor arg. Previous heavier default `mixedbread-ai/mxbai-embed-large-v1` (1024 dim, ~1.3 GB) is one env export away. bge-small matched mxbai within noise on voice eval (0.9124 vs 0.9117) at 10 % of the RAM.
     - `voice_retriever.py` — embeds all voice samples once on construction; `top_k(query, k=, exclude_ids=)`.
   - `store/` — persistent stores (SQLite + BLOB embeddings + cosine scan). Graduate to LanceDB when past ~10k rows.
     - `transcript.py` — append-only transcript (WAL + FTS5). `fetch_after(session, after_id=)` for scribe.

@@ -25,3 +25,6 @@ logs/
 # Local Claude Code per-clone settings and interaction state
 .claude/
 scratch/**/*
+
+# Benchmark artifacts — regenerable via scripts/bench_*.py and `harness eval *`
+bench_results/
