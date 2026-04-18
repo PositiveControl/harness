@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     # lands. See harness-e4m, harness-5b3 in beads for the full data.
     embedder_repo: str = "BAAI/bge-small-en-v1.5"
     router_repo: str = "mlx-community/Hermes-3-Llama-3.2-3B-4bit"
+    # MLX free-cache cap in megabytes. None = no cap (MLX default).
+    # Caps the pool of buffers that MLX has allocated but not yet
+    # returned to the system allocator — the active model weights and
+    # live KV cache are NOT affected, only the "would keep for reuse"
+    # scratch pool. Lower = smaller peak RSS under memory pressure at
+    # the cost of re-alloc on the next turn. Set via
+    # HARNESS_MLX_CACHE_LIMIT_MB; benchmarked per tuning commit under
+    # harness-0kw (see bench_results/mlx_cache_*.json).
+    mlx_cache_limit_mb: int | None = None
 
     @property
     def character_path(self) -> Path:

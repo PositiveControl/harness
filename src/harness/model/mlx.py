@@ -242,6 +242,7 @@ class MLXAdapter:
         *,
         adapter_path: str | None = None,
         context_window: int = 131_072,
+        cache_limit_mb: int | None = None,
     ) -> None:
         self.repo = repo
         self.adapter_path = adapter_path
@@ -255,8 +256,19 @@ class MLXAdapter:
         else:
             self.id = f"mlx:{repo.split('/')[-1]}"
         self.context_window = context_window
+        # Falls back to Settings.mlx_cache_limit_mb (HARNESS_MLX_CACHE_
+        # LIMIT_MB env) when caller passes None. Zero caps the cache at
+        # 0 bytes — every dealloc returns to the system allocator, which
+        # trades peak RSS for per-turn re-alloc latency. See Settings
+        # for the full rationale.
+        from harness.config import settings as _settings
+
+        self.cache_limit_mb = (
+            cache_limit_mb if cache_limit_mb is not None else _settings.mlx_cache_limit_mb
+        )
         self._model: Any | None = None
         self._tokenizer: Any | None = None
+        self._cache_limit_applied: bool = False
 
     def load(self) -> None:
         """Load model + tokenizer from the HF cache (downloading if
@@ -267,9 +279,15 @@ class MLXAdapter:
         DIRECTORY produced by `mlx_lm.lora` training — it should
         contain `adapter_config.json` plus the weight files. The
         result behaves like any other adapter from our perspective —
-        no changes downstream."""
+        no changes downstream.
+
+        Applies the cache limit (if one is configured) once per process.
+        `mx.set_cache_limit` is process-global: subsequent adapters in
+        the same process inherit the cap rather than each nudging the
+        limit further. Idempotent via the `_cache_limit_applied` flag."""
         if self._model is not None:
             return
+        self._apply_cache_limit()
         from mlx_lm import load as _load
 
         # mlx_lm.load() returns a 2- or 3-tuple depending on `return_config`;
@@ -281,6 +299,27 @@ class MLXAdapter:
             loaded = _load(self.repo)
         self._model = loaded[0]
         self._tokenizer = loaded[1]
+
+    def _apply_cache_limit(self) -> None:
+        """Apply `self.cache_limit_mb` to MLX's free-cache cap. No-op if
+        the limit is None or has already been applied in this process.
+        Errors from the MLX API (older builds without set_cache_limit,
+        platform mismatch) are swallowed — a missing cap should not
+        block model loading."""
+        if self.cache_limit_mb is None or self._cache_limit_applied:
+            return
+        try:
+            import mlx.core as mx
+
+            mx.set_cache_limit(self.cache_limit_mb * 1024 * 1024)
+        except Exception as exc:
+            import warnings
+
+            warnings.warn(
+                f"MLX cache-limit cap not applied ({type(exc).__name__}: {exc})",
+                stacklevel=2,
+            )
+        self._cache_limit_applied = True
 
     def _ensure_loaded(self) -> None:
         if self._model is None:

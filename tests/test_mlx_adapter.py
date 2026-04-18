@@ -86,6 +86,44 @@ def test_mlx_adapter_does_not_load_on_construction() -> None:
     assert adapter._tokenizer is None
 
 
+def test_mlx_adapter_cache_limit_defaults_to_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With nothing set, cache_limit_mb is None so MLX keeps its default
+    cache behavior. With HARNESS_MLX_CACHE_LIMIT_MB=1024 the adapter
+    picks it up without needing an explicit ctor argument — matches the
+    pattern every other model knob uses (embedder_repo, router_repo)."""
+    from harness.config import Settings
+    from harness.model.mlx import MLXAdapter
+
+    assert Settings().mlx_cache_limit_mb is None
+    assert MLXAdapter().cache_limit_mb is None
+
+    monkeypatch.setenv("HARNESS_MLX_CACHE_LIMIT_MB", "1024")
+    assert Settings().mlx_cache_limit_mb == 1024
+    # Re-import to pick up fresh Settings() in the adapter's inline import.
+    import importlib
+
+    import harness.config
+
+    importlib.reload(harness.config)
+    import harness.model.mlx as mlx_module
+
+    importlib.reload(mlx_module)
+    assert mlx_module.MLXAdapter().cache_limit_mb == 1024
+
+
+def test_mlx_adapter_explicit_cache_limit_overrides_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit ctor arg beats the env — useful when a single process
+    wants one adapter capped and another unlimited."""
+    monkeypatch.setenv("HARNESS_MLX_CACHE_LIMIT_MB", "4096")
+    from harness.model.mlx import MLXAdapter
+
+    assert MLXAdapter(cache_limit_mb=512).cache_limit_mb == 512
+
+
 @pytest.mark.skipif(
     "os.environ.get('HARNESS_TEST_MLX') != '1'",
     reason="set HARNESS_TEST_MLX=1 to run (loads the real 32B model)",

@@ -35,11 +35,34 @@ def _peak_rss_mb() -> float:
     return raw / divisor
 
 
+def _mlx_memory_mb() -> tuple[float, float, float]:
+    """MLX internal memory counters in MB: (peak, active, cache). Peak is
+    the watermark since process start (or last reset_peak_memory). Active
+    is memory currently backing live tensors. Cache is free buffers MLX
+    has allocated but not yet returned to the system — the thing
+    set_cache_limit caps. Returns zeros if MLX hasn't allocated anything
+    yet (e.g. before the first model load) or if the APIs aren't
+    available on this build."""
+    try:
+        import mlx.core as mx
+    except ImportError:
+        return 0.0, 0.0, 0.0
+    scale = 1 / (1024 * 1024)
+    return (
+        mx.get_peak_memory() * scale,
+        mx.get_active_memory() * scale,
+        mx.get_cache_memory() * scale,
+    )
+
+
 @dataclass
 class _Probe:
     stage: str
-    peak_mb: float
+    peak_mb: float  # process RSS watermark from getrusage
     wall_s: float
+    mlx_peak_mb: float = 0.0
+    mlx_active_mb: float = 0.0
+    mlx_cache_mb: float = 0.0
     notes: str = ""
 
 
@@ -65,7 +88,19 @@ def run(args: argparse.Namespace) -> _Run:
         embedder_repo=args.embedder_repo,
     )
 
-    result.probes.append(_Probe(stage="startup", peak_mb=_peak_rss_mb(), wall_s=0.0))
+    def _snapshot(stage: str, wall_s: float, notes: str = "") -> _Probe:
+        mlx_peak, mlx_active, mlx_cache = _mlx_memory_mb()
+        return _Probe(
+            stage=stage,
+            peak_mb=_peak_rss_mb(),
+            wall_s=wall_s,
+            mlx_peak_mb=mlx_peak,
+            mlx_active_mb=mlx_active,
+            mlx_cache_mb=mlx_cache,
+            notes=notes,
+        )
+
+    result.probes.append(_snapshot("startup", 0.0))
 
     character = load_character(settings.character_path)
 
@@ -74,10 +109,9 @@ def run(args: argparse.Namespace) -> _Run:
     retriever = VoiceRetriever(embedder=embedder, character=character)
     _ = retriever.top_k("test query", k=3)
     result.probes.append(
-        _Probe(
-            stage=f"embedder {args.embedder_repo}",
-            peak_mb=_peak_rss_mb(),
-            wall_s=time.monotonic() - t0,
+        _snapshot(
+            f"embedder {args.embedder_repo}",
+            time.monotonic() - t0,
             notes=f"dim={embedder.dimension}",
         )
     )
@@ -87,10 +121,9 @@ def run(args: argparse.Namespace) -> _Run:
     main.load()
     reply = main.complete([ChatMessage(role="user", content="hi")], max_tokens=8, temperature=0.0)
     result.probes.append(
-        _Probe(
-            stage=f"main {args.main_repo}",
-            peak_mb=_peak_rss_mb(),
-            wall_s=time.monotonic() - t0,
+        _snapshot(
+            f"main {args.main_repo}",
+            time.monotonic() - t0,
             notes=f"reply={reply[:30]!r}",
         )
     )
@@ -104,11 +137,23 @@ def run(args: argparse.Namespace) -> _Run:
             max_tokens=8,
             temperature=0.0,
         )
+        result.probes.append(_snapshot(f"router {args.router_repo}", time.monotonic() - t0))
+
+        # One more main generation AFTER the router has run, so the
+        # bench captures the "steady-state" pattern a real TUI turn
+        # hits: router classify, then main wrap-up. Peak during this
+        # stage is what set_cache_limit actually caps against.
+        t0 = time.monotonic()
+        reply2 = main.complete(
+            [ChatMessage(role="user", content="tell me one word")],
+            max_tokens=8,
+            temperature=0.0,
+        )
         result.probes.append(
-            _Probe(
-                stage=f"router {args.router_repo}",
-                peak_mb=_peak_rss_mb(),
-                wall_s=time.monotonic() - t0,
+            _snapshot(
+                "main post-router turn",
+                time.monotonic() - t0,
+                notes=f"reply={reply2[:30]!r}",
             )
         )
 
@@ -120,10 +165,18 @@ def _print(run_: _Run) -> None:
     print(f"router : {run_.router_repo or '(skipped)'}")
     print(f"embed  : {run_.embedder_repo}")
     print()
-    print(f"{'stage':<60} {'peak_MB':>10} {'wall_s':>8}  notes")
-    print("-" * 100)
+    header = (
+        f"{'stage':<50} {'rss_MB':>8} {'wall_s':>7} "
+        f"{'mlx_peak':>9} {'mlx_act':>8} {'mlx_cache':>10}  notes"
+    )
+    print(header)
+    print("-" * len(header))
     for p in run_.probes:
-        print(f"{p.stage:<60} {p.peak_mb:>10.1f} {p.wall_s:>8.2f}  {p.notes}")
+        print(
+            f"{p.stage:<50} {p.peak_mb:>8.1f} {p.wall_s:>7.2f} "
+            f"{p.mlx_peak_mb:>9.1f} {p.mlx_active_mb:>8.1f} "
+            f"{p.mlx_cache_mb:>10.1f}  {p.notes}"
+        )
 
 
 def main() -> None:
@@ -141,11 +194,27 @@ def main() -> None:
         help="Only load main + embedder. Useful for measuring the floor.",
     )
     parser.add_argument(
+        "--cache-limit-mb",
+        type=int,
+        default=None,
+        help="MLX free-cache cap in MB. Applied to both main and router "
+        "adapters (set_cache_limit is process-global). None = no cap, "
+        "0 = disable cache entirely.",
+    )
+    parser.add_argument(
         "--json-out",
         type=Path,
         help="Write the run as JSON to this path in addition to the table.",
     )
     args = parser.parse_args()
+
+    if args.cache_limit_mb is not None:
+        try:
+            import mlx.core as mx
+
+            mx.set_cache_limit(args.cache_limit_mb * 1024 * 1024)
+        except Exception as exc:
+            print(f"warning: could not set cache limit ({exc})", file=sys.stderr)
 
     run_ = run(args)
     _print(run_)
@@ -155,11 +224,15 @@ def main() -> None:
             "main_repo": run_.main_repo,
             "router_repo": run_.router_repo,
             "embedder_repo": run_.embedder_repo,
+            "cache_limit_mb": args.cache_limit_mb,
             "probes": [
                 {
                     "stage": p.stage,
-                    "peak_mb": p.peak_mb,
+                    "rss_mb": p.peak_mb,
                     "wall_s": p.wall_s,
+                    "mlx_peak_mb": p.mlx_peak_mb,
+                    "mlx_active_mb": p.mlx_active_mb,
+                    "mlx_cache_mb": p.mlx_cache_mb,
                     "notes": p.notes,
                 }
                 for p in run_.probes
