@@ -758,13 +758,19 @@ async def test_slash_palette_opens_on_slash_and_filters(tmp_path) -> None:  # ty
         prompt.value = "/"
         await pilot.pause()
         assert palette.is_open
-        # Default highlight on first entry; both /exit and /quit match "/".
-        assert palette.selected_name() == "/exit"
+        # Default highlight is the alpha-first entry.
+        assert palette.selected_name() == "/compact"
 
         prompt.value = "/q"
         await pilot.pause()
         assert palette.is_open
         assert palette.selected_name() == "/quit"
+
+        prompt.value = "/e"
+        await pilot.pause()
+        assert palette.is_open
+        # /edit + /exit both match /e; /edit sorts first.
+        assert palette.selected_name() == "/edit"
 
         # Typing a non-slash char closes the palette.
         prompt.value = "hello"
@@ -781,12 +787,9 @@ async def test_slash_palette_arrow_and_enter_select(tmp_path) -> None:  # type: 
         prompt = pilot.app.query_one("#prompt", Input)
         palette = pilot.app.query_one("#slash_palette", SlashPalette)
 
-        prompt.value = "/"
+        prompt.value = "/ex"
         await pilot.pause()
         assert palette.selected_name() == "/exit"
-
-        await pilot.press("down")
-        assert palette.selected_name() == "/quit"
 
         # Enter selects the highlighted command and fires Submitted,
         # which exits the app.
@@ -825,6 +828,38 @@ async def test_slash_palette_escape_closes(tmp_path) -> None:  # type: ignore[no
         assert palette.is_open
         await pilot.press("escape")
         assert not palette.is_open
+
+
+@pytest.mark.asyncio
+async def test_slash_edit_without_exchange_warns(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """/edit with no turns in the transcript should say so, not
+    crash. This exercises the guard in _run_edit_capture without
+    poking $EDITOR."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "/edit"
+        await pilot.press("enter")
+        await pilot.pause()
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "no exchange to capture yet" in rendered
+
+
+@pytest.mark.asyncio
+async def test_slash_consolidate_without_stores_reports(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """/consolidate without memory+fact stores should emit an error
+    line, not a traceback."""
+    app = _build_app(tmp_path)  # EchoAdapter, no stores
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "/consolidate"
+        await pilot.press("enter")
+        await _wait_for_workers(pilot)
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "consolidate" in rendered
+        assert "--memories" in rendered
 
 
 # ---------- helpers ----------

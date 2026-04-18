@@ -1407,6 +1407,7 @@ def chat(
             warnings_out=tui_registry_warnings,
         )
 
+        tui_compaction_store = CompactionStore(settings.db_path) if compact_at > 0 else None
         ChatApp(
             character=character_for_tui,
             speaker=speaker,
@@ -1427,7 +1428,11 @@ def chat(
             workspace_path=tui_workspace_path,
             startup_warnings=tuple(tui_registry_warnings),
             retrieval_health=tui_retrieval_health,
+            compaction_store=tui_compaction_store,
+            scribe_user_id=speaker,
         ).run()
+        if tui_compaction_store is not None:
+            tui_compaction_store.close()
         return
 
     character = load_character(settings.character_path)

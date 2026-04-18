@@ -34,20 +34,27 @@ from harness.cli import (
     _TOOL_CALLS_SENTINEL,
     _build_tool_grounding_block,
     _format_ctx_meter,
+    _open_in_editor,
     _persist_tool_exchange,
     _render_fact_block,
     _render_memory_block,
     _retrieve_turn_context,
+    _write_voice_capture,
 )
 from harness.cli import _RetrievalState as _RetrievalHealth
+from harness.compaction import run_compaction
+from harness.config import settings
+from harness.consolidate import run_consolidation
 from harness.model.adapter import ChatMessage, approx_token_count
 from harness.orchestrator import ToolLoopEvent, run_tool_loop
+from harness.scribe import run_scribe
 from harness.tui.confirm_screen import ALWAYS, APPROVE, ConfirmToolScreen
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from harness.character import Character
+    from harness.compaction import CompactionStore
     from harness.model.adapter import ModelAdapter
     from harness.retrieval import VoiceRetriever
     from harness.router import Router
@@ -120,13 +127,17 @@ _SENTENCE_BOUNDARY_RE = re.compile(r"(?:[.!?][\s)\]'\"]+|\n)")
 
 # Slash-command registry for the palette. Alpha order is the contract
 # the palette relies on — keep it sorted by name. Descriptions are
-# rendered dim next to the name. `:q` is NOT in the palette: the
-# palette triggers on `/` as the first char; `:q` stays as a hidden
-# vim-muscle-memory alias handled only in on_input_submitted.
-# harness-kg9.
+# rendered dim next to the name. `:q` and `/capture` are NOT in the
+# palette: `:q` is a hidden vim-muscle-memory alias for /exit and
+# `/capture` is a hidden alias for /edit; both stay routable from the
+# submit handler so typing them directly still works. harness-kg9.
 _SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("/compact", "summarize older turns into a session summary"),
+    ("/consolidate", "merge near-duplicate memories + facts"),
+    ("/edit", "edit Airton's last reply as a new voice sample"),
     ("/exit", "leave chat"),
     ("/quit", "leave chat"),
+    ("/scribe", "extract memory candidates from recent turns"),
 )
 
 
@@ -295,6 +306,9 @@ class ChatApp(App[None]):
         max_history_replay: int = 20,
         startup_warnings: tuple[str, ...] = (),
         retrieval_health: _RetrievalHealth | None = None,
+        compaction_store: CompactionStore | None = None,
+        scribe_lock_dir: Path | None = None,
+        scribe_user_id: str | None = None,
     ) -> None:
         super().__init__()
         self._character = character
@@ -324,6 +338,14 @@ class ChatApp(App[None]):
         # behavior.
         self._approved_tools: set[str] = set()
         self._startup_warnings = startup_warnings
+        # Slash-command ops plumbing (harness-kg9). Each may be None —
+        # in which case the matching /compact /scribe command reports
+        # "not configured" instead of 500-ing. /consolidate wants the
+        # memory + semantic stores already held above; /edit uses the
+        # transcript alone.
+        self._compaction_store = compaction_store
+        self._scribe_lock_dir = scribe_lock_dir
+        self._scribe_user_id = scribe_user_id
         # Accept an external retrieval_health reference so the
         # IntrospectTool (harness-8is) can see live voice/episodic/
         # semantic health without a callback plumbing. When None the
@@ -502,15 +524,32 @@ class ChatApp(App[None]):
         # command that isn't in the registry, we fall through to the
         # model and the palette no longer applies to the next turn.
         self.query_one("#slash_palette", SlashPalette).close()
+        cmd = text.lower()
         # Slash-command intercept. Parity with the classic REPL:
-        # /exit, /quit, :q all exit; unrecognized commands fall
-        # through to the model so a user who types '/anything' into
-        # a prompt isn't silently dropped. More commands (e.g.
-        # /edit) land in later follow-ups — they need
-        # app.suspend() for $EDITOR and feel out of scope here.
-        if text.lower() in {"/exit", "/quit", ":q"}:
+        # /exit, /quit, :q all exit; /edit (+ /capture alias) opens
+        # $EDITOR on Airton's last reply for voice capture; /compact,
+        # /scribe, /consolidate invoke the corresponding memory op.
+        # Unrecognized slash commands fall through to the model so a
+        # user who types '/anything' isn't silently dropped.
+        if cmd in {"/exit", "/quit", ":q"}:
             event.input.value = ""
             self.exit()
+            return
+        if cmd in {"/edit", "/capture"}:
+            event.input.value = ""
+            self._run_edit_capture()
+            return
+        if cmd == "/compact":
+            event.input.value = ""
+            self._kick_op("compact", self._run_compact_sync)
+            return
+        if cmd == "/scribe":
+            event.input.value = ""
+            self._kick_op("scribe", self._run_scribe_sync)
+            return
+        if cmd == "/consolidate":
+            event.input.value = ""
+            self._kick_op("consolidate", self._run_consolidate_sync)
             return
         event.input.value = ""
         # Always-on prompt: if a turn is in flight, enqueue instead of
@@ -519,6 +558,168 @@ class ChatApp(App[None]):
             self._enqueue_prompt(text)
             return
         self._start_turn(text)
+
+    # ---------- slash-command ops (harness-kg9) ----------
+
+    def _run_edit_capture(self) -> None:
+        """In-chat /edit (+ /capture alias): pull the last exchange,
+        open Airton's reply in $EDITOR via app.suspend(), and append
+        the edited text as a new captured voice sample. Mirrors the
+        classic REPL path (cli.py:1750-1781).
+
+        Runs inline — not on a worker — because app.suspend() needs
+        the main thread and because the editor blocks on the user
+        anyway; during that time the app is already paused."""
+        log = self.query_one("#output", RichLog)
+        tail = self._transcript.tail(self._session, limit=50)
+        user_turns = [m for m in tail if m.role == "user"]
+        assistant_turns = [m for m in tail if m.role == "assistant"]
+        if not user_turns or not assistant_turns:
+            log.write(
+                Text(
+                    "no exchange to capture yet — have a turn first, then /edit",
+                    style="yellow",
+                )
+            )
+            return
+        prev_prompt = user_turns[-1].content
+        prev_reply = assistant_turns[-1].content
+        with self.suspend():
+            edited = _open_in_editor(prev_reply)
+        if edited is None:
+            log.write(Text("(no changes — nothing captured)", style="dim"))
+            return
+        captured_path, sample_id, total = _write_voice_capture(
+            prompt=prev_prompt,
+            gold=edited,
+            session=self._session,
+            original=prev_reply,
+        )
+        line = Text()
+        line.append("captured ", style="green")
+        line.append(f"id={sample_id!r} → ", style="dim")
+        line.append(str(captured_path.relative_to(settings.root)))
+        line.append(f" (now {total} captured sample(s))", style="dim")
+        log.write(line)
+
+    def _kick_op(self, label: str, worker: Any) -> None:
+        """Shared helper for /compact, /scribe, /consolidate. Writes a
+        dim '▸ running {label}…' line and kicks `worker` on a thread
+        so the UI stays responsive. Refuses to run concurrently with a
+        model turn — /compact and /scribe share the main adapter and
+        MLX is not thread-safe across complete() calls."""
+        log = self.query_one("#output", RichLog)
+        if self._state.is_busy:
+            log.write(
+                Text(
+                    f"{label}: wait for the current turn to finish, then retry",
+                    style="yellow",
+                )
+            )
+            return
+        log.write(Text(f"▸ running {label}…", style="dim magenta"))
+        self.run_worker(worker, thread=True, exclusive=False, group="op")
+
+    def _render_op_result(self, msg: str, *, error: bool = False) -> None:
+        log = self.query_one("#output", RichLog)
+        style = "red" if error else "dim green"
+        log.write(Text(msg, style=style))
+
+    def _run_compact_sync(self) -> None:
+        if self._compaction_store is None:
+            self.call_from_thread(
+                self._render_op_result,
+                "compact: no compaction store wired for this session",
+                error=True,
+            )
+            return
+        try:
+            outcome = run_compaction(
+                self._adapter,
+                self._transcript,
+                self._compaction_store,
+                session_id=self._session,
+            )
+        except Exception as exc:
+            self.call_from_thread(
+                self._render_op_result,
+                f"compact failed: {type(exc).__name__}: {exc}",
+                error=True,
+            )
+            return
+        msg = (
+            f"✓ compacted {outcome.covered_turns} turn(s) up to id={outcome.new_up_to_turn_id}"
+            if outcome.wrote
+            else "compact: nothing new to fold (not enough turns past the watermark)"
+        )
+        self.call_from_thread(self._render_op_result, msg, error=False)
+
+    def _run_scribe_sync(self) -> None:
+        missing = [
+            name
+            for name, obj in (
+                ("memory_store", self._memory_store),
+                ("semantic_store", self._semantic_store),
+            )
+            if obj is None
+        ]
+        if missing:
+            self.call_from_thread(
+                self._render_op_result,
+                f"scribe: missing {', '.join(missing)} — "
+                "launch with --memories > 0 and --facts > 0",
+                error=True,
+            )
+            return
+        try:
+            summary = run_scribe(
+                self._adapter,
+                self._character,
+                self._transcript,
+                self._memory_store,  # type: ignore[arg-type]  # non-None checked above
+                self._semantic_store,  # type: ignore[arg-type]
+                session_id=self._session,
+                user_id=self._scribe_user_id or self._speaker,
+                lock_dir=self._scribe_lock_dir,
+            )
+        except Exception as exc:
+            self.call_from_thread(
+                self._render_op_result,
+                f"scribe failed: {type(exc).__name__}: {exc}",
+                error=True,
+            )
+            return
+        msg = (
+            f"✓ scribed: {summary.episodic_written} episodic + "
+            f"{summary.semantic_written} semantic candidates "
+            f"across {summary.windows} window(s)"
+        )
+        self.call_from_thread(self._render_op_result, msg, error=False)
+
+    def _run_consolidate_sync(self) -> None:
+        if self._memory_store is None or self._semantic_store is None:
+            self.call_from_thread(
+                self._render_op_result,
+                "consolidate: need both --memories and --facts stores",
+                error=True,
+            )
+            return
+        try:
+            summary = run_consolidation(self._memory_store, self._semantic_store)
+        except Exception as exc:
+            self.call_from_thread(
+                self._render_op_result,
+                f"consolidate failed: {type(exc).__name__}: {exc}",
+                error=True,
+            )
+            return
+        msg = (
+            f"✓ consolidated: episodic {summary.episodic_clusters_merged} cluster(s) merged, "
+            f"{summary.episodic_superseded} superseded; semantic "
+            f"{summary.semantic_groups_merged} group(s) merged, "
+            f"{summary.semantic_superseded} superseded"
+        )
+        self.call_from_thread(self._render_op_result, msg, error=False)
 
     # ---------- slash-palette actions (harness-kg9) ----------
 
