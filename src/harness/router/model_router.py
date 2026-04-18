@@ -43,6 +43,7 @@ Return null (no tool) for:
 - Greetings, thanks, acknowledgements, casual chat
 - Creative writing (haikus, poems, jokes, stories)
 - Explanations of general concepts, definitions, how things work
+  ("explain what X is", "how does Y work", "what is a Z")
 - Opinion or judgment requests ("what do you think", "which is better")
 - Arithmetic, logic, riddles, or anything answerable from general knowledge
 
@@ -53,26 +54,46 @@ Available tools:
 {tool_list}
 
 Disambiguation for common overlaps:
-- read_file: user wants the CONTENTS of a specific named file.
+- read_file: user wants the CONTENTS of a specific named file. A
+  concrete filename like `pyproject.toml` or `README.md` is read_file,
+  even when the verb is "open" or "find".
 - list_dir: user wants to see what's IN a directory.
-- glob: user wants to FIND files matching a name pattern (no content).
+- glob: user wants to FIND files matching a WILDCARD pattern (must
+  contain `*`, `?`, or `[...]`). A bare filename is not a glob.
 - grep: user wants to SEARCH INSIDE files for a text pattern.
-- search_memory / search_facts: user says "remember", "recall", asks
-  about past conversations, or asks what you know about a person/topic.
+- search_web: anything about live external data. "Online", "on the
+  web", "latest", "current" are search_web even when the verb is
+  "find".
+- search_memory: past conversations, specific events ("remember",
+  "recall", "what did we discuss").
+- search_facts: stored attributes or preferences about a subject. The
+  word "fact(s)" is a strong cue for search_facts over search_memory.
 
 Examples:
 
 User message: search the web for bbq restaurants in 85048
 Output: {{"tool": "search_web", "arguments": {{"query": "bbq restaurants 85048"}}}}
 
+User message: find a good recipe for X online
+Output: {{"tool": "search_web", "arguments": {{"query": "good recipe for X"}}}}
+
 User message: show me the contents of src/main.py
 Output: {{"tool": "read_file", "arguments": {{"path": "src/main.py"}}}}
+
+User message: open README.md and tell me what it says
+Output: {{"tool": "read_file", "arguments": {{"path": "README.md"}}}}
 
 User message: list the files in src/tests
 Output: {{"tool": "list_dir", "arguments": {{"path": "src/tests"}}}}
 
+User message: grep for CONFIG_FLAG in the code
+Output: {{"tool": "grep", "arguments": {{"pattern": "CONFIG_FLAG"}}}}
+
 User message: recall what we discussed about retrieval thresholds
 Output: {{"tool": "search_memory", "arguments": {{"query": "retrieval thresholds"}}}}
+
+User message: what facts do you have about Mark's workflow
+Output: {{"tool": "search_facts", "arguments": {{"query": "Mark's workflow"}}}}
 
 User message: hey how's it going
 Output: {{"tool": null, "arguments": {{}}}}
