@@ -40,6 +40,22 @@ class Settings(BaseSettings):
     # HARNESS_MLX_CACHE_LIMIT_MB; benchmarked per tuning commit under
     # harness-0kw (see bench_results/mlx_cache_*.json).
     mlx_cache_limit_mb: int | None = None
+    # ab (airton_b) data-plane isolation. ab wraps bd as its backing
+    # store; its beads DB lives outside the repo so personal tasks
+    # don't leak into the harness git history, get a different backup
+    # cadence, and can federate independently of dev work. Override
+    # via HARNESS_AB_BD_DIR. The dir is treated as a bd working
+    # directory — bd init / bd bootstrap must have been run there
+    # once; the adapter only verifies, never auto-inits.
+    ab_bd_dir: Path | None = None
+    # ab caveman-rewriter register intensity (lite | full | ultra).
+    # Consumed by src/harness/persona/caveman_rewriter.py (harness-inj.3).
+    ab_register: str = "lite"
+    # Whether to apply the caveman rewrite on turns where tools ran.
+    # Off by default — same rationale as Airton's PersonaAdapter:
+    # rewriter compresses, which is wrong for investigate/summarize
+    # tool replies.
+    ab_rewrite_on_tools: bool = False
 
     @property
     def character_path(self) -> Path:
@@ -54,6 +70,15 @@ class Settings(BaseSettings):
     @property
     def db_path(self) -> Path:
         return self.data_path / "harness.sqlite"
+
+    @property
+    def ab_bd_dir_resolved(self) -> Path:
+        """Resolve ab's bd working directory, falling back to
+        ~/.harness/airton_b/ when unset. The dir itself is not created
+        here — BeadsAdapter verifies on use."""
+        if self.ab_bd_dir is not None:
+            return self.ab_bd_dir
+        return Path.home() / ".harness" / "airton_b"
 
 
 settings = Settings()
