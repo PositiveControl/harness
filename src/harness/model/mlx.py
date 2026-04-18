@@ -356,7 +356,9 @@ class MLXAdapter:
         the advisory contract."""
         self._ensure_loaded()
         try:
-            from outlines.generate import json as outlines_json
+            # outlines ships without py.typed; mypy sees `json` as
+            # not-explicitly-exported even though it's the public API.
+            from outlines.generate import json as outlines_json  # type: ignore[attr-defined]
             from outlines.models.mlxlm import MLXLM
         except ImportError as exc:
             raise RuntimeError(
@@ -371,7 +373,11 @@ class MLXAdapter:
         )
         # MLXLM wraps our pre-loaded model + tokenizer; no extra load.
         wrapped = MLXLM(model=self._model, tokenizer=self._tokenizer)
-        generator = outlines_json(wrapped, schema)
+        # outlines 0.1.x expects the schema as a JSON string (not a dict) —
+        # docstring says it accepts a Pydantic class, a function, or a
+        # string containing the JSON Schema spec. Dump the dict here so
+        # the caller (GrammarRouter) can keep working with dicts.
+        generator = outlines_json(wrapped, json.dumps(schema))
         raw = generator(prompt, max_tokens=max_tokens, temperature=temperature)
         # outlines can return either a Python object (dict) or the raw
         # JSON string depending on version. Normalize to a string so the
