@@ -24,10 +24,11 @@ retrieval = [
 grammar = [
     # Constrained JSON-schema decoding for the GrammarRouter. Lives
     # behind the adapter boundary (only src/harness/model/mlx.py
-    # imports it). Keep pinned loosely — outlines has had API churn
-    # and we exercise a narrow surface (generate.json + MLXLM wrap
-    # over a pre-loaded model + tokenizer).
-    "outlines>=0.1",
+    # imports it). Pinned below 1.0 because outlines did a major API
+    # rewrite in v1 (generate.json + MLXLM wrapper moved); see
+    # harness-22f. Migrate to 1.x when we're ready to touch the
+    # adapter's complete_grammar method.
+    "outlines>=0.1,<1.0",
 ]
 dev = [
     "pytest>=8.3",

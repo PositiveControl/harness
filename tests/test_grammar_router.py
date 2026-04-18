@@ -141,7 +141,9 @@ def test_grammar_router_handles_null_tool() -> None:
 def test_grammar_router_returns_none_when_adapter_raises() -> None:
     """Advisory contract — never raises out of classify(). Real-world
     causes: missing `grammar` extra (RuntimeError), outlines internal
-    failure, MLX OOM, etc."""
+    failure, MLX OOM, etc. We also emit a RuntimeWarning the first time
+    so silent degradation (every call returning null) is visible."""
+    import warnings as warnings_module
 
     @dataclass
     class _ExplodingAdapter:
@@ -159,8 +161,18 @@ def test_grammar_router_returns_none_when_adapter_raises() -> None:
             _ = messages, schema, max_tokens, temperature
             raise RuntimeError("outlines unavailable")
 
-    intent = GrammarRouter(adapter=_ExplodingAdapter()).classify("hey", [_spec()])
-    assert intent is None
+    router = GrammarRouter(adapter=_ExplodingAdapter())
+    with warnings_module.catch_warnings(record=True) as w:
+        warnings_module.simplefilter("always")
+        intent1 = router.classify("hey", [_spec()])
+        intent2 = router.classify("also hey", [_spec()])
+    assert intent1 is None
+    assert intent2 is None
+    # Warning fires once, not on every call — avoids spamming a chat
+    # loop when outlines is mis-installed.
+    runtime_warnings = [x for x in w if issubclass(x.category, RuntimeWarning)]
+    assert len(runtime_warnings) == 1
+    assert "outlines unavailable" in str(runtime_warnings[0].message)
 
 
 def test_grammar_router_uses_low_temperature_by_default() -> None:

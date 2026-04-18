@@ -23,8 +23,9 @@ src/harness/model/."""
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from harness.model.adapter import ChatMessage
@@ -76,6 +77,7 @@ class GrammarRouter:
     adapter: Any  # structurally typed; see GrammarCapableAdapter Protocol
     max_tokens: int = 256
     temperature: float = 0.0
+    _warned: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not callable(getattr(self.adapter, "complete_grammar", None)):
@@ -100,10 +102,24 @@ class GrammarRouter:
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
             )
-        except Exception:
+        except Exception as exc:
             # Advisory contract — never raise out of classify(). Adapter
-            # failures (missing grammar extra, OOM, outlines bug) degrade
-            # to 'router could not decide' and the orchestrator falls
-            # through to the normal tool loop.
+            # failures (missing grammar extra, OOM, outlines API drift)
+            # degrade to 'router could not decide' and the orchestrator
+            # falls through to the normal tool loop.
+            #
+            # But: silent degradation makes breakage invisible (we spent
+            # an eval run chasing a 40% accuracy that was actually the
+            # adapter raising on every call). Warn once per router
+            # instance so the failure surfaces without spamming.
+            if not self._warned:
+                warnings.warn(
+                    f"GrammarRouter adapter call failed ({type(exc).__name__}: {exc}). "
+                    f"Falling through to null intent. Check that the `grammar` extra "
+                    f"is installed and the outlines API matches the adapter.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                self._warned = True
             return None
         return parse_router_output(raw)
