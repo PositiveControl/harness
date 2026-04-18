@@ -217,7 +217,7 @@ def _open_episodic_store(character: Character, *, ingest: bool = True) -> Episod
     embedder = _load_embedder()
     if embedder is None:
         return None
-    store = EpisodicStore(settings.db_path, embedder=embedder)  # type: ignore[arg-type]
+    store = EpisodicStore(settings.character_db_path, embedder=embedder)  # type: ignore[arg-type]
     if ingest:
         inserted = ensure_seeds_ingested(character, store)
         if inserted > 0:
@@ -229,7 +229,7 @@ def _open_semantic_store() -> SemanticStore | None:
     embedder = _load_embedder()
     if embedder is None:
         return None
-    return SemanticStore(settings.db_path, embedder=embedder)  # type: ignore[arg-type]
+    return SemanticStore(settings.character_db_path, embedder=embedder)  # type: ignore[arg-type]
 
 
 def _format_ctx_meter(used: int, total: int) -> str:
@@ -1363,7 +1363,7 @@ def chat(
         tui_retriever = _maybe_retriever(character_for_tui, top_k)
         tui_memory_store = _open_episodic_store(character_for_tui) if memories > 0 else None
         tui_semantic_store = _open_semantic_store() if facts > 0 else None
-        tui_transcript = Transcript(settings.db_path)
+        tui_transcript = Transcript(settings.character_db_path)
 
         tui_router: Router | None = None
         if router_enabled:
@@ -1407,7 +1407,9 @@ def chat(
             warnings_out=tui_registry_warnings,
         )
 
-        tui_compaction_store = CompactionStore(settings.db_path) if compact_at > 0 else None
+        tui_compaction_store = (
+            CompactionStore(settings.character_db_path) if compact_at > 0 else None
+        )
         ChatApp(
             character=character_for_tui,
             speaker=speaker,
@@ -1468,8 +1470,8 @@ def chat(
     retriever = _maybe_retriever(character, top_k)
     memory_store = _open_episodic_store(character) if memories > 0 else None
     semantic_store = _open_semantic_store() if facts > 0 else None
-    transcript = Transcript(settings.db_path)
-    compaction_store = CompactionStore(settings.db_path) if compact_at > 0 else None
+    transcript = Transcript(settings.character_db_path)
+    compaction_store = CompactionStore(settings.character_db_path) if compact_at > 0 else None
 
     # Created early so the introspect tool (harness-8is) can hold a
     # live reference to the same object the turn loop mutates.
@@ -2437,7 +2439,7 @@ def memory_scribe(
     semantic = _open_semantic_store()
     if episodic is None or semantic is None:
         raise typer.Exit(code=1)
-    transcript = Transcript(settings.db_path)
+    transcript = Transcript(settings.character_db_path)
     try:
         user_id = None if shared else user
         with Status(f"scribe running on session={session}…", console=console):
@@ -2549,7 +2551,7 @@ def memory_wipe(
     # Hardcoded whitelist — not user input, so S608 is a false positive
     # for this interpolation, but we keep the table names fixed anyway.
     tables = ("episodic", "semantic", "scribe_watermark")
-    conn = sqlite3.connect(settings.db_path)
+    conn = sqlite3.connect(settings.character_db_path)
     try:
         for table in tables:
             with contextlib.suppress(sqlite3.OperationalError):
@@ -2644,7 +2646,7 @@ def voice_capture(
     a separate file from the curated canonical set, and will be loaded
     alongside canonical samples on the next character load. Over time
     this is how the voice corpus compounds from real use."""
-    transcript = Transcript(settings.db_path)
+    transcript = Transcript(settings.character_db_path)
     try:
         history = transcript.tail(session, limit=200)
     finally:

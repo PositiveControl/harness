@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     # directory — bd init / bd bootstrap must have been run there
     # once; the adapter only verifies, never auto-inits.
     ab_bd_dir: Path | None = None
+    # ab's memory DB parent directory. Per-character isolation for
+    # episodic + semantic + transcript + compaction stores so personal
+    # turns and operating-style facts never cross into Airton's silo.
+    # Defaults to <ab_bd_dir>/memory/ when unset — co-locates bd data
+    # and memory under one ab dir for unified backup.
+    ab_memory_dir: Path | None = None
     # ab caveman-rewriter register intensity (lite | full | ultra).
     # Consumed by src/harness/persona/caveman_rewriter.py (harness-inj.3).
     ab_register: str = "lite"
@@ -79,6 +85,35 @@ class Settings(BaseSettings):
         if self.ab_bd_dir is not None:
             return self.ab_bd_dir
         return Path.home() / ".harness" / "airton_b"
+
+    @property
+    def ab_memory_dir_resolved(self) -> Path:
+        """Resolve ab's memory dir, defaulting to <ab_bd_dir>/memory/
+        so one ab directory holds both planes (bd + memory) for a
+        clean backup boundary."""
+        if self.ab_memory_dir is not None:
+            return self.ab_memory_dir
+        return self.ab_bd_dir_resolved / "memory"
+
+    def db_path_for(self, character_name: str) -> Path:
+        """Resolve the memory DB path for a character. Airton (and any
+        other character without explicit isolation) uses the repo-
+        relative default; airton_b is siloed under its own memory dir
+        so personal turns + operating-style facts stay out of the dev
+        store. The parent directory is created eagerly for isolated
+        characters; the default path is managed by `data_path`."""
+        if character_name == "airton_b":
+            memory_dir = self.ab_memory_dir_resolved
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            return memory_dir / "harness.sqlite"
+        return self.db_path
+
+    @property
+    def character_db_path(self) -> Path:
+        """Shortcut to the current character's DB path, derived from
+        `character_name`. Useful in CLI subcommands that don't already
+        hold a Character instance."""
+        return self.db_path_for(self.character_name)
 
 
 settings = Settings()
