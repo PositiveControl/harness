@@ -992,11 +992,11 @@ def chat(
         "through to the normal loop. See harness-ut3.",
     ),
     router_repo: str = typer.Option(
-        "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+        "mlx-community/Hermes-3-Llama-3.2-3B-4bit",
         "--router-repo",
-        help="HF repo for the router model. Default is Qwen 2.5 1.5B "
-        "Instruct 4-bit (~1GB RAM). Only used when --router is on. "
-        "Router is MLX-only for now.",
+        help="HF repo for the router model. Default is "
+        "Hermes-3-Llama-3.2-3B-4bit (~2GB RAM, function-call-tuned). "
+        "Only used when --router is on. Router is MLX-only for now.",
     ),
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
@@ -1750,7 +1750,7 @@ def _resolve_router_tool_specs(tool_names: Sequence[str], workspace: Path) -> li
 @eval_app.command("router")
 def eval_router(
     router_repo: str = typer.Option(
-        "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+        "mlx-community/Hermes-3-Llama-3.2-3B-4bit",
         "--router-repo",
         help="HF repo for the router model under test.",
     ),

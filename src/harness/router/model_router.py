@@ -1,6 +1,6 @@
 """Model-backed Router: wraps a ModelAdapter (typically a small one —
-Qwen 2.5 1.5B Instruct 4-bit is the default) and classifies each turn
-via strict-JSON generation.
+Hermes-3-Llama-3.2-3B-4bit is the default, function-call-tuned) and
+classifies each turn via strict-JSON generation.
 
 The prompt is regenerated per call so the tool list stays fresh:
 enabling/disabling tools between turns doesn't require a new Router.

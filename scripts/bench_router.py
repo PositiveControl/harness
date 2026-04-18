@@ -25,7 +25,7 @@ Usage:
     uv run python scripts/bench_router.py --prompts 5
     uv run python scripts/bench_router.py \\
         --main-repo mlx-community/Qwen2.5-7B-Instruct-4bit \\
-        --router-repo mlx-community/Qwen2.5-1.5B-Instruct-4bit
+        --router-repo mlx-community/Hermes-3-Llama-3.2-3B-4bit
 
 Prompts are pulled from the shipped router_eval.yaml fixture so the
 bench tracks the same ground truth as the accuracy eval. --prompts N
@@ -56,7 +56,7 @@ from harness.tools import (
 )
 
 _DEFAULT_MAIN_REPO = "mlx-community/Qwen2.5-7B-Instruct-4bit"
-_DEFAULT_ROUTER_REPO = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+_DEFAULT_ROUTER_REPO = "mlx-community/Hermes-3-Llama-3.2-3B-4bit"
 
 
 @dataclass

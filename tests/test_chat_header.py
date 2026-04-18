@@ -153,11 +153,11 @@ def test_header_rewrite_on_tools_visible_when_set() -> None:
 
 
 def test_header_router_visible_when_on() -> None:
-    out = _render(router_enabled=True, router_repo="mlx-community/Qwen2.5-1.5B-Instruct-4bit")
+    out = _render(router_enabled=True, router_repo="mlx-community/Hermes-3-Llama-3.2-3B-4bit")
     assert "router" in out
     assert "on" in out
     # Short repo name (no org prefix) is what we show.
-    assert "Qwen2.5-1.5B-Instruct-4bit" in out
+    assert "Hermes-3-Llama-3.2-3B-4bit" in out
 
 
 def test_header_router_hidden_when_off() -> None:
@@ -172,7 +172,7 @@ def test_header_router_hidden_when_tools_off() -> None:
         tools_enabled=False,
         tool_names=[],
         router_enabled=True,
-        router_repo="mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+        router_repo="mlx-community/Hermes-3-Llama-3.2-3B-4bit",
     )
     assert "router" not in out
 
