@@ -118,12 +118,11 @@ class ChatApp(App[None]):
     RichLog {
         height: 1fr;
         border: none;
-        padding: 1 2 0 2;
+        padding: 1 2 1 2;
         background: $background;
     }
 
     #metrics {
-        dock: bottom;
         height: 1;
         background: $boost;
         color: $text-muted;
@@ -131,9 +130,8 @@ class ChatApp(App[None]):
     }
 
     Input {
-        dock: bottom;
         border: tall $accent;
-        margin: 0;
+        margin: 0 0 1 0;
     }
 
     Input:disabled {
@@ -204,12 +202,13 @@ class ChatApp(App[None]):
     # ---------- compose / mount ----------
 
     def compose(self) -> ComposeResult:
-        # Textual stacks docked widgets in reverse declaration order,
-        # so yield the Input *before* the metrics Static to get
-        # metrics on top of input.
+        # Natural vertical flow: RichLog takes remaining space, metrics
+        # sits as a 1-row strip above the input, input at the bottom.
+        # Previous dock-bottom on both overlapped visually — prompt
+        # border got clipped by the stat bar.
         yield RichLog(id="output", wrap=True, markup=True, highlight=False)
-        yield Input(id="prompt", placeholder="type a message… (ctrl+c to quit)")
         yield Static("ctx — · elapsed —", id="metrics")
+        yield Input(id="prompt", placeholder="type a message… (ctrl+c to quit)")
 
     def on_mount(self) -> None:
         log = self.query_one("#output", RichLog)
