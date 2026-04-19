@@ -614,3 +614,141 @@ def test_beads_issue_scope_returns_none_when_unlabeled() -> None:
         raw={},
     )
     assert issue.scope is None
+
+
+def test_beads_issue_parses_assignee_from_json(bd_dir: Path, runner: FakeRunner) -> None:
+    payload = json.dumps(
+        [
+            {
+                "id": "harness-a",
+                "title": "own thought",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": ["scope:personal"],
+                "assignee": "airton_b",
+            }
+        ]
+    )
+    runner.queue(FakeCompletedProcess(stdout=payload))
+    adapter = BeadsAdapter(bd_dir)
+
+    issue = adapter.show("harness-a")
+
+    assert issue.assignee == "airton_b"
+
+
+def test_beads_issue_assignee_defaults_none_when_absent() -> None:
+    issue = BeadsIssue(
+        id="harness-x",
+        title="t",
+        status="open",
+        priority=2,
+        issue_type="task",
+        labels=(),
+        raw={},
+    )
+    assert issue.assignee is None
+
+
+def test_beads_issue_assignee_empty_string_normalizes_to_none(
+    bd_dir: Path, runner: FakeRunner
+) -> None:
+    """bd sometimes emits an empty-string assignee for unassigned beads;
+    normalize to None so `issue.assignee is None` reads cleanly in
+    downstream filters."""
+    payload = json.dumps(
+        [
+            {
+                "id": "harness-u",
+                "title": "unassigned",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "",
+            }
+        ]
+    )
+    runner.queue(FakeCompletedProcess(stdout=payload))
+    adapter = BeadsAdapter(bd_dir)
+
+    issue = adapter.show("harness-u")
+
+    assert issue.assignee is None
+
+
+def test_create_passes_assignee_flag(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(
+        FakeCompletedProcess(stdout="project,event,habit\n"),
+        FakeCompletedProcess(stdout="✓ Created issue: harness-own — own thought\n"),
+    )
+    adapter = BeadsAdapter(bd_dir)
+
+    issue_id = adapter.create(
+        title="own thought",
+        scope="personal",
+        assignee="airton_b",
+    )
+
+    assert issue_id == "harness-own"
+    create_cmd = runner.calls[-1]["cmd"]
+    assert "--assignee" in create_cmd
+    assert create_cmd[create_cmd.index("--assignee") + 1] == "airton_b"
+
+
+def test_create_omits_assignee_flag_when_unset(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(
+        FakeCompletedProcess(stdout="project,event,habit\n"),
+        FakeCompletedProcess(stdout="✓ Created issue: harness-anon — untagged\n"),
+    )
+    adapter = BeadsAdapter(bd_dir)
+
+    adapter.create(title="untagged", scope="personal")
+
+    create_cmd = runner.calls[-1]["cmd"]
+    assert "--assignee" not in create_cmd
+
+
+def test_list_passes_assignee_flag(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(stdout="[]"))
+    adapter = BeadsAdapter(bd_dir)
+
+    adapter.list_issues(assignee="airton_b")
+
+    cmd = runner.calls[0]["cmd"]
+    assert cmd[cmd.index("--assignee") + 1] == "airton_b"
+
+
+def test_ready_passes_assignee_flag(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(stdout="[]"))
+    adapter = BeadsAdapter(bd_dir)
+
+    adapter.ready(assignee="airton_b")
+
+    cmd = runner.calls[0]["cmd"]
+    assert cmd[cmd.index("--assignee") + 1] == "airton_b"
+
+
+def test_search_passes_assignee_flag(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(stdout="[]"))
+    adapter = BeadsAdapter(bd_dir)
+
+    adapter.search("focus", assignee="airton_b")
+
+    cmd = runner.calls[0]["cmd"]
+    assert cmd[cmd.index("--assignee") + 1] == "airton_b"
+
+
+def test_update_accepts_assignee_kwarg(bd_dir: Path, runner: FakeRunner) -> None:
+    """update() dispatches kwargs as --flag pairs; assignee comes along
+    for free via the generic path. Pin it so the convention doesn't
+    silently regress."""
+    runner.queue(FakeCompletedProcess())
+    adapter = BeadsAdapter(bd_dir)
+
+    adapter.update("harness-x", assignee="airton_b")
+
+    cmd = runner.calls[0]["cmd"]
+    assert cmd[:3] == ["bd", "update", "harness-x"]
+    assert cmd[cmd.index("--assignee") + 1] == "airton_b"

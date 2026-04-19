@@ -54,6 +54,7 @@ class BeadsIssue:
     issue_type: str
     labels: tuple[str, ...]
     raw: dict[str, Any]
+    assignee: str | None = None
 
     @property
     def scope(self) -> str | None:
@@ -64,6 +65,8 @@ class BeadsIssue:
 
 
 def _issue_from_json(data: dict[str, Any]) -> BeadsIssue:
+    raw_assignee = data.get("assignee")
+    assignee = str(raw_assignee) if raw_assignee else None
     return BeadsIssue(
         id=str(data["id"]),
         title=str(data.get("title", "")),
@@ -72,6 +75,7 @@ def _issue_from_json(data: dict[str, Any]) -> BeadsIssue:
         issue_type=str(data.get("issue_type", "")),
         labels=tuple(data.get("labels", []) or []),
         raw=data,
+        assignee=assignee,
     )
 
 
@@ -188,10 +192,12 @@ class BeadsAdapter:
         parent: str | None = None,
         deps: Sequence[str] = (),
         extra_labels: Sequence[str] = (),
+        assignee: str | None = None,
     ) -> str:
         """Create a bead with a mandatory scope label. Returns the new
         bead's id. Type defaults to `task` — override with `project`,
-        `event`, `habit`, or `decision`."""
+        `event`, `habit`, or `decision`. `assignee` marks provenance —
+        pass `airton_b` for ab-captured beads, a user id for user-owned."""
         if scope not in ALLOWED_SCOPES:
             raise ValueError(f"scope must be one of {ALLOWED_SCOPES!r}, got {scope!r}")
         if issue_type not in ALLOWED_TYPES:
@@ -215,6 +221,8 @@ class BeadsAdapter:
         ]
         if parent is not None:
             args.extend(["--parent", parent])
+        if assignee is not None:
+            args.extend(["--assignee", assignee])
         result = self._run(args)
         issue_id = _extract_created_id(result.stdout)
         if issue_id is None:
@@ -283,10 +291,11 @@ class BeadsAdapter:
         priority: str | None = None,
         issue_type: str | None = None,
         limit: int | None = None,
+        assignee: str | None = None,
     ) -> list[BeadsIssue]:
-        """Wrap `bd list`. status/priority/type pass through to bd's
-        native flags; scope is filtered client-side since bd doesn't
-        recognize ab's scope: label as a first-class filter."""
+        """Wrap `bd list`. status/priority/type/assignee pass through to
+        bd's native flags; scope is filtered client-side since bd
+        doesn't recognize ab's scope: label as a first-class filter."""
         args = ["list", "--json"]
         if status is not None:
             args.extend(["--status", status])
@@ -294,6 +303,8 @@ class BeadsAdapter:
             args.extend(["--priority", priority])
         if issue_type is not None:
             args.extend(["--type", issue_type])
+        if assignee is not None:
+            args.extend(["--assignee", assignee])
         if limit is not None:
             args.extend(["--limit", str(limit)])
         result = self._run(args)
@@ -309,6 +320,7 @@ class BeadsAdapter:
         *,
         status: str | None = None,
         limit: int | None = None,
+        assignee: str | None = None,
     ) -> list[BeadsIssue]:
         """Wrap `bd search`. Defaults exclude closed issues; pass
         status='all' to include them. Empty query raises ValueError —
@@ -318,13 +330,23 @@ class BeadsAdapter:
         args = ["search", query, "--json"]
         if status is not None:
             args.extend(["--status", status])
+        if assignee is not None:
+            args.extend(["--assignee", assignee])
         if limit is not None:
             args.extend(["--limit", str(limit)])
         result = self._run(args)
         return _parse_issue_list(result.stdout)
 
-    def ready(self, *, scope: str | None = None, limit: int | None = None) -> list[BeadsIssue]:
+    def ready(
+        self,
+        *,
+        scope: str | None = None,
+        limit: int | None = None,
+        assignee: str | None = None,
+    ) -> list[BeadsIssue]:
         args = ["ready", "--json"]
+        if assignee is not None:
+            args.extend(["--assignee", assignee])
         if limit is not None:
             args.extend(["--limit", str(limit)])
         result = self._run(args)
