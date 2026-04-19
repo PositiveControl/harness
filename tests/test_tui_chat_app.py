@@ -289,42 +289,76 @@ async def test_chat_app_streams_sentences_as_tokens_arrive(tmp_path) -> None:  #
 
 
 @pytest.mark.asyncio
-async def test_feed_stream_buffers_partial_until_sentence_boundary(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """Direct test of the sentence buffer: two half-sentences
-    shouldn't emit; once the period arrives, the full sentence does.
-    Exercises the UI-thread invariant without racing a worker."""
+async def test_feed_stream_updates_live_preview_not_log(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-fup: in-flight tokens stream to the preview Static,
+    not the main RichLog. The log stays unchanged until flush."""
     app = _build_app(tmp_path)
     async with app.run_test() as pilot:
         tui_app: ChatApp = pilot.app  # type: ignore[assignment]
         log = pilot.app.query_one("#output", RichLog)
+        preview = pilot.app.query_one("#stream_preview", Static)
         lines_before = len(log.lines)
 
         tui_app._feed_stream("Hello, ")
-        assert len(log.lines) == lines_before  # still pending
         tui_app._feed_stream("world. ")
-        # Sentence boundary hit — one line emitted.
-        assert len(log.lines) == lines_before + 1
-        rendered = str(log.lines[-1])
-        assert "Hello, world." in rendered
-        # First chunk of the turn carries the 'airton ›' prefix.
-        assert "airton" in rendered
+        # Log untouched while the buffer accumulates.
+        assert len(log.lines) == lines_before
+        # Preview reflects the live buffer and is visible.
+        assert "Hello, world." in str(preview.render())
+        assert preview.has_class("-visible")
 
 
 @pytest.mark.asyncio
-async def test_flush_stream_buffer_emits_trailing_fragment(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """A reply that ends mid-sentence (no trailing period) must
-    still make it to the log when the worker flushes."""
+async def test_flush_stream_buffer_commits_markdown_block(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-fup: _flush_stream_buffer writes a badge line plus a
+    rich.Markdown renderable to the log and hides the preview."""
     app = _build_app(tmp_path)
     async with app.run_test() as pilot:
         tui_app: ChatApp = pilot.app  # type: ignore[assignment]
         log = pilot.app.query_one("#output", RichLog)
+        preview = pilot.app.query_one("#stream_preview", Static)
         lines_before = len(log.lines)
 
         tui_app._feed_stream("partial without terminator")
-        assert len(log.lines) == lines_before  # buffered
+        assert len(log.lines) == lines_before  # buffered, not in log
+        assert preview.has_class("-visible")
+
         tui_app._flush_stream_buffer()
-        assert len(log.lines) == lines_before + 1
-        assert "partial without terminator" in str(log.lines[-1])
+        # Badge + Markdown block both landed; Markdown may render on
+        # multiple strips so we only assert it grew and the text + badge
+        # are visible somewhere.
+        assert len(log.lines) > lines_before
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "partial without terminator" in rendered
+        assert "airton" in rendered  # badge
+        assert not preview.has_class("-visible")
+        # Subsequent flushes of the same turn do not repeat the badge.
+        tui_app._feed_stream("next round text")
+        tui_app._flush_stream_buffer()
+        rendered2 = "\n".join(str(line) for line in log.lines)
+        assert rendered2.count("airton ›") == 1
+
+
+@pytest.mark.asyncio
+async def test_flush_renders_fenced_code_with_syntax_highlighting(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-fup: fenced code blocks in the buffered text render via
+    rich.Markdown so the log shows highlighted code instead of raw
+    backtick fences. Assert the code content survives the render and
+    the fence markers themselves don't appear in the rendered output."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        log = pilot.app.query_one("#output", RichLog)
+        tui_app._feed_stream("try this:\n\n```python\nprint('hi')\n```\n")
+        tui_app._flush_stream_buffer()
+        # Syntax-highlighted code splits into per-token Segments; join
+        # each Strip's segment texts to get the rendered plain form.
+        plain = ["".join(seg.text for seg in line._segments) for line in log.lines]
+        rendered = "\n".join(plain)
+        assert "print" in rendered
+        assert "'hi'" in rendered
+        # Markdown strips the ``` fences when it renders the code block.
+        assert "```" not in rendered
 
 
 @pytest.mark.asyncio
@@ -848,25 +882,22 @@ async def test_slash_edit_without_exchange_warns(tmp_path) -> None:  # type: ign
 
 
 @pytest.mark.asyncio
-async def test_stream_drops_empty_paragraph_fragments(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """_emit_stream_sentence drops whitespace-only fragments so
-    `\\n\\n` paragraph breaks don't emit invisible blank lines that
-    push the log scroll up without surfacing any visible text."""
+async def test_flush_drops_whitespace_only_buffer(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-fup: a flush on an empty or whitespace-only buffer
+    must not emit a lone badge line. Mirrors the old paragraph-break
+    drop test for the Markdown-block world."""
     app = _build_app(tmp_path)
     async with app.run_test() as pilot:
         tui_app: ChatApp = pilot.app  # type: ignore[assignment]
-        tui_app._emit_stream_sentence("first.")
-        tui_app._emit_stream_sentence("\n")  # paragraph-break artefact
-        tui_app._emit_stream_sentence("   ")  # whitespace-only
-        tui_app._emit_stream_sentence("second.")
         log = pilot.app.query_one("#output", RichLog)
-        plain = ["".join(seg.text for seg in line._segments) for line in log.lines]
-        airton_lines = [s for s in plain if "airton" in s.lower() or "second" in s.lower()]
-        # Only two assistant lines should have landed: the badged
-        # "first." and the continuation "second." — the two empty
-        # fragments are dropped.
-        assert sum(1 for s in airton_lines if "first" in s) == 1
-        assert sum(1 for s in airton_lines if "second" in s) == 1
+        lines_before = len(log.lines)
+        # Empty buffer: flush is a no-op.
+        tui_app._flush_stream_buffer()
+        assert len(log.lines) == lines_before
+        # Whitespace-only buffer: still a no-op.
+        tui_app._feed_stream("   \n\n")
+        tui_app._flush_stream_buffer()
+        assert len(log.lines) == lines_before
 
 
 @pytest.mark.asyncio

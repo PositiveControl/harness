@@ -21,12 +21,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from rich.markdown import Markdown
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
@@ -103,8 +103,9 @@ class _ChatAppState:
     ctx_used: int = 0
     # Per-turn streaming buffer. Reset at turn start; written to
     # from `_feed_stream` (UI thread only) as token deltas arrive;
-    # flushed at turn end. `stream_first_chunk` tracks whether the
-    # 'airton ›' prefix has been emitted yet.
+    # flushed at round end to a rich.Markdown block in the main log.
+    # `stream_first_chunk` tracks whether the 'airton ›' badge has
+    # been emitted yet this turn (shared across tool-loop rounds).
     stream_buffer: str = ""
     stream_first_chunk: bool = True
     # Always-on input (harness-c93): while a worker is running,
@@ -134,12 +135,6 @@ class _ChatAppState:
     # the confirm strip is hidden and no call is pending.
     confirm_future: asyncio.Future[str] | None = None
 
-
-# Sentence boundary: `.!?` followed by whitespace / closing quote /
-# paren, OR a literal newline. Same heuristic as cli._StreamRenderer;
-# tuned so URLs like www.example.com/path don't split at the dot
-# inside the host.
-_SENTENCE_BOUNDARY_RE = re.compile(r"(?:[.!?][\s)\]'\"]+|\n)")
 
 # Speaker-badge styles (harness-nrx). Reverse-video bold colored pads
 # draw the eye to turn boundaries without touching the message body —
@@ -371,6 +366,19 @@ class ChatApp(App[None]):
         padding: 0 2;
     }
 
+    #stream_preview {
+        height: auto;
+        max-height: 8;
+        padding: 0 2;
+        background: $background;
+        color: $text-muted;
+        display: none;
+    }
+
+    #stream_preview.-visible {
+        display: block;
+    }
+
     #prompt_row {
         height: auto;
     }
@@ -529,6 +537,11 @@ class ChatApp(App[None]):
         # Previous dock-bottom on both overlapped visually — prompt
         # border got clipped by the stat bar.
         yield RichLog(id="output", wrap=True, markup=True, highlight=False)
+        # Live stream preview (harness-fup): in-flight assistant tokens
+        # render here as plain Text for responsiveness. At round end the
+        # buffered text commits to the main RichLog as a rich.Markdown
+        # block so headers, lists, and fenced code render properly.
+        yield Static("", id="stream_preview", markup=False)
         yield Static("ctx — · elapsed —", id="metrics")
         yield SlashPalette(_SLASH_COMMANDS)
         # Prompt row is a Horizontal so the transient write-tier
@@ -670,9 +683,8 @@ class ChatApp(App[None]):
             elif msg.role == "assistant":
                 if _TOOL_CALLS_SENTINEL in msg.content:
                     continue  # tool-call turn — skip to mirror tool-role skipping
-                line = _make_assistant_badge(msg.speaker)
-                line.append(msg.content)
-                log.write(line)
+                log.write(_make_assistant_badge(msg.speaker))
+                log.write(Markdown(msg.content, code_theme="monokai"))
                 self._state.history.append(ChatMessage(role="assistant", content=msg.content))
             # tool-role rows are not replayed — see docstring.
 
@@ -1168,56 +1180,49 @@ class ChatApp(App[None]):
     # ---------- UI-thread helpers (all run via call_from_thread) ----------
 
     def _feed_stream(self, delta: str) -> None:
-        """UI-thread only. Append a token delta to the per-turn
-        buffer and emit every completed sentence as a RichLog line.
+        """UI-thread only. Append a token delta to the in-flight
+        stream buffer and update the live preview Static below the
+        main log. The preview shows the raw text as it arrives for
+        responsiveness; the main log only receives the formatted
+        Markdown block at `_flush_stream_buffer` time (round end).
         Called from the no-tools stream path via call_from_thread,
         and from _render_tool_event when a token_delta observer
-        event fires."""
+        event fires (harness-fup)."""
         if not delta:
             return
         self._state.stream_buffer += delta
-        while True:
-            match = _SENTENCE_BOUNDARY_RE.search(self._state.stream_buffer)
-            if match is None:
-                return
-            end = match.end()
-            sentence = self._state.stream_buffer[:end]
-            self._state.stream_buffer = self._state.stream_buffer[end:]
-            self._emit_stream_sentence(sentence)
+        try:
+            preview = self.query_one("#stream_preview", Static)
+        except Exception:
+            return
+        preview.update(Text(self._state.stream_buffer))
+        preview.add_class("-visible")
 
     def _flush_stream_buffer(self) -> None:
-        """UI-thread only. Emit whatever is left in the buffer even
-        without a trailing sentence boundary — the model may stop
-        mid-sentence, or the reply may end with an incomplete quote
-        the regex won't match."""
-        if self._state.stream_buffer:
-            self._emit_stream_sentence(self._state.stream_buffer)
-            self._state.stream_buffer = ""
-
-    def _emit_stream_sentence(self, sentence: str) -> None:
-        """UI-thread only. Write one sentence of the assistant's
-        reply to the log, prefixing the first emission of this turn
-        with the assistant badge so the user can see who is speaking.
-        Subsequent sentences land as continuation lines (no badge) so
-        code blocks and wrapped prose stay clean.
-
-        Empty / whitespace-only fragments are dropped. The sentence
-        regex splits on bare `\\n` too, so a reply containing `\\n\\n`
-        (paragraph break) used to emit an empty Text which RichLog
-        rendered as an invisible blank line — pushing the visible
-        scroll up on every paragraph without showing anything.
-        harness-nrx follow-up."""
-        cleaned = sentence.rstrip("\n").strip()
-        if not cleaned:
+        """UI-thread only. Commit the buffered round text to the
+        main RichLog as a rich.Markdown renderable, then clear the
+        live preview. Called at round boundaries (tool call emitted,
+        truncated_retry, or turn end). Whitespace-only buffers are
+        dropped so an empty wrap-up round doesn't emit a lone badge
+        line (harness-fup)."""
+        text = self._state.stream_buffer
+        self._state.stream_buffer = ""
+        self._hide_stream_preview()
+        if not text.strip():
             return
         log = self.query_one("#output", RichLog)
         if self._state.stream_first_chunk:
-            line = _make_assistant_badge(self._character.name)
+            log.write(_make_assistant_badge(self._character.name))
             self._state.stream_first_chunk = False
-        else:
-            line = Text()
-        line.append(cleaned)
-        log.write(line)
+        log.write(Markdown(text, code_theme="monokai"))
+
+    def _hide_stream_preview(self) -> None:
+        try:
+            preview = self.query_one("#stream_preview", Static)
+        except Exception:
+            return
+        preview.update("")
+        preview.remove_class("-visible")
 
     def _render_error(self, exc: BaseException) -> None:
         log = self.query_one("#output", RichLog)
@@ -1264,6 +1269,7 @@ class ChatApp(App[None]):
         self._state.turn_seq += 1
         self._state.stream_buffer = ""
         self._state.stream_first_chunk = True
+        self._hide_stream_preview()
         if self._state.turn_started_at is not None:
             self._state.last_elapsed = time.monotonic() - self._state.turn_started_at
         self._state.turn_started_at = None
@@ -1448,6 +1454,14 @@ class ChatApp(App[None]):
         two lines in the RichLog. Uses rich.Text (not markup strings)
         so tool arguments / output snippets can't inject styles."""
         log = self.query_one("#output", RichLog)
+        # harness-fup: non-token events mean the current streaming
+        # round is done (or never started). Flush the live preview
+        # into the log as Markdown before rendering the tool-event
+        # line so visual order matches emission order. Skip the flush
+        # for truncated_retry — that branch drops the partial instead
+        # of committing it, since the wider-budget retry supersedes.
+        if event.kind not in ("token_delta", "truncated_retry"):
+            self._flush_stream_buffer()
         if event.kind == "router_intent":
             call = event.call
             assert call is not None
@@ -1500,6 +1514,7 @@ class ChatApp(App[None]):
             # not appends to it (harness-6rl).
             self._state.stream_buffer = ""
             self._state.stream_first_chunk = True
+            self._hide_stream_preview()
             log.write(Text("⋯ truncated, retrying with wider budget…", style="dim"))
         # Other event kinds (round_start, model_call_start/end,
         # round_complete) are internal book-keeping — the metrics
