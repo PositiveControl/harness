@@ -1051,16 +1051,24 @@ class ChatApp(App[None]):
         reply to the log, prefixing the first emission of this turn
         with the assistant badge so the user can see who is speaking.
         Subsequent sentences land as continuation lines (no badge) so
-        code blocks and wrapped prose stay clean."""
+        code blocks and wrapped prose stay clean.
+
+        Empty / whitespace-only fragments are dropped. The sentence
+        regex splits on bare `\\n` too, so a reply containing `\\n\\n`
+        (paragraph break) used to emit an empty Text which RichLog
+        rendered as an invisible blank line — pushing the visible
+        scroll up on every paragraph without showing anything.
+        harness-nrx follow-up."""
+        cleaned = sentence.rstrip("\n").strip()
+        if not cleaned:
+            return
         log = self.query_one("#output", RichLog)
         if self._state.stream_first_chunk:
             line = _make_assistant_badge(self._character.name)
             self._state.stream_first_chunk = False
         else:
             line = Text()
-        # rstrip the trailing newline the regex captured — RichLog
-        # adds its own line break and double newlines look off.
-        line.append(sentence.rstrip("\n"))
+        line.append(cleaned)
         log.write(line)
 
     def _render_error(self, exc: BaseException) -> None:

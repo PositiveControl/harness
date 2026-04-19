@@ -847,6 +847,28 @@ async def test_slash_edit_without_exchange_warns(tmp_path) -> None:  # type: ign
 
 
 @pytest.mark.asyncio
+async def test_stream_drops_empty_paragraph_fragments(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """_emit_stream_sentence drops whitespace-only fragments so
+    `\\n\\n` paragraph breaks don't emit invisible blank lines that
+    push the log scroll up without surfacing any visible text."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        tui_app._emit_stream_sentence("first.")
+        tui_app._emit_stream_sentence("\n")  # paragraph-break artefact
+        tui_app._emit_stream_sentence("   ")  # whitespace-only
+        tui_app._emit_stream_sentence("second.")
+        log = pilot.app.query_one("#output", RichLog)
+        plain = ["".join(seg.text for seg in line._segments) for line in log.lines]
+        airton_lines = [s for s in plain if "airton" in s.lower() or "second" in s.lower()]
+        # Only two assistant lines should have landed: the badged
+        # "first." and the continuation "second." — the two empty
+        # fragments are dropped.
+        assert sum(1 for s in airton_lines if "first" in s) == 1
+        assert sum(1 for s in airton_lines if "second" in s) == 1
+
+
+@pytest.mark.asyncio
 async def test_turn_has_blank_separator_and_badges(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """harness-nrx: each turn is preceded by a blank line and wears a
     reverse-video colored badge so sent / received are distinguishable

@@ -51,29 +51,33 @@ class ConfirmToolScreen(ModalScreen[str]):
     scrolling log stays visible behind it — the user can double-
     check the last tool output before approving."""
 
+    # Compact dialog: sized to content with a hard cap, a thin border,
+    # and a semi-transparent backdrop (default ModalScreen overlay) so
+    # the chat log behind stays readable. Prior sizing (max-width: 80,
+    # thick border, no arg cap) pushed write_file calls with long
+    # content into a screen-filling slab.
     CSS = """
     ConfirmToolScreen {
         align: center middle;
     }
 
     #dialog {
-        padding: 1 2;
+        padding: 0 1;
         width: auto;
-        max-width: 80;
+        max-width: 60;
         height: auto;
+        max-height: 16;
         background: $panel;
-        border: thick $warning;
+        border: round $warning;
     }
 
     #title {
         text-style: bold;
         color: $warning;
-        padding-bottom: 1;
     }
 
     #args {
         color: $text-muted;
-        padding-bottom: 1;
     }
 
     #hint {
@@ -81,6 +85,13 @@ class ConfirmToolScreen(ModalScreen[str]):
         text-style: italic;
     }
     """
+
+    # Cap for the pretty-printed arguments block. Beyond this we
+    # truncate with an ellipsis — enough to show the user what the
+    # call is doing (first few lines of a write_file payload etc.)
+    # without the modal swallowing the whole screen.
+    _ARGS_MAX_LINES = 8
+    _ARGS_MAX_CHARS = 600
 
     BINDINGS: ClassVar[list[BindingType]] = [
         ("y", "approve", "approve"),
@@ -100,13 +111,29 @@ class ConfirmToolScreen(ModalScreen[str]):
             # Pretty-print args so multi-line / long-arg write calls
             # are legible. dumps falls back to str() for non-JSON-
             # serializable values — tool args are free-form dicts,
-            # so hedge.
+            # so hedge. Truncate so a long write_file payload doesn't
+            # balloon the modal past a handful of lines.
             try:
                 args_text = json.dumps(self._call.arguments, indent=2)
             except TypeError:
                 args_text = str(self._call.arguments)
-            yield Static(args_text, id="args")
+            yield Static(self._truncate(args_text), id="args")
             yield Static("[y] approve   [n] decline   [a] always", id="hint")
+
+    @classmethod
+    def _truncate(cls, text: str) -> str:
+        lines = text.splitlines()
+        truncated = False
+        if len(lines) > cls._ARGS_MAX_LINES:
+            lines = lines[: cls._ARGS_MAX_LINES]
+            truncated = True
+        joined = "\n".join(lines)
+        if len(joined) > cls._ARGS_MAX_CHARS:
+            joined = joined[: cls._ARGS_MAX_CHARS]
+            truncated = True
+        if truncated:
+            joined = f"{joined.rstrip()}\n… (truncated)"
+        return joined
 
     def action_approve(self) -> None:
         self.dismiss(APPROVE)
