@@ -91,11 +91,14 @@ from harness.tools import (
 from harness.tools.ab_ops import (
     CaptureTool,
     CloseTool,
+    CommentsTool,
     DeferTool,
     DeleteTool,
     DepTool,
     DriftTool,
+    FindDuplicatesTool,
     ForgetTool,
+    LabelTool,
     ListTool,
     MemoriesTool,
     PlanTool,
@@ -302,6 +305,9 @@ def _ab_tool_builders(
         "memories": lambda: MemoriesTool(ab_adapter),
         "forget": lambda: ForgetTool(ab_adapter),
         "dep": lambda: DepTool(ab_adapter),
+        "label": lambda: LabelTool(ab_adapter),
+        "comments": lambda: CommentsTool(ab_adapter),
+        "find_duplicates": lambda: FindDuplicatesTool(ab_adapter),
     }
 
 

@@ -21,11 +21,14 @@ from harness.store.bd_adapter import BeadsIssue
 from harness.tools.ab_ops import (
     CaptureTool,
     CloseTool,
+    CommentsTool,
     DeferTool,
     DeleteTool,
     DepTool,
     DriftTool,
+    FindDuplicatesTool,
     ForgetTool,
+    LabelTool,
     ListTool,
     MemoriesTool,
     PlanTool,
@@ -90,6 +93,9 @@ class FakeAdapter:
     show_issues: dict[str, BeadsIssue] = field(default_factory=dict)
     stale_issues: list[BeadsIssue] = field(default_factory=list)
     memories_output: str = ""
+    label_list_output: str = ""
+    comments_list_output: str = ""
+    duplicate_pairs: list[dict[str, Any]] = field(default_factory=list)
     create_calls: list[dict[str, Any]] = field(default_factory=list)
     close_calls: list[dict[str, Any]] = field(default_factory=list)
     reopen_calls: list[dict[str, Any]] = field(default_factory=list)
@@ -102,6 +108,12 @@ class FakeAdapter:
     forget_calls: list[str] = field(default_factory=list)
     memories_calls: list[str] = field(default_factory=list)
     remember_calls: list[str] = field(default_factory=list)
+    label_add_calls: list[tuple[str, str]] = field(default_factory=list)
+    label_rm_calls: list[tuple[str, str]] = field(default_factory=list)
+    label_list_calls: list[str] = field(default_factory=list)
+    comment_add_calls: list[tuple[str, str]] = field(default_factory=list)
+    comments_list_calls: list[str] = field(default_factory=list)
+    find_duplicates_calls: list[dict[str, Any]] = field(default_factory=list)
     next_create_id: str = "harness-new"
 
     def ready(
@@ -182,6 +194,35 @@ class FakeAdapter:
 
     def forget(self, key: str) -> None:
         self.forget_calls.append(key)
+
+    def label_add(self, issue_id: str, label: str) -> None:
+        self.label_add_calls.append((issue_id, label))
+
+    def label_rm(self, issue_id: str, label: str) -> None:
+        self.label_rm_calls.append((issue_id, label))
+
+    def label_list(self, issue_id: str) -> str:
+        self.label_list_calls.append(issue_id)
+        return self.label_list_output
+
+    def comment_add(self, issue_id: str, text: str) -> None:
+        self.comment_add_calls.append((issue_id, text))
+
+    def comments_list(self, issue_id: str) -> str:
+        self.comments_list_calls.append(issue_id)
+        return self.comments_list_output
+
+    def find_duplicates(
+        self,
+        *,
+        threshold: float | None = None,
+        limit: int | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        self.find_duplicates_calls.append(
+            {"threshold": threshold, "limit": limit, "status": status}
+        )
+        return list(self.duplicate_pairs)
 
 
 def test_classify_priority_zero_is_shall() -> None:
@@ -615,13 +656,108 @@ def test_dep_tool_rejects_unknown_op() -> None:
     assert adapter.dep_rm_calls == []
 
 
-def test_make_ops_tools_returns_sixteen_distinct_names() -> None:
+def test_label_tool_add() -> None:
+    adapter = FakeAdapter()
+    out = LabelTool(adapter).call(op="add", id="harness-x", label="tech-debt")
+    assert adapter.label_add_calls == [("harness-x", "tech-debt")]
+    assert "Added label" in out
+
+
+def test_label_tool_remove() -> None:
+    adapter = FakeAdapter()
+    out = LabelTool(adapter).call(op="remove", id="harness-x", label="tech-debt")
+    assert adapter.label_rm_calls == [("harness-x", "tech-debt")]
+    assert "Removed label" in out
+
+
+def test_label_tool_list() -> None:
+    adapter = FakeAdapter(label_list_output="scope:professional\ntech-debt\n")
+    out = LabelTool(adapter).call(op="list", id="harness-x")
+    assert adapter.label_list_calls == ["harness-x"]
+    assert "tech-debt" in out
+
+
+def test_label_tool_list_empty_branch() -> None:
+    adapter = FakeAdapter(label_list_output="")
+    out = LabelTool(adapter).call(op="list", id="harness-x")
+    assert "no labels" in out
+
+
+def test_label_tool_add_requires_label() -> None:
+    adapter = FakeAdapter()
+    out = LabelTool(adapter).call(op="add", id="harness-x")
+    assert "requires a label" in out
+    assert adapter.label_add_calls == []
+
+
+def test_label_tool_rejects_unknown_op() -> None:
+    out = LabelTool(FakeAdapter()).call(op="toggle", id="harness-x", label="x")
+    assert "unknown op" in out
+
+
+def test_comments_tool_add() -> None:
+    adapter = FakeAdapter()
+    out = CommentsTool(adapter).call(op="add", id="harness-x", text="looking into this")
+    assert adapter.comment_add_calls == [("harness-x", "looking into this")]
+    assert "Added comment" in out
+
+
+def test_comments_tool_list() -> None:
+    adapter = FakeAdapter(comments_list_output="2026-04-18: looking into this\n")
+    out = CommentsTool(adapter).call(op="list", id="harness-x")
+    assert adapter.comments_list_calls == ["harness-x"]
+    assert "looking into this" in out
+
+
+def test_comments_tool_list_empty_branch() -> None:
+    adapter = FakeAdapter(comments_list_output="")
+    out = CommentsTool(adapter).call(op="list", id="harness-x")
+    assert "no comments" in out
+
+
+def test_comments_tool_add_requires_text() -> None:
+    adapter = FakeAdapter()
+    out = CommentsTool(adapter).call(op="add", id="harness-x", text="   ")
+    assert "requires non-empty text" in out
+    assert adapter.comment_add_calls == []
+
+
+def test_find_duplicates_tool_renders_pairs() -> None:
+    adapter = FakeAdapter(
+        duplicate_pairs=[
+            {
+                "a_id": "harness-a",
+                "b_id": "harness-b",
+                "a_title": "auth refactor",
+                "b_title": "refactor the auth path",
+                "similarity": 0.78,
+            }
+        ]
+    )
+    out = FindDuplicatesTool(adapter).call(threshold=0.4, limit=10, status="open")
+    assert adapter.find_duplicates_calls == [{"threshold": 0.4, "limit": 10, "status": "open"}]
+    assert "harness-a" in out
+    assert "harness-b" in out
+    assert "0.78" in out
+
+
+def test_find_duplicates_tool_empty_branch() -> None:
+    out = FindDuplicatesTool(FakeAdapter()).call()
+    assert "no duplicate candidates" in out
+
+
+def test_find_duplicates_tool_rejects_out_of_range_threshold() -> None:
+    out = FindDuplicatesTool(FakeAdapter()).call(threshold=1.5)
+    assert "0.0-1.0" in out
+
+
+def test_make_ops_tools_returns_nineteen_distinct_names() -> None:
     tools = make_ops_tools(FakeAdapter())
     names = [t.spec.name for t in tools]
-    assert len(names) == 16
-    assert len(set(names)) == 16
-    # Expected surface matches the v1 spec plus tranche-1 + tranche-2
-    # additions.
+    assert len(names) == 19
+    assert len(set(names)) == 19
+    # Expected surface covers every tranche (v1 + tranche-1 + tranche-2
+    # + tranche-3).
     assert set(names) == {
         "plan",
         "capture",
@@ -639,4 +775,7 @@ def test_make_ops_tools_returns_sixteen_distinct_names() -> None:
         "memories",
         "forget",
         "dep",
+        "label",
+        "comments",
+        "find_duplicates",
     }

@@ -421,6 +421,92 @@ def test_memories_passes_query(bd_dir: Path, runner: FakeRunner) -> None:
     assert runner.calls[0]["cmd"] == ["bd", "memories", "dolt"]
 
 
+def test_label_add_command_shape(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess())
+    adapter = BeadsAdapter(bd_dir)
+    adapter.label_add("harness-x", "tech-debt")
+    assert runner.calls[0]["cmd"] == ["bd", "label", "add", "harness-x", "tech-debt"]
+
+
+def test_label_rm_command_shape(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess())
+    adapter = BeadsAdapter(bd_dir)
+    adapter.label_rm("harness-x", "tech-debt")
+    assert runner.calls[0]["cmd"] == ["bd", "label", "remove", "harness-x", "tech-debt"]
+
+
+def test_label_rejects_empty_label(bd_dir: Path, runner: FakeRunner) -> None:
+    adapter = BeadsAdapter(bd_dir)
+    with pytest.raises(ValueError, match="non-empty"):
+        adapter.label_add("harness-x", "   ")
+    assert runner.calls == []
+
+
+def test_label_list_returns_stdout(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(stdout="scope:professional\ntech-debt\n"))
+    adapter = BeadsAdapter(bd_dir)
+    out = adapter.label_list("harness-x")
+    assert "tech-debt" in out
+    assert runner.calls[0]["cmd"] == ["bd", "label", "list", "harness-x"]
+
+
+def test_comment_add_command_shape(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess())
+    adapter = BeadsAdapter(bd_dir)
+    adapter.comment_add("harness-x", "looking into this")
+    assert runner.calls[0]["cmd"] == ["bd", "comments", "add", "harness-x", "looking into this"]
+
+
+def test_comments_list_returns_stdout(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(stdout="2026-04-18: looking into this\n"))
+    adapter = BeadsAdapter(bd_dir)
+    out = adapter.comments_list("harness-x")
+    assert "looking into this" in out
+    assert runner.calls[0]["cmd"] == ["bd", "comments", "harness-x"]
+
+
+def test_comment_add_rejects_empty_text(bd_dir: Path, runner: FakeRunner) -> None:
+    adapter = BeadsAdapter(bd_dir)
+    with pytest.raises(ValueError, match="non-empty"):
+        adapter.comment_add("harness-x", "   ")
+    assert runner.calls == []
+
+
+def test_find_duplicates_parses_json(bd_dir: Path, runner: FakeRunner) -> None:
+    payload = json.dumps(
+        [
+            {
+                "a_id": "harness-a",
+                "b_id": "harness-b",
+                "a_title": "auth refactor",
+                "b_title": "refactor the auth path",
+                "similarity": 0.78,
+            }
+        ]
+    )
+    runner.queue(FakeCompletedProcess(stdout=payload))
+    adapter = BeadsAdapter(bd_dir)
+
+    pairs = adapter.find_duplicates(threshold=0.4, limit=10, status="open")
+
+    assert len(pairs) == 1
+    assert pairs[0]["a_id"] == "harness-a"
+    cmd = runner.calls[0]["cmd"]
+    assert cmd[:2] == ["bd", "find-duplicates"]
+    assert "--json" in cmd
+    # Mechanical method is forced; AI method would leak to cloud.
+    assert cmd[cmd.index("--method") + 1] == "mechanical"
+    assert cmd[cmd.index("--threshold") + 1] == "0.4"
+    assert cmd[cmd.index("--limit") + 1] == "10"
+    assert cmd[cmd.index("--status") + 1] == "open"
+
+
+def test_find_duplicates_empty_stdout_returns_empty_list(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(stdout=""))
+    adapter = BeadsAdapter(bd_dir)
+    assert adapter.find_duplicates() == []
+
+
 def test_verify_raises_when_bd_not_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / ".beads").mkdir()
     monkeypatch.setattr("harness.store.bd_adapter.shutil.which", lambda _: None)
