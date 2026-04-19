@@ -24,7 +24,7 @@ from harness.model.echo import EchoAdapter
 from harness.store.transcript import Transcript
 from harness.tools import ModelReply, ReadFileTool, ToolCall, ToolRegistry, ToolSpec
 from harness.tui import ChatApp
-from harness.tui.confirm_screen import ConfirmToolScreen
+from harness.tui.chat_app import ConfirmStrip
 
 
 @pytest.mark.asyncio
@@ -366,12 +366,13 @@ async def test_chat_app_renders_tool_events_inline(tmp_path) -> None:  # type: i
 
 
 @pytest.mark.asyncio
-async def test_chat_app_confirm_modal_declined_via_escape(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """harness-mz2: write-tier tool pushes the confirm modal.
-    Pressing escape dismisses with DECLINE → run_tool_loop injects
-    a 'user declined' tool-role message → the scripted adapter's
-    wrap-up reply still shows up in the log, and the WriteOnlyTool
-    .call() is never reached (its body raises AssertionError)."""
+async def test_chat_app_confirm_strip_declined_via_escape(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-drd: write-tier tool shows the inline confirm strip.
+    Pressing escape resolves the pending future with DECLINE →
+    run_tool_loop injects a 'user declined' tool-role message → the
+    scripted adapter's wrap-up reply still shows up in the log, and
+    the WriteOnlyTool .call() is never reached (its body raises
+    AssertionError)."""
     registry = ToolRegistry()
     registry.register(_WriteOnlyTool())
 
@@ -389,7 +390,7 @@ async def test_chat_app_confirm_modal_declined_via_escape(tmp_path) -> None:  # 
         prompt = pilot.app.query_one("#prompt", Input)
         prompt.value = "write to file.txt"
         await pilot.press("enter")
-        await _wait_for_modal(pilot)
+        await _wait_for_confirm(pilot)
         await pilot.press("escape")
         await _wait_for_workers(pilot)
         await pilot.pause(0.05)
@@ -401,9 +402,9 @@ async def test_chat_app_confirm_modal_declined_via_escape(tmp_path) -> None:  # 
 
 
 @pytest.mark.asyncio
-async def test_chat_app_confirm_modal_approved_via_y(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """Pressing `y` on the modal approves — the tool runs, result
-    flows back, wrap-up reply renders normally."""
+async def test_chat_app_confirm_strip_approved_via_y(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Pressing `y` while the confirm strip is visible approves —
+    the tool runs, result flows back, wrap-up reply renders normally."""
     calls_made: list[dict[str, object]] = []
     registry = ToolRegistry()
     registry.register(_RecordingWriteTool(calls_made=calls_made))
@@ -422,7 +423,7 @@ async def test_chat_app_confirm_modal_approved_via_y(tmp_path) -> None:  # type:
         prompt = pilot.app.query_one("#prompt", Input)
         prompt.value = "do it"
         await pilot.press("enter")
-        await _wait_for_modal(pilot)
+        await _wait_for_confirm(pilot)
         await pilot.press("y")
         await _wait_for_workers(pilot)
         await pilot.pause(0.05)
@@ -434,7 +435,7 @@ async def test_chat_app_confirm_modal_approved_via_y(tmp_path) -> None:  # type:
 
 
 @pytest.mark.asyncio
-async def test_chat_app_confirm_modal_always_skips_future_prompts(tmp_path) -> None:  # type: ignore[no-untyped-def]
+async def test_chat_app_confirm_strip_always_skips_future_prompts(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """Pressing `a` approves AND marks the tool always-allowed for
     the session. A second call to the same tool next turn must run
     without re-prompting."""
@@ -461,14 +462,14 @@ async def test_chat_app_confirm_modal_always_skips_future_prompts(tmp_path) -> N
         prompt = pilot.app.query_one("#prompt", Input)
         prompt.value = "first"
         await pilot.press("enter")
-        await _wait_for_modal(pilot)
+        await _wait_for_confirm(pilot)
         await pilot.press("a")
         await _wait_for_workers(pilot)
         await pilot.pause(0.05)
 
-        # Turn 2: no modal should appear. Running the turn completes
-        # end-to-end; if a modal had popped we'd time out in
-        # _wait_for_workers because the worker parks on it.
+        # Turn 2: no confirm strip should appear. Running the turn
+        # completes end-to-end; if a confirm had surfaced we'd time
+        # out in _wait_for_workers because the worker parks on it.
         prompt.value = "second"
         await pilot.press("enter")
         await _wait_for_workers(pilot)
@@ -1144,20 +1145,19 @@ async def _wait_for_workers(pilot) -> None:  # type: ignore[no-untyped-def]
     await pilot.pause()
 
 
-async def _wait_for_modal(pilot, *, timeout: float = 2.0) -> None:  # type: ignore[no-untyped-def]
-    """Poll until ConfirmToolScreen is on the screen stack or the
-    timeout expires. Tests can't use _wait_for_workers here because
-    the worker is deliberately parked on call_from_thread while the
-    modal is open."""
+async def _wait_for_confirm(pilot, *, timeout: float = 2.0) -> None:  # type: ignore[no-untyped-def]
+    """Poll until the inline write-tier confirm strip is visible (the
+    worker is parked on the pending future) or the timeout expires.
+    Tests can't use _wait_for_workers here because the worker is
+    deliberately parked on call_from_thread while the strip is up."""
     import asyncio
 
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
-        for screen in pilot.app.screen_stack:
-            if isinstance(screen, ConfirmToolScreen):
-                return
+        tui_app: ChatApp = pilot.app
+        if tui_app._confirm_pending():
+            strip = pilot.app.query_one(ConfirmStrip)
+            assert strip.has_class("-visible"), "confirm future set but strip hidden"
+            return
         await pilot.pause(0.02)
-    raise AssertionError(
-        f"ConfirmToolScreen never appeared within {timeout}s — "
-        f"current screen stack: {pilot.app.screen_stack}"
-    )
+    raise AssertionError(f"inline confirm strip never appeared within {timeout}s")

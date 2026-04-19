@@ -18,7 +18,9 @@ confirmation modal.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import json
 import re
 import time
 from collections import deque
@@ -28,7 +30,9 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
-from textual.widgets import Input, RichLog, Static
+from textual.containers import Horizontal
+from textual.widget import Widget
+from textual.widgets import Button, Input, RichLog, Static
 
 from harness.cli import (
     _TOOL_CALLS_SENTINEL,
@@ -48,7 +52,14 @@ from harness.consolidate import run_consolidation
 from harness.model.adapter import ChatMessage, approx_token_count
 from harness.orchestrator import ToolLoopEvent, run_tool_loop
 from harness.scribe import run_scribe
-from harness.tui.confirm_screen import ALWAYS, APPROVE, ConfirmToolScreen
+
+# Inline confirm verdicts (harness-drd). Replaces the previous
+# ConfirmToolScreen modal: confirmation now lives on the prompt row
+# itself. Public constants so the confirm action handlers and the
+# worker-thread bridge don't stringly-type the three outcomes.
+APPROVE = "approve"
+DECLINE = "decline"
+ALWAYS = "always"
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -116,6 +127,12 @@ class _ChatAppState:
     # workers can't be killed mid-execution; the seq gate is how we
     # make their late updates harmless.
     turn_seq: int = 0
+    # Inline write-tier confirmation (harness-drd). Future is created
+    # on the UI event loop when a write-tier tool call arrives and
+    # resolved by action_confirm_{approve,decline,always} or escape.
+    # The worker thread awaits it via call_from_thread. None means
+    # the confirm strip is hidden and no call is pending.
+    confirm_future: asyncio.Future[str] | None = None
 
 
 # Sentence boundary: `.!?` followed by whitespace / closing quote /
@@ -238,6 +255,88 @@ class SlashPalette(Static):
         self.update("\n".join(lines) if lines else " ")
 
 
+class ConfirmStrip(Widget):
+    """Inline write-tier confirmation strip (harness-drd).
+
+    Docks to the left of the prompt Input inside `#prompt_row`. When a
+    write-tier tool call arrives the strip is shown, receives focus,
+    and offers three verdicts via keybindings (y/n/a, plus Escape as
+    a decline alias) and three real Buttons so mouse users aren't
+    stranded. The Input stays visible with its caret and value intact
+    — it's just temporarily not the focused widget so letter bindings
+    can fire without being swallowed by Input's character path.
+
+    Verdicts are posted upward to the App via its `_resolve_confirm`
+    hook so a single code path fulfils the pending confirm future
+    regardless of whether it came from a key or a click."""
+
+    can_focus = True
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("y", "approve", "approve", priority=True),
+        Binding("n", "decline", "decline", priority=True),
+        Binding("a", "always", "always", priority=True),
+        Binding("escape", "decline", "cancel", priority=True),
+        # Left/right walk between the three Buttons so keyboard-only
+        # users can tab-navigate without going through the Input.
+        Binding("left", "focus_previous", show=False),
+        Binding("right", "focus_next", show=False),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__(id="confirm_strip")
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="confirm_summary", markup=True)
+        with Horizontal(id="confirm_buttons"):
+            yield Button("[y] approve", id="btn_confirm_approve", variant="success")
+            yield Button("[n] decline", id="btn_confirm_decline", variant="error")
+            yield Button("[a] always", id="btn_confirm_always", variant="warning")
+
+    def show_for(self, summary_markup: str) -> None:
+        self.query_one("#confirm_summary", Static).update(summary_markup)
+        self.add_class("-visible")
+        # Focus a button (not the wrapper) so Enter/Space can activate
+        # the default verdict and mouse/keyboard navigation feels
+        # coherent. `approve` is the highlighted default.
+        self.query_one("#btn_confirm_approve", Button).focus()
+
+    def hide(self) -> None:
+        self.remove_class("-visible")
+        self.query_one("#confirm_summary", Static).update("")
+
+    # Widget-level actions forward to the app resolver so the pending
+    # future is fulfilled once; the app also hides the strip and
+    # returns focus to the Input.
+    def action_approve(self) -> None:
+        app = self.app
+        if isinstance(app, ChatApp):
+            app._resolve_confirm(APPROVE)
+
+    def action_decline(self) -> None:
+        app = self.app
+        if isinstance(app, ChatApp):
+            app._resolve_confirm(DECLINE)
+
+    def action_always(self) -> None:
+        app = self.app
+        if isinstance(app, ChatApp):
+            app._resolve_confirm(ALWAYS)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        mapping = {
+            "btn_confirm_approve": APPROVE,
+            "btn_confirm_decline": DECLINE,
+            "btn_confirm_always": ALWAYS,
+        }
+        decision = mapping.get(event.button.id or "")
+        if decision is None:
+            return
+        app = self.app
+        if isinstance(app, ChatApp):
+            app._resolve_confirm(decision)
+
+
 class ChatApp(App[None]):
     """Persistent-input chat TUI.
 
@@ -272,13 +371,51 @@ class ChatApp(App[None]):
         padding: 0 2;
     }
 
+    #prompt_row {
+        height: auto;
+    }
+
     Input {
         border: tall $accent;
         margin: 0 0 1 0;
+        width: 1fr;
     }
 
     Input:disabled {
         border: tall $warning-muted;
+    }
+
+    #confirm_strip {
+        width: auto;
+        max-width: 70;
+        height: auto;
+        margin: 0 1 1 0;
+        padding: 0 1;
+        border: tall $warning;
+        background: $panel;
+        color: $text;
+        display: none;
+    }
+
+    #confirm_strip.-visible {
+        display: block;
+    }
+
+    #confirm_summary {
+        width: auto;
+        padding: 0 0 1 0;
+    }
+
+    #confirm_buttons {
+        height: auto;
+        width: auto;
+    }
+
+    #confirm_buttons Button {
+        min-width: 14;
+        margin: 0 1 0 0;
+        height: 1;
+        border: none;
     }
 
     #slash_palette {
@@ -305,6 +442,9 @@ class ChatApp(App[None]):
         Binding("up", "palette_prev", show=False, priority=True),
         Binding("down", "palette_next", show=False, priority=True),
         Binding("enter", "palette_select", show=False, priority=True),
+        # Escape at the app level only dismisses the slash palette —
+        # confirm-strip escape lives on that widget so it fires when
+        # the strip has focus (harness-drd).
         Binding("escape", "palette_close", show=False, priority=True),
     ]
 
@@ -391,7 +531,15 @@ class ChatApp(App[None]):
         yield RichLog(id="output", wrap=True, markup=True, highlight=False)
         yield Static("ctx — · elapsed —", id="metrics")
         yield SlashPalette(_SLASH_COMMANDS)
-        yield Input(id="prompt", placeholder="type a message… (ctrl+c to quit)")
+        # Prompt row is a Horizontal so the transient write-tier
+        # confirm strip can dock to the left and visually shift the
+        # Input without clearing its value or moving the caret inside
+        # the Input itself (harness-drd).
+        yield Horizontal(
+            ConfirmStrip(),
+            Input(id="prompt", placeholder="type a message… (ctrl+c to quit)"),
+            id="prompt_row",
+        )
 
     def on_mount(self) -> None:
         log = self.query_one("#output", RichLog)
@@ -1108,6 +1256,11 @@ class ChatApp(App[None]):
         so queued prompts aren't stranded."""
         if not self._state.is_busy:
             return
+        # If the worker is parked on a write-tier confirm, unblock it
+        # with a decline so the turn can tear down cleanly; the
+        # seq-gated hop will no-op any trailing UI updates.
+        if self._confirm_pending():
+            self._resolve_confirm(DECLINE)
         self._state.turn_seq += 1
         self._state.stream_buffer = ""
         self._state.stream_first_chunk = True
@@ -1181,7 +1334,7 @@ class ChatApp(App[None]):
         """Worker-thread confirm callback for write-tier tool calls.
         If the tool has been marked always-allowed for this session,
         approve silently. Otherwise block the worker until the user
-        dismisses the modal on the UI thread.
+        resolves the inline confirm strip on the UI thread.
 
         `call_from_thread(coro)` schedules the coroutine on the
         Textual event loop and blocks this thread until it returns
@@ -1191,27 +1344,96 @@ class ChatApp(App[None]):
             return True
         # Textual stubs Callable[..., Awaitable[Never]] for
         # call_from_thread's arg, which doesn't line up with an async
-        # method that returns str | None — even though the runtime
+        # method that returns a string — even though the runtime
         # supports exactly this. Cast via Any locally so the calling
         # site stays readable.
         call_from_thread: Any = self.call_from_thread
-        decision: str | None = call_from_thread(self._prompt_for_confirm, call)
+        decision: str = call_from_thread(self._prompt_for_confirm, call)
         if decision == APPROVE:
             return True
         if decision == ALWAYS:
             self._approved_tools.add(call.name)
             return True
-        # DECLINE, None (modal cancelled), or any unexpected value.
         return False
 
-    async def _prompt_for_confirm(self, call: ToolCall) -> str | None:
-        """UI-thread coroutine: push the modal and await its result.
-        Returns the dismiss payload verbatim ('approve' / 'decline'
-        / 'always'), or None if the screen was dismissed without a
-        value (shouldn't happen with the normal bindings but we
-        handle it defensively)."""
-        screen = ConfirmToolScreen(call, label=self._tool_label(call.name))
-        return await self.push_screen_wait(screen)
+    async def _prompt_for_confirm(self, call: ToolCall) -> str:
+        """UI-thread coroutine: show the inline confirm strip on the
+        prompt row and await the user's verdict. The strip replaces
+        the old modal (harness-drd): it docks to the left of the
+        Input, visually shifting the Input right without touching the
+        Input's value or caret position.
+
+        Resolves to APPROVE / DECLINE / ALWAYS. On the off-chance the
+        event loop tears down mid-prompt (app exit), the future is
+        cancelled and we fall through to DECLINE."""
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[str] = loop.create_future()
+        self._state.confirm_future = future
+        self._show_confirm_strip(call)
+        try:
+            return await future
+        except asyncio.CancelledError:
+            return DECLINE
+        finally:
+            self._hide_confirm_strip()
+            self._state.confirm_future = None
+
+    # ---------- confirm-strip UI (harness-drd) ----------
+
+    def _confirm_pending(self) -> bool:
+        fut = self._state.confirm_future
+        return fut is not None and not fut.done()
+
+    def _show_confirm_strip(self, call: ToolCall) -> None:
+        """Render the inline strip with the tool label + truncated
+        args preview and focus it. The Input stays visible with its
+        value and caret intact; the strip takes focus temporarily so
+        its y/n/a/escape bindings fire (priority App-level bindings
+        on letter keys are swallowed by a focused Input's character
+        path, so the fix is to move focus off the Input instead)."""
+        strip = self.query_one(ConfirmStrip)
+        label = self._tool_label(call.name)
+        args_preview = self._format_confirm_args(call.arguments)
+        summary = f"[bold yellow]⚠ {label}[/bold yellow]"
+        if args_preview:
+            summary = f"{summary} [dim]{args_preview}[/dim]"
+        strip.show_for(summary)
+
+    def _hide_confirm_strip(self) -> None:
+        try:
+            strip = self.query_one(ConfirmStrip)
+        except Exception:
+            return
+        strip.hide()
+        # Return focus to the Input so the user can resume typing
+        # without an extra click. Skip if the app is tearing down.
+        try:
+            self.query_one("#prompt", Input).focus()
+        except Exception:
+            return
+
+    @staticmethod
+    def _format_confirm_args(arguments: object) -> str:
+        """Compact single-line preview of the tool arguments. JSON
+        when serializable, str() otherwise; truncated so a long
+        write_file payload can't blow out the row height."""
+        try:
+            text = json.dumps(arguments, ensure_ascii=False)
+        except TypeError:
+            text = str(arguments)
+        text = text.replace("\n", " ")
+        if len(text) > 60:
+            text = f"{text[:57]}…"
+        return text
+
+    def _resolve_confirm(self, decision: str) -> None:
+        """Fulfill the pending confirm future with `decision`. No-op
+        if no confirm is pending or the future was already resolved
+        (double-tap on the binding)."""
+        fut = self._state.confirm_future
+        if fut is None or fut.done():
+            return
+        fut.set_result(decision)
 
     def _observe_tool_event(self, event: ToolLoopEvent) -> None:
         """Observer callback passed to run_tool_loop. Runs on the
