@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -362,6 +363,58 @@ class BeadsAdapter:
         if not issues:
             raise BeadsAdapterError(f"no issue returned for id {issue_id!r}")
         return issues[0]
+
+    def get_focus(self, assignee: str) -> BeadsIssue | None:
+        """Return the single in_progress bead for `assignee`, or None.
+
+        Reconciles on read: if bd's state somehow contains more than one
+        in_progress bead for the same assignee (crash mid-set_focus,
+        concurrent writer, manual edit) the method keeps the
+        most-recently-updated and demotes the rest to `open`, emitting a
+        RuntimeWarning. Lazy reconciliation replaces an explicit startup
+        hook — any caller that reads focus gets a consistent answer."""
+        issues = self.list_issues(status="in_progress", assignee=assignee)
+        if not issues:
+            return None
+        if len(issues) == 1:
+            return issues[0]
+        issues_sorted = sorted(
+            issues,
+            key=lambda i: str(i.raw.get("updated_at") or ""),
+            reverse=True,
+        )
+        keep, *to_demote = issues_sorted
+        demoted_ids = [i.id for i in to_demote]
+        warnings.warn(
+            f"{len(issues)} in_progress beads for assignee={assignee!r}; "
+            f"keeping most-recent {keep.id}, demoting {demoted_ids}.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        for issue in to_demote:
+            self.update(issue.id, status="open")
+        return keep
+
+    def set_focus(self, issue_id: str, *, assignee: str) -> str | None:
+        """Promote `issue_id` to in_progress for `assignee`. If another
+        bead is currently in_progress for the same assignee, demote it
+        to open first. Returns the demoted prior focus's id, or None if
+        no demotion happened (no prior, or issue_id was already focus).
+
+        Not atomic across bd subprocess calls — if demote succeeds but
+        promote fails, no bead is in_progress for this assignee (clean,
+        recoverable state; retry set_focus). The invariant 'at most one
+        in_progress per assignee' is preserved at every observable
+        boundary."""
+        prior = self.get_focus(assignee)
+        if prior is None:
+            self.update(issue_id, status="in_progress")
+            return None
+        if prior.id == issue_id:
+            return None
+        self.update(prior.id, status="open")
+        self.update(issue_id, status="in_progress")
+        return prior.id
 
     def stale(self) -> list[BeadsIssue]:
         result = self._run(["stale", "--json"])

@@ -740,6 +740,173 @@ def test_search_passes_assignee_flag(bd_dir: Path, runner: FakeRunner) -> None:
     assert cmd[cmd.index("--assignee") + 1] == "airton_b"
 
 
+def test_get_focus_returns_none_when_no_in_progress(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(stdout="[]"))
+    adapter = BeadsAdapter(bd_dir)
+
+    focus = adapter.get_focus("airton_b")
+
+    assert focus is None
+    cmd = runner.calls[0]["cmd"]
+    assert cmd[:3] == ["bd", "list", "--json"]
+    assert cmd[cmd.index("--status") + 1] == "in_progress"
+    assert cmd[cmd.index("--assignee") + 1] == "airton_b"
+
+
+def test_get_focus_returns_single_in_progress(bd_dir: Path, runner: FakeRunner) -> None:
+    payload = json.dumps(
+        [
+            {
+                "id": "harness-f",
+                "title": "focused",
+                "status": "in_progress",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": ["scope:personal"],
+                "assignee": "airton_b",
+                "updated_at": "2026-04-18T10:00:00Z",
+            }
+        ]
+    )
+    runner.queue(FakeCompletedProcess(stdout=payload))
+    adapter = BeadsAdapter(bd_dir)
+
+    focus = adapter.get_focus("airton_b")
+
+    assert focus is not None
+    assert focus.id == "harness-f"
+
+
+def test_get_focus_warns_and_demotes_when_multiple(bd_dir: Path, runner: FakeRunner) -> None:
+    """Lazy reconciliation: if bd's state has >1 in_progress for the
+    same assignee (crash mid-switch, manual edit) get_focus keeps the
+    most-recently-updated and demotes the rest. RuntimeWarning fires."""
+    payload = json.dumps(
+        [
+            {
+                "id": "harness-old",
+                "title": "stale focus",
+                "status": "in_progress",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "airton_b",
+                "updated_at": "2026-04-18T08:00:00Z",
+            },
+            {
+                "id": "harness-new",
+                "title": "recent focus",
+                "status": "in_progress",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "airton_b",
+                "updated_at": "2026-04-18T12:00:00Z",
+            },
+            {
+                "id": "harness-mid",
+                "title": "middle focus",
+                "status": "in_progress",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "airton_b",
+                "updated_at": "2026-04-18T10:00:00Z",
+            },
+        ]
+    )
+    runner.queue(
+        FakeCompletedProcess(stdout=payload),
+        FakeCompletedProcess(),  # demote harness-mid
+        FakeCompletedProcess(),  # demote harness-old
+    )
+    adapter = BeadsAdapter(bd_dir)
+
+    with pytest.warns(RuntimeWarning, match="keeping most-recent harness-new"):
+        focus = adapter.get_focus("airton_b")
+
+    assert focus is not None
+    assert focus.id == "harness-new"
+    demote_cmds = [c["cmd"] for c in runner.calls[1:]]
+    assert ["bd", "update", "harness-mid", "--status", "open"] in demote_cmds
+    assert ["bd", "update", "harness-old", "--status", "open"] in demote_cmds
+    # harness-new (most-recent) is never demoted.
+    for cmd in demote_cmds:
+        assert "harness-new" not in cmd
+
+
+def test_set_focus_promotes_when_no_prior(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(
+        FakeCompletedProcess(stdout="[]"),  # get_focus sees none
+        FakeCompletedProcess(),  # promote issue_id
+    )
+    adapter = BeadsAdapter(bd_dir)
+
+    prior = adapter.set_focus("harness-new", assignee="airton_b")
+
+    assert prior is None
+    promote_cmd = runner.calls[-1]["cmd"]
+    assert promote_cmd == ["bd", "update", "harness-new", "--status", "in_progress"]
+
+
+def test_set_focus_demotes_prior_then_promotes_new(bd_dir: Path, runner: FakeRunner) -> None:
+    payload = json.dumps(
+        [
+            {
+                "id": "harness-old",
+                "title": "prior focus",
+                "status": "in_progress",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "airton_b",
+                "updated_at": "2026-04-18T10:00:00Z",
+            }
+        ]
+    )
+    runner.queue(
+        FakeCompletedProcess(stdout=payload),  # get_focus returns prior
+        FakeCompletedProcess(),  # demote prior
+        FakeCompletedProcess(),  # promote new
+    )
+    adapter = BeadsAdapter(bd_dir)
+
+    prior_id = adapter.set_focus("harness-new", assignee="airton_b")
+
+    assert prior_id == "harness-old"
+    cmds = [c["cmd"] for c in runner.calls]
+    assert cmds[1] == ["bd", "update", "harness-old", "--status", "open"]
+    assert cmds[2] == ["bd", "update", "harness-new", "--status", "in_progress"]
+
+
+def test_set_focus_noop_when_already_focused(bd_dir: Path, runner: FakeRunner) -> None:
+    """set_focus to the currently-focused id should not demote or
+    re-promote — it's already in the right state."""
+    payload = json.dumps(
+        [
+            {
+                "id": "harness-same",
+                "title": "already focused",
+                "status": "in_progress",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "airton_b",
+                "updated_at": "2026-04-18T10:00:00Z",
+            }
+        ]
+    )
+    runner.queue(FakeCompletedProcess(stdout=payload))
+    adapter = BeadsAdapter(bd_dir)
+
+    prior_id = adapter.set_focus("harness-same", assignee="airton_b")
+
+    assert prior_id is None
+    # Only the get_focus list call; no update dispatched.
+    assert len(runner.calls) == 1
+    assert runner.calls[0]["cmd"][:3] == ["bd", "list", "--json"]
+
+
 def test_update_accepts_assignee_kwarg(bd_dir: Path, runner: FakeRunner) -> None:
     """update() dispatches kwargs as --flag pairs; assignee comes along
     for free via the generic path. Pin it so the convention doesn't
