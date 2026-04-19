@@ -344,6 +344,83 @@ def test_dep_add_command_shape(bd_dir: Path, runner: FakeRunner) -> None:
     assert runner.calls[0]["cmd"] == ["bd", "dep", "add", "harness-a", "harness-b"]
 
 
+def test_dep_rm_command_shape(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess())
+    adapter = BeadsAdapter(bd_dir)
+    adapter.dep_rm("harness-a", "harness-b")
+    assert runner.calls[0]["cmd"] == ["bd", "dep", "remove", "harness-a", "harness-b"]
+
+
+def test_search_passes_query_and_flags(bd_dir: Path, runner: FakeRunner) -> None:
+    payload = json.dumps(
+        [
+            {
+                "id": "harness-1",
+                "title": "auth refactor",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": ["scope:professional"],
+            }
+        ]
+    )
+    runner.queue(FakeCompletedProcess(stdout=payload))
+    adapter = BeadsAdapter(bd_dir)
+
+    hits = adapter.search("auth", status="all", limit=5)
+
+    assert len(hits) == 1
+    assert hits[0].id == "harness-1"
+    cmd = runner.calls[0]["cmd"]
+    assert cmd[:3] == ["bd", "search", "auth"]
+    assert "--json" in cmd
+    assert cmd[cmd.index("--status") + 1] == "all"
+    assert cmd[cmd.index("--limit") + 1] == "5"
+
+
+def test_search_rejects_empty_query(bd_dir: Path, runner: FakeRunner) -> None:
+    adapter = BeadsAdapter(bd_dir)
+    with pytest.raises(ValueError, match="non-empty"):
+        adapter.search("   ")
+    assert runner.calls == []
+
+
+def test_list_passes_priority_and_type(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(stdout="[]"))
+    adapter = BeadsAdapter(bd_dir)
+
+    adapter.list_issues(status="open", priority="2", issue_type="task", limit=10)
+
+    cmd = runner.calls[0]["cmd"]
+    assert cmd[:3] == ["bd", "list", "--json"]
+    assert cmd[cmd.index("--status") + 1] == "open"
+    assert cmd[cmd.index("--priority") + 1] == "2"
+    assert cmd[cmd.index("--type") + 1] == "task"
+    assert cmd[cmd.index("--limit") + 1] == "10"
+
+
+def test_forget_command_shape(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess())
+    adapter = BeadsAdapter(bd_dir)
+    adapter.forget("dolt-phantoms")
+    assert runner.calls[0]["cmd"] == ["bd", "forget", "dolt-phantoms"]
+
+
+def test_forget_rejects_empty_key(bd_dir: Path, runner: FakeRunner) -> None:
+    adapter = BeadsAdapter(bd_dir)
+    with pytest.raises(ValueError, match="non-empty"):
+        adapter.forget("   ")
+    assert runner.calls == []
+
+
+def test_memories_passes_query(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(stdout="memory: dolt phantoms\n"))
+    adapter = BeadsAdapter(bd_dir)
+    out = adapter.memories("dolt")
+    assert "dolt phantoms" in out
+    assert runner.calls[0]["cmd"] == ["bd", "memories", "dolt"]
+
+
 def test_verify_raises_when_bd_not_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / ".beads").mkdir()
     monkeypatch.setattr("harness.store.bd_adapter.shutil.which", lambda _: None)

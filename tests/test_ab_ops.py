@@ -23,11 +23,16 @@ from harness.tools.ab_ops import (
     CloseTool,
     DeferTool,
     DeleteTool,
+    DepTool,
     DriftTool,
+    ForgetTool,
+    ListTool,
+    MemoriesTool,
     PlanTool,
     ReopenTool,
     ReprioritizeTool,
     RetroTool,
+    SearchTool,
     StatusTool,
     UpdateTool,
     _render_plan,
@@ -81,13 +86,21 @@ class FakeAdapter:
 
     ready_issues: list[BeadsIssue] = field(default_factory=list)
     list_issues_data: list[BeadsIssue] = field(default_factory=list)
+    search_hits: list[BeadsIssue] = field(default_factory=list)
     show_issues: dict[str, BeadsIssue] = field(default_factory=dict)
     stale_issues: list[BeadsIssue] = field(default_factory=list)
+    memories_output: str = ""
     create_calls: list[dict[str, Any]] = field(default_factory=list)
     close_calls: list[dict[str, Any]] = field(default_factory=list)
     reopen_calls: list[dict[str, Any]] = field(default_factory=list)
     delete_calls: list[dict[str, Any]] = field(default_factory=list)
     update_calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    search_calls: list[dict[str, Any]] = field(default_factory=list)
+    list_calls: list[dict[str, Any]] = field(default_factory=list)
+    dep_add_calls: list[tuple[str, str]] = field(default_factory=list)
+    dep_rm_calls: list[tuple[str, str]] = field(default_factory=list)
+    forget_calls: list[str] = field(default_factory=list)
+    memories_calls: list[str] = field(default_factory=list)
     remember_calls: list[str] = field(default_factory=list)
     next_create_id: str = "harness-new"
 
@@ -107,9 +120,30 @@ class FakeAdapter:
         *,
         scope: str | None = None,
         status: str | None = None,
+        priority: str | None = None,
+        issue_type: str | None = None,
         limit: int | None = None,
     ) -> list[BeadsIssue]:
+        self.list_calls.append(
+            {
+                "scope": scope,
+                "status": status,
+                "priority": priority,
+                "issue_type": issue_type,
+                "limit": limit,
+            }
+        )
         return list(self.list_issues_data)
+
+    def search(
+        self,
+        query: str,
+        *,
+        status: str | None = None,
+        limit: int | None = None,
+    ) -> list[BeadsIssue]:
+        self.search_calls.append({"query": query, "status": status, "limit": limit})
+        return list(self.search_hits)
 
     def show(self, issue_id: str) -> BeadsIssue:
         return self.show_issues[issue_id]
@@ -133,8 +167,21 @@ class FakeAdapter:
     def update(self, issue_id: str, **fields: Any) -> None:
         self.update_calls.append((issue_id, dict(fields)))
 
+    def dep_add(self, issue: str, depends_on: str) -> None:
+        self.dep_add_calls.append((issue, depends_on))
+
+    def dep_rm(self, issue: str, depends_on: str) -> None:
+        self.dep_rm_calls.append((issue, depends_on))
+
     def remember(self, insight: str) -> None:
         self.remember_calls.append(insight)
+
+    def memories(self, query: str = "") -> str:
+        self.memories_calls.append(query)
+        return self.memories_output
+
+    def forget(self, key: str) -> None:
+        self.forget_calls.append(key)
 
 
 def test_classify_priority_zero_is_shall() -> None:
@@ -461,12 +508,120 @@ def test_update_tool_requires_at_least_one_field() -> None:
     assert adapter.update_calls == []
 
 
-def test_make_ops_tools_returns_eleven_distinct_names() -> None:
+def test_search_tool_renders_hits() -> None:
+    adapter = FakeAdapter(
+        search_hits=[
+            _issue(issue_id="harness-a", title="auth bug", priority=1),
+        ]
+    )
+    out = SearchTool(adapter).call(query="auth", status="all", limit=5)
+    assert adapter.search_calls == [{"query": "auth", "status": "all", "limit": 5}]
+    assert "auth" in out
+    assert "harness-a" in out
+    assert "P1" in out
+
+
+def test_search_tool_empty_hits() -> None:
+    out = SearchTool(FakeAdapter()).call(query="nope")
+    assert "no matches" in out
+
+
+def test_search_tool_rejects_empty_query() -> None:
+    adapter = FakeAdapter()
+    out = SearchTool(adapter).call(query="   ")
+    assert "non-empty" in out
+    assert adapter.search_calls == []
+
+
+def test_list_tool_filters_passed_through() -> None:
+    adapter = FakeAdapter(
+        list_issues_data=[
+            _issue(issue_id="harness-a", priority=2, title="thing"),
+        ]
+    )
+    out = ListTool(adapter).call(status="open", priority=2, issue_type="task")
+    # priority is coerced to string when forwarded to the adapter (bd
+    # takes it as a string flag).
+    assert adapter.list_calls == [
+        {
+            "scope": None,
+            "status": "open",
+            "priority": "2",
+            "issue_type": "task",
+            "limit": None,
+        }
+    ]
+    assert "harness-a" in out
+
+
+def test_list_tool_empty_branch() -> None:
+    out = ListTool(FakeAdapter()).call()
+    assert "no matching items" in out
+
+
+def test_list_tool_rejects_out_of_range_priority() -> None:
+    adapter = FakeAdapter()
+    out = ListTool(adapter).call(priority=9)
+    assert "must be 0-4" in out
+    assert adapter.list_calls == []
+
+
+def test_list_tool_rejects_invalid_scope() -> None:
+    out = ListTool(FakeAdapter()).call(scope="social")
+    assert "invalid scope" in out
+
+
+def test_memories_tool_returns_bd_output() -> None:
+    adapter = FakeAdapter(memories_output="  dolt-phantoms: be careful about ...\n")
+    out = MemoriesTool(adapter).call(query="dolt")
+    assert adapter.memories_calls == ["dolt"]
+    assert "dolt-phantoms" in out
+
+
+def test_memories_tool_empty_branch() -> None:
+    adapter = FakeAdapter(memories_output="")
+    out = MemoriesTool(adapter).call()
+    assert "no memories" in out
+
+
+def test_forget_tool_dispatch() -> None:
+    adapter = FakeAdapter()
+    out = ForgetTool(adapter).call(key="dolt-phantoms")
+    assert adapter.forget_calls == ["dolt-phantoms"]
+    assert "Forgot" in out
+
+
+def test_dep_tool_add() -> None:
+    adapter = FakeAdapter()
+    out = DepTool(adapter).call(op="add", issue="harness-a", depends_on="harness-b")
+    assert adapter.dep_add_calls == [("harness-a", "harness-b")]
+    assert adapter.dep_rm_calls == []
+    assert "Linked" in out
+
+
+def test_dep_tool_remove() -> None:
+    adapter = FakeAdapter()
+    out = DepTool(adapter).call(op="remove", issue="harness-a", depends_on="harness-b")
+    assert adapter.dep_rm_calls == [("harness-a", "harness-b")]
+    assert adapter.dep_add_calls == []
+    assert "Unlinked" in out
+
+
+def test_dep_tool_rejects_unknown_op() -> None:
+    adapter = FakeAdapter()
+    out = DepTool(adapter).call(op="toggle", issue="harness-a", depends_on="harness-b")
+    assert "unknown op" in out
+    assert adapter.dep_add_calls == []
+    assert adapter.dep_rm_calls == []
+
+
+def test_make_ops_tools_returns_sixteen_distinct_names() -> None:
     tools = make_ops_tools(FakeAdapter())
     names = [t.spec.name for t in tools]
-    assert len(names) == 11
-    assert len(set(names)) == 11
-    # Expected surface matches the v1 spec plus tranche-1 additions.
+    assert len(names) == 16
+    assert len(set(names)) == 16
+    # Expected surface matches the v1 spec plus tranche-1 + tranche-2
+    # additions.
     assert set(names) == {
         "plan",
         "capture",
@@ -479,4 +634,9 @@ def test_make_ops_tools_returns_eleven_distinct_names() -> None:
         "reopen",
         "delete",
         "update",
+        "search",
+        "list",
+        "memories",
+        "forget",
+        "dep",
     }

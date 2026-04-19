@@ -93,11 +93,16 @@ from harness.tools.ab_ops import (
     CloseTool,
     DeferTool,
     DeleteTool,
+    DepTool,
     DriftTool,
+    ForgetTool,
+    ListTool,
+    MemoriesTool,
     PlanTool,
     ReopenTool,
     ReprioritizeTool,
     RetroTool,
+    SearchTool,
     StatusTool,
     UpdateTool,
 )
@@ -292,6 +297,11 @@ def _ab_tool_builders(
         "reopen": lambda: ReopenTool(ab_adapter),
         "delete": lambda: DeleteTool(ab_adapter),
         "update": lambda: UpdateTool(ab_adapter),
+        "search": lambda: SearchTool(ab_adapter),
+        "list": lambda: ListTool(ab_adapter),
+        "memories": lambda: MemoriesTool(ab_adapter),
+        "forget": lambda: ForgetTool(ab_adapter),
+        "dep": lambda: DepTool(ab_adapter),
     }
 
 

@@ -21,6 +21,11 @@ Tools shipped:
 | reopen         | write | re-open a closed item (bd reopen)         |
 | delete         | write | permanently remove an item (bd delete)    |
 | update         | write | edit title / description / notes / …      |
+| search         | read  | keyword search over items                 |
+| list           | read  | filtered cross-section of items           |
+| memories       | read  | list / search persistent memories         |
+| forget         | write | remove a persistent memory by key         |
+| dep            | write | add / remove dependency links             |
 
 Deadline-aware tier promotion (date-locked items → Shall at T-1) is a
 follow-up; v1 classifies from priority + dependent-count only. Issues
@@ -57,6 +62,16 @@ class _Adapter(Protocol):
         *,
         scope: str | None = ...,
         status: str | None = ...,
+        priority: str | None = ...,
+        issue_type: str | None = ...,
+        limit: int | None = ...,
+    ) -> list[BeadsIssue]: ...
+
+    def search(
+        self,
+        query: str,
+        *,
+        status: str | None = ...,
         limit: int | None = ...,
     ) -> list[BeadsIssue]: ...
 
@@ -85,7 +100,15 @@ class _Adapter(Protocol):
 
     def update(self, issue_id: str, **fields: Any) -> None: ...
 
+    def dep_add(self, issue: str, depends_on: str) -> None: ...
+
+    def dep_rm(self, issue: str, depends_on: str) -> None: ...
+
     def remember(self, insight: str) -> None: ...
+
+    def memories(self, query: str = ...) -> str: ...
+
+    def forget(self, key: str) -> None: ...
 
 
 CAPTURE_REQUIRED_FIELDS = ("scope", "outcome", "next_action")
@@ -522,7 +545,15 @@ class CloseTool:
     def spec(self) -> ToolSpec:
         return ToolSpec(
             name="close",
-            description="Close an item. Records an optional reason on the bead.",
+            description=(
+                "Close an item. Records an optional reason on the bead.\n\n"
+                "REASON POLICY: Pass `reason` only if the user stated one "
+                "explicitly in this turn (e.g. 'close harness-x, it shipped'). "
+                "Do NOT synthesize a reason from prior context, the issue "
+                "title, or your own inference. If a reason seems worth "
+                "recording but none was given, reply WITHOUT calling `close` "
+                "and ask the user for one — one question, no batching."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -841,6 +872,270 @@ class RetroTool:
         return f"retro failed: unknown mode {mode!r}; use 'summary' or 'record'"
 
 
+def _render_issue_list(issues: list[BeadsIssue], *, empty_label: str) -> str:
+    """Shared compact renderer for search / list results. One line per
+    issue with scope, id, priority, status, title. Empty label lets
+    callers distinguish 'no matches' from 'no open items'."""
+    if not issues:
+        return empty_label
+    lines: list[str] = []
+    for issue in issues:
+        scope_tag = issue.scope or "?"
+        lines.append(
+            f"  - [{scope_tag}/{issue.id}] P{issue.priority} {issue.status}: {issue.title}"
+        )
+    return "\n".join(lines)
+
+
+@dataclass
+class SearchTool:
+    """Keyword search over bd. Defaults exclude closed issues; pass
+    status='all' to include them. Distinct from drift/status — this
+    is a free-text lookup, not a curated view."""
+
+    adapter: _Adapter
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="search",
+            description=(
+                "Search items by keyword (title + id prefix by default). "
+                "Excludes closed items unless status='all'. Returns a "
+                "compact list; call `status` or `show` for detail."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "description": (
+                            "Optional status filter (open, in_progress, "
+                            "blocked, deferred, closed, all)."
+                        ),
+                    },
+                    "limit": {"type": "integer", "minimum": 1},
+                },
+                "required": ["query"],
+            },
+            tier="read",
+            display_name="Search",
+        )
+
+    def call(
+        self,
+        *,
+        query: str,
+        status: str | None = None,
+        limit: int | None = None,
+    ) -> str:
+        if not query.strip():
+            return "search failed: query must be non-empty"
+        try:
+            hits = self.adapter.search(query, status=status, limit=limit)
+        except (ValueError, BeadsAdapterError) as exc:
+            return f"search failed: {exc}"
+        header = f"Search {query!r}:"
+        body = _render_issue_list(hits, empty_label="  (no matches)")
+        return f"{header}\n{body}"
+
+
+@dataclass
+class ListTool:
+    """Filtered list. Distinct from `plan`, which renders tier buckets
+    over the ready-subset. This tool is a raw cross-section: filter
+    by status / priority / type / scope, return every matching row."""
+
+    adapter: _Adapter
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="list",
+            description=(
+                "List items matching optional filters: status, priority, "
+                "type, scope. Distinct from `plan` — this is a raw "
+                "filtered cross-section, not a tiered planning view."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string"},
+                    "priority": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 4,
+                    },
+                    "issue_type": {
+                        "type": "string",
+                        "enum": list(ALLOWED_TYPES),
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": list(ALLOWED_SCOPES),
+                    },
+                    "limit": {"type": "integer", "minimum": 1},
+                },
+                "required": [],
+            },
+            tier="read",
+            display_name="List items",
+        )
+
+    def call(
+        self,
+        *,
+        status: str | None = None,
+        priority: int | None = None,
+        issue_type: str | None = None,
+        scope: str | None = None,
+        limit: int | None = None,
+    ) -> str:
+        scope_err = _validate_scope(scope)
+        if scope_err:
+            return scope_err
+        if priority is not None and not 0 <= priority <= 4:
+            return f"list failed: priority {priority} must be 0-4"
+        try:
+            items = self.adapter.list_issues(
+                scope=scope,
+                status=status,
+                priority=str(priority) if priority is not None else None,
+                issue_type=issue_type,
+                limit=limit,
+            )
+        except BeadsAdapterError as exc:
+            return f"list failed: {exc}"
+        return _render_issue_list(items, empty_label="(no matching items)")
+
+
+@dataclass
+class MemoriesTool:
+    """Read-tier view of bd's persistent memories — free-text insights
+    the agent or user stored via `retro record` or `bd remember`."""
+
+    adapter: _Adapter
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="memories",
+            description=(
+                "List persistent memories, or search them by keyword. "
+                "Returns bd's raw output verbatim. Read-only; use "
+                "`retro` with mode='record' to add, `forget` to remove."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Optional keyword filter.",
+                    },
+                },
+                "required": [],
+            },
+            tier="read",
+            display_name="Memories",
+        )
+
+    def call(self, *, query: str = "") -> str:
+        try:
+            output = self.adapter.memories(query)
+        except BeadsAdapterError as exc:
+            return f"memories failed: {exc}"
+        text = output.strip()
+        return text if text else "(no memories)"
+
+
+@dataclass
+class ForgetTool:
+    """Remove a persistent memory by key. Destructive — write-tier."""
+
+    adapter: _Adapter
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="forget",
+            description=(
+                "Remove a persistent memory by key. Irreversible — use "
+                "`memories` first to confirm the key exists."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string"},
+                },
+                "required": ["key"],
+            },
+            tier="write",
+            display_name="Forget memory",
+        )
+
+    def call(self, *, key: str) -> str:
+        try:
+            self.adapter.forget(key)
+        except (ValueError, BeadsAdapterError) as exc:
+            return f"forget failed: {exc}"
+        return f"Forgot memory {key!r}."
+
+
+@dataclass
+class DepTool:
+    """Add or remove dependency links. `add` creates an
+    issue-depends-on-blocker relation; `remove` deletes the link.
+    Single tool with an op switch keeps the schema compact — the
+    model usually says either 'make X depend on Y' or 'drop dep';
+    one tool handles both shapes."""
+
+    adapter: _Adapter
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="dep",
+            description=(
+                "Manage dependency links between items. op='add' makes "
+                "`issue` depend on `depends_on` (i.e. depends_on blocks "
+                "issue). op='remove' drops the link."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "op": {
+                        "type": "string",
+                        "enum": ["add", "remove"],
+                    },
+                    "issue": {
+                        "type": "string",
+                        "description": "The dependent item (the one that is blocked).",
+                    },
+                    "depends_on": {
+                        "type": "string",
+                        "description": "The blocker item.",
+                    },
+                },
+                "required": ["op", "issue", "depends_on"],
+            },
+            tier="write",
+            display_name="Dependency",
+        )
+
+    def call(self, *, op: str, issue: str, depends_on: str) -> str:
+        if op not in {"add", "remove"}:
+            return f"dep failed: unknown op {op!r}; use 'add' or 'remove'"
+        try:
+            if op == "add":
+                self.adapter.dep_add(issue, depends_on)
+                return f"Linked {issue} → depends on {depends_on}."
+            self.adapter.dep_rm(issue, depends_on)
+        except BeadsAdapterError as exc:
+            return f"dep failed: {exc}"
+        return f"Unlinked {issue} from {depends_on}."
+
+
 def make_ops_tools(
     adapter: _Adapter,
 ) -> tuple[
@@ -855,6 +1150,11 @@ def make_ops_tools(
     ReopenTool,
     DeleteTool,
     UpdateTool,
+    SearchTool,
+    ListTool,
+    MemoriesTool,
+    ForgetTool,
+    DepTool,
 ]:
     """Single-point constructor for the full ab ops tool set. The CLI
     calls this once per session and passes the tuple to the registry."""
@@ -870,4 +1170,9 @@ def make_ops_tools(
         ReopenTool(adapter),
         DeleteTool(adapter),
         UpdateTool(adapter),
+        SearchTool(adapter),
+        ListTool(adapter),
+        MemoriesTool(adapter),
+        ForgetTool(adapter),
+        DepTool(adapter),
     )

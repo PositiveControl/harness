@@ -269,16 +269,31 @@ class BeadsAdapter:
     def dep_add(self, issue: str, depends_on: str) -> None:
         self._run(["dep", "add", issue, depends_on])
 
+    def dep_rm(self, issue: str, depends_on: str) -> None:
+        """Remove a dependency. Uses `bd dep remove` (bd aliases to rm).
+        Wraps the positional-arg form; bd also accepts `--blocks`, but
+        the positional shape matches `dep_add` for symmetry."""
+        self._run(["dep", "remove", issue, depends_on])
+
     def list_issues(
         self,
         *,
         scope: str | None = None,
         status: str | None = None,
+        priority: str | None = None,
+        issue_type: str | None = None,
         limit: int | None = None,
     ) -> list[BeadsIssue]:
+        """Wrap `bd list`. status/priority/type pass through to bd's
+        native flags; scope is filtered client-side since bd doesn't
+        recognize ab's scope: label as a first-class filter."""
         args = ["list", "--json"]
         if status is not None:
             args.extend(["--status", status])
+        if priority is not None:
+            args.extend(["--priority", priority])
+        if issue_type is not None:
+            args.extend(["--type", issue_type])
         if limit is not None:
             args.extend(["--limit", str(limit)])
         result = self._run(args)
@@ -287,6 +302,26 @@ class BeadsAdapter:
             label = f"scope:{scope}"
             issues = [i for i in issues if label in i.labels]
         return issues
+
+    def search(
+        self,
+        query: str,
+        *,
+        status: str | None = None,
+        limit: int | None = None,
+    ) -> list[BeadsIssue]:
+        """Wrap `bd search`. Defaults exclude closed issues; pass
+        status='all' to include them. Empty query raises ValueError —
+        bd rejects it and the error is clearer at the adapter."""
+        if not query.strip():
+            raise ValueError("search query must be non-empty")
+        args = ["search", query, "--json"]
+        if status is not None:
+            args.extend(["--status", status])
+        if limit is not None:
+            args.extend(["--limit", str(limit)])
+        result = self._run(args)
+        return _parse_issue_list(result.stdout)
 
     def ready(self, *, scope: str | None = None, limit: int | None = None) -> list[BeadsIssue]:
         args = ["ready", "--json"]
@@ -319,6 +354,14 @@ class BeadsAdapter:
             args.append(query)
         result = self._run(args)
         return result.stdout
+
+    def forget(self, key: str) -> None:
+        """Wrap `bd forget <key>`. Removes a persistent memory by key.
+        Empty key raises ValueError so the caller's bad arg surfaces
+        before spawning a doomed subprocess."""
+        if not key.strip():
+            raise ValueError("forget key must be non-empty")
+        self._run(["forget", key])
 
 
 def _parse_issue_list(stdout: str) -> list[BeadsIssue]:

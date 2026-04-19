@@ -27,7 +27,7 @@ def test_load_airton_b_shape() -> None:
     assert ab.era == "personal operations lead"
     assert ab.relationship["mark"] == "operations steward"
     assert len(ab.values) == 7
-    assert len(ab.taboos) == 8
+    assert len(ab.taboos) == 9
     assert len(ab.directives) >= 4
     assert len(ab.seed_memories) == 5
     assert ab.constitution
