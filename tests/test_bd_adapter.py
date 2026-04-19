@@ -109,9 +109,12 @@ def test_create_applies_scope_label(bd_dir: Path, runner: FakeRunner) -> None:
     cmd = create_call["cmd"]
     assert cmd[0] == "bd"
     assert cmd[1] == "create"
-    assert "--add-label" in cmd
-    label_idx = cmd.index("--add-label")
-    assert cmd[label_idx + 1] == "scope:professional"
+    # Labels are passed comma-separated via --labels (not --add-label;
+    # that flag is update-only).
+    assert "--labels" in cmd
+    labels_idx = cmd.index("--labels")
+    label_values = cmd[labels_idx + 1].split(",")
+    assert "scope:professional" in label_values
     # Every call's cwd must pin to the adapter's bd_dir.
     for call in runner.calls:
         assert call["cwd"] == bd_dir

@@ -197,6 +197,9 @@ class BeadsAdapter:
         if issue_type not in ALLOWED_TYPES:
             raise ValueError(f"issue_type must be one of {ALLOWED_TYPES!r}, got {issue_type!r}")
         self.ensure_custom_types()
+        # `bd create` labels are comma-separated via --labels; --add-label
+        # is an update-time flag and errors at create.
+        labels = [f"scope:{scope}", *extra_labels]
         args: list[str] = [
             "create",
             "--title",
@@ -207,11 +210,9 @@ class BeadsAdapter:
             str(priority),
             "--description",
             description,
-            "--add-label",
-            f"scope:{scope}",
+            "--labels",
+            ",".join(labels),
         ]
-        for label in extra_labels:
-            args.extend(["--add-label", label])
         if parent is not None:
             args.extend(["--parent", parent])
         result = self._run(args)
