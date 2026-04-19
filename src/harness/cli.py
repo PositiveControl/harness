@@ -1175,6 +1175,24 @@ def _build_tool_grounding_block(registry: ToolRegistry, workspace_path: Path) ->
             "`introspect` tool with the matching scope. Do not guess "
             "your capabilities from the character sheet or training."
         )
+    # Backlog grounding (harness-dxv). When ab's ops tools are wired,
+    # any question about the user's tasks / plans / priorities /
+    # blockers MUST route through bd via plan/status/drift — not
+    # fabricated from memory of the plan format or prior turns.
+    if any(t in registry for t in ("plan", "status", "drift")):
+        base += (
+            "\n- BACKLOG is tool-routed. Never describe the user's tasks, "
+            "plan, priorities, tiers, blockers, deadlines, or project "
+            "state from memory. Every ask like 'do we have plans', "
+            "'what's up today', 'what am I working on', 'what's "
+            "blocked', 'status of X', 'priorities', 'top tasks' MUST "
+            "call the matching tool first (`plan` for tiered today's "
+            "path, `drift` for blocked/at-risk items, `status` for a "
+            "single issue). Do NOT invent issue ids, scopes, tiers, "
+            "titles, reasons, or deadlines — they live in bd and are "
+            "read-only to you until a tool call returns them. If none "
+            "of these tools is loaded this turn, say so plainly."
+        )
     return base
 
 
