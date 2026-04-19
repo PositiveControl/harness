@@ -572,7 +572,7 @@ def test_close_tool_dispatch() -> None:
 
 
 def test_defer_tool_numeric_priority() -> None:
-    adapter = FakeAdapter()
+    adapter = FakeAdapter(show_issues={"harness-x": _issue(issue_id="harness-x", priority=2)})
     out = DeferTool(adapter).call(id="harness-x", priority="3", reason="too big")
     assert adapter.update_calls == [("harness-x", {"priority": "3"})]
     assert adapter.remember_calls == ["deferred harness-x → P3: too big"]
@@ -589,6 +589,120 @@ def test_defer_tool_down_reads_current_priority() -> None:
 def test_defer_tool_rejects_out_of_range() -> None:
     out = DeferTool(FakeAdapter()).call(id="harness-x", priority="7")
     assert "must be 0-4" in out
+
+
+def test_defer_first_adds_count_label() -> None:
+    """First defer on a bead that has no defer-count label just adds
+    `defer-count:1`; no label_rm needed."""
+    adapter = FakeAdapter(show_issues={"harness-x": _issue(issue_id="harness-x", priority=2)})
+    DeferTool(adapter).call(id="harness-x", priority="3")
+    assert adapter.label_add_calls == [("harness-x", "defer-count:1")]
+    assert adapter.label_rm_calls == []
+
+
+def test_defer_increments_existing_count_label() -> None:
+    """Second defer swaps defer-count:1 → defer-count:2 via rm + add."""
+    issue = _issue(issue_id="harness-x", priority=2)
+    # Replace labels to include a pre-existing defer counter.
+    issue_with_count = BeadsIssue(
+        id=issue.id,
+        title=issue.title,
+        status=issue.status,
+        priority=issue.priority,
+        issue_type=issue.issue_type,
+        labels=("defer-count:1",),
+        raw=issue.raw,
+    )
+    adapter = FakeAdapter(show_issues={"harness-x": issue_with_count})
+    DeferTool(adapter).call(id="harness-x", priority="3")
+    assert adapter.label_rm_calls == [("harness-x", "defer-count:1")]
+    assert adapter.label_add_calls == [("harness-x", "defer-count:2")]
+
+
+def test_defer_escalates_on_third_defer() -> None:
+    """Third defer (count 2 → 3) triggers stall escalation: creates
+    thought:question child parent-linked, adds stall-escalated label
+    to parent."""
+    issue = _issue(
+        issue_id="harness-parent",
+        priority=2,
+        scope="personal",
+        title="original work",
+    )
+    with_count_2 = BeadsIssue(
+        id=issue.id,
+        title=issue.title,
+        status=issue.status,
+        priority=issue.priority,
+        issue_type=issue.issue_type,
+        labels=("scope:personal", "defer-count:2"),
+        raw=issue.raw,
+    )
+    adapter = FakeAdapter(
+        show_issues={"harness-parent": with_count_2},
+        next_create_id="harness-question",
+    )
+
+    out = DeferTool(adapter).call(id="harness-parent", priority="4")
+
+    assert "Stall-escalated" in out
+    assert "harness-question" in out
+    # The escalation create carries the expected shape.
+    assert len(adapter.create_calls) == 1
+    payload = adapter.create_calls[0]
+    assert payload["scope"] == "personal"
+    assert payload["parent"] == "harness-parent"
+    assert "thought:question" in payload["extra_labels"]
+    assert payload["assignee"] == "airton_b"
+    # Parent gets the stall-escalated label so a 4th defer won't
+    # spawn another escalation.
+    assert ("harness-parent", "stall-escalated") in adapter.label_add_calls
+
+
+def test_defer_skips_escalation_when_already_escalated() -> None:
+    """If the bead already carries the stall-escalated label, a
+    subsequent defer must not spawn another escalation child."""
+    issue = _issue(issue_id="harness-parent", priority=3, scope="personal")
+    already = BeadsIssue(
+        id=issue.id,
+        title=issue.title,
+        status=issue.status,
+        priority=issue.priority,
+        issue_type=issue.issue_type,
+        labels=("scope:personal", "defer-count:3", "stall-escalated"),
+        raw=issue.raw,
+    )
+    adapter = FakeAdapter(show_issues={"harness-parent": already})
+
+    out = DeferTool(adapter).call(id="harness-parent", priority="4")
+
+    assert "Stall-escalated" not in out
+    assert adapter.create_calls == []
+
+
+def test_defer_first_two_defers_do_not_escalate() -> None:
+    """Defers 1 and 2 just bump the counter; no escalation child
+    before the threshold."""
+    issue = _issue(issue_id="harness-x", priority=2, scope="personal")
+    adapter = FakeAdapter(show_issues={"harness-x": issue})
+
+    DeferTool(adapter).call(id="harness-x", priority="3")
+    assert adapter.create_calls == []
+
+    # Simulate second defer by replacing the stored issue with
+    # defer-count:1 labels to match what bd would show after the first.
+    with_1 = BeadsIssue(
+        id=issue.id,
+        title=issue.title,
+        status=issue.status,
+        priority=issue.priority,
+        issue_type=issue.issue_type,
+        labels=("scope:personal", "defer-count:1"),
+        raw=issue.raw,
+    )
+    adapter.show_issues["harness-x"] = with_1
+    DeferTool(adapter).call(id="harness-x", priority="3")
+    assert adapter.create_calls == []
 
 
 def test_retro_summary_mode_renders_state() -> None:

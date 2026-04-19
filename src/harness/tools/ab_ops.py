@@ -147,6 +147,15 @@ TIERS = ("shall", "should", "shmaybe", "watching")
 # interface with an extra 'who owns this' arg.
 AB_ASSIGNEE = "airton_b"
 
+# Defer-count threshold for stall escalation. When a bead has been
+# deferred this many times, DeferTool auto-creates a thought:question
+# child to surface the 'still relevant?' question. Settings knob lives
+# at Settings.ab_stall_defers (harness-6y5) — DeferTool doesn't read
+# it directly to keep tool deps minimal; wire-up is a follow-up.
+STALL_DEFERS = 3
+STALL_LABEL = "stall-escalated"
+_DEFER_COUNT_PREFIX = "defer-count:"
+
 
 @dataclass(frozen=True)
 class _TieredLine:
@@ -688,23 +697,91 @@ class DeferTool:
         )
 
     def call(self, *, id: str, priority: str, reason: str | None = None) -> str:
-        try:
-            if priority == "down":
-                current = self.adapter.show(id)
-                new_priority = min(current.priority + 1, 4)
-            else:
+        # Validate the priority spec before touching bd so bad input
+        # bails cheap without spawning a show/update subprocess.
+        if priority != "down":
+            try:
                 new_priority = int(priority)
-                if not 0 <= new_priority <= 4:
-                    return f"defer failed: priority {new_priority} must be 0-4"
+            except ValueError:
+                return f"defer failed: priority must be 0-4 or 'down', got {priority!r}"
+            if not 0 <= new_priority <= 4:
+                return f"defer failed: priority {new_priority} must be 0-4"
+        try:
+            current = self.adapter.show(id)
+            if priority == "down":
+                new_priority = min(current.priority + 1, 4)
             self.adapter.update(id, priority=str(new_priority))
             if reason:
                 # Reason is stored via bd remember so drift/retro can
                 # surface rationale for stalled items later. No way to
                 # attach structured notes without a richer bd schema.
                 self.adapter.remember(f"deferred {id} → P{new_priority}: {reason}")
+            new_count = _bump_defer_count(self.adapter, current)
         except BeadsAdapterError as exc:
             return f"defer failed: {exc}"
-        return f"Deferred {id} to P{new_priority}."
+
+        escalation_note = ""
+        if new_count >= STALL_DEFERS and STALL_LABEL not in current.labels:
+            try:
+                child_id = _create_stall_escalation(self.adapter, current, new_count)
+                self.adapter.label_add(id, STALL_LABEL)
+                escalation_note = f" Stall-escalated: {child_id} (still relevant?)."
+            except BeadsAdapterError as exc:
+                escalation_note = f" (stall-escalation failed: {exc})"
+
+        return f"Deferred {id} to P{new_priority}.{escalation_note}"
+
+
+def _extract_defer_count(labels: tuple[str, ...]) -> int:
+    """Read the current defer count off the bead's labels. Absence
+    means zero — the first-ever defer lands at count=1."""
+    for label in labels:
+        if label.startswith(_DEFER_COUNT_PREFIX):
+            try:
+                return int(label[len(_DEFER_COUNT_PREFIX) :])
+            except ValueError:
+                return 0
+    return 0
+
+
+def _bump_defer_count(adapter: _Adapter, issue: BeadsIssue) -> int:
+    """Increment the defer counter stored as a `defer-count:N` label.
+    Two subprocess calls (remove old + add new) when the bead already
+    has a count; one add call on the first defer. Returns the new
+    count so the caller can decide whether to escalate."""
+    old_count = _extract_defer_count(issue.labels)
+    new_count = old_count + 1
+    if old_count > 0:
+        adapter.label_rm(issue.id, f"{_DEFER_COUNT_PREFIX}{old_count}")
+    adapter.label_add(issue.id, f"{_DEFER_COUNT_PREFIX}{new_count}")
+    return new_count
+
+
+def _create_stall_escalation(
+    adapter: _Adapter,
+    parent: BeadsIssue,
+    defer_count: int,
+) -> str:
+    """Create a `thought:question` child bead asking whether the
+    stalled parent is still relevant. Parent-linked via bd's --parent
+    so the relationship is explicit; assigned to airton_b so the
+    thought-graph view picks it up."""
+    parent_scope = parent.scope or "personal"
+    return adapter.create(
+        title=f"Still relevant? {parent.id}",
+        scope=parent_scope,
+        issue_type="task",
+        description=(
+            f"Parent {parent.id} deferred {defer_count} times — auto-escalated "
+            "by DeferTool. Resolve by either closing parent (no longer "
+            "relevant), promoting it back to active priority, or closing "
+            "this question after a reason is captured."
+        ),
+        priority=2,
+        parent=parent.id,
+        extra_labels=["thought:question"],
+        assignee=AB_ASSIGNEE,
+    )
 
 
 _UPDATE_FIELD_FLAGS: dict[str, str] = {
