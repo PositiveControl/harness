@@ -4,6 +4,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 from harness.model.adapter import ChatMessage, approx_token_count
+from harness.tools.base import ModelReply, ToolSpec
 
 
 @dataclass
@@ -39,6 +40,21 @@ class EchoAdapter:
         Exists so any CLI path that prefers the streaming API can still
         use the echo adapter for wiring tests."""
         yield self.complete(messages, max_tokens=max_tokens, temperature=temperature)
+
+    def complete_with_tools(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        tools: list[ToolSpec] | None = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.5,
+    ) -> ModelReply:
+        """Tool-loop stub: returns the echo reply with no tool calls so
+        `--tools` paths can be exercised for wiring tests without
+        requiring a real model. Actual tool invocation needs MLX or
+        Ollama — echo can't decide when to route a prompt at a tool."""
+        content = self.complete(messages, max_tokens=max_tokens, temperature=temperature)
+        return ModelReply(content=content, tool_calls=())
 
     def count_tokens(self, messages: Iterable[ChatMessage]) -> int:
         return approx_token_count(messages)
