@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -62,6 +63,17 @@ class Settings(BaseSettings):
     # rewriter compresses, which is wrong for investigate/summarize
     # tool replies.
     ab_rewrite_on_tools: bool = False
+    # ab thought-graph budget knobs (Phase 3.6). Consumed by
+    # BeadsAdapter / ab_ops (C1-C4); centralized here so every knob is
+    # tunable via HARNESS_AB_* env without hardcoding.
+    ab_turn_cap: int = Field(default=3, ge=1, le=10)
+    """Max ab orchestrator turns per user message."""
+    ab_inflight_cap: int = Field(default=10, ge=5, le=50)
+    """Max simultaneously in-flight ab issues before deferring new ones."""
+    ab_stall_defers: int = Field(default=3, ge=1, le=10)
+    """Consecutive defers before an ab issue is flagged as stalled."""
+    ab_drift_days: int = Field(default=7, ge=1, le=90)
+    """Days of inactivity before an ab issue is surfaced as drift."""
 
     @property
     def character_path(self) -> Path:

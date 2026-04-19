@@ -11,6 +11,7 @@ silently revert them.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from harness.config import Settings
 
@@ -47,3 +48,58 @@ def test_embedder_constructor_picks_up_default() -> None:
 
     e = SentenceTransformersEmbedder()
     assert e.model_name == Settings().embedder_repo
+
+
+# ab (airton_b) thought-graph budget knobs - Phase 3.6 C5 (harness-6y5).
+# Defaults + env overrides + range validation are pinned here so
+# downstream consumers (C1-C4) can rely on the Settings surface without
+# drift.
+
+
+def test_ab_budget_defaults() -> None:
+    s = Settings()
+    assert s.ab_turn_cap == 3
+    assert s.ab_inflight_cap == 10
+    assert s.ab_stall_defers == 3
+    assert s.ab_drift_days == 7
+
+
+def test_ab_turn_cap_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HARNESS_AB_TURN_CAP", "5")
+    assert Settings().ab_turn_cap == 5
+
+
+def test_ab_inflight_cap_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HARNESS_AB_INFLIGHT_CAP", "25")
+    assert Settings().ab_inflight_cap == 25
+
+
+def test_ab_stall_defers_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HARNESS_AB_STALL_DEFERS", "6")
+    assert Settings().ab_stall_defers == 6
+
+
+def test_ab_drift_days_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HARNESS_AB_DRIFT_DAYS", "30")
+    assert Settings().ab_drift_days == 30
+
+
+@pytest.mark.parametrize(
+    ("env_var", "bad_value"),
+    [
+        ("HARNESS_AB_TURN_CAP", "0"),
+        ("HARNESS_AB_TURN_CAP", "11"),
+        ("HARNESS_AB_INFLIGHT_CAP", "4"),
+        ("HARNESS_AB_INFLIGHT_CAP", "51"),
+        ("HARNESS_AB_STALL_DEFERS", "0"),
+        ("HARNESS_AB_STALL_DEFERS", "11"),
+        ("HARNESS_AB_DRIFT_DAYS", "0"),
+        ("HARNESS_AB_DRIFT_DAYS", "91"),
+    ],
+)
+def test_ab_budget_rejects_out_of_range(
+    monkeypatch: pytest.MonkeyPatch, env_var: str, bad_value: str
+) -> None:
+    monkeypatch.setenv(env_var, bad_value)
+    with pytest.raises(ValidationError):
+        Settings()
