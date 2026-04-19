@@ -1083,6 +1083,59 @@ class _WriteOnlyTool:
         )
 
 
+@pytest.mark.asyncio
+async def test_chat_app_retro_slash_renders_summary(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """/retro with a wired ab_adapter calls RetroTool mode=summary and
+    renders the result into the RichLog. harness-vpei."""
+    ab = _FakeAbAdapter()
+    app = _build_app(tmp_path, ab_adapter=ab)
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "/retro"
+        await pilot.press("enter")
+        await _wait_for_workers(pilot)
+
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        # RetroTool's own "Retro — <date>" header is the signature.
+        assert "Retro —" in rendered
+
+
+@pytest.mark.asyncio
+async def test_chat_app_retro_slash_hints_when_no_ab_adapter(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """/retro without an ab_adapter should print a friendly hint
+    rather than silently swallowing the command."""
+    app = _build_app(tmp_path, ab_adapter=None)
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "/retro"
+        await pilot.press("enter")
+        await _wait_for_workers(pilot)
+
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "airton_b" in rendered
+
+
+@pytest.mark.asyncio
+async def test_chat_app_resets_turn_counter_on_each_submit(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Every user submission fires ab_adapter.reset_turn_counter() so
+    the per-turn ab-bead create budget refreshes at each turn
+    boundary. harness-4ate."""
+    ab = _FakeAbAdapter()
+    app = _build_app(tmp_path, ab_adapter=ab)
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "first"
+        await pilot.press("enter")
+        await _wait_for_workers(pilot)
+        prompt.value = "second"
+        await pilot.press("enter")
+        await _wait_for_workers(pilot)
+
+        assert ab.reset_calls == 2
+
+
 @dataclass
 class _RecordingWriteTool:
     """Benign write-tier tool that records each call instead of
@@ -1137,6 +1190,7 @@ def _build_app(  # type: ignore[no-untyped-def]
     workspace=None,
     startup_warnings: tuple[str, ...] = (),
     router: object | None = None,
+    ab_adapter: object | None = None,
 ) -> ChatApp:
     """Construct a ChatApp with a real Transcript (SQLite in tmp_path),
     the real Airton character, and by default an EchoAdapter. Tests
@@ -1163,7 +1217,29 @@ def _build_app(  # type: ignore[no-untyped-def]
         workspace_path=workspace,
         startup_warnings=startup_warnings,
         router=router,  # type: ignore[arg-type]
+        ab_adapter=ab_adapter,  # type: ignore[arg-type]
     )
+
+
+class _FakeAbAdapter:
+    """Lightweight stand-in for BeadsAdapter in TUI tests. Records
+    reset_turn_counter calls and serves a scripted retro summary."""
+
+    def __init__(self, retro_summary: str = "Retro — test") -> None:
+        self._retro_summary = retro_summary
+        self.reset_calls = 0
+
+    def reset_turn_counter(self) -> None:
+        self.reset_calls += 1
+
+    # RetroTool inside _run_retro instantiates with adapter; the
+    # call path invokes adapter.ready() + adapter.list_issues(). Stub
+    # both to return empty lists so the summary is cheap and safe.
+    def ready(self, *, scope=None, limit=None):  # type: ignore[no-untyped-def]
+        return []
+
+    def list_issues(self, **_kwargs):  # type: ignore[no-untyped-def]
+        return []
 
 
 async def _wait_for_workers(pilot) -> None:  # type: ignore[no-untyped-def]

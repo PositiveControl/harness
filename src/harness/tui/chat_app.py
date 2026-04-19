@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from harness.retrieval import VoiceRetriever
     from harness.router import Router
     from harness.store import EpisodicStore, SemanticStore
+    from harness.store.bd_adapter import BeadsAdapter
     from harness.store.transcript import Transcript
     from harness.tools import ToolCall, ToolRegistry
 
@@ -177,6 +178,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/edit", "edit Airton's last reply as a new voice sample"),
     ("/exit", "leave chat"),
     ("/quit", "leave chat"),
+    ("/retro", "ab's thought-graph retrospective (summary)"),
     ("/scribe", "extract memory candidates from recent turns"),
 )
 
@@ -485,6 +487,7 @@ class ChatApp(App[None]):
         compaction_store: CompactionStore | None = None,
         scribe_lock_dir: Path | None = None,
         scribe_user_id: str | None = None,
+        ab_adapter: BeadsAdapter | None = None,
     ) -> None:
         super().__init__()
         self._character = character
@@ -522,6 +525,11 @@ class ChatApp(App[None]):
         self._compaction_store = compaction_store
         self._scribe_lock_dir = scribe_lock_dir
         self._scribe_user_id = scribe_user_id
+        # Ab's bd adapter — only populated when character=airton_b and
+        # the isolated bd dir verifies. Feeds /retro and the
+        # per-turn reset_turn_counter hook. None for every other
+        # character; the /retro handler reports 'not configured'.
+        self._ab_adapter = ab_adapter
         # Accept an external retrieval_health reference so the
         # IntrospectTool (harness-8is) can see live voice/episodic/
         # semantic health without a callback plumbing. When None the
@@ -711,11 +719,19 @@ class ChatApp(App[None]):
         # command that isn't in the registry, we fall through to the
         # model and the palette no longer applies to the next turn.
         self.query_one("#slash_palette", SlashPalette).close()
+        # User-turn boundary — refresh the per-turn ab-bead create
+        # budget so each turn starts with a fresh 3-slot allowance.
+        # Runs before slash dispatch so even slash commands bump the
+        # counter (they're user actions, and never spawn ab-captures,
+        # so the cost is free). harness-4ate.
+        if self._ab_adapter is not None:
+            self._ab_adapter.reset_turn_counter()
         cmd = text.lower()
         # Slash-command intercept. Parity with the classic REPL:
         # /exit, /quit, :q all exit; /edit (+ /capture alias) opens
         # $EDITOR on Airton's last reply for voice capture; /compact,
-        # /scribe, /consolidate invoke the corresponding memory op.
+        # /scribe, /consolidate invoke the corresponding memory op;
+        # /retro runs ab's retrospective summary.
         # Unrecognized slash commands fall through to the model so a
         # user who types '/anything' isn't silently dropped.
         if cmd in {"/exit", "/quit", ":q"}:
@@ -737,6 +753,10 @@ class ChatApp(App[None]):
         if cmd == "/consolidate":
             event.input.value = ""
             self._kick_op("consolidate", self._run_consolidate_sync)
+            return
+        if cmd == "/retro":
+            event.input.value = ""
+            self._run_retro()
             return
         event.input.value = ""
         # Always-on prompt: if a turn is in flight, enqueue instead of
@@ -788,6 +808,31 @@ class ChatApp(App[None]):
         line.append(str(captured_path.relative_to(settings.root)))
         line.append(f" (now {total} captured sample(s))", style="dim")
         log.write(line)
+
+    def _run_retro(self) -> None:
+        """/retro: ab's thought-graph retrospective summary. Renders
+        inline in the RichLog. Synchronous — RetroTool.call(mode=
+        'summary') is a read-only bd query; fast and safe on the main
+        thread. No insight-record flow here (TUI has no modal text
+        input); users who want to record run RetroTool as a tool
+        through chat. harness-vpei."""
+        log = self.query_one("#output", RichLog)
+        if self._ab_adapter is None:
+            log.write(
+                Text(
+                    "/retro: only available when character=airton_b",
+                    style="yellow",
+                )
+            )
+            return
+        from harness.tools.ab_ops import RetroTool
+
+        try:
+            summary = RetroTool(self._ab_adapter).call(mode="summary")
+        except Exception as exc:
+            log.write(Text(f"/retro failed: {exc}", style="red"))
+            return
+        log.write(Text(summary, style="dim"))
 
     def _kick_op(self, label: str, worker: Any) -> None:
         """Shared helper for /compact, /scribe, /consolidate. Writes a
@@ -1459,9 +1504,10 @@ class ChatApp(App[None]):
         # round is done (or never started). Flush the live preview
         # into the log as Markdown before rendering the tool-event
         # line so visual order matches emission order. Skip the flush
-        # for truncated_retry — that branch drops the partial instead
-        # of committing it, since the wider-budget retry supersedes.
-        if event.kind not in ("token_delta", "truncated_retry"):
+        # for truncated_retry / bail_retry — those branches drop the
+        # partial instead of committing it, since the retry supersedes
+        # the draft.
+        if event.kind not in ("token_delta", "truncated_retry", "bail_retry"):
             self._flush_stream_buffer()
         if event.kind == "router_intent":
             call = event.call
@@ -1517,6 +1563,16 @@ class ChatApp(App[None]):
             self._state.stream_first_chunk = True
             self._hide_stream_preview()
             log.write(Text("⋯ truncated, retrying with wider budget…", style="dim"))
+        elif event.kind == "bail_retry":
+            # 0-tool-calls reply tripped a fabrication / teaser
+            # catcher; orchestrator appended a nudge and is re-running.
+            # Same drop-partial contract as truncated_retry so the
+            # fabricated draft doesn't stack above the next retry
+            # (harness-24xj).
+            self._state.stream_buffer = ""
+            self._state.stream_first_chunk = True
+            self._hide_stream_preview()
+            log.write(Text("⋯ discarding draft, retrying…", style="dim"))
         # Other event kinds (round_start, model_call_start/end,
         # round_complete) are internal book-keeping — the metrics
         # footer already covers 'model is thinking'.

@@ -880,6 +880,13 @@ def _render_tool_event(
         # upcoming reply supersedes the partial they just saw.
         stream_renderer.stop()
         console.print("[dim]⋯ truncated, retrying with wider budget…[/dim]")
+    elif event.kind == "bail_retry":
+        # 0-tool-calls reply tripped a fabrication / teaser catcher;
+        # orchestrator appended a nudge and is re-running. Drop the
+        # partial stream so the fabricated draft doesn't stay
+        # stacked above the next retry (harness-24xj).
+        stream_renderer.stop()
+        console.print("[dim]⋯ discarding draft, retrying…[/dim]")
 
 
 def _stream_or_complete(
@@ -997,6 +1004,7 @@ def _build_tool_registry_for_tui(
     transcript: Transcript | None = None,
     warnings_out: list[str] | None = None,
     include_internal: bool = False,
+    ab_adapter: BeadsAdapter | None = None,
 ) -> ToolRegistry | None:
     """Build a ToolRegistry for the Textual app. Subset of the
     classic REPL's setup — skips scribe_session and
@@ -1050,11 +1058,17 @@ def _build_tool_registry_for_tui(
             else None
         ),
     }
-    # Same ab-ops injection as the REPL builder. Character is required
-    # for this path so we can always compute the adapter.
+    # Same ab-ops injection as the REPL builder. When an ab_adapter is
+    # passed in (TUI hoists the construction so ChatApp can share the
+    # reference), reuse it; otherwise construct lazily so non-TUI
+    # callers don't need to know about the plumbing.
     if character is not None:
-        ab_adapter = _maybe_ab_bd_adapter(character, include_internal=include_internal)
-        builders.update(_ab_tool_builders(ab_adapter))
+        effective_ab = (
+            ab_adapter
+            if ab_adapter is not None
+            else _maybe_ab_bd_adapter(character, include_internal=include_internal)
+        )
+        builders.update(_ab_tool_builders(effective_ab))
 
     registry = ToolRegistry()
     for name in wanted_names:
@@ -1593,6 +1607,12 @@ def chat(
         # Shared between ChatApp (which mutates it when retrieval raises)
         # and the introspect tool (which reads live status).
         tui_retrieval_health = _RetrievalState()
+        # Hoist the ab_adapter so ChatApp and the tool registry share
+        # the same reference. One subprocess verify + one 'bd → path'
+        # console line, not two.
+        tui_ab_adapter = _maybe_ab_bd_adapter(
+            character_for_tui, include_internal=include_internal or dev
+        )
         tui_registry: ToolRegistry | None = _build_tool_registry_for_tui(
             tools=tools,
             tool_set=tool_set,
@@ -1611,6 +1631,7 @@ def chat(
             transcript=tui_transcript,
             warnings_out=tui_registry_warnings,
             include_internal=include_internal or dev,
+            ab_adapter=tui_ab_adapter,
         )
 
         tui_compaction_store = (
@@ -1638,6 +1659,7 @@ def chat(
             retrieval_health=tui_retrieval_health,
             compaction_store=tui_compaction_store,
             scribe_user_id=speaker,
+            ab_adapter=tui_ab_adapter,
         ).run()
         if tui_compaction_store is not None:
             tui_compaction_store.close()
