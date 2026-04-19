@@ -1191,6 +1191,56 @@ def test_set_focus_demotes_prior_then_promotes_new(bd_dir: Path, runner: FakeRun
     assert cmds[2] == ["bd", "update", "harness-new", "--status", "in_progress"]
 
 
+def test_persist_to_focus_appends_to_current_focus(bd_dir: Path, runner: FakeRunner) -> None:
+    """persist_to_focus resolves the current focus via get_focus then
+    dispatches `bd update <id> --append-notes <summary>` so repeated
+    calls stack with newline separators rather than overwriting."""
+    focus_payload = json.dumps(
+        [
+            {
+                "id": "harness-focus",
+                "title": "current",
+                "status": "in_progress",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "airton_b",
+            }
+        ]
+    )
+    runner.queue(
+        FakeCompletedProcess(stdout=focus_payload),  # get_focus list
+        FakeCompletedProcess(),  # update --append-notes
+    )
+    adapter = BeadsAdapter(bd_dir)
+
+    focus_id = adapter.persist_to_focus("post-compact breadcrumb", assignee="airton_b")
+
+    assert focus_id == "harness-focus"
+    update_cmd = runner.calls[-1]["cmd"]
+    assert update_cmd[:3] == ["bd", "update", "harness-focus"]
+    assert "--append-notes" in update_cmd
+    assert update_cmd[update_cmd.index("--append-notes") + 1] == "post-compact breadcrumb"
+
+
+def test_persist_to_focus_raises_when_no_focus(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(stdout="[]"))
+    adapter = BeadsAdapter(bd_dir)
+
+    with pytest.raises(BeadsAdapterError, match="no in_progress focus bead"):
+        adapter.persist_to_focus("anything", assignee="airton_b")
+
+
+def test_persist_to_focus_rejects_empty_summary(bd_dir: Path, runner: FakeRunner) -> None:
+    """Blank summary is a caller bug; bail before spawning any
+    subprocess so the error surfaces clean."""
+    adapter = BeadsAdapter(bd_dir)
+
+    with pytest.raises(BeadsAdapterError, match="non-empty"):
+        adapter.persist_to_focus("   ", assignee="airton_b")
+    assert runner.calls == []
+
+
 def test_set_focus_noop_when_already_focused(bd_dir: Path, runner: FakeRunner) -> None:
     """set_focus to the currently-focused id should not demote or
     re-promote — it's already in the right state."""

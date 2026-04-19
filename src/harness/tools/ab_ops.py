@@ -86,6 +86,8 @@ class _Adapter(Protocol):
 
     def get_focus(self, assignee: str) -> BeadsIssue | None: ...
 
+    def persist_to_focus(self, summary: str, *, assignee: str) -> str: ...
+
     def create(
         self,
         *,
@@ -1572,6 +1574,55 @@ class FindDuplicatesTool:
         return "\n".join(lines)
 
 
+@dataclass
+class PersistFocusNoteTool:
+    """Append a single-line summary to the current focus bead's notes.
+    Opt-in breadcrumb: ab calls this explicitly (typically right after
+    a compaction pass) when an observation is load-bearing enough to
+    outlive the conversation window. No auto-persist — the caller is
+    responsible for deciding what's worth writing."""
+
+    adapter: _Adapter
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="persist_focus_note",
+            description=(
+                "Append a summary string to the current focus bead's "
+                "notes field. Use after compaction or when capturing "
+                "a load-bearing observation that should survive the "
+                "conversation window. Requires an active focus bead "
+                "(capture + set-focus flow); fails loudly when none "
+                "is set. Multiple calls stack with newline separators."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": (
+                            "One-line observation to append. Keep "
+                            "terse — notes read back as prose later."
+                        ),
+                    },
+                },
+                "required": ["summary"],
+            },
+            tier="write",
+            display_name="Persist focus note",
+        )
+
+    def call(self, *, summary: str) -> str:
+        if not summary.strip():
+            return "persist_focus_note failed: summary must be non-empty"
+        try:
+            focus_id = self.adapter.persist_to_focus(summary, assignee=AB_ASSIGNEE)
+        except BeadsAdapterError as exc:
+            return f"persist_focus_note failed: {exc}"
+        return f"Appended note to focus bead {focus_id}."
+
+
 def make_ops_tools(
     adapter: _Adapter,
 ) -> tuple[
@@ -1595,6 +1646,7 @@ def make_ops_tools(
     LabelTool,
     CommentsTool,
     FindDuplicatesTool,
+    PersistFocusNoteTool,
 ]:
     """Single-point constructor for the full ab ops tool set. The CLI
     calls this once per session and passes the tuple to the registry."""
@@ -1619,4 +1671,5 @@ def make_ops_tools(
         LabelTool(adapter),
         CommentsTool(adapter),
         FindDuplicatesTool(adapter),
+        PersistFocusNoteTool(adapter),
     )

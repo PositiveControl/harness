@@ -477,6 +477,26 @@ class BeadsAdapter:
             self.update(issue.id, status="open")
         return keep
 
+    def persist_to_focus(self, summary: str, *, assignee: str) -> str:
+        """Append `summary` to the current focus bead's notes field.
+        Returns the focus bead id. Raises BeadsAdapterError when no
+        focus is set — persist_to_focus is opt-in and load-bearing, so
+        a silent no-op would mask a missing focus.
+
+        Notes accumulate with newline separators (bd's --append-notes
+        semantics), so repeated calls stack chronologically rather
+        than overwriting — useful for compaction-summary breadcrumbs."""
+        if not summary.strip():
+            raise BeadsAdapterError("persist_to_focus: summary must be non-empty")
+        focus = self.get_focus(assignee)
+        if focus is None:
+            raise BeadsAdapterError(
+                f"persist_to_focus: no in_progress focus bead for assignee={assignee!r}. "
+                "Call set_focus first."
+            )
+        self.update(focus.id, append_notes=summary)
+        return focus.id
+
     def set_focus(self, issue_id: str, *, assignee: str) -> str | None:
         """Promote `issue_id` to in_progress for `assignee`. If another
         bead is currently in_progress for the same assignee, demote it

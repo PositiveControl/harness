@@ -31,6 +31,7 @@ from harness.tools.ab_ops import (
     LabelTool,
     ListTool,
     MemoriesTool,
+    PersistFocusNoteTool,
     PlanTool,
     RememberTool,
     ReopenTool,
@@ -117,6 +118,7 @@ class FakeAdapter:
     find_duplicates_calls: list[dict[str, Any]] = field(default_factory=list)
     focus_issue: BeadsIssue | None = None
     get_focus_calls: list[str] = field(default_factory=list)
+    persist_to_focus_calls: list[dict[str, Any]] = field(default_factory=list)
     next_create_id: str = "harness-new"
 
     def ready(
@@ -171,6 +173,14 @@ class FakeAdapter:
     def get_focus(self, assignee: str) -> BeadsIssue | None:
         self.get_focus_calls.append(assignee)
         return self.focus_issue
+
+    def persist_to_focus(self, summary: str, *, assignee: str) -> str:
+        self.persist_to_focus_calls.append({"summary": summary, "assignee": assignee})
+        if self.focus_issue is None:
+            from harness.store.bd_adapter import BeadsAdapterError
+
+            raise BeadsAdapterError("no focus")
+        return self.focus_issue.id
 
     def create(self, **kwargs: Any) -> str:
         self.create_calls.append(kwargs)
@@ -1111,13 +1121,14 @@ def test_find_duplicates_tool_rejects_out_of_range_threshold() -> None:
     assert "0.0-1.0" in out
 
 
-def test_make_ops_tools_returns_twenty_distinct_names() -> None:
+def test_make_ops_tools_returns_twenty_one_distinct_names() -> None:
     tools = make_ops_tools(FakeAdapter())
     names = [t.spec.name for t in tools]
-    assert len(names) == 20
-    assert len(set(names)) == 20
+    assert len(names) == 21
+    assert len(set(names)) == 21
     # Expected surface covers every tranche (v1 + tranche-1 + tranche-2
-    # + tranche-3) plus remember (harness-0dj fix).
+    # + tranche-3) plus remember (harness-0dj fix) and the thought-graph
+    # persist_focus_note tool (harness-dao).
     assert set(names) == {
         "plan",
         "capture",
@@ -1139,4 +1150,35 @@ def test_make_ops_tools_returns_twenty_distinct_names() -> None:
         "label",
         "comments",
         "find_duplicates",
+        "persist_focus_note",
     }
+
+
+def test_persist_focus_note_appends_to_focus() -> None:
+    focus = _issue(issue_id="harness-focus", status="in_progress")
+    adapter = FakeAdapter(focus_issue=focus)
+
+    out = PersistFocusNoteTool(adapter).call(summary="compaction: main loop done")
+
+    assert adapter.persist_to_focus_calls == [
+        {"summary": "compaction: main loop done", "assignee": "airton_b"}
+    ]
+    assert "harness-focus" in out
+
+
+def test_persist_focus_note_rejects_empty_summary() -> None:
+    adapter = FakeAdapter(focus_issue=_issue(issue_id="harness-focus"))
+    out = PersistFocusNoteTool(adapter).call(summary="   ")
+    assert "non-empty" in out
+    assert adapter.persist_to_focus_calls == []
+
+
+def test_persist_focus_note_surfaces_no_focus_error() -> None:
+    """FakeAdapter.persist_to_focus raises when no focus is set; the
+    tool catches and returns the hint instead of crashing."""
+    adapter = FakeAdapter(focus_issue=None)
+
+    out = PersistFocusNoteTool(adapter).call(summary="anything")
+
+    assert "persist_focus_note failed" in out
+    assert "no focus" in out

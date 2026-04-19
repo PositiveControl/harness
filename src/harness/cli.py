@@ -101,6 +101,7 @@ from harness.tools.ab_ops import (
     LabelTool,
     ListTool,
     MemoriesTool,
+    PersistFocusNoteTool,
     PlanTool,
     RememberTool,
     ReopenTool,
@@ -325,6 +326,7 @@ def _ab_tool_builders(
         "label": lambda: LabelTool(ab_adapter),
         "comments": lambda: CommentsTool(ab_adapter),
         "find_duplicates": lambda: FindDuplicatesTool(ab_adapter),
+        "persist_focus_note": lambda: PersistFocusNoteTool(ab_adapter),
     }
 
 

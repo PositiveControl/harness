@@ -114,6 +114,7 @@ def test_ab_tool_builders_surface_matches_ops_profile() -> None:
         "label",
         "comments",
         "find_duplicates",
+        "persist_focus_note",
     }
     # Each builder produces a Tool whose spec.name matches the key —
     # no silent renames between builder map and tool class.
