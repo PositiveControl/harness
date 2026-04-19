@@ -38,6 +38,42 @@ def test_grounding_block_omits_nudge_without_introspect(tmp_path: Path) -> None:
     assert "introspect" not in block.lower()
 
 
+def test_grounding_block_adds_preference_capture_nudge_when_remember_present(
+    tmp_path: Path,
+) -> None:
+    """harness-7jda: when the `remember` tool is loaded (ab ops profile),
+    the grounding block must carry a directive telling the model to call
+    remember on durable-preference phrasings ('from now on', 'always',
+    'remember to', 'keep in mind'). Otherwise the model acknowledges the
+    preference in-chat but never persists it."""
+    from harness.store.bd_adapter import BeadsAdapter  # noqa: F401  (imported for clarity)
+    from harness.tools.ab_ops import RememberTool
+
+    class _StubAdapter:
+        def remember(self, _insight: str) -> None:
+            return None
+
+    registry = ToolRegistry()
+    registry.register(RememberTool(adapter=_StubAdapter()))  # type: ignore[arg-type]
+
+    block = _build_tool_grounding_block(registry, tmp_path)
+    assert "remember" in block.lower()
+    # Must list at least two of the canonical trigger phrases so the
+    # model has concrete pattern-matches, not a vague directive.
+    triggers = ("from now on", "always", "remember to", "keep in mind")
+    matched = [t for t in triggers if t in block.lower()]
+    assert len(matched) >= 2, f"expected preference triggers, found only {matched}"
+
+
+def test_grounding_block_omits_preference_nudge_without_remember(tmp_path: Path) -> None:
+    """When remember isn't loaded (non-ops profiles), the preference
+    nudge doesn't appear — the model can't act on it anyway."""
+    registry = _registry_with([ReadFileTool(root=tmp_path)])
+    block = _build_tool_grounding_block(registry, tmp_path)
+    assert "from now on" not in block.lower()
+    assert "remember to" not in block.lower()
+
+
 def test_grounding_block_adds_nudge_when_introspect_present(tmp_path: Path) -> None:
     """harness-u71: with introspect loaded, the block carries a
     directive pointing the model at it for self-capability questions."""

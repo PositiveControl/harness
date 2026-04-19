@@ -1076,14 +1076,45 @@ class RetroTool:
 def _render_issue_list(issues: list[BeadsIssue], *, empty_label: str) -> str:
     """Shared compact renderer for search / list results. One line per
     issue with scope, id, priority, status, title. Empty label lets
-    callers distinguish 'no matches' from 'no open items'."""
+    callers distinguish 'no matches' from 'no open items'.
+
+    Exact-title duplicates are collapsed onto the highest-priority
+    sibling with an '(also: <id>, …)' annotation so the user sees the
+    duplication instead of reading two independent rows and assuming
+    they're distinct work (harness-mmz1). Fuzzy dedup is
+    `find_duplicates`' job — this helper stays mechanical."""
     if not issues:
         return empty_label
-    lines: list[str] = []
+
+    # Group by exact title, preserve first-seen order for the primary.
+    primary_by_title: dict[str, BeadsIssue] = {}
+    sibling_ids_by_title: dict[str, list[str]] = {}
+    order: list[str] = []
     for issue in issues:
+        key = issue.title
+        if key not in primary_by_title:
+            primary_by_title[key] = issue
+            sibling_ids_by_title[key] = []
+            order.append(key)
+            continue
+        # Dupe: keep the higher-priority one as primary (lower int = higher).
+        current = primary_by_title[key]
+        if issue.priority < current.priority:
+            sibling_ids_by_title[key].append(current.id)
+            primary_by_title[key] = issue
+        else:
+            sibling_ids_by_title[key].append(issue.id)
+
+    lines: list[str] = []
+    for key in order:
+        issue = primary_by_title[key]
         scope_tag = issue.scope or "?"
+        suffix = ""
+        siblings = sibling_ids_by_title[key]
+        if siblings:
+            suffix = f" (also: {', '.join(siblings)})"
         lines.append(
-            f"  - [{scope_tag}/{issue.id}] P{issue.priority} {issue.status}: {issue.title}"
+            f"  - [{scope_tag}/{issue.id}] P{issue.priority} {issue.status}: {issue.title}{suffix}"
         )
     return "\n".join(lines)
 
@@ -1299,11 +1330,14 @@ class RememberTool:
             name="remember",
             description=(
                 "Persist a note to self as a durable memory via bd "
-                "remember. Accepts one free-form string. Use this for "
-                "'note to self', 'remember that', 'write it down', "
-                "'keep this in mind' phrasings. Do NOT use `comments` "
-                "for notes to self — comments attach to a specific "
-                "existing issue id."
+                "remember. Accepts one free-form string. Call this "
+                "BEFORE replying whenever the user states a durable "
+                "preference or rule — phrases like 'from now on', "
+                "'always', 'remember to', 'keep in mind', 'note to "
+                "self', 'remember that', 'write it down'. Capture the "
+                "rule verbatim so later sessions can apply it. Do NOT "
+                "use `comments` for notes to self — comments attach to "
+                "a specific existing issue id."
             ),
             parameters={
                 "type": "object",

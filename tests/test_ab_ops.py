@@ -1003,6 +1003,71 @@ def test_remember_tool_rejects_empty_insight() -> None:
     assert adapter.remember_calls == []
 
 
+def test_remember_tool_description_lists_preference_triggers() -> None:
+    """harness-7jda: model must see explicit trigger phrases in the
+    tool description, not just 'note to self'. Users phrase durable
+    preferences as 'from now on', 'always', 'remember to', 'keep in
+    mind' — listing these in the schema surface raises the odds that
+    the model routes those turns through remember rather than
+    acknowledging-and-forgetting."""
+    adapter = FakeAdapter()
+    desc = RememberTool(adapter).spec.description.lower()
+    triggers = ("from now on", "always", "remember to", "keep in mind")
+    matched = [t for t in triggers if t in desc]
+    assert len(matched) >= 3, (
+        f"RememberTool.description must list preference triggers, found only {matched}"
+    )
+
+
+def test_render_issue_list_annotates_exact_title_duplicates() -> None:
+    """harness-mmz1: the user's plan showed 'take the hyundai ioniq 5
+    to the dealer' twice (different ids), 'quarterly financial review'
+    twice, 'full subscription audit' twice — rendered as independent
+    rows with no indication of duplication. Fix collapses exact-title
+    matches onto the primary (highest-priority, first seen) with an
+    '(also: <id>, …)' annotation so the user can see + close the
+    siblings."""
+    from harness.tools.ab_ops import _render_issue_list
+
+    issues = [
+        _issue(
+            issue_id="airton_b-d3s",
+            title="take the hyundai ioniq 5 to the dealer",
+            priority=1,
+        ),
+        _issue(
+            issue_id="airton_b-95e",
+            title="take the hyundai ioniq 5 to the dealer",
+            priority=2,
+        ),
+        _issue(issue_id="airton_b-mnp", title="cable tidy desk", priority=2),
+    ]
+    out = _render_issue_list(issues, empty_label="(none)")
+    # Primary (highest-priority, id airton_b-d3s) remains; duplicate gets annotated.
+    assert "airton_b-d3s" in out
+    assert "also: airton_b-95e" in out
+    # The duplicate must NOT appear as its own standalone row.
+    assert out.count("airton_b-95e") == 1  # only the annotation
+    # Distinct titles are untouched.
+    assert "airton_b-mnp" in out
+    assert "(also:" in out  # annotation present
+
+
+def test_render_issue_list_no_annotation_for_unique_titles() -> None:
+    """Control: when every title is unique, no '(also:' annotation
+    should appear — the helper must only activate on actual collisions."""
+    from harness.tools.ab_ops import _render_issue_list
+
+    issues = [
+        _issue(issue_id="airton_b-a", title="task one"),
+        _issue(issue_id="airton_b-b", title="task two"),
+    ]
+    out = _render_issue_list(issues, empty_label="(none)")
+    assert "(also:" not in out
+    assert "airton_b-a" in out
+    assert "airton_b-b" in out
+
+
 def test_dep_tool_add() -> None:
     adapter = FakeAdapter()
     out = DepTool(adapter).call(op="add", issue="harness-a", depends_on="harness-b")

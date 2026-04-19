@@ -258,6 +258,21 @@ def _open_semantic_store() -> SemanticStore | None:
     return SemanticStore(settings.character_db_path, embedder=embedder)  # type: ignore[arg-type]
 
 
+def _print_session_end_retro(ab_adapter: BeadsAdapter | None) -> None:
+    """Render RetroTool's summary view at graceful session exit
+    (/exit, :q, Ctrl-C). Skipped for non-ab sessions and on retro
+    failure — the retro is a convenience, not a blocker on shutdown.
+    Crash/kill paths intentionally don't hit this (no atexit); an
+    unreliable retro is worse than none."""
+    if ab_adapter is None:
+        return
+    try:
+        summary = RetroTool(ab_adapter).call(mode="summary")
+    except Exception:  # exit path; never raise on shutdown
+        return
+    console.print(f"[dim]{summary}[/dim]")
+
+
 def _maybe_ab_bd_adapter(
     character: Character,
     *,
@@ -1218,6 +1233,20 @@ def _build_tool_grounding_block(registry: ToolRegistry, workspace_path: Path) ->
             "`introspect` tool with the matching scope. Do not guess "
             "your capabilities from the character sheet or training."
         )
+    # Preference-capture nudge (harness-7jda). When the remember tool is
+    # loaded, the model must route durable-preference turns through it
+    # BEFORE replying; otherwise the preference is acknowledged in chat
+    # and lost at session end. Listing concrete trigger phrases gives
+    # small models the pattern-matches they need.
+    if "remember" in registry:
+        base += (
+            "\n- PREFERENCE CAPTURE. When the user states a durable "
+            "preference or rule — phrases like 'from now on', 'always', "
+            "'remember to', 'keep in mind', 'note to self', 'never again' "
+            "— call the `remember` tool with the verbatim rule BEFORE "
+            "replying. Then apply it. Acknowledging a preference only in "
+            "chat does NOT persist it across sessions."
+        )
     # Backlog grounding (harness-dxv). When ab's ops tools are wired,
     # any question about the user's tasks / plans / priorities /
     # blockers MUST route through bd via plan/status/drift — not
@@ -1237,6 +1266,26 @@ def _build_tool_grounding_block(registry: ToolRegistry, workspace_path: Path) ->
             "of these tools is loaded this turn, say so plainly."
         )
     return base
+
+
+def _render_ab_memories_block(adapter: BeadsAdapter) -> str | None:
+    """Fetch ab's bd-owned memories and wrap them as a system-prompt
+    block. Returns None when the store is empty or bd is transiently
+    unavailable — the caller should skip the injection rather than
+    emitting an empty section (harness-hc9k).
+
+    The chat pipeline's existing `_render_memory_block` only surfaces
+    the harness-local EpisodicStore; persisted `bd remember` insights
+    stayed dormant across sessions until a tool round called
+    `memories` explicitly. Auto-injecting them makes durable
+    preferences take effect the very next turn."""
+    try:
+        out = adapter.memories().strip()
+    except BeadsAdapterError:
+        return None
+    if not out or out.startswith("No memories stored"):
+        return None
+    return "Durable preferences and notes from earlier sessions — apply automatically:\n\n" + out
 
 
 def _render_memory_block(memories: list[EpisodicRecord]) -> str:
@@ -1931,6 +1980,7 @@ def chat(
                 # regardless of how many the prior turn spent.
                 ab_adapter.reset_turn_counter()
             if user_input.lower() in _EXIT_COMMANDS:
+                _print_session_end_retro(ab_adapter)
                 break
             if user_input.lower() in _EDIT_COMMANDS:
                 # Slash command: open $EDITOR on Airton's last reply.
@@ -2001,6 +2051,11 @@ def chat(
 
             if recalled:
                 system_content = f"{system_content}\n\n{_render_memory_block(recalled)}"
+
+            if ab_adapter is not None:
+                ab_mem_block = _render_ab_memories_block(ab_adapter)
+                if ab_mem_block is not None:
+                    system_content = f"{system_content}\n\n{ab_mem_block}"
 
             if registry is not None:
                 system_content = (
@@ -2107,7 +2162,9 @@ def chat(
                 console.print(Markdown(reply))
             console.print()
     except (KeyboardInterrupt, EOFError):
-        console.print("\n[dim]bye.[/dim]")
+        console.print()
+        _print_session_end_retro(ab_adapter)
+        console.print("[dim]bye.[/dim]")
     finally:
         # Order matters: stop anything that could still be painting the
         # terminal first (spinner, stream) so a later exception doesn't
