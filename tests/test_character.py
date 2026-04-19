@@ -123,6 +123,28 @@ def test_system_prompt_includes_thought_graph_guidance() -> None:
     assert "thought:hypothesis" in prompt
 
 
+def test_system_prompt_injects_today_when_date_supplied() -> None:
+    """harness-2o2: model has no temporal anchor unless system_prompt
+    carries today's date. Passing `now=` must surface the ISO date and
+    weekday near the top so even a small model can judge
+    'is this deadline close or months away?'."""
+    from datetime import date
+
+    character = load_character(AIRTON)
+    prompt = character.system_prompt(now=date(2026, 4, 18))  # a Saturday
+    assert "2026-04-18" in prompt
+    assert "Saturday" in prompt
+
+
+def test_system_prompt_omits_date_when_not_supplied() -> None:
+    """harness-2o2: date injection is opt-in. Callers that don't pass
+    `now` (e.g. voice-eval snapshots) must see no date line, so fixtures
+    stay deterministic across days."""
+    character = load_character(AIRTON)
+    prompt = character.system_prompt()
+    assert "Today:" not in prompt
+
+
 def test_system_prompt_excludes_named_voice_examples() -> None:
     character = load_character(AIRTON)
     excluded = frozenset({"self_reference"})

@@ -6,7 +6,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import cast
@@ -1847,7 +1847,9 @@ def chat(
         plus any compaction summary, plus history since the pointer.
         Undercounts slightly because retrieved memories/facts add text
         per turn, but tracks transcript growth accurately."""
-        baseline_system = ChatMessage(role="system", content=character.system_prompt())
+        baseline_system = ChatMessage(
+            role="system", content=character.system_prompt(now=date.today())
+        )
         summary_msg, history_msgs = _load_history()
         msgs: list[ChatMessage] = [baseline_system]
         if summary_msg is not None:
@@ -1969,9 +1971,9 @@ def chat(
             )
 
             if examples:
-                system_content = character.system_prompt(include_samples=examples)
+                system_content = character.system_prompt(include_samples=examples, now=date.today())
             else:
-                system_content = character.system_prompt()
+                system_content = character.system_prompt(now=date.today())
 
             if recalled:
                 system_content = f"{system_content}\n\n{_render_memory_block(recalled)}"

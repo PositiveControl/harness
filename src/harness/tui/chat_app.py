@@ -24,6 +24,7 @@ import json
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import date
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.markdown import Markdown
@@ -1047,9 +1048,9 @@ class ChatApp(App[None]):
             )
 
             system_content = (
-                self._character.system_prompt(include_samples=examples)
+                self._character.system_prompt(include_samples=examples, now=date.today())
                 if examples
-                else self._character.system_prompt()
+                else self._character.system_prompt(now=date.today())
             )
             if recalled:
                 system_content = f"{system_content}\n\n{_render_memory_block(recalled)}"

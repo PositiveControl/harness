@@ -3,6 +3,7 @@ from __future__ import annotations
 import textwrap
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import frontmatter
@@ -74,6 +75,7 @@ class Character:
         *,
         exclude_example_ids: frozenset[str] | None = None,
         include_samples: Sequence[VoiceSample] | None = None,
+        now: date | None = None,
     ) -> str:
         """Fallback system prompt for single-model ReAct and voice evals.
         Richer pipelines (multi-agent roles + critic) compose their own.
@@ -134,7 +136,12 @@ class Character:
                 f"  - Thought-labels: {tg.thought_labels.strip()}\n\n"
             )
 
+        date_block = ""
+        if now is not None:
+            date_block = f"Today: {now.isoformat()} ({now.strftime('%A')}).\n\n"
+
         return (
+            f"{date_block}"
             f"You are {self.name}. Pronoun: {self.pronouns}. "
             f"Era of origin: {self.era}.\n\n"
             f"Premise:\n{self.premise}\n\n"

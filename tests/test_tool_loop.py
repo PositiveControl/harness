@@ -1304,6 +1304,95 @@ def test_loop_catches_fabricated_ab_plan_output() -> None:
     assert len(nudges) == 1
 
 
+def test_loop_catches_fabrication_after_errored_tool_call() -> None:
+    """Regression (harness-a0y): when a tool is called this turn but
+    returns success=False (e.g. 'invalid scope'), the existing gate
+    'tools_ran_this_turn' flips True and disarms every fabrication
+    catcher — the model is treated as 'in wrap-up' when in reality
+    it has no successful tool output to summarize. User-visible repro:
+    asked 'tell me about our current tasks', model called plan with
+    scope='current tasks' (invalid), tool errored, model then emitted
+    two fabricated tiered plans as 'wrap-up'. The fix gates on
+    'at least one successful tool this turn' instead of 'any tool
+    executed'."""
+    registry = ToolRegistry()
+
+    class _AlwaysFailPlan:
+        @property
+        def spec(self) -> ToolSpec:
+            return ToolSpec(
+                name="plan",
+                description="d",
+                parameters={
+                    "type": "object",
+                    "properties": {"scope": {"type": "string"}},
+                },
+                tier="read",
+            )
+
+        def call(self, **_: object) -> str:
+            raise ValueError("invalid scope 'current tasks'")
+
+    registry.register(_AlwaysFailPlan())
+    fabrication = (
+        "For professional tasks: Today — 2026-04-18 Shall: (none) "
+        "Should: 1. [professional/airton_b-kyl] deliver cabin computer UI POC "
+        "Shmaybe: (none) Watching: (none)\n"
+        "For personal tasks: Today — 2026-04-18 Shall: (none) "
+        "Should: 1. [personal/birthday] August 29 2026 — date-locked "
+        "Shmaybe: (none) Watching: (none)"
+    )
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="plan", arguments={"scope": "current tasks"}),),
+            ),
+            ModelReply(content=fabrication),
+            ModelReply(content="I cannot plan right now."),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="tell me about our current tasks")],
+        registry,
+    )
+    nudges = [
+        m for m in result.messages if m.role == "user" and "fabricated tool output" in m.content
+    ]
+    assert len(nudges) == 1, (
+        "fabrication after all-errored tool calls must be caught, not returned as wrap-up"
+    )
+
+
+def test_loop_catches_full_scope_plan_fabrication() -> None:
+    """Regression (harness-jj9): _looks_like_ab_fabrication missed the
+    user's observed shape because it used FULL scope names
+    ('[professional/airton_b-kyl]' not 'prof') and rendered tier labels
+    mid-line rather than at line-start. Catcher must also fire on:
+    (a) a 'Today — YYYY-MM-DD' date-header prefix (real _render_plan
+    shape, fabricated verbatim), (b) four tier labels in one reply
+    regardless of line-start anchoring."""
+    from harness.orchestrator.tool_loop import _looks_like_ab_fabrication
+
+    # Full-scope + inline tier labels — exact shape from harness-a0y repro.
+    inline_fab = (
+        "For professional tasks: Today — 2026-04-18 Shall: (none) "
+        "Should: 1. [professional/airton_b-kyl] deliver cabin computer UI POC "
+        "Shmaybe: (none) Watching: (none)"
+    )
+    assert _looks_like_ab_fabrication(inline_fab), (
+        "full-scope plan fabrication with inline tier labels must be caught"
+    )
+
+    # Date-header prefix alone is a strong tell (real tool output starts
+    # with this exact shape; prose almost never does).
+    date_header_only = "Today — 2026-04-18\n  Shall: (none)"
+    assert _looks_like_ab_fabrication(date_header_only), (
+        "'Today — YYYY-MM-DD' header must be caught as plan fabrication"
+    )
+
+
 def test_loop_allows_real_plan_output_after_tool_call() -> None:
     """Guard: if `plan` really ran this turn, the model echoing back
     'Shall: 1. [professional/harness-abc] …' as its wrap-up is legitimate,

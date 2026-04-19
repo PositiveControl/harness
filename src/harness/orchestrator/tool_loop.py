@@ -148,8 +148,20 @@ _FABRICATED_SEARCH_RE = re.compile(
 #     together is plan imitation.
 _FABRICATED_AB_CAPTURE_RE = re.compile(r"(?:\A|\n)\s*Captured:\s", re.IGNORECASE)
 _FABRICATED_AB_SCOPE_RE = re.compile(r"\[(?:prof|pers)/[^\]]+\]", re.IGNORECASE)
+# 'Today — YYYY-MM-DD' is the exact _render_plan header shape; natural
+# prose basically never emits this prefix. Accept em-dash or hyphen
+# (harness-jj9: the observed fabrication reproduces the em-dash verbatim).
+_AB_DATE_HEADER_RE = re.compile(
+    r"\bToday\s*[\u2014\-]\s*\d{4}-\d{2}-\d{2}\b",
+    re.IGNORECASE,
+)
+# Tier labels anywhere in the reply (not just line-start): the user's
+# observed fabrication emitted them inline after the date header, so the
+# earlier line-start anchor missed the case entirely. Two+ labels with a
+# colon/dash suffix is a plan-imitation signal regardless of layout
+# (harness-jj9).
 _AB_TIER_HEADER_RE = re.compile(
-    r"(?:\A|\n)\s*(?:Shall|Should|Shmaybe|Watching)\b[-:]",
+    r"\b(?:Shall|Should|Shmaybe|Watching)\b[-:]",
     re.IGNORECASE,
 )
 
@@ -158,6 +170,8 @@ def _looks_like_ab_fabrication(content: str) -> bool:
     if _FABRICATED_AB_CAPTURE_RE.search(content):
         return True
     if _FABRICATED_AB_SCOPE_RE.search(content):
+        return True
+    if _AB_DATE_HEADER_RE.search(content):
         return True
     return len(_AB_TIER_HEADER_RE.findall(content)) >= 2
 
@@ -351,11 +365,15 @@ def _router_prelude(
     confirm: ConfirmFn | None,
     emit: Callable[[ToolLoopEvent], None],
     seen_calls: set[tuple[str, str]],
-) -> bool:
+) -> tuple[bool, bool]:
     """Classify the last user turn and, on a usable intent, append a
     synthetic assistant tool-call turn + the tool result to `working`
-    in place. Returns True if routing produced a tool execution (main
-    model enters wrap-up mode directly), False otherwise.
+    in place. Returns (routed, succeeded) — `routed` is True if routing
+    produced a tool execution (main model enters wrap-up mode directly),
+    `succeeded` is True iff that tool returned ToolResult.success=True.
+    The main loop needs both signals: routed-but-failed still counts as
+    "tool executed" for the wrap-up token cap but NOT for disarming
+    fabrication catchers (see harness-a0y).
 
     Conservative guards: read-tier tools only (write-tier needs the
     main model's richer context + its own confirmation UX), intent
@@ -369,18 +387,18 @@ def _router_prelude(
     duplicate guard."""
     user_message = _last_user_message(working)
     if user_message is None:
-        return False
+        return (False, False)
     intent = router.classify(user_message, registry.specs())
     if intent is None or intent.tool_name is None:
-        return False
+        return (False, False)
     if intent.tool_name not in registry:
-        return False
+        return (False, False)
     spec = registry.get(intent.tool_name).spec
     if spec.tier != "read":
-        return False
+        return (False, False)
     required = spec.parameters.get("required", []) or []
     if any(key not in intent.arguments for key in required):
-        return False
+        return (False, False)
 
     call = ToolCall(name=intent.tool_name, arguments=dict(intent.arguments))
     emit(ToolLoopEvent(kind="router_intent", call=call, round_index=0))
@@ -403,7 +421,7 @@ def _router_prelude(
     seen_calls.add(_call_key(call))
     working.append(ChatMessage(role="assistant", content="", tool_calls=(call,)))
     working.append(ChatMessage(role="tool", content=result.output, name=call.name))
-    return True
+    return (True, result.success)
 
 
 def run_tool_loop(
@@ -469,8 +487,15 @@ def run_tool_loop(
         if observe is not None:
             observe(event)
 
+    # Tracks whether any tool call THIS TURN returned success=True. The
+    # fabrication catchers (_diagnose_bail) gate on this: if every tool
+    # this turn errored, the model has no real data to wrap up, so a
+    # completion-style reply is still hallucination (harness-a0y).
+    any_tool_succeeded = False
+
     if router is not None:
-        _router_prelude(router, working, registry, confirm, emit, seen_calls)
+        _, router_success = _router_prelude(router, working, registry, confirm, emit, seen_calls)
+        any_tool_succeeded = any_tool_succeeded or router_success
 
     stream_fn = getattr(adapter, "stream_with_tools", None)
 
@@ -537,9 +562,12 @@ def run_tool_loop(
             # tool_calls produced tool-role messages appended to working),
             # a completion claim is legitimate — the model is wrapping up.
             # Only treat a claim as hallucination when no tool has run yet.
-            tools_ran_this_turn = any(m.role == "tool" for m in working[initial_count:])
+            # Gate on successful tool execution, not mere execution: an
+            # all-errored turn (e.g. plan with invalid scope) must still
+            # trip fabrication catchers because the model has no real
+            # data to wrap up (harness-a0y).
             recovery = (
-                _diagnose_bail(last_reply, tools_ran_this_turn=tools_ran_this_turn)
+                _diagnose_bail(last_reply, tools_ran_this_turn=any_tool_succeeded)
                 if bail_retries > 0
                 else None
             )
@@ -617,6 +645,8 @@ def run_tool_loop(
             emit(ToolLoopEvent(kind=kind, call=call, result=result, round_index=round_idx))
 
             seen_calls.add(key)
+            if result.success:
+                any_tool_succeeded = True
             working.append(ChatMessage(role="tool", content=result.output, name=call.name))
 
     # Loop exhausted — return what we have.
