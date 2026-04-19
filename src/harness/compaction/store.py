@@ -44,7 +44,14 @@ class CompactionStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path, isolation_level=None)
+        # `check_same_thread=False` mirrors Transcript / EpisodicStore /
+        # SemanticStore: the Textual TUI fires user-triggered ops like
+        # /compact on worker threads while the connection lives on the
+        # main thread. SQLite's default thread check would reject the
+        # cross-thread use; WAL + busy_timeout serialize the actual
+        # writes, and only one writer runs at a time (is_busy gates
+        # /compact out when a turn worker is active).
+        self._conn = sqlite3.connect(self.db_path, isolation_level=None, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
         self._conn.execute("PRAGMA busy_timeout = 5000")
