@@ -740,6 +740,169 @@ def test_search_passes_assignee_flag(bd_dir: Path, runner: FakeRunner) -> None:
     assert cmd[cmd.index("--assignee") + 1] == "airton_b"
 
 
+def test_default_exclude_drops_matching_assignee_from_list(
+    bd_dir: Path, runner: FakeRunner
+) -> None:
+    payload = json.dumps(
+        [
+            {
+                "id": "harness-user",
+                "title": "user work",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "mark",
+            },
+            {
+                "id": "harness-ab",
+                "title": "ab internal",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "airton_b",
+            },
+        ]
+    )
+    runner.queue(FakeCompletedProcess(stdout=payload))
+    adapter = BeadsAdapter(bd_dir, default_exclude_assignee="airton_b")
+
+    issues = adapter.list_issues()
+
+    assert [i.id for i in issues] == ["harness-user"]
+
+
+def test_default_exclude_skipped_when_explicit_assignee_passed(
+    bd_dir: Path, runner: FakeRunner
+) -> None:
+    """A positive `assignee=X` filter opts in explicitly — the default
+    exclude gets out of the way. Without this, querying for
+    airton_b-owned beads on an adapter that defaults to hiding them
+    would return empty."""
+    payload = json.dumps(
+        [
+            {
+                "id": "harness-ab",
+                "title": "ab internal",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "airton_b",
+            }
+        ]
+    )
+    runner.queue(FakeCompletedProcess(stdout=payload))
+    adapter = BeadsAdapter(bd_dir, default_exclude_assignee="airton_b")
+
+    issues = adapter.list_issues(assignee="airton_b")
+
+    assert [i.id for i in issues] == ["harness-ab"]
+
+
+def test_default_exclude_applies_to_ready(bd_dir: Path, runner: FakeRunner) -> None:
+    payload = json.dumps(
+        [
+            {
+                "id": "harness-ab",
+                "title": "ab internal",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "airton_b",
+            }
+        ]
+    )
+    runner.queue(FakeCompletedProcess(stdout=payload))
+    adapter = BeadsAdapter(bd_dir, default_exclude_assignee="airton_b")
+
+    assert adapter.ready() == []
+
+
+def test_default_exclude_applies_to_search(bd_dir: Path, runner: FakeRunner) -> None:
+    payload = json.dumps(
+        [
+            {
+                "id": "harness-ab",
+                "title": "ab internal",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "airton_b",
+            }
+        ]
+    )
+    runner.queue(FakeCompletedProcess(stdout=payload))
+    adapter = BeadsAdapter(bd_dir, default_exclude_assignee="airton_b")
+
+    assert adapter.search("foo") == []
+
+
+def test_default_exclude_applies_to_stale(bd_dir: Path, runner: FakeRunner) -> None:
+    payload = json.dumps(
+        [
+            {
+                "id": "harness-ab",
+                "title": "ab internal",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "airton_b",
+            },
+            {
+                "id": "harness-user",
+                "title": "user",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "mark",
+            },
+        ]
+    )
+    runner.queue(FakeCompletedProcess(stdout=payload))
+    adapter = BeadsAdapter(bd_dir, default_exclude_assignee="airton_b")
+
+    issues = adapter.stale()
+
+    assert [i.id for i in issues] == ["harness-user"]
+
+
+def test_no_default_exclude_returns_everything(bd_dir: Path, runner: FakeRunner) -> None:
+    payload = json.dumps(
+        [
+            {
+                "id": "harness-ab",
+                "title": "ab internal",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "airton_b",
+            },
+            {
+                "id": "harness-user",
+                "title": "user",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "mark",
+            },
+        ]
+    )
+    runner.queue(FakeCompletedProcess(stdout=payload))
+    adapter = BeadsAdapter(bd_dir)  # no default_exclude_assignee
+
+    issues = adapter.list_issues()
+
+    assert {i.id for i in issues} == {"harness-ab", "harness-user"}
+
+
 def test_get_focus_returns_none_when_no_in_progress(bd_dir: Path, runner: FakeRunner) -> None:
     runner.queue(FakeCompletedProcess(stdout="[]"))
     adapter = BeadsAdapter(bd_dir)

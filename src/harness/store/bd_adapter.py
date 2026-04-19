@@ -86,10 +86,22 @@ class BeadsAdapter:
     `cwd=bd_dir` so the isolation invariant holds without the caller
     having to think about it."""
 
-    def __init__(self, bd_dir: Path, *, bd_executable: str = "bd") -> None:
+    def __init__(
+        self,
+        bd_dir: Path,
+        *,
+        bd_executable: str = "bd",
+        default_exclude_assignee: str | None = None,
+    ) -> None:
+        """`default_exclude_assignee` (e.g. 'airton_b') hides beads owned
+        by that assignee from the adapter's read methods — list_issues,
+        ready, search, stale — unless a caller explicitly passes a
+        positive `assignee=X` filter, which is respected as an opt-in.
+        Write methods are never filtered."""
         self._bd_dir = bd_dir
         self._bd = bd_executable
         self._types_ensured = False
+        self._default_exclude_assignee = default_exclude_assignee
 
     @property
     def bd_dir(self) -> Path:
@@ -313,7 +325,7 @@ class BeadsAdapter:
         if scope is not None:
             label = f"scope:{scope}"
             issues = [i for i in issues if label in i.labels]
-        return issues
+        return self._apply_default_exclude(issues, explicit_assignee=assignee)
 
     def search(
         self,
@@ -336,7 +348,8 @@ class BeadsAdapter:
         if limit is not None:
             args.extend(["--limit", str(limit)])
         result = self._run(args)
-        return _parse_issue_list(result.stdout)
+        issues = _parse_issue_list(result.stdout)
+        return self._apply_default_exclude(issues, explicit_assignee=assignee)
 
     def ready(
         self,
@@ -355,7 +368,7 @@ class BeadsAdapter:
         if scope is not None:
             label = f"scope:{scope}"
             issues = [i for i in issues if label in i.labels]
-        return issues
+        return self._apply_default_exclude(issues, explicit_assignee=assignee)
 
     def show(self, issue_id: str) -> BeadsIssue:
         result = self._run(["show", issue_id, "--json"])
@@ -418,7 +431,25 @@ class BeadsAdapter:
 
     def stale(self) -> list[BeadsIssue]:
         result = self._run(["stale", "--json"])
-        return _parse_issue_list(result.stdout)
+        issues = _parse_issue_list(result.stdout)
+        return self._apply_default_exclude(issues, explicit_assignee=None)
+
+    def _apply_default_exclude(
+        self,
+        issues: list[BeadsIssue],
+        *,
+        explicit_assignee: str | None,
+    ) -> list[BeadsIssue]:
+        """Drop rows whose assignee matches the adapter's configured
+        default exclude — but only if the caller didn't pass a positive
+        `assignee=` filter. A positive filter is an opt-in and beats
+        the default exclude."""
+        if explicit_assignee is not None:
+            return issues
+        exclude = self._default_exclude_assignee
+        if not exclude:
+            return issues
+        return [i for i in issues if i.assignee != exclude]
 
     def remember(self, insight: str) -> None:
         self._run(["remember", insight])

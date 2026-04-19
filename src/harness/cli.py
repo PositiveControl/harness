@@ -256,17 +256,26 @@ def _open_semantic_store() -> SemanticStore | None:
     return SemanticStore(settings.character_db_path, embedder=embedder)  # type: ignore[arg-type]
 
 
-def _maybe_ab_bd_adapter(character: Character) -> BeadsAdapter | None:
+def _maybe_ab_bd_adapter(
+    character: Character,
+    *,
+    include_internal: bool = False,
+) -> BeadsAdapter | None:
     """Construct ab's bd adapter when the active character is
     airton_b and its isolated beads DB is initialized. Returns None
     (with a yellow warning to the console) when bd isn't runnable or
     the dir hasn't been bootstrapped yet — ab's ops tools then skip
     registration with a hint. Any other character gets None silently;
-    ab ops don't belong on other personas."""
+    ab ops don't belong on other personas.
+
+    `include_internal=False` (default) hides ab-owned thought-graph
+    beads (assignee=airton_b) from read views. `--dev` or explicit
+    `--include-internal` on the CLI flip this on."""
     if character.name != "airton_b":
         return None
     bd_dir = settings.ab_bd_dir_resolved
-    adapter = BeadsAdapter(bd_dir)
+    exclude = None if include_internal else "airton_b"
+    adapter = BeadsAdapter(bd_dir, default_exclude_assignee=exclude)
     try:
         adapter.verify()
     except BeadsAdapterError as exc:
@@ -962,6 +971,7 @@ def _build_tool_registry_for_tui(
     router_id: str | None = None,
     transcript: Transcript | None = None,
     warnings_out: list[str] | None = None,
+    include_internal: bool = False,
 ) -> ToolRegistry | None:
     """Build a ToolRegistry for the Textual app. Subset of the
     classic REPL's setup — skips scribe_session and
@@ -1018,7 +1028,7 @@ def _build_tool_registry_for_tui(
     # Same ab-ops injection as the REPL builder. Character is required
     # for this path so we can always compute the adapter.
     if character is not None:
-        ab_adapter = _maybe_ab_bd_adapter(character)
+        ab_adapter = _maybe_ab_bd_adapter(character, include_internal=include_internal)
         builders.update(_ab_tool_builders(ab_adapter))
 
     registry = ToolRegistry()
@@ -1421,7 +1431,15 @@ def chat(
         help="Dev mode — surface internal signals like the stream filter's "
         "'⋯ suppressed N line(s)…' markers. Off by default so users don't "
         "see the model's self-inflicted noise; on for developers tuning "
-        "the filter or debugging small-model behavior.",
+        "the filter or debugging small-model behavior. Also implies "
+        "--include-internal so ab's own thought-graph beads are visible.",
+    ),
+    include_internal: bool = typer.Option(
+        False,
+        "--include-internal/--no-include-internal",
+        help="Show ab-internal beads (assignee=airton_b) in plan / list / "
+        "drift / search views. Off by default so user-captured work isn't "
+        "buried under ab's scratchpad thought-graph. --dev implies on.",
     ),
     router_enabled: bool = typer.Option(
         False,
@@ -1533,6 +1551,7 @@ def chat(
             router_id=_router_id_label(tui_router),
             transcript=tui_transcript,
             warnings_out=tui_registry_warnings,
+            include_internal=include_internal or dev,
         )
 
         tui_compaction_store = (
@@ -1687,7 +1706,7 @@ def chat(
         # Inject ab's ops builders when the active character is airton_b
         # and the isolated bd dir is ready. Non-ab characters get an
         # empty merge — no behavioural change.
-        ab_adapter = _maybe_ab_bd_adapter(character)
+        ab_adapter = _maybe_ab_bd_adapter(character, include_internal=include_internal or dev)
         builders.update(_ab_tool_builders(ab_adapter))
 
         registry = ToolRegistry()
