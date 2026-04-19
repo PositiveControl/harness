@@ -324,6 +324,42 @@ def test_verify_raises_when_beads_subdir_missing(
         adapter.verify()
 
 
+def test_verify_raises_when_server_unreachable(
+    bd_dir: Path, runner: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """verify() by default probes `bd dolt test`. Non-zero exit from
+    the probe must surface a repair hint pointing the user at
+    `bd dolt start`."""
+    monkeypatch.setattr("harness.store.bd_adapter.shutil.which", lambda _: "/u/b/bd")
+    runner.queue(FakeCompletedProcess(returncode=1, stderr="connection refused"))
+    adapter = BeadsAdapter(bd_dir)
+    with pytest.raises(BeadsAdapterError, match="bd dolt start"):
+        adapter.verify()
+    # The probe went to `bd dolt test` (not some other subcommand).
+    assert runner.calls[0]["cmd"][-2:] == ["dolt", "test"]
+
+
+def test_verify_passes_when_server_reachable(
+    bd_dir: Path, runner: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("harness.store.bd_adapter.shutil.which", lambda _: "/u/b/bd")
+    runner.queue(FakeCompletedProcess(returncode=0, stdout="✓ Connection successful"))
+    adapter = BeadsAdapter(bd_dir)
+    adapter.verify()  # should not raise
+
+
+def test_verify_check_server_false_skips_probe(
+    bd_dir: Path, runner: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """check_server=False is the escape hatch for test paths that have
+    already stubbed subprocess and don't need a second round-trip."""
+    monkeypatch.setattr("harness.store.bd_adapter.shutil.which", lambda _: "/u/b/bd")
+    adapter = BeadsAdapter(bd_dir)
+    adapter.verify(check_server=False)
+    # No subprocess calls — server probe skipped.
+    assert runner.calls == []
+
+
 def test_run_raises_beads_error_when_bd_missing(
     bd_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

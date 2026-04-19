@@ -8,6 +8,11 @@ dist/
 build/
 *.egg-info/
 .harness/
+# ab's isolated bd + memory data when bd init lands at repo root
+# (canonical path is ~/.harness/airton_b/; bd may land here if the
+# user cd's into <repo>/airton_b/ first). Leading slash = repo-root
+# only; character/airton_b/ (persona data) stays tracked.
+/airton_b/
 data/
 logs/
 *.sqlite

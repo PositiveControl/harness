@@ -55,6 +55,17 @@ def test_maybe_ab_bd_adapter_returns_adapter_when_dir_ready(
     # bd-on-PATH gate without actually needing bd installed.
     monkeypatch.setattr("harness.store.bd_adapter.shutil.which", lambda _: "/usr/local/bin/bd")
 
+    # verify() now also probes the Dolt server via `bd dolt test`; stub
+    # subprocess so the probe returns exit 0 without needing a real bd.
+    def fake_run(*_a: object, **_k: object) -> MagicMock:
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.stdout = "✓ Connection successful\n"
+        proc.stderr = ""
+        return proc
+
+    monkeypatch.setattr("harness.store.bd_adapter.subprocess.run", fake_run)
+
     ab = load_character(AIRTON_B)
     adapter = _maybe_ab_bd_adapter(ab)
 

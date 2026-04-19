@@ -115,9 +115,14 @@ class BeadsAdapter:
             raise BeadsAdapterError(f"bd command failed ({' '.join(args)}): {stderr}")
         return result
 
-    def verify(self) -> None:
-        """Confirm bd is runnable and bd_dir has a beads DB. Raises
-        BeadsAdapterError with a repair hint on failure."""
+    def verify(self, *, check_server: bool = True) -> None:
+        """Confirm bd is runnable, bd_dir has a beads DB, and (by
+        default) the project's Dolt server is reachable. Raises
+        BeadsAdapterError with a repair hint on failure.
+
+        `check_server=False` skips the Dolt reachability probe — useful
+        in tests that have already stubbed subprocess and don't need
+        to run a real `bd dolt test` round-trip."""
         if shutil.which(self._bd) is None:
             raise BeadsAdapterError(
                 f"bd executable not found at {self._bd!r}. Install beads and ensure it's on PATH."
@@ -134,6 +139,23 @@ class BeadsAdapter:
                 f"ab bd_dir {self._bd_dir} has no .beads/ subdirectory. "
                 f"Run `cd {self._bd_dir} && bd init` to initialize."
             )
+        if check_server and not self._server_reachable():
+            raise BeadsAdapterError(
+                f"ab bd_dir {self._bd_dir} has its beads DB but the Dolt "
+                "server isn't reachable. bd normally auto-starts on demand; "
+                f"when that fails, run `cd {self._bd_dir} && bd dolt start` "
+                "explicitly. Verify with `bd dolt test`."
+            )
+
+    def _server_reachable(self) -> bool:
+        """Probe the project's Dolt server via `bd dolt test`. Returns
+        False on subprocess failure, missing dolt subcommand, or
+        explicit non-zero exit — caller decides whether to raise."""
+        try:
+            result = self._run(["dolt", "test"], check=False)
+        except BeadsAdapterError:
+            return False
+        return result.returncode == 0
 
     def ensure_custom_types(self) -> None:
         """Idempotent: make sure bd's types.custom list includes ab's
