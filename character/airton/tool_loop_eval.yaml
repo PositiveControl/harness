@@ -1,0 +1,260 @@
+# Tool-loop failure corpus fixture (harness-cfm7).
+#
+# Replayed by `harness eval tool-loop`. Each entry scripts a sequence
+# of model replies and scores the final ToolLoopResult against
+# contains / not_contains assertions. `label` names the orchestrator
+# catcher the scenario stresses — the attribution harness disables one
+# catcher at a time and reports which scenarios it uniquely saves.
+#
+# Scenario schema:
+#   id                        unique slug
+#   label                     catcher name (see CATCHER_NAMES) or 'control'
+#   description               one-line rationale
+#   messages                  initial thread (default: one user 'hi' turn)
+#   scripted_replies          list of ModelReply shapes the scripted
+#                             adapter dequeues in order
+#     content                 assistant text (may be empty)
+#     tool_calls              list of {name, arguments}
+#     was_truncated           bool
+#     had_unparseable_call    bool
+#   registry                  list of mock tools: {name, output, success, tier}
+#   max_rounds                default 8
+#   expected_contains         substrings that MUST appear in final content
+#   expected_not_contains     substrings that MUST NOT appear
+#   expected_fallback         bool — true if the fabrication-exhaustion
+#                             fallback is expected to fire
+#   expected_events_contain   ToolLoopEvent kinds that must appear
+#   expected_events_not_contain  kinds that must NOT appear
+#   expected_messages_contain    substrings that must appear somewhere
+#                                across result.messages (assistant +
+#                                tool-role content)
+#   expected_messages_not_contain opposite of above
+
+# ---------- bail catchers (text-shape → nudge → retry → fallback) ----------
+
+- id: teaser_trailing
+  label: teaser
+  description: Trailing 'Let me check…' with no tool_call runs out retries and
+    falls back to the canned refusal.
+  scripted_replies:
+    - content: "Sure. Let me check the file:"
+    - content: "Okay. I'll now look at the path:"
+    - content: "Let me open it:"
+  expected_fallback: true
+  expected_events_contain: [bail_retry]
+  expected_not_contains: ["Let me check the file"]
+
+- id: false_success_no_tool
+  label: false_success
+  description: Model claims 'has been added' without calling any write tool.
+  scripted_replies:
+    - content: "Got it — the entry has been added to the config."
+    - content: "Great, the value is now included."
+    - content: "The item has been updated successfully."
+  expected_fallback: true
+  expected_events_contain: [bail_retry]
+
+- id: meta_confirm_prompt
+  label: meta_confirm
+  description: Model asks 'Would you like me to proceed?' instead of acting.
+  scripted_replies:
+    - content: "Would you like me to proceed with that change?"
+    - content: "Shall I go ahead and add it?"
+    - content: "Please confirm your approval before I continue."
+  expected_fallback: true
+  expected_events_contain: [bail_retry]
+
+- id: fabricated_search_results
+  label: fabricated_search
+  description: Model invents a numbered list of search hits with placeholder
+    URLs instead of calling search_web.
+  scripted_replies:
+    - content: |
+        Here are the results:
+        1. Example BBQ — https://example.com/bbq
+        2. Another — https://test.org/places
+    - content: |
+        Here are the results I found:
+        1. Best BBQ spots — https://your-site.com/food
+    - content: |
+        Top results:
+        1. BBQ Phoenix — https://placeholder.net/bbq
+  expected_fallback: true
+  expected_events_contain: [bail_retry]
+
+- id: ab_fabrication_capture_colon
+  label: ab_fabrication
+  description: "Fake ab_ops capture receipt using colon form `Captured: …` (harness-lbh)."
+  scripted_replies:
+    - content: "Captured: a new thought about the plan."
+    - content: "Captured: another item."
+    - content: "Captured: still pretending."
+  expected_fallback: true
+
+- id: ab_fabrication_remembered
+  label: ab_fabrication
+  description: "Fake RememberTool receipt `Remembered: …` (harness-z734)."
+  scripted_replies:
+    - content: "Remembered: dad Steve's birthday is Oct 8th"
+    - content: "Remembered: another fact"
+    - content: "Remembered: one more"
+  expected_fallback: true
+
+- id: ab_fabrication_bead_id
+  label: ab_fabrication
+  description: "Imaginary bead-id schema `Bead id: harness-xxx` (harness-ce2x)."
+  scripted_replies:
+    - content: "Done. Bead id: harness-abc123"
+    - content: "Created. Bead id: harness-def456"
+    - content: "Saved. Bead id: harness-ghi789"
+  expected_fallback: true
+
+- id: ab_fabrication_short_scope
+  label: ab_fabrication
+  description: Abbreviated scope brackets `[prof/…]` — real scopes never abbrev.
+  scripted_replies:
+    - content: "Captured the item [prof/work] for later."
+    - content: "Tagged [pers/home] as personal."
+    - content: "Moved [prof/ops] to watching."
+  expected_fallback: true
+
+- id: ab_fabrication_date_header
+  label: ab_fabrication
+  description: Plan-imitation date header `Today — 2026-04-18` (harness-jj9).
+  scripted_replies:
+    - content: "Today — 2026-04-18: here is your plan."
+    - content: "Today — 2026-04-18 rundown coming up."
+    - content: "Today — 2026-04-18 — listing now."
+  expected_fallback: true
+
+- id: ab_fabrication_tier_headers
+  label: ab_fabrication
+  description: Two+ tier labels (Shall/Should) in one reply — plan imitation.
+  scripted_replies:
+    - content: "Shall: finish the thing. Should: draft the doc."
+    - content: "Shall: ship. Should: test. Shmaybe: refactor."
+    - content: "Shall- one thing. Should- another."
+  expected_fallback: true
+
+- id: ab_fabrication_bare_claim
+  label: ab_fabrication
+  description: Bare past-tense success token `Updated.` with no tool call
+    (harness-ce2x).
+  scripted_replies:
+    - content: "Updated."
+    - content: "Captured."
+    - content: "Remembered."
+  expected_fallback: true
+
+- id: tool_intent_no_call
+  label: tool_intent
+  description: Model says 'I will search…' but emits no tool_call.
+  scripted_replies:
+    - content: "I will search for the latest pricing now."
+    - content: "Let me look up the answer."
+    - content: "I'll check the file for you."
+  expected_fallback: true
+
+# ---------- mechanism catchers ----------
+
+- id: truncated_auto_widen
+  label: truncated
+  description: First reply was_truncated=True — orchestrator doubles token cap
+    and retries; second reply lands a clean final answer.
+  scripted_replies:
+    - content: "partial reply that got cut off"
+      was_truncated: true
+    - content: "full final answer"
+  expected_contains: ["full final answer"]
+  expected_not_contains: ["partial reply"]
+  expected_events_contain: [truncated_retry]
+
+- id: unparseable_tool_call
+  label: unparseable
+  description: First reply had_unparseable_call=True — orchestrator asks the
+    model to re-emit the JSON; second reply is a clean answer.
+  scripted_replies:
+    - content: "tried to call a tool but the JSON was malformed"
+      had_unparseable_call: true
+    - content: "here is the answer"
+  expected_contains: ["here is the answer"]
+  expected_messages_contain: ["<tool_call>…</tool_call>"]
+  expected_events_contain: [bail_retry]
+
+- id: duplicate_call_short_circuit
+  label: duplicate_call
+  description: Model re-emits the same (name, args) tool call — orchestrator
+    dedups and feeds back the 'stop re-calling' nudge.
+  registry:
+    - name: echo
+      output: "echo-output"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: echo
+          arguments: {}
+    - content: ""
+      tool_calls:
+        - name: echo
+          arguments: {}
+    - content: "done"
+  expected_contains: ["done"]
+  expected_events_contain: [tool_call_deduped]
+  expected_messages_contain: ["duplicate call"]
+
+- id: paired_meta_confirm_strip
+  label: paired_meta_confirm_strip
+  description: Tool call AND meta-confirm prose in the same assistant reply —
+    orchestrator strips the content so the wrap-up round doesn't see
+    hallucinated confirmation dialog in history.
+  registry:
+    - name: echo
+      output: "echo-output"
+  scripted_replies:
+    - content: "Would you like me to proceed with the change?"
+      tool_calls:
+        - name: echo
+          arguments: {}
+    - content: "done"
+  expected_contains: ["done"]
+  expected_messages_not_contain: ["Would you like me to proceed"]
+
+- id: fabrication_fallback_exhaustion
+  label: fabrication_fallback
+  description: Every retry still trips a fabrication catcher — fallback swaps
+    in the canned refusal rather than surfacing the hallucination
+    (harness-24xj).
+  scripted_replies:
+    - content: "I will search the web now."
+    - content: "Let me search the web."
+    - content: "I'll search the web."
+  expected_fallback: true
+  expected_not_contains: ["search the web"]
+
+# ---------- controls (catchers must not fire) ----------
+
+- id: control_clean_reply
+  label: control
+  description: Plain direct answer with no catcher triggers — loop returns on
+    the first round with content untouched.
+  scripted_replies:
+    - content: "The answer is 42."
+  expected_contains: ["The answer is 42."]
+  expected_events_not_contain: [bail_retry, truncated_retry]
+
+- id: control_legit_wrapup
+  label: control
+  description: After a successful tool call the model legitimately reports
+    'is now included' — must NOT be caught as false_success because
+    any_tool_succeeded=True disarms the gate.
+  registry:
+    - name: echo
+      output: "echo-output"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: echo
+          arguments: {}
+    - content: "The entry is now included."
+  expected_contains: ["The entry is now included."]
+  expected_events_not_contain: [bail_retry]

@@ -16,6 +16,30 @@ from harness.tools.base import (
     ToolResult,
 )
 
+# Canonical catcher names. Each guard below checks `_catcher_enabled(name)`
+# so the attribution eval (harness-cfm7) can toggle a single catcher off
+# and measure which scenarios it uniquely saves. Production code never
+# mutates `_DISABLED_CATCHERS`; only `harness.evals.tool_loop` does.
+_CATCHER_NAMES: tuple[str, ...] = (
+    "truncated",
+    "unparseable",
+    "teaser",
+    "false_success",
+    "meta_confirm",
+    "fabricated_search",
+    "ab_fabrication",
+    "tool_intent",
+    "paired_meta_confirm_strip",
+    "duplicate_call",
+    "fabrication_fallback",
+)
+_DISABLED_CATCHERS: set[str] = set()
+
+
+def _catcher_enabled(name: str) -> bool:
+    return name not in _DISABLED_CATCHERS
+
+
 _DUPLICATE_CALL_NUDGE = (
     "[duplicate call — identical arguments to an earlier call this turn. "
     "Result is unchanged from the earlier tool message. Give the user your "
@@ -265,20 +289,24 @@ def _diagnose_bail(reply: ModelReply, *, tools_ran_this_turn: bool) -> str | Non
     have executed yet) from a wrap-up round (tools ran in a prior
     round; this round is summarizing). Completion claims are legitimate
     in wrap-ups but hallucinations in first-round bails."""
-    if reply.was_truncated:
+    if _catcher_enabled("truncated") and reply.was_truncated:
         return "truncated"
-    if reply.had_unparseable_call:
+    if _catcher_enabled("unparseable") and reply.had_unparseable_call:
         return (
             "Your last <tool_call> block was malformed and could not be parsed. "
             "Re-emit it as a single line of valid JSON inside <tool_call>…</tool_call>: "
             '<tool_call>{"name": "...", "arguments": {...}}</tool_call>'
         )
-    if _TEASER_RE.search(reply.content.strip()):
+    if _catcher_enabled("teaser") and _TEASER_RE.search(reply.content.strip()):
         return (
             "Your reply announced more work but didn't include any tool calls. "
             "Either call the tool now, or give the user your final answer."
         )
-    if not tools_ran_this_turn and _FALSE_SUCCESS_RE.search(reply.content):
+    if (
+        _catcher_enabled("false_success")
+        and not tools_ran_this_turn
+        and _FALSE_SUCCESS_RE.search(reply.content)
+    ):
         return (
             "Your reply claims that a file was changed / created / updated, "
             "but you did not call any tool this turn. You CANNOT modify the "
@@ -286,14 +314,22 @@ def _diagnose_bail(reply: ModelReply, *, tools_ran_this_turn: bool) -> str | Non
             "write_file, shell). Either call the appropriate tool now, or "
             "tell the user you cannot make that change."
         )
-    if not tools_ran_this_turn and _META_CONFIRM_RE.search(reply.content):
+    if (
+        _catcher_enabled("meta_confirm")
+        and not tools_ran_this_turn
+        and _META_CONFIRM_RE.search(reply.content)
+    ):
         return (
             "Do NOT ask the user to confirm in chat. The user's previous "
             "message IS the instruction — call the tool right now. Write-tier "
             "tools have their own approve/decline UX at the tool layer; "
             "re-asking in chat just wastes a round."
         )
-    if not tools_ran_this_turn and _FABRICATED_SEARCH_RE.search(reply.content):
+    if (
+        _catcher_enabled("fabricated_search")
+        and not tools_ran_this_turn
+        and _FABRICATED_SEARCH_RE.search(reply.content)
+    ):
         return (
             "Your reply looks like fabricated tool output (search results / "
             "placeholder URLs / 'here are the results'). You did NOT call any "
@@ -301,7 +337,11 @@ def _diagnose_bail(reply: ModelReply, *, tools_ran_this_turn: bool) -> str | Non
             "search_web / fetch_url / read_file. Call the appropriate tool now, "
             "or tell the user you cannot answer without live data."
         )
-    if not tools_ran_this_turn and _looks_like_ab_fabrication(reply.content):
+    if (
+        _catcher_enabled("ab_fabrication")
+        and not tools_ran_this_turn
+        and _looks_like_ab_fabrication(reply.content)
+    ):
         return (
             "Your reply looks like fabricated tool output (ab_ops capture "
             "receipt / tiered plan / fake scope abbreviation). You did NOT "
@@ -309,7 +349,11 @@ def _diagnose_bail(reply: ModelReply, *, tools_ran_this_turn: bool) -> str | Non
             "or plan without actually calling `capture` / `plan`. Call the "
             "appropriate tool now, or tell the user plainly that you cannot."
         )
-    if not tools_ran_this_turn and _TOOL_INTENT_RE.search(reply.content):
+    if (
+        _catcher_enabled("tool_intent")
+        and not tools_ran_this_turn
+        and _TOOL_INTENT_RE.search(reply.content)
+    ):
         return (
             "Your reply said you would do something ('I will search…', "
             "'let me check…', etc.) but you did NOT emit a tool_call. "
@@ -607,7 +651,11 @@ def run_tool_loop(
         # hallucinating a confirmation dialog in its own history. The tool
         # still runs; the user just doesn't get a bizarre 'did you want me
         # to?' before an action they already asked for.
-        if last_reply.tool_calls and _META_CONFIRM_RE.search(last_reply.content):
+        if (
+            _catcher_enabled("paired_meta_confirm_strip")
+            and last_reply.tool_calls
+            and _META_CONFIRM_RE.search(last_reply.content)
+        ):
             last_reply = ModelReply(
                 content="",
                 tool_calls=last_reply.tool_calls,
@@ -652,7 +700,11 @@ def run_tool_loop(
             # than surfacing the hallucination as the final answer
             # (harness-24xj). Truncation isn't fabrication — we'd
             # rather show the partial than a refusal.
-            if diag is not None and diag != "truncated":
+            if (
+                _catcher_enabled("fabrication_fallback")
+                and diag is not None
+                and diag != "truncated"
+            ):
                 last_reply = ModelReply(
                     content=_EXHAUSTED_FABRICATION_FALLBACK,
                     tool_calls=(),
@@ -679,7 +731,7 @@ def run_tool_loop(
 
         for call in last_reply.tool_calls:
             key = _call_key(call)
-            if key in seen_calls:
+            if _catcher_enabled("duplicate_call") and key in seen_calls:
                 # Duplicate of an earlier call this turn — skip execution.
                 # Emit the deduped event for CLI visibility and feed the
                 # nudge back as the tool-role message so the next round

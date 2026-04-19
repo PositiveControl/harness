@@ -2602,6 +2602,133 @@ def eval_session_resume(
     )
 
 
+@eval_app.command("tool-loop")
+def eval_tool_loop(
+    fixture_path: Path | None = typer.Option(
+        None,
+        "--fixture",
+        help="Path to a tool-loop eval YAML file. Defaults to "
+        "`character/<name>/tool_loop_eval.yaml`.",
+    ),
+    attribute: bool = typer.Option(
+        False,
+        "--attribute",
+        help="Also run the per-catcher attribution harness (disable each "
+        "catcher in turn and report which scenarios it uniquely saves).",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+) -> None:
+    """Replay the tool-loop failure corpus through scripted adapters and
+    score contains / not_contains / events / messages assertions per
+    scenario. With --attribute, also measure which orchestrator catcher
+    uniquely saves which scenario."""
+    from harness.evals.tool_loop import (
+        default_fixture_path as _tl_default_fixture,
+    )
+    from harness.evals.tool_loop import (
+        load_fixture as _tl_load,
+    )
+    from harness.evals.tool_loop import (
+        run_attribution as _tl_attribution,
+    )
+    from harness.evals.tool_loop import (
+        run_tool_loop_eval as _tl_run,
+    )
+
+    character = load_character(settings.character_path)
+    path = fixture_path or _tl_default_fixture(settings.character_path)
+    if not path.exists():
+        raise typer.BadParameter(f"tool-loop eval fixture not found: {path}")
+    fixtures = _tl_load(path)
+
+    if attribute:
+        attr = _tl_attribution(fixtures)
+        baseline = attr.baseline
+    else:
+        baseline = _tl_run(fixtures)
+        attr = None
+
+    if as_json:
+        payload: dict[str, object] = {
+            "character": character.name,
+            "pass_rate": baseline.pass_rate,
+            "cases": [
+                {
+                    "id": c.id,
+                    "label": c.label,
+                    "passed": c.passed,
+                    "rounds": c.rounds,
+                    "missing_contains": list(c.missing_contains),
+                    "unexpected_contains": list(c.unexpected_contains),
+                    "missing_events": list(c.missing_events),
+                    "unexpected_events": list(c.unexpected_events),
+                    "missing_message_substrings": list(c.missing_message_substrings),
+                    "unexpected_message_substrings": list(c.unexpected_message_substrings),
+                    "expected_fallback": c.expected_fallback,
+                    "fallback_triggered": c.fallback_triggered,
+                }
+                for c in baseline.cases
+            ],
+        }
+        if attr is not None:
+            payload["attributions"] = [
+                {
+                    "catcher": a.catcher,
+                    "unique_saves": list(a.unique_saves),
+                    "also_breaks": list(a.also_breaks),
+                    "no_effect": a.no_effect,
+                }
+                for a in attr.attributions
+            ]
+        console.print_json(json.dumps(payload))
+        return
+
+    table = Table(title=f"Tool-loop eval — {character.name}", show_lines=False)
+    table.add_column("✓", style="bold", width=2)
+    table.add_column("id")
+    table.add_column("label", style="cyan")
+    table.add_column("rounds", style="dim", justify="right")
+    table.add_column("failures", style="red")
+    for c in baseline.cases:
+        mark = "[green]✓[/green]" if c.passed else "[red]✗[/red]"
+        failures: list[str] = []
+        if c.missing_contains:
+            failures.append(f"missing: {list(c.missing_contains)}")
+        if c.unexpected_contains:
+            failures.append(f"unexpected: {list(c.unexpected_contains)}")
+        if c.missing_events:
+            failures.append(f"missing events: {list(c.missing_events)}")
+        if c.unexpected_events:
+            failures.append(f"unexpected events: {list(c.unexpected_events)}")
+        if c.missing_message_substrings:
+            failures.append(f"missing msg: {list(c.missing_message_substrings)}")
+        if c.unexpected_message_substrings:
+            failures.append(f"unexpected msg: {list(c.unexpected_message_substrings)}")
+        if c.expected_fallback != c.fallback_triggered:
+            failures.append(f"fallback expected={c.expected_fallback} got={c.fallback_triggered}")
+        table.add_row(mark, c.id, c.label, str(c.rounds), " · ".join(failures))
+    console.print(table)
+    passed = sum(1 for c in baseline.cases if c.passed)
+    console.print(
+        f"[bold]{passed}/{len(baseline.cases)} passed · {baseline.pass_rate * 100:.1f}%[/bold]"
+    )
+
+    if attr is not None:
+        attr_table = Table(title="Per-catcher attribution", show_lines=False, title_style="bold")
+        attr_table.add_column("catcher", style="cyan")
+        attr_table.add_column("uniquely saves", style="green")
+        attr_table.add_column("shares coverage with (also_breaks)", style="dim")
+        attr_table.add_column("no effect", style="red")
+        for a in attr.attributions:
+            attr_table.add_row(
+                a.catcher,
+                ", ".join(a.unique_saves) or "-",
+                ", ".join(a.also_breaks) or "-",
+                "yes" if a.no_effect else "",
+            )
+        console.print(attr_table)
+
+
 @memory_app.command("list")
 def memory_list(
     tier: str | None = typer.Option(None, help="Filter by tier: seed | consolidated | working"),
