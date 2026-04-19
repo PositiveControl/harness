@@ -24,6 +24,7 @@ Tools shipped:
 | search         | read  | keyword search over items                 |
 | list           | read  | filtered cross-section of items           |
 | memories       | read  | list / search persistent memories         |
+| remember       | write | persist a note-to-self / insight          |
 | forget         | write | remove a persistent memory by key         |
 | dep            | write | add / remove dependency links             |
 | label          | write | add / remove / list labels                |
@@ -1104,6 +1105,52 @@ class ForgetTool:
 
 
 @dataclass
+class RememberTool:
+    """Persist a free-form insight via `bd remember`. This is the right
+    target for 'note to self' / 'remember that' / 'write it down'
+    phrasings — use `comments` only when attaching text to a specific
+    existing issue, and `retro` mode=record only at end-of-day recap
+    time."""
+
+    adapter: _Adapter
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="remember",
+            description=(
+                "Persist a note to self as a durable memory via bd "
+                "remember. Accepts one free-form string. Use this for "
+                "'note to self', 'remember that', 'write it down', "
+                "'keep this in mind' phrasings. Do NOT use `comments` "
+                "for notes to self — comments attach to a specific "
+                "existing issue id."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "insight": {
+                        "type": "string",
+                        "description": "The note to persist. Stored verbatim.",
+                    },
+                },
+                "required": ["insight"],
+            },
+            tier="write",
+            display_name="Remember",
+        )
+
+    def call(self, *, insight: str) -> str:
+        if not insight.strip():
+            return "remember failed: insight must be non-empty"
+        try:
+            self.adapter.remember(insight)
+        except BeadsAdapterError as exc:
+            return f"remember failed: {exc}"
+        return f"Remembered: {insight}"
+
+
+@dataclass
 class DepTool:
     """Add or remove dependency links. `add` creates an
     issue-depends-on-blocker relation; `remove` deletes the link.
@@ -1230,7 +1277,14 @@ class CommentsTool:
             description=(
                 "List or add comments on an item. op='list' returns "
                 "bd's raw comment output; op='add' appends a new "
-                "comment with the provided text."
+                "comment with the provided text.\n\n"
+                "The `id` MUST be an existing bd issue id (e.g. "
+                "harness-abc) that you already know exists — either "
+                "from a prior tool call this turn or because the user "
+                "named it. Never invent an id from the user's phrasing. "
+                "For 'note to self', 'remember that', 'write it down' "
+                "use the `remember` tool, which stores a durable "
+                "memory without needing an issue id."
             ),
             parameters={
                 "type": "object",
@@ -1358,6 +1412,7 @@ def make_ops_tools(
     SearchTool,
     ListTool,
     MemoriesTool,
+    RememberTool,
     ForgetTool,
     DepTool,
     LabelTool,
@@ -1381,6 +1436,7 @@ def make_ops_tools(
         SearchTool(adapter),
         ListTool(adapter),
         MemoriesTool(adapter),
+        RememberTool(adapter),
         ForgetTool(adapter),
         DepTool(adapter),
         LabelTool(adapter),

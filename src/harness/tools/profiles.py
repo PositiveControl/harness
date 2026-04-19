@@ -71,6 +71,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search",
         "list",
         "memories",
+        "remember",
         "forget",
         "dep",
         "label",

@@ -108,6 +108,7 @@ def test_ab_tool_builders_surface_matches_ops_profile() -> None:
         "search",
         "list",
         "memories",
+        "remember",
         "forget",
         "dep",
         "label",

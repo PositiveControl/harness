@@ -32,6 +32,7 @@ from harness.tools.ab_ops import (
     ListTool,
     MemoriesTool,
     PlanTool,
+    RememberTool,
     ReopenTool,
     ReprioritizeTool,
     RetroTool,
@@ -632,6 +633,20 @@ def test_forget_tool_dispatch() -> None:
     assert "Forgot" in out
 
 
+def test_remember_tool_dispatch() -> None:
+    adapter = FakeAdapter()
+    out = RememberTool(adapter).call(insight="airton_b is gay")
+    assert adapter.remember_calls == ["airton_b is gay"]
+    assert "Remembered" in out
+
+
+def test_remember_tool_rejects_empty_insight() -> None:
+    adapter = FakeAdapter()
+    out = RememberTool(adapter).call(insight="   ")
+    assert "non-empty" in out
+    assert adapter.remember_calls == []
+
+
 def test_dep_tool_add() -> None:
     adapter = FakeAdapter()
     out = DepTool(adapter).call(op="add", issue="harness-a", depends_on="harness-b")
@@ -751,13 +766,13 @@ def test_find_duplicates_tool_rejects_out_of_range_threshold() -> None:
     assert "0.0-1.0" in out
 
 
-def test_make_ops_tools_returns_nineteen_distinct_names() -> None:
+def test_make_ops_tools_returns_twenty_distinct_names() -> None:
     tools = make_ops_tools(FakeAdapter())
     names = [t.spec.name for t in tools]
-    assert len(names) == 19
-    assert len(set(names)) == 19
+    assert len(names) == 20
+    assert len(set(names)) == 20
     # Expected surface covers every tranche (v1 + tranche-1 + tranche-2
-    # + tranche-3).
+    # + tranche-3) plus remember (harness-0dj fix).
     assert set(names) == {
         "plan",
         "capture",
@@ -773,6 +788,7 @@ def test_make_ops_tools_returns_nineteen_distinct_names() -> None:
         "search",
         "list",
         "memories",
+        "remember",
         "forget",
         "dep",
         "label",
