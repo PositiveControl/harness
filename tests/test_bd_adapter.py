@@ -283,6 +283,48 @@ def test_close_command_shape(bd_dir: Path, runner: FakeRunner) -> None:
     assert cmd == ["bd", "close", "harness-x", "--reason", "done"]
 
 
+def test_reopen_command_shape(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess())
+    adapter = BeadsAdapter(bd_dir)
+    adapter.reopen("harness-x", reason="still relevant")
+    cmd = runner.calls[0]["cmd"]
+    assert cmd == ["bd", "reopen", "harness-x", "--reason", "still relevant"]
+
+
+def test_reopen_command_shape_no_reason(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess())
+    adapter = BeadsAdapter(bd_dir)
+    adapter.reopen("harness-x")
+    cmd = runner.calls[0]["cmd"]
+    assert cmd == ["bd", "reopen", "harness-x"]
+
+
+def test_delete_command_shape_default(bd_dir: Path, runner: FakeRunner) -> None:
+    """bd delete always runs with --force because the agent-driven path
+    already gates on a write-tier confirmation. Cascade defaults off."""
+    runner.queue(FakeCompletedProcess())
+    adapter = BeadsAdapter(bd_dir)
+    adapter.delete("harness-x")
+    cmd = runner.calls[0]["cmd"]
+    assert cmd == ["bd", "delete", "harness-x", "--force"]
+    assert "--cascade" not in cmd
+
+
+def test_delete_command_shape_cascade(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess())
+    adapter = BeadsAdapter(bd_dir)
+    adapter.delete("harness-x", cascade=True)
+    cmd = runner.calls[0]["cmd"]
+    assert cmd == ["bd", "delete", "harness-x", "--force", "--cascade"]
+
+
+def test_delete_surfaces_bd_error(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(returncode=1, stderr="bd: issue not found"))
+    adapter = BeadsAdapter(bd_dir)
+    with pytest.raises(BeadsAdapterError, match="not found"):
+        adapter.delete("harness-missing")
+
+
 def test_update_command_shape(bd_dir: Path, runner: FakeRunner) -> None:
     runner.queue(FakeCompletedProcess())
     adapter = BeadsAdapter(bd_dir)

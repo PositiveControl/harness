@@ -65,6 +65,9 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "close",
         "defer",
         "retro",
+        "reopen",
+        "delete",
+        "update",
         "introspect",
     ),
     # Memory-curation sessions. supersede_fact will join once

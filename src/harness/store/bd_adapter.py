@@ -229,6 +229,34 @@ class BeadsAdapter:
             args.extend(["--reason", reason])
         self._run(args)
 
+    def reopen(self, issue_id: str, *, reason: str | None = None) -> None:
+        """Wrap `bd reopen`. Re-opens a closed issue and clears its
+        closed_at timestamp; emits a Reopened event in bd's audit log."""
+        args = ["reopen", issue_id]
+        if reason is not None:
+            args.extend(["--reason", reason])
+        self._run(args)
+
+    def delete(
+        self,
+        issue_id: str,
+        *,
+        cascade: bool = False,
+    ) -> None:
+        """Wrap `bd delete`. Destructive — the bead and its reference
+        links are removed from the database. Always passes --force
+        because the agent-driven path already gates on a write-tier
+        confirmation; requiring bd's own prompt would double-confirm.
+
+        `cascade=True` recursively deletes every dependent. Default
+        False so ab has to opt in explicitly; bd will orphan dependents
+        (keep them, rewriting refs to `[deleted:ID]`) with --force
+        alone."""
+        args = ["delete", issue_id, "--force"]
+        if cascade:
+            args.append("--cascade")
+        self._run(args)
+
     def update(self, issue_id: str, **fields: str) -> None:
         """Pass bd update fields as kwargs — e.g.
         `update("harness-x", priority="1", status="in_progress")`."""

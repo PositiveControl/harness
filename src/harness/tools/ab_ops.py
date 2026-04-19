@@ -1,6 +1,6 @@
 """ab's operations tool set — harness-inj.5.
 
-Eight tools wrapping ab's slash commands. Every data-plane operation
+Wraps ab's slash commands over bd. Every data-plane operation
 dispatches through a shared BeadsAdapter; no tool here reads or writes
 beads directly. Tier computation (Shall / Should / Shmaybe / Watching)
 lives in-module and is pure: priority and dependent-count in, labelled
@@ -18,6 +18,9 @@ Tools shipped:
 | reprioritize   | read  | recompute tiers, emit re-rank notice      |
 | close          | write | thin wrapper over bd close                |
 | defer          | write | thin wrapper over bd update --priority    |
+| reopen         | write | re-open a closed item (bd reopen)         |
+| delete         | write | permanently remove an item (bd delete)    |
+| update         | write | edit title / description / notes / …      |
 
 Deadline-aware tier promotion (date-locked items → Shall at T-1) is a
 follow-up; v1 classifies from priority + dependent-count only. Issues
@@ -75,6 +78,10 @@ class _Adapter(Protocol):
     ) -> str: ...
 
     def close(self, issue_id: str, *, reason: str | None = ...) -> None: ...
+
+    def reopen(self, issue_id: str, *, reason: str | None = ...) -> None: ...
+
+    def delete(self, issue_id: str, *, cascade: bool = ...) -> None: ...
 
     def update(self, issue_id: str, **fields: Any) -> None: ...
 
@@ -592,6 +599,179 @@ class DeferTool:
         return f"Deferred {id} to P{new_priority}."
 
 
+_UPDATE_FIELD_FLAGS: dict[str, str] = {
+    "title": "title",
+    "description": "description",
+    "notes": "notes",
+    "assignee": "assignee",
+    "priority": "priority",
+    "status": "status",
+}
+
+
+@dataclass
+class ReopenTool:
+    """Reopen a previously closed item. Thin wrapper over `bd reopen`;
+    `reason` is recorded in bd's audit log so drift/retro can surface
+    the rationale later."""
+
+    adapter: _Adapter
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="reopen",
+            description=(
+                "Reopen a closed item. Sets status back to open and "
+                "emits a Reopened event. Accepts an optional reason."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["id"],
+            },
+            tier="write",
+            display_name="Reopen item",
+        )
+
+    def call(self, *, id: str, reason: str | None = None) -> str:
+        try:
+            self.adapter.reopen(id, reason=reason)
+        except BeadsAdapterError as exc:
+            return f"reopen failed: {exc}"
+        return f"Reopened {id}."
+
+
+@dataclass
+class DeleteTool:
+    """Permanently delete an item. Destructive: removes the bead and
+    its dependency links from the database. Orphans dependents by
+    default (bd rewrites their references to `[deleted:ID]`); set
+    `cascade=true` to recursively delete every dependent.
+
+    Tier is write — the orchestrator gates the first call per session
+    on an explicit user confirmation, so bd's own --force is always
+    passed through (double-confirm would be noise)."""
+
+    adapter: _Adapter
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="delete",
+            description=(
+                "Permanently delete an item. Orphans dependents by "
+                "default; pass cascade=true to recursively delete "
+                "every dependent. Destructive and irreversible — use "
+                "`close` instead when the work simply finished."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "cascade": {
+                        "type": "boolean",
+                        "description": ("Recursively delete every dependent. Default false."),
+                    },
+                },
+                "required": ["id"],
+            },
+            tier="write",
+            display_name="Delete item",
+        )
+
+    def call(self, *, id: str, cascade: bool = False) -> str:
+        try:
+            self.adapter.delete(id, cascade=cascade)
+        except BeadsAdapterError as exc:
+            return f"delete failed: {exc}"
+        suffix = " (cascade)" if cascade else ""
+        return f"Deleted {id}{suffix}."
+
+
+@dataclass
+class UpdateTool:
+    """Generic bd update over common fields: title, description, notes,
+    assignee, priority, status. DeferTool stays as sugar for the
+    priority-down flow; this tool covers everything else and also
+    accepts `priority` directly when the caller knows the target."""
+
+    adapter: _Adapter
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="update",
+            description=(
+                "Update one or more fields on an item: title, "
+                "description, notes, assignee, priority (0-4), or "
+                "status. At least one field is required. For "
+                "priority-down-one-step, prefer `defer`."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "notes": {"type": "string"},
+                    "assignee": {"type": "string"},
+                    "priority": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 4,
+                    },
+                    "status": {"type": "string"},
+                },
+                "required": ["id"],
+            },
+            tier="write",
+            display_name="Update item",
+        )
+
+    def call(
+        self,
+        *,
+        id: str,
+        title: str | None = None,
+        description: str | None = None,
+        notes: str | None = None,
+        assignee: str | None = None,
+        priority: int | None = None,
+        status: str | None = None,
+    ) -> str:
+        fields: dict[str, str] = {}
+        if title is not None:
+            fields["title"] = title
+        if description is not None:
+            fields["description"] = description
+        if notes is not None:
+            fields["notes"] = notes
+        if assignee is not None:
+            fields["assignee"] = assignee
+        if priority is not None:
+            if not 0 <= priority <= 4:
+                return f"update failed: priority {priority} must be 0-4"
+            fields["priority"] = str(priority)
+        if status is not None:
+            fields["status"] = status
+        if not fields:
+            return (
+                "update failed: no fields provided. Pass at least one of "
+                + ", ".join(sorted(_UPDATE_FIELD_FLAGS))
+                + "."
+            )
+        try:
+            self.adapter.update(id, **fields)
+        except BeadsAdapterError as exc:
+            return f"update failed: {exc}"
+        changed = ", ".join(sorted(fields))
+        return f"Updated {id}: {changed}."
+
+
 @dataclass
 class RetroTool:
     """End-of-day retrospective. Summarizes today's Shall/Should/
@@ -672,6 +852,9 @@ def make_ops_tools(
     CloseTool,
     DeferTool,
     RetroTool,
+    ReopenTool,
+    DeleteTool,
+    UpdateTool,
 ]:
     """Single-point constructor for the full ab ops tool set. The CLI
     calls this once per session and passes the tuple to the registry."""
@@ -684,4 +867,7 @@ def make_ops_tools(
         CloseTool(adapter),
         DeferTool(adapter),
         RetroTool(adapter),
+        ReopenTool(adapter),
+        DeleteTool(adapter),
+        UpdateTool(adapter),
     )

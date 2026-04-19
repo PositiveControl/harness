@@ -22,11 +22,14 @@ from harness.tools.ab_ops import (
     CaptureTool,
     CloseTool,
     DeferTool,
+    DeleteTool,
     DriftTool,
     PlanTool,
+    ReopenTool,
     ReprioritizeTool,
     RetroTool,
     StatusTool,
+    UpdateTool,
     _render_plan,
     _TieredLine,
     classify_issue,
@@ -82,6 +85,8 @@ class FakeAdapter:
     stale_issues: list[BeadsIssue] = field(default_factory=list)
     create_calls: list[dict[str, Any]] = field(default_factory=list)
     close_calls: list[dict[str, Any]] = field(default_factory=list)
+    reopen_calls: list[dict[str, Any]] = field(default_factory=list)
+    delete_calls: list[dict[str, Any]] = field(default_factory=list)
     update_calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     remember_calls: list[str] = field(default_factory=list)
     next_create_id: str = "harness-new"
@@ -118,6 +123,12 @@ class FakeAdapter:
 
     def close(self, issue_id: str, *, reason: str | None = None) -> None:
         self.close_calls.append({"id": issue_id, "reason": reason})
+
+    def reopen(self, issue_id: str, *, reason: str | None = None) -> None:
+        self.reopen_calls.append({"id": issue_id, "reason": reason})
+
+    def delete(self, issue_id: str, *, cascade: bool = False) -> None:
+        self.delete_calls.append({"id": issue_id, "cascade": cascade})
 
     def update(self, issue_id: str, **fields: Any) -> None:
         self.update_calls.append((issue_id, dict(fields)))
@@ -377,12 +388,85 @@ def test_retro_record_mode_requires_insight() -> None:
     assert "requires insight" in out
 
 
-def test_make_ops_tools_returns_eight_distinct_names() -> None:
+def test_reopen_tool_dispatch() -> None:
+    adapter = FakeAdapter()
+    out = ReopenTool(adapter).call(id="harness-x", reason="wasn't really done")
+    assert adapter.reopen_calls == [{"id": "harness-x", "reason": "wasn't really done"}]
+    assert "Reopened" in out
+
+
+def test_reopen_tool_without_reason() -> None:
+    adapter = FakeAdapter()
+    ReopenTool(adapter).call(id="harness-x")
+    assert adapter.reopen_calls == [{"id": "harness-x", "reason": None}]
+
+
+def test_delete_tool_dispatch_default() -> None:
+    adapter = FakeAdapter()
+    out = DeleteTool(adapter).call(id="harness-x")
+    assert adapter.delete_calls == [{"id": "harness-x", "cascade": False}]
+    assert "Deleted" in out
+    assert "cascade" not in out
+
+
+def test_delete_tool_dispatch_cascade() -> None:
+    adapter = FakeAdapter()
+    out = DeleteTool(adapter).call(id="harness-x", cascade=True)
+    assert adapter.delete_calls == [{"id": "harness-x", "cascade": True}]
+    assert "cascade" in out
+
+
+def test_update_tool_dispatches_single_field() -> None:
+    adapter = FakeAdapter()
+    out = UpdateTool(adapter).call(id="harness-x", title="new name")
+    assert adapter.update_calls == [("harness-x", {"title": "new name"})]
+    assert "title" in out
+
+
+def test_update_tool_dispatches_multiple_fields() -> None:
+    adapter = FakeAdapter()
+    UpdateTool(adapter).call(
+        id="harness-x",
+        title="t",
+        description="d",
+        priority=1,
+        status="in_progress",
+    )
+    # priority is coerced to string for the bd CLI interface.
+    assert adapter.update_calls == [
+        (
+            "harness-x",
+            {
+                "title": "t",
+                "description": "d",
+                "priority": "1",
+                "status": "in_progress",
+            },
+        )
+    ]
+
+
+def test_update_tool_rejects_out_of_range_priority() -> None:
+    adapter = FakeAdapter()
+    out = UpdateTool(adapter).call(id="harness-x", priority=9)
+    assert "must be 0-4" in out
+    # No dispatch on validation failure.
+    assert adapter.update_calls == []
+
+
+def test_update_tool_requires_at_least_one_field() -> None:
+    adapter = FakeAdapter()
+    out = UpdateTool(adapter).call(id="harness-x")
+    assert "no fields provided" in out
+    assert adapter.update_calls == []
+
+
+def test_make_ops_tools_returns_eleven_distinct_names() -> None:
     tools = make_ops_tools(FakeAdapter())
     names = [t.spec.name for t in tools]
-    assert len(names) == 8
-    assert len(set(names)) == 8
-    # Expected surface matches the v1 spec.
+    assert len(names) == 11
+    assert len(set(names)) == 11
+    # Expected surface matches the v1 spec plus tranche-1 additions.
     assert set(names) == {
         "plan",
         "capture",
@@ -392,4 +476,7 @@ def test_make_ops_tools_returns_eight_distinct_names() -> None:
         "close",
         "defer",
         "retro",
+        "reopen",
+        "delete",
+        "update",
     }

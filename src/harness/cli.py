@@ -92,11 +92,14 @@ from harness.tools.ab_ops import (
     CaptureTool,
     CloseTool,
     DeferTool,
+    DeleteTool,
     DriftTool,
     PlanTool,
+    ReopenTool,
     ReprioritizeTool,
     RetroTool,
     StatusTool,
+    UpdateTool,
 )
 
 _EXIT_COMMANDS = frozenset({"/exit", "/quit", "exit", "quit", ":q", ":quit"})
@@ -286,6 +289,9 @@ def _ab_tool_builders(
         "close": lambda: CloseTool(ab_adapter),
         "defer": lambda: DeferTool(ab_adapter),
         "retro": lambda: RetroTool(ab_adapter),
+        "reopen": lambda: ReopenTool(ab_adapter),
+        "delete": lambda: DeleteTool(ab_adapter),
+        "update": lambda: UpdateTool(ab_adapter),
     }
 
 
