@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -38,29 +37,23 @@ from textual.widgets import Button, Input, RichLog, Static
 from harness.cli import (
     _TOOL_CALLS_SENTINEL,
     _build_tool_grounding_block,
-    _format_ctx_meter,
-    _open_in_editor,
     _persist_tool_exchange,
     _render_fact_block,
     _render_memory_block,
     _retrieve_turn_context,
-    _write_voice_capture,
 )
 from harness.cli import _RetrievalState as _RetrievalHealth
-from harness.compaction import run_compaction
-from harness.config import settings
-from harness.consolidate import run_consolidation
-from harness.model.adapter import ChatMessage, approx_token_count
+from harness.model.adapter import ChatMessage
 from harness.orchestrator import ToolLoopEvent, run_tool_loop
-from harness.scribe import run_scribe
-
-# Inline confirm verdicts (harness-drd). Replaces the previous
-# ConfirmToolScreen modal: confirmation now lives on the prompt row
-# itself. Public constants so the confirm action handlers and the
-# worker-thread bridge don't stringly-type the three outcomes.
-APPROVE = "approve"
-DECLINE = "decline"
-ALWAYS = "always"
+from harness.tui.confirm import (
+    ALWAYS,
+    APPROVE,
+    DECLINE,
+    ConfirmController,
+)
+from harness.tui.metrics import MetricsView
+from harness.tui.slash_ops import SlashOps
+from harness.tui.stream import StreamView
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -510,12 +503,6 @@ class ChatApp(App[None]):
         self._router = router
         self._workspace_path = workspace_path
         self._max_history_replay = max_history_replay
-        # Session-scoped always-approve set. The modal writes into
-        # this when the user picks 'always' so subsequent calls to
-        # the same tool skip the modal. Cleared on app exit — no
-        # persistence across sessions, matching the classic REPL's
-        # behavior.
-        self._approved_tools: set[str] = set()
         self._startup_warnings = startup_warnings
         # Slash-command ops plumbing (harness-kg9). Each may be None —
         # in which case the matching /compact /scribe command reports
@@ -537,6 +524,10 @@ class ChatApp(App[None]):
         self._state = _ChatAppState()
         if retrieval_health is not None:
             self._state.retrieval_health = retrieval_health
+        self._stream = StreamView(self, self._state, self._character.name)
+        self._metrics = MetricsView(self, self._state, self._adapter)
+        self._confirm = ConfirmController(self, self._state)
+        self._ops = SlashOps(self)
 
     # ---------- compose / mount ----------
 
@@ -740,23 +731,23 @@ class ChatApp(App[None]):
             return
         if cmd in {"/edit", "/capture"}:
             event.input.value = ""
-            self._run_edit_capture()
+            self._ops.run_edit_capture()
             return
         if cmd == "/compact":
             event.input.value = ""
-            self._kick_op("compact", self._run_compact_sync)
+            self._ops.kick("compact", "run_compact_sync")
             return
         if cmd == "/scribe":
             event.input.value = ""
-            self._kick_op("scribe", self._run_scribe_sync)
+            self._ops.kick("scribe", "run_scribe_sync")
             return
         if cmd == "/consolidate":
             event.input.value = ""
-            self._kick_op("consolidate", self._run_consolidate_sync)
+            self._ops.kick("consolidate", "run_consolidate_sync")
             return
         if cmd == "/retro":
             event.input.value = ""
-            self._run_retro()
+            self._ops.run_retro()
             return
         event.input.value = ""
         # Always-on prompt: if a turn is in flight, enqueue instead of
@@ -765,193 +756,6 @@ class ChatApp(App[None]):
             self._enqueue_prompt(text)
             return
         self._start_turn(text)
-
-    # ---------- slash-command ops (harness-kg9) ----------
-
-    def _run_edit_capture(self) -> None:
-        """In-chat /edit (+ /capture alias): pull the last exchange,
-        open Airton's reply in $EDITOR via app.suspend(), and append
-        the edited text as a new captured voice sample. Mirrors the
-        classic REPL path (cli.py:1750-1781).
-
-        Runs inline — not on a worker — because app.suspend() needs
-        the main thread and because the editor blocks on the user
-        anyway; during that time the app is already paused."""
-        log = self.query_one("#output", RichLog)
-        tail = self._transcript.tail(self._session, limit=50)
-        user_turns = [m for m in tail if m.role == "user"]
-        assistant_turns = [m for m in tail if m.role == "assistant"]
-        if not user_turns or not assistant_turns:
-            log.write(
-                Text(
-                    "no exchange to capture yet — have a turn first, then /edit",
-                    style="yellow",
-                )
-            )
-            return
-        prev_prompt = user_turns[-1].content
-        prev_reply = assistant_turns[-1].content
-        with self.suspend():
-            edited = _open_in_editor(prev_reply)
-        if edited is None:
-            log.write(Text("(no changes — nothing captured)", style="dim"))
-            return
-        captured_path, sample_id, total = _write_voice_capture(
-            prompt=prev_prompt,
-            gold=edited,
-            session=self._session,
-            original=prev_reply,
-        )
-        line = Text()
-        line.append("captured ", style="green")
-        line.append(f"id={sample_id!r} → ", style="dim")
-        line.append(str(captured_path.relative_to(settings.root)))
-        line.append(f" (now {total} captured sample(s))", style="dim")
-        log.write(line)
-
-    def _run_retro(self) -> None:
-        """/retro: ab's thought-graph retrospective summary. Renders
-        inline in the RichLog. Synchronous — RetroTool.call(mode=
-        'summary') is a read-only bd query; fast and safe on the main
-        thread. No insight-record flow here (TUI has no modal text
-        input); users who want to record run RetroTool as a tool
-        through chat. harness-vpei."""
-        log = self.query_one("#output", RichLog)
-        if self._ab_adapter is None:
-            log.write(
-                Text(
-                    "/retro: only available when character=airton_b",
-                    style="yellow",
-                )
-            )
-            return
-        from harness.tools.ab_ops import RetroTool
-
-        try:
-            summary = RetroTool(self._ab_adapter).call(mode="summary")
-        except Exception as exc:
-            log.write(Text(f"/retro failed: {exc}", style="red"))
-            return
-        log.write(Text(summary, style="dim"))
-
-    def _kick_op(self, label: str, worker: Any) -> None:
-        """Shared helper for /compact, /scribe, /consolidate. Writes a
-        dim '▸ running {label}…' line and kicks `worker` on a thread
-        so the UI stays responsive. Refuses to run concurrently with a
-        model turn — /compact and /scribe share the main adapter and
-        MLX is not thread-safe across complete() calls."""
-        log = self.query_one("#output", RichLog)
-        if self._state.is_busy:
-            log.write(
-                Text(
-                    f"{label}: wait for the current turn to finish, then retry",
-                    style="yellow",
-                )
-            )
-            return
-        log.write(Text(f"▸ running {label}…", style="dim magenta"))
-        self.run_worker(worker, thread=True, exclusive=False, group="op")
-
-    def _render_op_result(self, msg: str, *, error: bool = False) -> None:
-        log = self.query_one("#output", RichLog)
-        style = "red" if error else "dim green"
-        log.write(Text(msg, style=style))
-
-    def _run_compact_sync(self) -> None:
-        if self._compaction_store is None:
-            self.call_from_thread(
-                self._render_op_result,
-                "compact: no compaction store wired for this session",
-                error=True,
-            )
-            return
-        try:
-            outcome = run_compaction(
-                self._adapter,
-                self._transcript,
-                self._compaction_store,
-                session_id=self._session,
-            )
-        except Exception as exc:
-            self.call_from_thread(
-                self._render_op_result,
-                f"compact failed: {type(exc).__name__}: {exc}",
-                error=True,
-            )
-            return
-        msg = (
-            f"✓ compacted {outcome.covered_turns} turn(s) up to id={outcome.new_up_to_turn_id}"
-            if outcome.wrote
-            else "compact: nothing new to fold (not enough turns past the watermark)"
-        )
-        self.call_from_thread(self._render_op_result, msg, error=False)
-
-    def _run_scribe_sync(self) -> None:
-        missing = [
-            name
-            for name, obj in (
-                ("memory_store", self._memory_store),
-                ("semantic_store", self._semantic_store),
-            )
-            if obj is None
-        ]
-        if missing:
-            self.call_from_thread(
-                self._render_op_result,
-                f"scribe: missing {', '.join(missing)} — "
-                "launch with --memories > 0 and --facts > 0",
-                error=True,
-            )
-            return
-        try:
-            summary = run_scribe(
-                self._adapter,
-                self._character,
-                self._transcript,
-                self._memory_store,  # type: ignore[arg-type]  # non-None checked above
-                self._semantic_store,  # type: ignore[arg-type]
-                session_id=self._session,
-                user_id=self._scribe_user_id or self._speaker,
-                lock_dir=self._scribe_lock_dir,
-            )
-        except Exception as exc:
-            self.call_from_thread(
-                self._render_op_result,
-                f"scribe failed: {type(exc).__name__}: {exc}",
-                error=True,
-            )
-            return
-        msg = (
-            f"✓ scribed: {summary.episodic_written} episodic + "
-            f"{summary.semantic_written} semantic candidates "
-            f"across {summary.windows} window(s)"
-        )
-        self.call_from_thread(self._render_op_result, msg, error=False)
-
-    def _run_consolidate_sync(self) -> None:
-        if self._memory_store is None or self._semantic_store is None:
-            self.call_from_thread(
-                self._render_op_result,
-                "consolidate: need both --memories and --facts stores",
-                error=True,
-            )
-            return
-        try:
-            summary = run_consolidation(self._memory_store, self._semantic_store)
-        except Exception as exc:
-            self.call_from_thread(
-                self._render_op_result,
-                f"consolidate failed: {type(exc).__name__}: {exc}",
-                error=True,
-            )
-            return
-        msg = (
-            f"✓ consolidated: episodic {summary.episodic_clusters_merged} cluster(s) merged, "
-            f"{summary.episodic_superseded} superseded; semantic "
-            f"{summary.semantic_groups_merged} group(s) merged, "
-            f"{summary.semantic_superseded} superseded"
-        )
-        self.call_from_thread(self._render_op_result, msg, error=False)
 
     # ---------- slash-palette actions (harness-kg9) ----------
 
@@ -1226,49 +1030,13 @@ class ChatApp(App[None]):
     # ---------- UI-thread helpers (all run via call_from_thread) ----------
 
     def _feed_stream(self, delta: str) -> None:
-        """UI-thread only. Append a token delta to the in-flight
-        stream buffer and update the live preview Static below the
-        main log. The preview shows the raw text as it arrives for
-        responsiveness; the main log only receives the formatted
-        Markdown block at `_flush_stream_buffer` time (round end).
-        Called from the no-tools stream path via call_from_thread,
-        and from _render_tool_event when a token_delta observer
-        event fires (harness-fup)."""
-        if not delta:
-            return
-        self._state.stream_buffer += delta
-        try:
-            preview = self.query_one("#stream_preview", Static)
-        except Exception:
-            return
-        preview.update(Text(self._state.stream_buffer))
-        preview.add_class("-visible")
+        self._stream.feed(delta)
 
     def _flush_stream_buffer(self) -> None:
-        """UI-thread only. Commit the buffered round text to the
-        main RichLog as a rich.Markdown renderable, then clear the
-        live preview. Called at round boundaries (tool call emitted,
-        truncated_retry, or turn end). Whitespace-only buffers are
-        dropped so an empty wrap-up round doesn't emit a lone badge
-        line (harness-fup)."""
-        text = self._state.stream_buffer
-        self._state.stream_buffer = ""
-        self._hide_stream_preview()
-        if not text.strip():
-            return
-        log = self.query_one("#output", RichLog)
-        if self._state.stream_first_chunk:
-            log.write(_make_assistant_badge(self._character.name))
-            self._state.stream_first_chunk = False
-        log.write(Markdown(text, code_theme="monokai"))
+        self._stream.flush()
 
     def _hide_stream_preview(self) -> None:
-        try:
-            preview = self.query_one("#stream_preview", Static)
-        except Exception:
-            return
-        preview.update("")
-        preview.remove_class("-visible")
+        self._stream.hide_preview()
 
     def _render_error(self, exc: BaseException) -> None:
         log = self.query_one("#output", RichLog)
@@ -1313,9 +1081,7 @@ class ChatApp(App[None]):
         if self._confirm_pending():
             self._resolve_confirm(DECLINE)
         self._state.turn_seq += 1
-        self._state.stream_buffer = ""
-        self._state.stream_first_chunk = True
-        self._hide_stream_preview()
+        self._stream.reset()
         if self._state.turn_started_at is not None:
             self._state.last_elapsed = time.monotonic() - self._state.turn_started_at
         self._state.turn_started_at = None
@@ -1355,20 +1121,7 @@ class ChatApp(App[None]):
         self._refresh_metrics()
 
     def _recompute_ctx_used(self) -> None:
-        """Cached per-turn token count for the metrics footer.
-        Prefer the adapter's tokenizer (exact) when it exposes one;
-        fall back to the char-heuristic used by approx_token_count.
-        Any exception (e.g. a tokenizer that panics on bad input) is
-        swallowed — we don't want a metrics hiccup to take out the
-        whole turn."""
-        count_fn = getattr(self._adapter, "count_tokens", None)
-        try:
-            if callable(count_fn):
-                self._state.ctx_used = int(count_fn(self._state.history))
-            else:
-                self._state.ctx_used = approx_token_count(self._state.history)
-        except Exception:
-            self._state.ctx_used = approx_token_count(self._state.history)
+        self._metrics.recompute_ctx()
 
     # ---------- tool loop plumbing ----------
 
@@ -1383,109 +1136,13 @@ class ChatApp(App[None]):
         return name
 
     def _confirm_write_tool(self, call: ToolCall) -> bool:
-        """Worker-thread confirm callback for write-tier tool calls.
-        If the tool has been marked always-allowed for this session,
-        approve silently. Otherwise block the worker until the user
-        resolves the inline confirm strip on the UI thread.
-
-        `call_from_thread(coro)` schedules the coroutine on the
-        Textual event loop and blocks this thread until it returns
-        — which is exactly what we need to give run_tool_loop the
-        sync `bool` it expects."""
-        if call.name in self._approved_tools:
-            return True
-        # Textual stubs Callable[..., Awaitable[Never]] for
-        # call_from_thread's arg, which doesn't line up with an async
-        # method that returns a string — even though the runtime
-        # supports exactly this. Cast via Any locally so the calling
-        # site stays readable.
-        call_from_thread: Any = self.call_from_thread
-        decision: str = call_from_thread(self._prompt_for_confirm, call)
-        if decision == APPROVE:
-            return True
-        if decision == ALWAYS:
-            self._approved_tools.add(call.name)
-            return True
-        return False
-
-    async def _prompt_for_confirm(self, call: ToolCall) -> str:
-        """UI-thread coroutine: show the inline confirm strip on the
-        prompt row and await the user's verdict. The strip replaces
-        the old modal (harness-drd): it docks to the left of the
-        Input, visually shifting the Input right without touching the
-        Input's value or caret position.
-
-        Resolves to APPROVE / DECLINE / ALWAYS. On the off-chance the
-        event loop tears down mid-prompt (app exit), the future is
-        cancelled and we fall through to DECLINE."""
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[str] = loop.create_future()
-        self._state.confirm_future = future
-        self._show_confirm_strip(call)
-        try:
-            return await future
-        except asyncio.CancelledError:
-            return DECLINE
-        finally:
-            self._hide_confirm_strip()
-            self._state.confirm_future = None
-
-    # ---------- confirm-strip UI (harness-drd) ----------
+        return self._confirm.request(call)
 
     def _confirm_pending(self) -> bool:
-        fut = self._state.confirm_future
-        return fut is not None and not fut.done()
-
-    def _show_confirm_strip(self, call: ToolCall) -> None:
-        """Render the inline strip with the tool label + truncated
-        args preview and focus it. The Input stays visible with its
-        value and caret intact; the strip takes focus temporarily so
-        its y/n/a/escape bindings fire (priority App-level bindings
-        on letter keys are swallowed by a focused Input's character
-        path, so the fix is to move focus off the Input instead)."""
-        strip = self.query_one(ConfirmStrip)
-        label = self._tool_label(call.name)
-        args_preview = self._format_confirm_args(call.arguments)
-        summary = f"[bold yellow]⚠ {label}[/bold yellow]"
-        if args_preview:
-            summary = f"{summary} [dim]{args_preview}[/dim]"
-        strip.show_for(summary)
-
-    def _hide_confirm_strip(self) -> None:
-        try:
-            strip = self.query_one(ConfirmStrip)
-        except Exception:
-            return
-        strip.hide()
-        # Return focus to the Input so the user can resume typing
-        # without an extra click. Skip if the app is tearing down.
-        try:
-            self.query_one("#prompt", Input).focus()
-        except Exception:
-            return
-
-    @staticmethod
-    def _format_confirm_args(arguments: object) -> str:
-        """Compact single-line preview of the tool arguments. JSON
-        when serializable, str() otherwise; truncated so a long
-        write_file payload can't blow out the row height."""
-        try:
-            text = json.dumps(arguments, ensure_ascii=False)
-        except TypeError:
-            text = str(arguments)
-        text = text.replace("\n", " ")
-        if len(text) > 60:
-            text = f"{text[:57]}…"
-        return text
+        return self._confirm.is_pending()
 
     def _resolve_confirm(self, decision: str) -> None:
-        """Fulfill the pending confirm future with `decision`. No-op
-        if no confirm is pending or the future was already resolved
-        (double-tap on the binding)."""
-        fut = self._state.confirm_future
-        if fut is None or fut.done():
-            return
-        fut.set_result(decision)
+        self._confirm.resolve(decision)
 
     def _observe_tool_event(self, event: ToolLoopEvent) -> None:
         """Observer callback passed to run_tool_loop. Runs on the
@@ -1559,9 +1216,7 @@ class ChatApp(App[None]):
             # partial in the stream buffer and flag the break so the
             # user knows the next reply replaces the partial above,
             # not appends to it (harness-6rl).
-            self._state.stream_buffer = ""
-            self._state.stream_first_chunk = True
-            self._hide_stream_preview()
+            self._stream.reset()
             log.write(Text("⋯ truncated, retrying with wider budget…", style="dim"))
         elif event.kind == "bail_retry":
             # 0-tool-calls reply tripped a fabrication / teaser
@@ -1569,9 +1224,7 @@ class ChatApp(App[None]):
             # Same drop-partial contract as truncated_retry so the
             # fabricated draft doesn't stack above the next retry
             # (harness-24xj).
-            self._state.stream_buffer = ""
-            self._state.stream_first_chunk = True
-            self._hide_stream_preview()
+            self._stream.reset()
             log.write(Text("⋯ discarding draft, retrying…", style="dim"))
         # Other event kinds (round_start, model_call_start/end,
         # round_complete) are internal book-keeping — the metrics
@@ -1580,23 +1233,4 @@ class ChatApp(App[None]):
     # ---------- metrics ----------
 
     def _refresh_metrics(self) -> None:
-        """Render the metrics strip. Idle state shows just the ctx
-        meter; active turn appends 'thinking N.Ns' so the user can
-        see the model is alive even when streaming tokens hasn't
-        started yet. Elapsed time is formatted to one decimal place
-        so the ticker visibly advances at the 0.25s tick cadence.
-        When the always-on prompt has queued submissions, append
-        'queued N' so the user can see the backlog depth."""
-        metrics = self.query_one("#metrics", Static)
-        meter = _format_ctx_meter(self._state.ctx_used, self._adapter.context_window) or "ctx —"
-        parts = [meter]
-        if self._state.turn_started_at is not None:
-            elapsed = time.monotonic() - self._state.turn_started_at
-            parts.append(f"thinking {elapsed:.1f}s")
-        elif self._state.last_elapsed is not None:
-            parts.append(f"last {self._state.last_elapsed:.1f}s")
-        else:
-            parts.append("idle")
-        if self._state.pending_prompts:
-            parts.append(f"queued {len(self._state.pending_prompts)}")
-        metrics.update(Text.from_markup(" · ".join(parts)))
+        self._metrics.refresh()
