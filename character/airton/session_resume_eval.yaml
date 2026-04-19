@@ -1,0 +1,154 @@
+# Session-resume eval fixture — scenarios for harness eval session-resume.
+# Each fixture scripts a moment at which ab's session-resume protocol
+# must surface the thought-graph state so nothing load-bearing gets
+# lost across the conversation window. Eval builds an in-memory
+# adapter from the state block, calls build_resume_summary, and scores
+# the output against contains / not_contains assertions.
+#
+# Fields per entry:
+#   id: short identifier, unique per fixture
+#   description: one-line scenario motivation
+#   focus: nullable object {id, title, scope, priority}
+#   in_progress: list of issue objects (same shape as focus)
+#   memories: list of memory lines (joined with \n in adapter.memories)
+#   drift: list of issues with an extra updated_days_ago int; shown
+#     in the drift section when older than 7d
+#   expected_contains: strings that MUST appear in the rendered
+#     summary (substring match)
+#   expected_not_contains: strings that MUST NOT appear
+
+- id: mid-task-interrupt
+  description: |
+    Ab was mid-way through a focused refactor with one sub-thought in
+    flight. Fresh session; resume must surface both ids + memories so
+    the next user turn lands in context.
+  focus:
+    id: harness-ref
+    title: "refactor voice retriever"
+    scope: personal
+    priority: 1
+  in_progress:
+    - id: harness-ref
+      title: "refactor voice retriever"
+      scope: personal
+      priority: 1
+    - id: harness-sub
+      title: "add top_k exclude-ids param"
+      scope: personal
+      priority: 2
+  memories:
+    - "bge-small matches mxbai within noise at 10% RAM"
+    - "don't mock bd in tests; use real stores"
+  drift: []
+  expected_contains:
+    - "── session resume ──"
+    - "harness-ref"
+    - "refactor voice retriever"
+    - "harness-sub"
+    - "bge-small"
+  expected_not_contains:
+    - "(none)"
+
+- id: cold-session
+  description: |
+    Fresh start, no focus, no in-progress, no memories. Resume must
+    render with explicit (none) markers rather than blanking out —
+    the user should see the system attempted resume and found nothing.
+  focus: null
+  in_progress: []
+  memories: []
+  drift: []
+  expected_contains:
+    - "── session resume ──"
+    - "Focus: (none)"
+    - "In-progress ab-beads: (none)"
+    - "Recent memories: (none)"
+  expected_not_contains:
+    - "harness-"
+
+- id: post-compaction
+  description: |
+    Simulated post-compaction resume: focus + a handful of memories.
+    Scenario models 'context just shrank, re-anchor against bd'. The
+    memories are the specific load-bearing kind compaction erases.
+  focus:
+    id: harness-focus
+    title: "debug router-prelude fabrication bug"
+    scope: professional
+    priority: 1
+  in_progress:
+    - id: harness-focus
+      title: "debug router-prelude fabrication bug"
+      scope: professional
+      priority: 1
+  memories:
+    - "router: weak prelude hit triggers main-model fabrication"
+    - "mitigation: widen wrap-up token cap on truncated recovery"
+    - "reproduce with tool-set=research + 7B Qwen"
+  drift: []
+  expected_contains:
+    - "harness-focus"
+    - "debug router-prelude fabrication bug"
+    - "router: weak prelude"
+    - "wrap-up token cap"
+  expected_not_contains: []
+
+- id: stall-escalated-question-pending
+  description: |
+    A parent bead was deferred 3+ times and the stall escalator
+    spawned a thought:question child. Both should surface — parent
+    as drift (old), child as in-progress or drift depending on age.
+    Resume must flag the question so the user can triage.
+  focus: null
+  in_progress:
+    - id: harness-question
+      title: "Still relevant? harness-legacy"
+      scope: professional
+      priority: 2
+  memories:
+    - "harness-legacy deferred 3x — escalated auto-question"
+  drift:
+    - id: harness-legacy
+      title: "migrate legacy auth middleware"
+      scope: professional
+      priority: 4
+      updated_days_ago: 21
+  expected_contains:
+    - "harness-question"
+    - "Still relevant?"
+    - "harness-legacy"
+  expected_not_contains: []
+
+- id: orphaned-children-from-cancel
+  description: |
+    User cancelled a parent mid-decomposition. Parent is closed but
+    three child sub-task beads remain open and orphaned. Drift horizon
+    flags them after 7d. Resume must surface the orphans so they go
+    into retro-triage rather than rotting silently.
+  focus: null
+  in_progress: []
+  memories:
+    - "auth-rewrite parent cancelled 2026-04-10 — children orphaned"
+  drift:
+    - id: harness-child-a
+      title: "write JWT refresh loop"
+      scope: professional
+      priority: 2
+      updated_days_ago: 9
+    - id: harness-child-b
+      title: "deprecate old cookie path"
+      scope: professional
+      priority: 2
+      updated_days_ago: 9
+    - id: harness-child-c
+      title: "backfill session token column"
+      scope: professional
+      priority: 2
+      updated_days_ago: 9
+  expected_contains:
+    - "harness-child-a"
+    - "harness-child-b"
+    - "harness-child-c"
+    - "orphaned"
+  expected_not_contains:
+    - "Focus: ["

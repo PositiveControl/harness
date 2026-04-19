@@ -1643,10 +1643,13 @@ def build_resume_summary(
     lines.append("Focus: " + _render_focus_line(focus))
 
     in_progress = _safe_in_progress(adapter)
-    if in_progress:
-        labels = ", ".join(i.id for i in in_progress)
-        lines.append(f"In-progress ab-beads: {labels}")
-    else:
+    focus_id = focus.id if focus else None
+    others = [i for i in in_progress if i.id != focus_id]
+    if others:
+        lines.append("In-progress ab-beads:")
+        for issue in others:
+            lines.append(f"  - {issue.id}: {issue.title}")
+    elif not in_progress:
         lines.append("In-progress ab-beads: (none)")
 
     memories = _safe_memories(adapter, memory_limit)

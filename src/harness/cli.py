@@ -2515,6 +2515,71 @@ def _print_router_eval_table(
     )
 
 
+@eval_app.command("session-resume")
+def eval_session_resume(
+    fixture_path: Path | None = typer.Option(
+        None,
+        "--fixture",
+        help="Path to a session-resume eval YAML file. Defaults to "
+        "`character/<name>/session_resume_eval.yaml`.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+) -> None:
+    """Replay the session-resume fixture against build_resume_summary
+    and score contains / not_contains assertions per scenario. Locks
+    in quality so changes to the resume protocol don't silently drop
+    a load-bearing section."""
+    from harness.evals.session_resume import (
+        default_fixture_path as _sr_default_fixture,
+    )
+    from harness.evals.session_resume import (
+        load_fixture as _sr_load,
+    )
+    from harness.evals.session_resume import (
+        run_session_resume_eval as _sr_run,
+    )
+
+    character = load_character(settings.character_path)
+    path = fixture_path or _sr_default_fixture(settings.character_path)
+    if not path.exists():
+        raise typer.BadParameter(f"session-resume eval fixture not found: {path}")
+    fixtures = _sr_load(path)
+    result = _sr_run(fixtures)
+
+    if as_json:
+        payload = {
+            "character": character.name,
+            "pass_rate": result.pass_rate,
+            "cases": [
+                {
+                    "id": c.id,
+                    "passed": c.passed,
+                    "missing_contains": list(c.missing_contains),
+                    "unexpected_contains": list(c.unexpected_contains),
+                }
+                for c in result.cases
+            ],
+        }
+        console.print_json(json.dumps(payload))
+        return
+
+    table = Table(title=f"Session-resume eval — {character.name}", show_lines=False)
+    table.add_column("✓", style="bold", width=2)
+    table.add_column("id")
+    table.add_column("missing contains", style="yellow")
+    table.add_column("unexpected", style="red")
+    for c in result.cases:
+        mark = "[green]✓[/green]" if c.passed else "[red]✗[/red]"
+        missing = ", ".join(c.missing_contains) if c.missing_contains else ""
+        unexpected = ", ".join(c.unexpected_contains) if c.unexpected_contains else ""
+        table.add_row(mark, c.id, missing, unexpected)
+    console.print(table)
+    passed = sum(1 for c in result.cases if c.passed)
+    console.print(
+        f"[bold]{passed}/{len(result.cases)} passed · {result.pass_rate * 100:.1f}%[/bold]"
+    )
+
+
 @memory_app.command("list")
 def memory_list(
     tier: str | None = typer.Option(None, help="Filter by tier: seed | consolidated | working"),
