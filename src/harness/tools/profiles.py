@@ -52,6 +52,21 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_facts",
         "introspect",
     ),
+    # ab's personal-operations tool set — harness-inj.5. Every tool
+    # dispatches through the BeadsAdapter to ab's isolated beads DB
+    # (HARNESS_AB_BD_DIR). No filesystem / shell / git / web — the
+    # experience plane only touches the data plane through bd.
+    "ops": (
+        "plan",
+        "capture",
+        "status",
+        "drift",
+        "reprioritize",
+        "close",
+        "defer",
+        "retro",
+        "introspect",
+    ),
     # Memory-curation sessions. supersede_fact will join once
     # implemented (see bd issue harness-5tz).
     "memory": (
