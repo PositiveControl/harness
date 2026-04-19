@@ -20,11 +20,9 @@ from rich.table import Table
 import harness._quiet  # noqa: F401 — side-effect import: silences HF/transformers/sentence-transformers noise before they load
 from harness.character import Character, VoiceSample, load_character
 from harness.cli_introspect import list_cli_commands
+from harness.cli_repl import ContextMeter, handle_edit_slash, handle_retro_slash
 from harness.compaction import (
-    CompactionOutcome,
     CompactionStore,
-    run_compaction,
-    should_compact,
 )
 from harness.config import settings
 from harness.consolidate import run_consolidation
@@ -36,7 +34,7 @@ from harness.evals.router import (
 )
 from harness.evals.voice import run_voice_eval
 from harness.model import AdapterName, ChatMessage, ModelAdapter, make_adapter
-from harness.model.adapter import Role, count_tokens
+from harness.model.adapter import Role
 from harness.orchestrator import (
     _FABRICATED_SEARCH_RE,
     _FALSE_SUCCESS_RE,
@@ -1554,115 +1552,33 @@ def chat(
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
     if tui:
-        # Phase 4: tools + router wired. Compaction, voice-capture,
-        # and rewrite-on-tools still pending. Reject flags the TUI
-        # can't honor so the user isn't surprised by silent drops.
-        try:
-            from harness.tui import ChatApp
-        except ImportError as exc:
-            raise typer.BadParameter(
-                "--tui requires the `tui` extra. Install it with: uv sync --extra tui"
-            ) from exc
-        character_for_tui = load_character(settings.character_path)
-        tui_workspace_path = Path(workspace).expanduser().resolve() if workspace else settings.root
-        if tools and not tui_workspace_path.is_dir():
-            raise typer.BadParameter(f"workspace {tui_workspace_path} is not a directory")
-        # Tools-active path runs persona *after* the loop in the classic
-        # REPL; the TUI currently skips post-loop persona rewrite (the
-        # rewriter tends to compress investigate-style replies we want
-        # verbatim). So persona goes to _resolve_adapter only when tools
-        # are off.
-        tui_adapter = _resolve_adapter(
-            model,
-            persona=persona and not tools,
-            character=character_for_tui,
+        from harness.cli_tui import run_tui
+
+        run_tui(
+            session=session,
+            channel=channel,
+            speaker=speaker,
+            model=model,
             model_repo=model_repo,
             lora_path=lora_path,
-        )
-        tui_retriever = _maybe_retriever(character_for_tui, top_k)
-        tui_memory_store = _open_episodic_store(character_for_tui) if memories > 0 else None
-        tui_semantic_store = _open_semantic_store() if facts > 0 else None
-        tui_transcript = Transcript(settings.character_db_path)
-
-        tui_router: Router | None = None
-        if router_enabled:
-            if not tools:
-                raise typer.BadParameter(
-                    "--router requires --tools (nothing to route to otherwise)."
-                )
-            if router_mode not in {"free", "grammar"}:
-                raise typer.BadParameter(
-                    f"--router-mode must be 'free' or 'grammar' (got {router_mode!r})."
-                )
-            from harness.model.mlx import MLXAdapter
-
-            tui_router_adapter = MLXAdapter(repo=router_repo)
-            tui_router = (
-                GrammarRouter(adapter=tui_router_adapter)
-                if router_mode == "grammar"
-                else ModelRouter(adapter=tui_router_adapter)
-            )
-
-        tui_registry_warnings: list[str] = []
-        # Shared between ChatApp (which mutates it when retrieval raises)
-        # and the introspect tool (which reads live status).
-        tui_retrieval_health = _RetrievalState()
-        # Hoist the ab_adapter so ChatApp and the tool registry share
-        # the same reference. One subprocess verify + one 'bd → path'
-        # console line, not two.
-        tui_ab_adapter = _maybe_ab_bd_adapter(
-            character_for_tui, include_internal=include_internal or dev
-        )
-        tui_registry: ToolRegistry | None = _build_tool_registry_for_tui(
+            persona=persona,
+            top_k=top_k,
+            memories=memories,
+            memories_threshold=memories_threshold,
+            facts=facts,
+            facts_threshold=facts_threshold,
             tools=tools,
             tool_set=tool_set,
             tools_add=tools_add,
             tools_drop=tools_drop,
-            workspace_path=tui_workspace_path,
-            memory_store=tui_memory_store,
-            semantic_store=tui_semantic_store,
-            speaker=speaker,
-            session=session,
-            adapter=tui_adapter,
-            character=character_for_tui,
-            retrieval_health=tui_retrieval_health,
-            persona_active=persona and not tools,
-            router_id=_router_id_label(tui_router),
-            transcript=tui_transcript,
-            warnings_out=tui_registry_warnings,
-            include_internal=include_internal or dev,
-            ab_adapter=tui_ab_adapter,
+            workspace=workspace,
+            compact_at=compact_at,
+            router_enabled=router_enabled,
+            router_repo=router_repo,
+            router_mode=router_mode,
+            include_internal=include_internal,
+            dev=dev,
         )
-
-        tui_compaction_store = (
-            CompactionStore(settings.character_db_path) if compact_at > 0 else None
-        )
-        ChatApp(
-            character=character_for_tui,
-            speaker=speaker,
-            session=session,
-            channel=channel,
-            adapter=tui_adapter,
-            transcript=tui_transcript,
-            retriever=tui_retriever,
-            top_k=top_k,
-            memory_store=tui_memory_store,
-            memories=memories,
-            memories_threshold=memories_threshold,
-            semantic_store=tui_semantic_store,
-            facts=facts,
-            facts_threshold=facts_threshold,
-            registry=tui_registry,
-            router=tui_router,
-            workspace_path=tui_workspace_path,
-            startup_warnings=tuple(tui_registry_warnings),
-            retrieval_health=tui_retrieval_health,
-            compaction_store=tui_compaction_store,
-            scribe_user_id=speaker,
-            ab_adapter=tui_ab_adapter,
-        ).run()
-        if tui_compaction_store is not None:
-            tui_compaction_store.close()
         return
 
     character = load_character(settings.character_path)
@@ -1903,86 +1819,14 @@ def chat(
         "/edit to capture a corrected reply as a voice sample)[/dim]\n"
     )
 
-    def _load_history() -> tuple[ChatMessage | None, list[ChatMessage]]:
-        """Return (optional summary-system-message, turns-since-pointer).
-        When a compaction summary exists, turns before the pointer are
-        represented by the summary only; the raw rows stay in the
-        transcript for audit but never hit the model."""
-        record = compaction_store.latest_for_session(session) if compaction_store else None
-        if record is not None:
-            summary_msg = ChatMessage(
-                role="system",
-                content=(
-                    "Earlier conversation in this session (summarized; "
-                    f"{record.covered_turns} turns folded in):\n\n{record.summary}"
-                ),
-            )
-            rows = transcript.fetch_after(session, after_id=record.up_to_turn_id)
-            return summary_msg, [_decode_transcript_message(m) for m in rows]
-        rows = transcript.tail(session, limit=50)
-        return None, [_decode_transcript_message(m) for m in rows]
-
-    def _measure_ctx() -> int:
-        """Estimate tokens for what the NEXT turn will start with:
-        character.system_prompt() (cheap fallback — no retrieval yet),
-        plus any compaction summary, plus history since the pointer.
-        Undercounts slightly because retrieved memories/facts add text
-        per turn, but tracks transcript growth accurately."""
-        baseline_system = ChatMessage(
-            role="system", content=character.system_prompt(now=date.today())
-        )
-        summary_msg, history_msgs = _load_history()
-        msgs: list[ChatMessage] = [baseline_system]
-        if summary_msg is not None:
-            msgs.append(summary_msg)
-        msgs.extend(history_msgs)
-        return count_tokens(adapter, msgs)
-
-    def _print_ctx_meter() -> None:
-        used = _measure_ctx()
-        meter = _format_ctx_meter(used, adapter.context_window)
-        if meter:
-            console.print(meter)
-
-    def _maybe_compact() -> None:
-        if compaction_store is None:
-            return
-        used = _measure_ctx()
-        if not should_compact(
-            used_tokens=used,
-            context_window=adapter.context_window,
-            threshold_pct=compact_at,
-        ):
-            return
-        console.print(
-            f"[dim]compacting history (ctx {used / 1000:.1f}k, threshold "
-            f"{compact_at * 100:.0f}%)…[/dim]"
-        )
-        thinking.start()
-        try:
-            outcome: CompactionOutcome = run_compaction(
-                adapter,
-                transcript,
-                compaction_store,
-                session_id=session,
-                keep_recent=compact_keep_recent,
-            )
-        finally:
-            thinking.stop()
-        if outcome.wrote:
-            console.print(
-                f"[dim]compacted {outcome.covered_turns} turns "
-                f"(pointer → #{outcome.new_up_to_turn_id})[/dim]"
-            )
-            if ab_adapter is not None:
-                # Post-compaction resume — context window shrank,
-                # reprint thought-graph state so the anchor is fresh.
-                console.print(f"[dim]{build_resume_summary(ab_adapter)}[/dim]")
-        else:
-            console.print(
-                "[yellow]compaction skipped — nothing qualified "
-                "(fewer turns than keep-recent, or model returned empty).[/yellow]"
-            )
+    ctx_meter = ContextMeter(
+        adapter=adapter,
+        character=character,
+        transcript=transcript,
+        compaction_store=compaction_store,
+        session=session,
+        console=console,
+    )
 
     if ab_adapter is not None:
         # Session-resume protocol (harness-jr3): show thought-graph
@@ -1992,8 +1836,13 @@ def chat(
 
     try:
         while True:
-            _maybe_compact()
-            _print_ctx_meter()
+            ctx_meter.maybe_compact(
+                compact_at=compact_at,
+                compact_keep_recent=compact_keep_recent,
+                thinking=thinking,
+                ab_adapter=ab_adapter,
+            )
+            ctx_meter.print_ctx()
             user_input = console.input("[bold cyan]you › [/bold cyan]").strip()
             if not user_input:
                 continue
@@ -2006,55 +1855,10 @@ def chat(
                 _print_session_end_retro(ab_adapter)
                 break
             if user_input.lower() in _RETRO_COMMANDS:
-                # /retro: on-demand retrospective. Summary first; then
-                # prompt for an optional insight to persist via
-                # RetroTool mode=record. Empty response skips recording.
-                if ab_adapter is None:
-                    console.print(
-                        "[yellow]/retro is only available when ab's bd adapter "
-                        "is configured (character=airton_b).[/yellow]"
-                    )
-                    continue
-                retro = RetroTool(ab_adapter)
-                console.print(f"[dim]{retro.call(mode='summary')}[/dim]")
-                insight = console.input(
-                    "[bold cyan]insight to record (blank to skip) › [/bold cyan]"
-                ).strip()
-                if insight:
-                    console.print(f"[dim]{retro.call(mode='record', insight=insight)}[/dim]")
+                handle_retro_slash(ab_adapter, console)
                 continue
             if user_input.lower() in _EDIT_COMMANDS:
-                # Slash command: open $EDITOR on Airton's last reply.
-                # Saving writes a new captured voice sample paired with
-                # the preceding user prompt. Closes the loop between
-                # 'reply was off-register' and 'new training sample'
-                # without leaving chat.
-                history_tail = transcript.tail(session, limit=50)
-                user_turns = [m for m in history_tail if m.role == "user"]
-                assistant_turns = [m for m in history_tail if m.role == "assistant"]
-                if not user_turns or not assistant_turns:
-                    console.print(
-                        "[yellow]no exchange to capture yet — have a turn "
-                        "first, then run /edit.[/yellow]"
-                    )
-                    continue
-                prev_prompt = user_turns[-1].content
-                prev_reply = assistant_turns[-1].content
-                edited = _open_in_editor(prev_reply)
-                if edited is None:
-                    console.print("[dim](no changes — nothing captured)[/dim]")
-                    continue
-                captured_path, sample_id, total = _write_voice_capture(
-                    prompt=prev_prompt,
-                    gold=edited,
-                    session=session,
-                    original=prev_reply,
-                )
-                console.print(
-                    f"[green]captured[/green] id={sample_id!r} "
-                    f"→ {captured_path.relative_to(settings.root)} "
-                    f"(now {total} captured sample(s))"
-                )
+                handle_edit_slash(transcript=transcript, session=session, console=console)
                 continue
             transcript.append(
                 session=session,
@@ -2108,7 +1912,7 @@ def chat(
 
             system = ChatMessage(role="system", content=system_content)
 
-            summary_msg, history = _load_history()
+            summary_msg, history = ctx_meter.load_history()
             history_messages: list[ChatMessage] = []
             if summary_msg is not None:
                 history_messages.append(summary_msg)
