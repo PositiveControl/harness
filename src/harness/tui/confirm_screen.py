@@ -51,22 +51,26 @@ class ConfirmToolScreen(ModalScreen[str]):
     scrolling log stays visible behind it — the user can double-
     check the last tool output before approving."""
 
-    # Compact dialog: sized to content with a hard cap, a thin border,
-    # and a semi-transparent backdrop (default ModalScreen overlay) so
-    # the chat log behind stays readable. Prior sizing (max-width: 80,
-    # thick border, no arg cap) pushed write_file calls with long
-    # content into a screen-filling slab.
+    # Non-obscuring inline-style popover. ModalScreen by default dims
+    # the full background at 60 % opacity and centres its child;
+    # together these read as "the entire TUI is covered by a modal".
+    # Override to a transparent background and dock the dialog at the
+    # bottom just above the Input so the chat log stays fully visible.
+    # Dialog itself is capped compact and wraps its args so a
+    # write_file payload can't balloon it.
     CSS = """
     ConfirmToolScreen {
-        align: center middle;
+        background: transparent;
+        align: center bottom;
     }
 
     #dialog {
         padding: 0 1;
         width: auto;
-        max-width: 60;
+        max-width: 70;
         height: auto;
-        max-height: 16;
+        max-height: 14;
+        margin: 0 0 4 0;
         background: $panel;
         border: round $warning;
     }
