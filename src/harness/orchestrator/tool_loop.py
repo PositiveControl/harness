@@ -526,6 +526,180 @@ def _router_prelude(
     return (True, result.success)
 
 
+class _BailController:
+    """Owns the retry budget + current token caps for a tool-loop
+    turn. Pulled out of run_tool_loop (harness-z4ev) so the main
+    orchestration isn't juggling three mutable ints inline.
+
+    `on_truncated()` widens both caps (main + wrap-up) because
+    wrap-up rounds clamp to `min(main, wrap_up)` — doubling only
+    the main cap still re-truncates at the old wrap-up cap
+    (harness-jly).
+
+    `consume_retry()` decrements the retry budget. Returns True
+    when a retry is still allowed; False once exhausted."""
+
+    def __init__(self, max_tokens: int, wrap_up_max_tokens: int) -> None:
+        self.current_max_tokens = max_tokens
+        self.current_wrap_up_max_tokens = wrap_up_max_tokens
+        self._retries = _BAIL_RETRIES_PER_TURN
+
+    def round_max_tokens(self, tools_already_ran: bool) -> int:
+        """Post-tool rounds are wrap-up rounds — tighter cap."""
+        if tools_already_ran:
+            return min(self.current_max_tokens, self.current_wrap_up_max_tokens)
+        return self.current_max_tokens
+
+    def on_truncated(self) -> None:
+        self.current_max_tokens = min(self.current_max_tokens * 2, _MAX_TOKENS_CEILING)
+        self.current_wrap_up_max_tokens = min(
+            self.current_wrap_up_max_tokens * 2, _MAX_TOKENS_CEILING
+        )
+
+    def consume_retry(self) -> bool:
+        """Decrement the retry budget. Returns True if a retry can
+        still fire after this consumption, False if exhausted."""
+        if self._retries <= 0:
+            return False
+        self._retries -= 1
+        return True
+
+    @property
+    def retries_left(self) -> int:
+        return self._retries
+
+
+def _run_model_round(
+    adapter: _ToolCapableAdapter,
+    working: list[ChatMessage],
+    registry: ToolRegistry,
+    *,
+    round_max_tokens: int,
+    temperature: float,
+    round_idx: int,
+    emit: Callable[[ToolLoopEvent], None],
+) -> ModelReply:
+    """Call the adapter for one round. Streams via `stream_with_tools`
+    when available (emitting token_delta events); falls back to
+    blocking `complete_with_tools` otherwise. Emits model_call_start
+    / model_call_end around the call. Strips paired-meta-confirm
+    narrative from replies that also carry a valid tool call
+    (harness-fup / harness-q27)."""
+    emit(ToolLoopEvent(kind="model_call_start", round_index=round_idx))
+    stream_fn = getattr(adapter, "stream_with_tools", None)
+    try:
+        if callable(stream_fn):
+            stream_iter: Iterator[StreamChunk] = stream_fn(
+                working,
+                tools=registry.specs(),
+                max_tokens=round_max_tokens,
+                temperature=temperature,
+            )
+            reply: ModelReply | None = None
+            for chunk in stream_iter:
+                if isinstance(chunk, StreamText):
+                    emit(
+                        ToolLoopEvent(
+                            kind="token_delta",
+                            delta=chunk.text,
+                            round_index=round_idx,
+                        )
+                    )
+                elif isinstance(chunk, StreamComplete):
+                    reply = chunk.reply
+            if reply is None:
+                raise RuntimeError("stream_with_tools exhausted without StreamComplete")
+            last_reply = reply
+        else:
+            last_reply = adapter.complete_with_tools(
+                working,
+                tools=registry.specs(),
+                max_tokens=round_max_tokens,
+                temperature=temperature,
+            )
+    finally:
+        emit(ToolLoopEvent(kind="model_call_end", round_index=round_idx))
+
+    # Small models sometimes emit meta-confirm narrative AND a tool call
+    # in the same reply ("Would you like me to …? <tool_call>…"). The
+    # tool call is valid but the narrative is noise — strip it from the
+    # assistant turn's content so the wrap-up round doesn't see the model
+    # hallucinating a confirmation dialog in its own history.
+    if (
+        _catcher_enabled("paired_meta_confirm_strip")
+        and last_reply.tool_calls
+        and _META_CONFIRM_RE.search(last_reply.content)
+    ):
+        last_reply = ModelReply(
+            content="",
+            tool_calls=last_reply.tool_calls,
+            was_truncated=last_reply.was_truncated,
+            had_unparseable_call=last_reply.had_unparseable_call,
+        )
+    return last_reply
+
+
+def _execute_tool_calls(
+    calls: Iterable[ToolCall],
+    registry: ToolRegistry,
+    working: list[ChatMessage],
+    seen_calls: set[tuple[str, str]],
+    *,
+    confirm: ConfirmFn | None,
+    emit: Callable[[ToolLoopEvent], None],
+    round_idx: int,
+) -> bool:
+    """Execute the round's tool calls: duplicate-call guard, write-tier
+    confirm, dispatch, append tool-role messages. Returns True if any
+    call returned success=True (used to gate fabrication catchers on
+    later rounds)."""
+    any_success = False
+    for call in calls:
+        key = _call_key(call)
+        if _catcher_enabled("duplicate_call") and key in seen_calls:
+            # Duplicate of an earlier call this turn — skip execution.
+            # Feed the nudge back as the tool-role message so the next
+            # round sees 'finalize, don't re-call'.
+            result = ToolResult(
+                tool_name=call.name,
+                output=_DUPLICATE_CALL_NUDGE,
+                success=True,
+            )
+            emit(
+                ToolLoopEvent(
+                    kind="tool_call_deduped",
+                    call=call,
+                    result=result,
+                    round_index=round_idx,
+                )
+            )
+            working.append(ChatMessage(role="tool", content=result.output, name=call.name))
+            continue
+
+        emit(ToolLoopEvent(kind="tool_call_start", call=call, round_index=round_idx))
+
+        spec = registry.get(call.name).spec if call.name in registry else None
+        needs_confirm = confirm is not None and spec is not None and spec.tier == "write"
+        if needs_confirm and not confirm(call):  # type: ignore[misc]  # confirm is not None when needs_confirm is True
+            result = ToolResult(
+                tool_name=call.name,
+                output="user declined to approve this tool call",
+                success=False,
+                error="user_declined",
+            )
+            kind = "tool_call_declined"
+        else:
+            result = registry.call(call.name, call.arguments)
+            kind = "tool_call_end" if result.success else "tool_call_failed"
+        emit(ToolLoopEvent(kind=kind, call=call, result=result, round_index=round_idx))
+
+        seen_calls.add(key)
+        if result.success:
+            any_success = True
+        working.append(ChatMessage(role="tool", content=result.output, name=call.name))
+    return any_success
+
+
 def run_tool_loop(
     adapter: _ToolCapableAdapter,
     messages: Iterable[ChatMessage],
@@ -565,23 +739,11 @@ def run_tool_loop(
     initial_count = len(working)
     events: list[ToolLoopEvent] = []
     last_reply: ModelReply = ModelReply(content="", tool_calls=())
-    bail_retries = _BAIL_RETRIES_PER_TURN
-    current_max_tokens = max_tokens
-    # Wrap-up cap lives alongside the main cap so the truncated-recovery
-    # branch can widen it too. Earlier bug (harness-jly): only
-    # current_max_tokens was doubled on retry — round_max_tokens was
-    # still min(current_max_tokens, wrap_up_max_tokens) in wrap-up
-    # rounds, so every retry re-truncated at the original cap and the
-    # user saw the same partial summary streamed 3x.
-    current_wrap_up_max_tokens = wrap_up_max_tokens
+    bail = _BailController(max_tokens=max_tokens, wrap_up_max_tokens=wrap_up_max_tokens)
     # Duplicate-call guard. Small models sometimes wrap a real answer
     # around a redundant re-call ("here's the summary" + same list_dir
-    # with same args as a prior round). Each round the call runs,
-    # returns identical output, and the model rewrites the summary —
-    # wasting rounds and making the TUI look like it's stuck. Tracking
-    # (name, args-json) per turn lets us skip execution on repeats and
-    # feed a 'stop, finalize' nudge to the model instead. See
-    # harness-pun.
+    # with same args as a prior round). Tracking (name, args-json) per
+    # turn lets us skip execution on repeats (harness-pun).
     seen_calls: set[tuple[str, str]] = set()
 
     def emit(event: ToolLoopEvent) -> None:
@@ -599,107 +761,41 @@ def run_tool_loop(
         _, router_success = _router_prelude(router, working, registry, confirm, emit, seen_calls)
         any_tool_succeeded = any_tool_succeeded or router_success
 
-    stream_fn = getattr(adapter, "stream_with_tools", None)
-
     for round_idx in range(max_rounds):
-        # Post-tool rounds are wrap-up rounds — tighter cap.
         tools_already_ran = any(m.role == "tool" for m in working[initial_count:])
-        round_max_tokens = (
-            min(current_max_tokens, current_wrap_up_max_tokens)
-            if tools_already_ran
-            else current_max_tokens
-        )
         emit(ToolLoopEvent(kind="round_start", round_index=round_idx))
-        emit(ToolLoopEvent(kind="model_call_start", round_index=round_idx))
-        try:
-            if callable(stream_fn):
-                stream_iter: Iterator[StreamChunk] = stream_fn(
-                    working,
-                    tools=registry.specs(),
-                    max_tokens=round_max_tokens,
-                    temperature=temperature,
-                )
-                reply: ModelReply | None = None
-                for chunk in stream_iter:
-                    if isinstance(chunk, StreamText):
-                        emit(
-                            ToolLoopEvent(
-                                kind="token_delta",
-                                delta=chunk.text,
-                                round_index=round_idx,
-                            )
-                        )
-                    elif isinstance(chunk, StreamComplete):
-                        reply = chunk.reply
-                if reply is None:
-                    raise RuntimeError("stream_with_tools exhausted without StreamComplete")
-                last_reply = reply
-            else:
-                last_reply = adapter.complete_with_tools(
-                    working,
-                    tools=registry.specs(),
-                    max_tokens=round_max_tokens,
-                    temperature=temperature,
-                )
-        finally:
-            emit(ToolLoopEvent(kind="model_call_end", round_index=round_idx))
-
-        # Small models sometimes emit meta-confirm narrative AND a tool call
-        # in the same reply ("Would you like me to …? <tool_call>…"). The
-        # tool call is valid but the narrative is noise — strip it from the
-        # assistant turn's content so the wrap-up round doesn't see the model
-        # hallucinating a confirmation dialog in its own history. The tool
-        # still runs; the user just doesn't get a bizarre 'did you want me
-        # to?' before an action they already asked for.
-        if (
-            _catcher_enabled("paired_meta_confirm_strip")
-            and last_reply.tool_calls
-            and _META_CONFIRM_RE.search(last_reply.content)
-        ):
-            last_reply = ModelReply(
-                content="",
-                tool_calls=last_reply.tool_calls,
-                was_truncated=last_reply.was_truncated,
-                had_unparseable_call=last_reply.had_unparseable_call,
-            )
+        last_reply = _run_model_round(
+            adapter,
+            working,
+            registry,
+            round_max_tokens=bail.round_max_tokens(tools_already_ran),
+            temperature=temperature,
+            round_idx=round_idx,
+            emit=emit,
+        )
 
         if not last_reply.tool_calls:
-            # If any tool has already executed in this turn (prior round's
-            # tool_calls produced tool-role messages appended to working),
-            # a completion claim is legitimate — the model is wrapping up.
-            # Only treat a claim as hallucination when no tool has run yet.
             # Gate on successful tool execution, not mere execution: an
             # all-errored turn (e.g. plan with invalid scope) must still
-            # trip fabrication catchers because the model has no real
-            # data to wrap up (harness-a0y).
+            # trip fabrication catchers (harness-a0y).
             diag = _diagnose_bail(last_reply, tools_ran_this_turn=any_tool_succeeded)
-            can_retry = bail_retries > 0 and round_idx + 1 < max_rounds
+            can_retry = bail.retries_left > 0 and round_idx + 1 < max_rounds
             if diag is not None and can_retry:
-                bail_retries -= 1
+                bail.consume_retry()
                 if diag == "truncated":
-                    current_max_tokens = min(current_max_tokens * 2, _MAX_TOKENS_CEILING)
-                    # Wrap-up rounds need the widened budget too, else
-                    # the round_max_tokens clamp still truncates at the
-                    # old wrap_up cap and the retry re-truncates at the
-                    # same spot (harness-jly).
-                    current_wrap_up_max_tokens = min(
-                        current_wrap_up_max_tokens * 2, _MAX_TOKENS_CEILING
-                    )
+                    bail.on_truncated()
                     emit(ToolLoopEvent(kind="truncated_retry", round_index=round_idx))
                 else:
                     # Must fire BEFORE the nudge is queued so the CLI /
                     # TUI can drop the in-flight stream buffer — each
-                    # retry re-streams from scratch and we don't want
-                    # the fabricated draft to stay on screen
-                    # (harness-24xj).
+                    # retry re-streams from scratch (harness-24xj).
                     emit(ToolLoopEvent(kind="bail_retry", round_index=round_idx))
                     working.append(ChatMessage(role="user", content=diag))
                 continue
-            # Retries / rounds exhausted. If the reply is still
-            # fabrication-shaped, swap in the canned fallback rather
-            # than surfacing the hallucination as the final answer
-            # (harness-24xj). Truncation isn't fabrication — we'd
-            # rather show the partial than a refusal.
+            # Retries exhausted. If the reply is still fabrication-shaped,
+            # swap in the canned fallback rather than surfacing the
+            # hallucination as the final answer (harness-24xj).
+            # Truncation isn't fabrication — prefer the partial.
             if (
                 _catcher_enabled("fabrication_fallback")
                 and diag is not None
@@ -728,51 +824,16 @@ def run_tool_loop(
                 tool_calls=last_reply.tool_calls,
             )
         )
-
-        for call in last_reply.tool_calls:
-            key = _call_key(call)
-            if _catcher_enabled("duplicate_call") and key in seen_calls:
-                # Duplicate of an earlier call this turn — skip execution.
-                # Emit the deduped event for CLI visibility and feed the
-                # nudge back as the tool-role message so the next round
-                # sees 'finalize, don't re-call'.
-                result = ToolResult(
-                    tool_name=call.name,
-                    output=_DUPLICATE_CALL_NUDGE,
-                    success=True,
-                )
-                emit(
-                    ToolLoopEvent(
-                        kind="tool_call_deduped",
-                        call=call,
-                        result=result,
-                        round_index=round_idx,
-                    )
-                )
-                working.append(ChatMessage(role="tool", content=result.output, name=call.name))
-                continue
-
-            emit(ToolLoopEvent(kind="tool_call_start", call=call, round_index=round_idx))
-
-            spec = registry.get(call.name).spec if call.name in registry else None
-            needs_confirm = confirm is not None and spec is not None and spec.tier == "write"
-            if needs_confirm and not confirm(call):  # type: ignore[misc]  # confirm is not None when needs_confirm is True
-                result = ToolResult(
-                    tool_name=call.name,
-                    output="user declined to approve this tool call",
-                    success=False,
-                    error="user_declined",
-                )
-                kind = "tool_call_declined"
-            else:
-                result = registry.call(call.name, call.arguments)
-                kind = "tool_call_end" if result.success else "tool_call_failed"
-            emit(ToolLoopEvent(kind=kind, call=call, result=result, round_index=round_idx))
-
-            seen_calls.add(key)
-            if result.success:
-                any_tool_succeeded = True
-            working.append(ChatMessage(role="tool", content=result.output, name=call.name))
+        round_success = _execute_tool_calls(
+            last_reply.tool_calls,
+            registry,
+            working,
+            seen_calls,
+            confirm=confirm,
+            emit=emit,
+            round_idx=round_idx,
+        )
+        any_tool_succeeded = any_tool_succeeded or round_success
 
     # Loop exhausted — return what we have.
     return ToolLoopResult(
