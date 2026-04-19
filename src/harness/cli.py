@@ -6,24 +6,19 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import cast
 
 import typer
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.status import Status
 from rich.table import Table
 
 import harness._quiet  # noqa: F401 — side-effect import: silences HF/transformers/sentence-transformers noise before they load
 from harness.character import Character, VoiceSample, load_character
 from harness.cli_introspect import list_cli_commands
-from harness.cli_repl import ContextMeter, handle_edit_slash, handle_retro_slash
-from harness.compaction import (
-    CompactionStore,
-)
 from harness.config import settings
 from harness.consolidate import run_consolidation
 from harness.evals.router import (
@@ -41,11 +36,9 @@ from harness.orchestrator import (
     _META_CONFIRM_RE,
     _TOOL_INTENT_RE,
     ToolLoopEvent,
-    run_tool_loop,
 )
 from harness.persona import PersonaAdapter
 from harness.persona.caveman_rewriter import CavemanRewriter, load_register_map
-from harness.persona.rewriter import build_rewriter_messages
 from harness.retrieval import VoiceRetriever
 from harness.router import GrammarRouter, ModelRouter, Router
 from harness.scribe import run_scribe
@@ -61,7 +54,6 @@ from harness.store.transcript import Transcript, TranscriptMessage
 from harness.tools import (
     DEFAULT_PROFILE,
     TOOL_PROFILES,
-    ConsolidateMemoryTool,
     EditFileTool,
     GitDiffTool,
     GitLogTool,
@@ -74,7 +66,6 @@ from harness.tools import (
     ReadFileTool,
     RememberEventTool,
     RememberFactTool,
-    ScribeSessionTool,
     SearchFactsTool,
     SearchMemoryTool,
     SearchWebTool,
@@ -108,7 +99,6 @@ from harness.tools.ab_ops import (
     SearchTool,
     StatusTool,
     UpdateTool,
-    build_resume_summary,
 )
 
 _EXIT_COMMANDS = frozenset({"/exit", "/quit", "exit", "quit", ":q", ":quit"})
@@ -1581,453 +1571,37 @@ def chat(
         )
         return
 
-    character = load_character(settings.character_path)
-    workspace_path = Path(workspace).expanduser().resolve() if workspace else settings.root
-    if tools and not workspace_path.is_dir():
-        raise typer.BadParameter(f"workspace {workspace_path} is not a directory")
-    # When tools are active we run persona manually *after* the tool loop,
-    # so we resolve the base adapter unwrapped. Without tools, persona
-    # wraps the base adapter as before.
-    adapter = _resolve_adapter(
-        model,
-        persona=persona and not tools,
-        character=character,
-        model_repo=model_repo,
-        lora_path=lora_path,
-    )
-    router: Router | None = None
-    if router_enabled:
-        if not tools:
-            raise typer.BadParameter("--router requires --tools (nothing to route to otherwise).")
-        if router_mode not in {"free", "grammar"}:
-            raise typer.BadParameter(
-                f"--router-mode must be 'free' or 'grammar' (got {router_mode!r})."
-            )
-        from harness.model.mlx import MLXAdapter
+    from harness.cli_classic import run_classic_chat
 
-        router_adapter = MLXAdapter(repo=router_repo)
-        router = (
-            GrammarRouter(adapter=router_adapter)
-            if router_mode == "grammar"
-            else ModelRouter(adapter=router_adapter)
-        )
-    retriever = _maybe_retriever(character, top_k)
-    memory_store = _open_episodic_store(character) if memories > 0 else None
-    semantic_store = _open_semantic_store() if facts > 0 else None
-    transcript = Transcript(settings.character_db_path)
-    compaction_store = CompactionStore(settings.character_db_path) if compact_at > 0 else None
-
-    # Created early so the introspect tool (harness-8is) can hold a
-    # live reference to the same object the turn loop mutates.
-    retrieval_state = _RetrievalState()
-    registry: ToolRegistry | None = None
-    approved_tools: set[str] = set()
-    if tools:
-        try:
-            wanted_names = resolve_tool_names(
-                tool_set,
-                add=tuple((tools_add or "").split(",")),
-                drop=tuple((tools_drop or "").split(",")),
-            )
-        except ValueError as exc:
-            raise typer.BadParameter(str(exc)) from exc
-
-        # Map names → builders. Memory tools return None when their store
-        # isn't available (--memories 0 / --facts 0). Unknown names fall
-        # through to the warning path so future-tool profiles stay loadable.
-        builders: dict[str, Callable[[], Tool | None]] = {
-            "read_file": lambda: ReadFileTool(root=workspace_path),
-            "edit_file": lambda: EditFileTool(root=workspace_path),
-            "write_file": lambda: WriteFileTool(root=workspace_path),
-            "shell": lambda: ShellTool(cwd=workspace_path),
-            "list_dir": lambda: ListDirTool(root=workspace_path),
-            "grep": lambda: GrepTool(root=workspace_path),
-            "glob": lambda: GlobTool(root=workspace_path),
-            "git_status": lambda: GitStatusTool(root=workspace_path),
-            "git_diff": lambda: GitDiffTool(root=workspace_path),
-            "git_log": lambda: GitLogTool(root=workspace_path),
-            "search_memory": (
-                lambda: (
-                    SearchMemoryTool(store=memory_store, user_id=speaker)
-                    if memory_store is not None
-                    else None
-                )
-            ),
-            "search_facts": (
-                lambda: (
-                    SearchFactsTool(store=semantic_store, user_id=speaker)
-                    if semantic_store is not None
-                    else None
-                )
-            ),
-            "search_web": lambda: SearchWebTool(),
-            "remember_fact": (
-                lambda: (
-                    RememberFactTool(store=semantic_store, user_id=speaker, session_id=session)
-                    if semantic_store is not None
-                    else None
-                )
-            ),
-            "remember_event": (
-                lambda: (
-                    RememberEventTool(store=memory_store, user_id=speaker, session_id=session)
-                    if memory_store is not None
-                    else None
-                )
-            ),
-            "scribe_session": (
-                lambda: (
-                    ScribeSessionTool(
-                        adapter=adapter,
-                        character=character,
-                        transcript=transcript,
-                        episodic_store=memory_store,
-                        semantic_store=semantic_store,
-                        default_user_id=speaker,
-                    )
-                    if memory_store is not None and semantic_store is not None
-                    else None
-                )
-            ),
-            "consolidate_memory": (
-                lambda: (
-                    ConsolidateMemoryTool(
-                        episodic_store=memory_store,
-                        semantic_store=semantic_store,
-                    )
-                    if memory_store is not None and semantic_store is not None
-                    else None
-                )
-            ),
-        }
-        # Inject ab's ops builders when the active character is airton_b
-        # and the isolated bd dir is ready. Non-ab characters get an
-        # empty merge — no behavioural change.
-        ab_adapter = _maybe_ab_bd_adapter(character, include_internal=include_internal or dev)
-        builders.update(_ab_tool_builders(ab_adapter))
-
-        registry = ToolRegistry()
-        for name in wanted_names:
-            if name == "introspect":
-                continue  # deferred until after the registry is populated
-            builder = builders.get(name)
-            if builder is None:
-                console.print(f"[yellow]⚠ tool {name!r} not yet implemented — skipping[/yellow]")
-                continue
-            tool = builder()
-            if tool is None:
-                console.print(
-                    f"[yellow]⚠ tool {name!r} needs a store that isn't enabled "
-                    f"(check --memories / --facts)[/yellow]"
-                )
-                continue
-            registry.register(tool)
-
-        if "introspect" in wanted_names:
-            registry.register(
-                _make_introspect_tool(
-                    registry,
-                    adapter,
-                    character,
-                    workspace_path,
-                    episodic=memory_store,
-                    semantic=semantic_store,
-                    user_id=speaker,
-                    retrieval_health=retrieval_state,
-                    persona_active=persona and not tools,
-                    router_id=_router_id_label(router),
-                    transcript=transcript,
-                    session_id=session,
-                )
-            )
-
-        if not registry.names():
-            registry = None  # empty profile → same as --no-tools
-
-    # retrieval_state is created earlier so the introspect tool (built
-    # during registry assembly above) holds a live reference to the
-    # same object the turn loop mutates.
-    thinking = _ThinkingSpinner(console)
-    stream_renderer = _StreamRenderer(console, show_suppressions=dev)
-
-    def _warn_once(msg: str) -> None:
-        console.print(f"[yellow]⚠ {msg}[/yellow]")
-
-    def _tool_label(name: str) -> str:
-        if registry is not None and name in registry:
-            return registry.get(name).spec.label
-        return name
-
-    def confirm_write_tool(call: ToolCall) -> bool:
-        # Pre-validate: some calls are so obviously wrong that we refuse
-        # them without even asking the user. The tool's own call() has
-        # the same guard as a safety net, but catching it here keeps the
-        # approve prompt out of the user's face for doomed calls.
-        refusal = _pre_validate_write_call(call, workspace_path)
-        if refusal is not None:
-            console.print(f"[red]🚫 refusing {call.name}: {refusal}[/red]")
-            return False
-        if call.name in approved_tools:
-            return True
-        label = _tool_label(call.name)
-        summary = _describe_call(call, workspace_path)
-        console.print(f"[yellow]🔧 Airton wants to [bold]{label}[/bold] — {summary}[/yellow]")
-        answer = console.input("   approve? [y/N/always]: ").strip().lower()
-        if answer == "always":
-            approved_tools.add(call.name)
-            return True
-        return answer.startswith("y")
-
-    def render_tool_event(event: ToolLoopEvent) -> None:
-        _render_tool_event(
-            event,
-            console=console,
-            thinking=thinking,
-            stream_renderer=stream_renderer,
-            tool_label=_tool_label,
-        )
-
-    _render_chat_header(
+    run_classic_chat(
         console=console,
-        character_name=character.name,
         session=session,
+        channel=channel,
         speaker=speaker,
-        adapter_id=adapter.id,
+        model=model,
+        model_repo=model_repo,
         lora_path=lora_path,
         persona=persona,
         top_k=top_k,
-        retriever_active=retriever is not None,
         memories=memories,
         memories_threshold=memories_threshold,
-        memories_active=memory_store is not None,
         facts=facts,
         facts_threshold=facts_threshold,
-        facts_active=semantic_store is not None,
-        tools_enabled=registry is not None,
+        tools=tools,
         tool_set=tool_set,
-        tool_names=registry.names() if registry is not None else [],
-        workspace_path=workspace_path if registry is not None else None,
+        tools_add=tools_add,
+        tools_drop=tools_drop,
         rewrite_on_tools=rewrite_on_tools,
-        router_enabled=router is not None,
-        router_repo=router_repo if router is not None else None,
+        workspace=workspace,
         compact_at=compact_at,
         compact_keep_recent=compact_keep_recent,
         dev=dev,
+        include_internal=include_internal,
+        router_enabled=router_enabled,
+        router_repo=router_repo,
+        router_mode=router_mode,
     )
-    console.print(
-        "[dim](ctrl-c, /exit, /quit, or :q to exit · "
-        "/edit to capture a corrected reply as a voice sample)[/dim]\n"
-    )
-
-    ctx_meter = ContextMeter(
-        adapter=adapter,
-        character=character,
-        transcript=transcript,
-        compaction_store=compaction_store,
-        session=session,
-        console=console,
-    )
-
-    if ab_adapter is not None:
-        # Session-resume protocol (harness-jr3): show thought-graph
-        # state so ab + user resume from the bead graph rather than
-        # reconstructing from a cold conversation.
-        console.print(f"[dim]{build_resume_summary(ab_adapter)}[/dim]")
-
-    try:
-        while True:
-            ctx_meter.maybe_compact(
-                compact_at=compact_at,
-                compact_keep_recent=compact_keep_recent,
-                thinking=thinking,
-                ab_adapter=ab_adapter,
-            )
-            ctx_meter.print_ctx()
-            user_input = console.input("[bold cyan]you › [/bold cyan]").strip()
-            if not user_input:
-                continue
-            if ab_adapter is not None:
-                # User-turn boundary — refresh the per-turn ab-bead
-                # create budget so this turn starts with 3 fresh slots
-                # regardless of how many the prior turn spent.
-                ab_adapter.reset_turn_counter()
-            if user_input.lower() in _EXIT_COMMANDS:
-                _print_session_end_retro(ab_adapter)
-                break
-            if user_input.lower() in _RETRO_COMMANDS:
-                handle_retro_slash(ab_adapter, console)
-                continue
-            if user_input.lower() in _EDIT_COMMANDS:
-                handle_edit_slash(transcript=transcript, session=session, console=console)
-                continue
-            transcript.append(
-                session=session,
-                channel=channel,
-                speaker=speaker,
-                role="user",
-                content=user_input,
-            )
-            # Start the spinner immediately so the user sees acknowledgement
-            # of their submission, not a blank cursor, while retrieval warms
-            # up and the model runs. The tool-loop observer drops/restarts it
-            # as needed across rounds; we stop it unconditionally before any
-            # interactive prompt or the final reply render.
-            thinking.start()
-
-            examples, recalled, known_facts = _retrieve_turn_context(
-                user_input=user_input,
-                speaker=speaker,
-                retriever=retriever,
-                memory_store=memory_store,
-                semantic_store=semantic_store,
-                top_k=top_k,
-                memories=memories,
-                memories_threshold=memories_threshold,
-                facts=facts,
-                facts_threshold=facts_threshold,
-                state=retrieval_state,
-                warn=_warn_once,
-            )
-
-            if examples:
-                system_content = character.system_prompt(include_samples=examples, now=date.today())
-            else:
-                system_content = character.system_prompt(now=date.today())
-
-            if recalled:
-                system_content = f"{system_content}\n\n{_render_memory_block(recalled)}"
-
-            if ab_adapter is not None:
-                ab_mem_block = _render_ab_memories_block(ab_adapter)
-                if ab_mem_block is not None:
-                    system_content = f"{system_content}\n\n{ab_mem_block}"
-
-            if registry is not None:
-                system_content = (
-                    f"{system_content}\n\n{_build_tool_grounding_block(registry, workspace_path)}"
-                )
-
-            if known_facts:
-                system_content = f"{system_content}\n\n{_render_fact_block(known_facts)}"
-
-            system = ChatMessage(role="system", content=system_content)
-
-            summary_msg, history = ctx_meter.load_history()
-            history_messages: list[ChatMessage] = []
-            if summary_msg is not None:
-                history_messages.append(summary_msg)
-            history_messages.extend(history)
-
-            console.print(f"[bold green]{character.name} ›[/bold green]")
-            streamed = False
-            if registry is not None:
-                # Tools active: drive the tool loop (observer handles live
-                # rendering per model call), then optionally apply the
-                # voice rewriter to the final text.
-                initial_messages: list[ChatMessage] = [system, *history_messages]
-                loop_result = run_tool_loop(
-                    adapter,  # type: ignore[arg-type]
-                    initial_messages,
-                    registry,
-                    confirm=confirm_write_tool,
-                    observe=render_tool_event,
-                    router=router,
-                )
-                streamed = True
-                # Persist the tool exchange (assistant tool-call turns +
-                # tool-role result turns) so the next user turn can see
-                # what was read / run. Without this, every turn is amnesia.
-                _persist_tool_exchange(
-                    transcript,
-                    session=session,
-                    channel=channel,
-                    character_name=character.name,
-                    initial_count=len(initial_messages),
-                    loop_messages=loop_result.messages,
-                )
-                draft = loop_result.content
-                # Small models (gemma4 8B) sometimes bail after a tool
-                # result — empty content AND no further tool calls. Nudge
-                # them once with an explicit follow-up asking for the
-                # final answer before falling back to the sentinel.
-                if not draft.strip():
-                    nudge_msgs = [
-                        *loop_result.messages,
-                        ChatMessage(
-                            role="user",
-                            content=(
-                                "Your last reply was empty. Give me a final answer "
-                                "based on what the tools already returned. Restate "
-                                "the key findings in prose. Do not return empty."
-                            ),
-                        ),
-                    ]
-                    retry = adapter.complete_with_tools(  # type: ignore[attr-defined]
-                        nudge_msgs,
-                        tools=registry.specs(),
-                        max_tokens=2048,
-                        temperature=0.3,
-                    )
-                    if retry.content.strip():
-                        draft = retry.content
-                # Skip the rewriter when (a) rewrite-on-tools is off (default)
-                # because the rewriter compresses prose that summarize /
-                # investigate tasks need, or (b) the tool loop left no
-                # substantive draft — otherwise the rewriter sees an empty
-                # "Draft:" block and hallucinates "paste the text."
-                if persona and rewrite_on_tools and draft.strip():
-                    console.print("\n[dim]*— voice pass —*[/dim]")
-                    rewrite_msgs = build_rewriter_messages(character, draft)
-                    reply, _ = _stream_or_complete(
-                        adapter,
-                        rewrite_msgs,
-                        stream_renderer=stream_renderer,
-                        temperature=0.2,
-                        max_tokens=2048,
-                    )
-                else:
-                    reply = draft or "(no reply — model returned empty text after tool calls)"
-            else:
-                reply, streamed = _stream_or_complete(
-                    adapter,
-                    [system, *history_messages],
-                    stream_renderer=stream_renderer,
-                )
-
-            thinking.stop()
-            stream_renderer.stop()
-            transcript.append(
-                session=session,
-                channel=channel,
-                speaker=character.name,
-                role="assistant",
-                content=reply,
-            )
-            if not streamed:
-                console.print(Markdown(reply))
-            console.print()
-    except (KeyboardInterrupt, EOFError):
-        console.print()
-        _print_session_end_retro(ab_adapter)
-        console.print("[dim]bye.[/dim]")
-    finally:
-        # Order matters: stop anything that could still be painting the
-        # terminal first (spinner, stream) so a later exception doesn't
-        # leave a live region hanging. Store closes last — they're
-        # idempotent and safe under exceptions.
-        thinking.stop()
-        if stream_renderer.active:
-            stream_renderer.stop()
-        transcript.close()
-        if compaction_store is not None:
-            compaction_store.close()
-        if memory_store is not None:
-            memory_store.close()
-        if semantic_store is not None:
-            semantic_store.close()
-        # MLX and sentence-transformers hold their weights in Python
-        # attributes; normal GC releases them on process exit. No
-        # explicit unload call is needed and mlx_lm doesn't expose one.
+    return
 
 
 @app.command()

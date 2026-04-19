@@ -90,6 +90,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "src/harness/cli.py" = ["RUF001"]  # prompt glyphs are intentional
+"src/harness/cli_classic.py" = ["RUF001", "RUF002"]  # same prompt glyphs as cli.py
 "src/harness/cli_repl.py" = ["RUF001", "RUF002"]  # same prompt glyphs as cli.py
 "src/harness/tui/*.py" = ["RUF001", "RUF002", "RUF003"]  # same `›` / `—` glyphs as the classic CLI
 "tests/**" = ["PLR2004"]           # magic numbers are fine in tests
