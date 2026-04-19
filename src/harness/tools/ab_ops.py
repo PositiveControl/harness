@@ -83,6 +83,8 @@ class _Adapter(Protocol):
 
     def stale(self) -> list[BeadsIssue]: ...
 
+    def get_focus(self, assignee: str) -> BeadsIssue | None: ...
+
     def create(
         self,
         *,
@@ -138,6 +140,11 @@ CAPTURE_REQUIRED_FIELDS = ("scope", "outcome", "next_action")
 # Tier labels are fixed; display labels come from register_map via the
 # rewriter. Order matters — render follows this order.
 TIERS = ("shall", "should", "shmaybe", "watching")
+
+# Assignee name for ab's own thought-graph beads. Plan / status use
+# this to surface the current focus without polluting the broader tool
+# interface with an extra 'who owns this' arg.
+AB_ASSIGNEE = "airton_b"
 
 
 @dataclass(frozen=True)
@@ -262,7 +269,19 @@ class PlanTool:
             return err
         ready = self.adapter.ready(scope=scope)
         lines = [_TieredLine(issue=i, **_classify_dict(i)) for i in ready]
-        return _render_plan(lines, date.today())
+        plan = _render_plan(lines, date.today())
+        focus = self.adapter.get_focus(AB_ASSIGNEE)
+        if focus is None:
+            return plan
+        return f"{_render_focus_banner(focus)}\n{plan}"
+
+
+def _render_focus_banner(issue: BeadsIssue) -> str:
+    """One-line banner above the tier buckets. Announces what ab is
+    currently holding in working memory so the plan isn't read in a
+    vacuum."""
+    scope_tag = issue.scope or "?"
+    return f"Focus: [{scope_tag}/{issue.id}] {issue.title} (P{issue.priority})"
 
 
 def _classify_dict(issue: BeadsIssue) -> dict[str, str]:
@@ -438,41 +457,64 @@ class StatusTool:
             name="status",
             description=(
                 "Show an item's state, priority, blockers, and what it "
-                "blocks. Accepts a bd issue id. Read-only."
+                "blocks. With no id, shows ab's current focus bead "
+                "(the single in_progress thought-graph item). Read-only."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": "bd issue id."},
+                    "id": {
+                        "type": "string",
+                        "description": ("bd issue id. Omit to show the current focus."),
+                    },
                 },
-                "required": ["id"],
+                "required": [],
             },
             tier="read",
             display_name="Status",
         )
 
-    def call(self, *, id: str) -> str:
+    def call(self, *, id: str | None = None) -> str:
+        focus = self.adapter.get_focus(AB_ASSIGNEE)
+        if id is None:
+            if focus is None:
+                return (
+                    "(no focus) — ab has no in_progress thought-graph bead. "
+                    "Capture one or promote an existing open bead to focus."
+                )
+            return _render_status_with_focus(focus, focus_id=focus.id)
         try:
             issue = self.adapter.show(id)
         except BeadsAdapterError as exc:
             return f"status failed: {exc}"
-        blockers_raw = issue.raw.get("dependencies") or []
-        blockers: list[BeadsIssue] = []
-        if isinstance(blockers_raw, list):
-            for dep in blockers_raw:
-                if isinstance(dep, dict) and "id" in dep:
-                    blockers.append(
-                        BeadsIssue(
-                            id=str(dep["id"]),
-                            title=str(dep.get("title", "")),
-                            status=str(dep.get("status", "")),
-                            priority=int(dep.get("priority") or 0),
-                            issue_type=str(dep.get("issue_type", "")),
-                            labels=tuple(dep.get("labels") or []),
-                            raw=dep,
-                        )
+        focus_id = focus.id if focus is not None else None
+        return _render_status_with_focus(issue, focus_id=focus_id)
+
+
+def _render_status_with_focus(issue: BeadsIssue, *, focus_id: str | None) -> str:
+    """Shared rendering for StatusTool. Extracts the blockers from
+    issue.raw and appends a focus-switch hint when the subject bead
+    isn't the current focus — advisory only, does not mutate."""
+    blockers_raw = issue.raw.get("dependencies") or []
+    blockers: list[BeadsIssue] = []
+    if isinstance(blockers_raw, list):
+        for dep in blockers_raw:
+            if isinstance(dep, dict) and "id" in dep:
+                blockers.append(
+                    BeadsIssue(
+                        id=str(dep["id"]),
+                        title=str(dep.get("title", "")),
+                        status=str(dep.get("status", "")),
+                        priority=int(dep.get("priority") or 0),
+                        issue_type=str(dep.get("issue_type", "")),
+                        labels=tuple(dep.get("labels") or []),
+                        raw=dep,
                     )
-        return _render_status(issue, blockers)
+                )
+    rendered = _render_status(issue, blockers)
+    if focus_id is not None and focus_id != issue.id:
+        rendered += f"\n  (Not current focus — ab is focused on {focus_id}.)"
+    return rendered
 
 
 @dataclass

@@ -115,6 +115,8 @@ class FakeAdapter:
     comment_add_calls: list[tuple[str, str]] = field(default_factory=list)
     comments_list_calls: list[str] = field(default_factory=list)
     find_duplicates_calls: list[dict[str, Any]] = field(default_factory=list)
+    focus_issue: BeadsIssue | None = None
+    get_focus_calls: list[str] = field(default_factory=list)
     next_create_id: str = "harness-new"
 
     def ready(
@@ -163,6 +165,10 @@ class FakeAdapter:
 
     def stale(self) -> list[BeadsIssue]:
         return list(self.stale_issues)
+
+    def get_focus(self, assignee: str) -> BeadsIssue | None:
+        self.get_focus_calls.append(assignee)
+        return self.focus_issue
 
     def create(self, **kwargs: Any) -> str:
         self.create_calls.append(kwargs)
@@ -395,6 +401,92 @@ def test_status_tool_no_blockers_branch() -> None:
     out = StatusTool(adapter).call(id="harness-lone")
     assert "Blockers: none" in out
     assert "Blocks: none" in out
+
+
+def test_plan_tool_prepends_focus_banner_when_focus_set() -> None:
+    focus = _issue(
+        issue_id="harness-focus",
+        scope="professional",
+        title="current work",
+        priority=1,
+    )
+    ready = [_issue(issue_id="harness-a", priority=2, scope="professional")]
+    adapter = FakeAdapter(ready_issues=ready, focus_issue=focus)
+
+    out = PlanTool(adapter).call()
+
+    assert out.startswith("Focus:")
+    assert "harness-focus" in out
+    assert "current work" in out
+    assert "Shall:" in out or "Should:" in out  # plan still renders below
+
+
+def test_plan_tool_omits_focus_banner_when_no_focus() -> None:
+    ready = [_issue(issue_id="harness-a", priority=2, scope="professional")]
+    adapter = FakeAdapter(ready_issues=ready, focus_issue=None)
+
+    out = PlanTool(adapter).call()
+
+    assert not out.startswith("Focus:")
+    assert "harness-a" in out
+
+
+def test_status_tool_without_id_shows_focus() -> None:
+    focus = _issue(
+        issue_id="harness-focus",
+        scope="personal",
+        title="mid-task",
+        status="in_progress",
+    )
+    adapter = FakeAdapter(focus_issue=focus, show_issues={"harness-focus": focus})
+
+    out = StatusTool(adapter).call()
+
+    assert "harness-focus" in out
+    assert "mid-task" in out
+
+
+def test_status_tool_without_id_no_focus_returns_hint() -> None:
+    adapter = FakeAdapter(focus_issue=None)
+
+    out = StatusTool(adapter).call()
+
+    assert "(no focus)" in out
+
+
+def test_status_tool_appends_hint_when_id_differs_from_focus() -> None:
+    focus = _issue(issue_id="harness-focus", title="focused", status="in_progress")
+    target = _issue(issue_id="harness-other", title="other")
+    adapter = FakeAdapter(
+        focus_issue=focus,
+        show_issues={"harness-other": target},
+    )
+
+    out = StatusTool(adapter).call(id="harness-other")
+
+    assert "harness-other" in out
+    assert "Not current focus" in out
+    assert "harness-focus" in out
+
+
+def test_status_tool_no_hint_when_id_matches_focus() -> None:
+    focus = _issue(issue_id="harness-focus", title="focused", status="in_progress")
+    adapter = FakeAdapter(
+        focus_issue=focus,
+        show_issues={"harness-focus": focus},
+    )
+
+    out = StatusTool(adapter).call(id="harness-focus")
+
+    assert "Not current focus" not in out
+
+
+def test_status_tool_id_not_in_required_schema() -> None:
+    """B2 makes the id parameter optional — confirm the schema matches
+    so small-model tool emitters don't reject the omission."""
+    adapter = FakeAdapter()
+    spec = StatusTool(adapter).spec
+    assert spec.parameters["required"] == []
 
 
 def test_drift_tool_empty_path() -> None:
