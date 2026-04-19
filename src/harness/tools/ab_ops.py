@@ -167,6 +167,19 @@ _DEFER_COUNT_PREFIX = "defer-count:"
 AB_DRIFT_DAYS = 7
 
 
+# Shared description for every scope parameter (harness-ilru). Small
+# models ignore JSON-schema enums when the description is vague and
+# will pass 'tomorrow' / 'this week' after a time-phrased user turn,
+# conflating scope (categorical) with when (temporal). Spelling out
+# the contract and naming concrete anti-examples is what stops it.
+_SCOPE_PARAM_DESCRIPTION = (
+    "Scope is CATEGORICAL, not temporal — one of {professional, personal}. "
+    "OMIT this field on time phrasings like 'tomorrow', 'today', 'this week', "
+    "'next month' — scope does not filter by time. Omit also when the user "
+    "hasn't specified a category."
+)
+
+
 @dataclass(frozen=True)
 class _TieredLine:
     issue: BeadsIssue
@@ -274,7 +287,7 @@ class PlanTool:
                     "scope": {
                         "type": "string",
                         "enum": list(ALLOWED_SCOPES),
-                        "description": "Optional filter to a single scope.",
+                        "description": _SCOPE_PARAM_DESCRIPTION,
                     }
                 },
                 "required": [],
@@ -373,6 +386,7 @@ class CaptureTool:
                     "scope": {
                         "type": "string",
                         "enum": list(ALLOWED_SCOPES),
+                        "description": _SCOPE_PARAM_DESCRIPTION,
                     },
                     "outcome": {
                         "type": "string",
@@ -570,7 +584,7 @@ class DriftTool:
                     "scope": {
                         "type": "string",
                         "enum": list(ALLOWED_SCOPES),
-                        "description": "Optional scope filter.",
+                        "description": _SCOPE_PARAM_DESCRIPTION,
                     },
                 },
                 "required": [],
@@ -653,6 +667,7 @@ class ReprioritizeTool:
                     "scope": {
                         "type": "string",
                         "enum": list(ALLOWED_SCOPES),
+                        "description": _SCOPE_PARAM_DESCRIPTION,
                     },
                 },
                 "required": [],
@@ -1206,6 +1221,7 @@ class ListTool:
                     "scope": {
                         "type": "string",
                         "enum": list(ALLOWED_SCOPES),
+                        "description": _SCOPE_PARAM_DESCRIPTION,
                     },
                     "limit": {"type": "integer", "minimum": 1},
                 },

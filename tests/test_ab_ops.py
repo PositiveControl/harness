@@ -1053,6 +1053,41 @@ def test_render_issue_list_annotates_exact_title_duplicates() -> None:
     assert "(also:" in out  # annotation present
 
 
+def test_scope_parameter_docs_call_out_categorical_not_temporal() -> None:
+    """harness-ilru: small models have been observed passing scope='tomorrow'
+    / scope='current tasks', conflating the user's time phrasing with the
+    scope field even though the JSON schema already declares the enum
+    [professional, personal]. Each tool that accepts scope must carry a
+    description that explicitly calls out 'categorical, not temporal'
+    and warns to OMIT scope on time phrasings — so free-form adapters
+    (which don't enforce enum) still have a textual anchor."""
+    adapter = FakeAdapter()
+    tools_with_scope = (
+        PlanTool(adapter),
+        CaptureTool(adapter),
+        DriftTool(adapter),
+        ReprioritizeTool(adapter),
+        ListTool(adapter),
+    )
+    required_phrases = ("categorical", "not temporal")
+    for tool in tools_with_scope:
+        scope_schema = tool.spec.parameters["properties"]["scope"]
+        # Enum must stay as the hard grammar anchor.
+        assert scope_schema.get("enum") == ["professional", "personal"], (
+            f"{tool.spec.name}: scope enum must be the canonical ALLOWED_SCOPES tuple"
+        )
+        desc = scope_schema.get("description", "").lower()
+        for phrase in required_phrases:
+            assert phrase in desc, (
+                f"{tool.spec.name}: scope description must say '{phrase}' — got {desc!r}"
+            )
+        # Must name at least one time-phrasing anti-example so the model
+        # has a concrete pattern-match to reject.
+        assert any(t in desc for t in ("tomorrow", "today", "this week", "next month")), (
+            f"{tool.spec.name}: scope description must cite at least one temporal anti-example"
+        )
+
+
 def test_render_issue_list_no_annotation_for_unique_titles() -> None:
     """Control: when every title is unique, no '(also:' annotation
     should appear — the helper must only activate on actual collisions."""
