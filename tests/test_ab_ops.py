@@ -138,6 +138,7 @@ class FakeAdapter:
         priority: str | None = None,
         issue_type: str | None = None,
         limit: int | None = None,
+        assignee: str | None = None,
     ) -> list[BeadsIssue]:
         self.list_calls.append(
             {
@@ -146,6 +147,7 @@ class FakeAdapter:
                 "priority": priority,
                 "issue_type": issue_type,
                 "limit": limit,
+                "assignee": assignee,
             }
         )
         return list(self.list_issues_data)
@@ -555,6 +557,94 @@ def test_drift_tool_scope_filter() -> None:
     assert "harness-a" not in out
 
 
+def _ab_issue_with_updated_at(issue_id: str, updated_at: str) -> BeadsIssue:
+    """Helper: build an ab-owned open bead with a controllable
+    updated_at timestamp in the raw payload."""
+    base = _issue(issue_id=issue_id, scope="personal", title=f"ab {issue_id}")
+    raw = dict(base.raw)
+    raw["updated_at"] = updated_at
+    return BeadsIssue(
+        id=base.id,
+        title=base.title,
+        status="open",
+        priority=base.priority,
+        issue_type=base.issue_type,
+        labels=base.labels,
+        raw=raw,
+    )
+
+
+def test_drift_flags_ab_bead_past_threshold() -> None:
+    """Ab-owned bead last-updated 10 days ago appears in drift output
+    even when bd's own stale list is empty."""
+    from datetime import UTC, datetime, timedelta
+
+    old_ts = (datetime.now(UTC) - timedelta(days=10)).isoformat()
+    ab_old = _ab_issue_with_updated_at("harness-old", old_ts)
+    adapter = FakeAdapter(stale_issues=[], list_issues_data=[ab_old])
+
+    out = DriftTool(adapter).call()
+
+    assert "harness-old" in out
+
+
+def test_drift_skips_ab_bead_below_threshold() -> None:
+    """Ab-owned bead updated 2 days ago is fresh and stays out of
+    drift output."""
+    from datetime import UTC, datetime, timedelta
+
+    recent_ts = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    ab_fresh = _ab_issue_with_updated_at("harness-fresh", recent_ts)
+    adapter = FakeAdapter(stale_issues=[], list_issues_data=[ab_fresh])
+
+    out = DriftTool(adapter).call()
+
+    assert "harness-fresh" not in out
+
+
+def test_drift_threshold_override_changes_cutoff() -> None:
+    """Explicit ab_drift_days on the tool changes the threshold. At
+    14 days the 10-day-old bead is no longer stale; at 7 days it is."""
+    from datetime import UTC, datetime, timedelta
+
+    ts_10_days_ago = (datetime.now(UTC) - timedelta(days=10)).isoformat()
+    ab_old = _ab_issue_with_updated_at("harness-10", ts_10_days_ago)
+    adapter = FakeAdapter(stale_issues=[], list_issues_data=[ab_old])
+
+    tight = DriftTool(adapter, ab_drift_days=7).call()
+    lax = DriftTool(adapter, ab_drift_days=14).call()
+
+    assert "harness-10" in tight
+    assert "harness-10" not in lax
+
+
+def test_drift_merges_bd_stale_and_ab_stale_deduped() -> None:
+    """If bd.stale already flagged a bead AND the ab filter also
+    considers it stale, the output lists it once, not twice."""
+    from datetime import UTC, datetime, timedelta
+
+    old_ts = (datetime.now(UTC) - timedelta(days=10)).isoformat()
+    shared = _ab_issue_with_updated_at("harness-shared", old_ts)
+    adapter = FakeAdapter(stale_issues=[shared], list_issues_data=[shared])
+
+    out = DriftTool(adapter).call()
+    # Count rendered bullet lines referencing the bead id — one per
+    # appearance. Dedupe means exactly one bullet.
+    bullet_lines = [line for line in out.splitlines() if "harness-shared]" in line]
+    assert len(bullet_lines) == 1
+
+
+def test_drift_ab_stale_queries_airton_b_assignee() -> None:
+    """The client-side ab drift filter must list issues with
+    assignee=airton_b so bd applies the server-side filter —
+    otherwise the client-side age check would scan every open bead."""
+    adapter = FakeAdapter(stale_issues=[], list_issues_data=[])
+    DriftTool(adapter).call()
+    last_call = adapter.list_calls[-1]
+    assert last_call["status"] == "open"
+    assert last_call["assignee"] == "airton_b"
+
+
 def test_reprioritize_rerenders_current_state() -> None:
     adapter = FakeAdapter(
         ready_issues=[_issue(issue_id="harness-a", priority=2, dependent_count=5)]
@@ -845,6 +935,7 @@ def test_list_tool_filters_passed_through() -> None:
             "priority": "2",
             "issue_type": "task",
             "limit": None,
+            "assignee": None,
         }
     ]
     assert "harness-a" in out

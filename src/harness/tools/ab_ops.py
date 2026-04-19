@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
 from harness.store.bd_adapter import (
@@ -69,6 +69,7 @@ class _Adapter(Protocol):
         priority: str | None = ...,
         issue_type: str | None = ...,
         limit: int | None = ...,
+        assignee: str | None = ...,
     ) -> list[BeadsIssue]: ...
 
     def search(
@@ -155,6 +156,13 @@ AB_ASSIGNEE = "airton_b"
 STALL_DEFERS = 3
 STALL_LABEL = "stall-escalated"
 _DEFER_COUNT_PREFIX = "defer-count:"
+
+# Ab-internal drift threshold in days. bd's own `stale` signal is
+# tuned for user work (~14d default); ab's thought-graph rots faster,
+# so DriftTool augments bd.stale() with a client-side filter that
+# flags ab-owned beads untouched for this many days. Settings knob
+# lives at Settings.ab_drift_days (harness-6y5).
+AB_DRIFT_DAYS = 7
 
 
 @dataclass(frozen=True)
@@ -542,6 +550,7 @@ def _render_status_with_focus(issue: BeadsIssue, *, focus_id: str | None) -> str
 @dataclass
 class DriftTool:
     adapter: _Adapter
+    ab_drift_days: int = AB_DRIFT_DAYS
 
     @property
     def spec(self) -> ToolSpec:
@@ -549,7 +558,9 @@ class DriftTool:
             name="drift",
             description=(
                 "Surface items that haven't been updated recently. Uses "
-                "bd stale as its backing signal. Read-only."
+                "bd stale for user-owned work plus a shorter-window "
+                "client-side check for ab-owned thought-graph beads "
+                f"(default {AB_DRIFT_DAYS}d). Read-only."
             ),
             parameters={
                 "type": "object",
@@ -572,8 +583,11 @@ class DriftTool:
             return err
         try:
             items = self.adapter.stale()
+            ab_stale = self._compute_ab_stale()
         except BeadsAdapterError as exc:
             return f"drift check failed: {exc}"
+        seen = {i.id for i in items}
+        items = list(items) + [i for i in ab_stale if i.id not in seen]
         if scope is not None:
             label = f"scope:{scope}"
             items = [i for i in items if label in i.labels]
@@ -584,6 +598,37 @@ class DriftTool:
             scope_tag = issue.scope or "?"
             lines.append(f"  - [{scope_tag}/{issue.id}] {issue.title} — status: {issue.status}")
         return "\n".join(lines)
+
+    def _compute_ab_stale(self) -> list[BeadsIssue]:
+        """Flag ab-owned open beads last-updated more than
+        ab_drift_days ago. bd's native `stale` typically runs on a
+        longer horizon suited to user work; ab's thought-graph should
+        re-evaluate idle thoughts sooner."""
+        candidates = self.adapter.list_issues(status="open", assignee=AB_ASSIGNEE)
+        cutoff = datetime.now(UTC) - timedelta(days=self.ab_drift_days)
+        stale: list[BeadsIssue] = []
+        for issue in candidates:
+            raw_ts = issue.raw.get("updated_at")
+            if not raw_ts:
+                continue
+            parsed = _parse_iso_utc(str(raw_ts))
+            if parsed is None:
+                continue
+            if parsed < cutoff:
+                stale.append(issue)
+        return stale
+
+
+def _parse_iso_utc(ts: str) -> datetime | None:
+    """Parse an ISO-8601 'Z' suffix timestamp into a timezone-aware
+    UTC datetime. Returns None on anything unparseable so callers can
+    skip rather than crash on an odd bd output."""
+    try:
+        if ts.endswith("Z"):
+            ts = ts[:-1] + "+00:00"
+        return datetime.fromisoformat(ts)
+    except ValueError:
+        return None
 
 
 @dataclass
