@@ -115,6 +115,7 @@ from harness.tools.ab_ops import (
 
 _EXIT_COMMANDS = frozenset({"/exit", "/quit", "exit", "quit", ":q", ":quit"})
 _EDIT_COMMANDS = frozenset({"/edit", "/capture"})
+_RETRO_COMMANDS = frozenset({"/retro"})
 
 # Sentinel used to encode structured tool_calls onto an assistant turn's
 # content when persisting to the transcript. Two-line format: human-readable
@@ -1982,6 +1983,24 @@ def chat(
             if user_input.lower() in _EXIT_COMMANDS:
                 _print_session_end_retro(ab_adapter)
                 break
+            if user_input.lower() in _RETRO_COMMANDS:
+                # /retro: on-demand retrospective. Summary first; then
+                # prompt for an optional insight to persist via
+                # RetroTool mode=record. Empty response skips recording.
+                if ab_adapter is None:
+                    console.print(
+                        "[yellow]/retro is only available when ab's bd adapter "
+                        "is configured (character=airton_b).[/yellow]"
+                    )
+                    continue
+                retro = RetroTool(ab_adapter)
+                console.print(f"[dim]{retro.call(mode='summary')}[/dim]")
+                insight = console.input(
+                    "[bold cyan]insight to record (blank to skip) › [/bold cyan]"
+                ).strip()
+                if insight:
+                    console.print(f"[dim]{retro.call(mode='record', insight=insight)}[/dim]")
+                continue
             if user_input.lower() in _EDIT_COMMANDS:
                 # Slash command: open $EDITOR on Airton's last reply.
                 # Saving writes a new captured voice sample paired with
