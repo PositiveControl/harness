@@ -253,12 +253,17 @@ def _maybe_ab_bd_adapter(character: Character) -> BeadsAdapter | None:
     ab ops don't belong on other personas."""
     if character.name != "airton_b":
         return None
-    adapter = BeadsAdapter(settings.ab_bd_dir_resolved)
+    bd_dir = settings.ab_bd_dir_resolved
+    adapter = BeadsAdapter(bd_dir)
     try:
         adapter.verify()
     except BeadsAdapterError as exc:
         console.print(f"[yellow]⚠ ab ops tools unavailable: {exc}[/yellow]")
         return None
+    # Surface which path the adapter landed on so misconfigured
+    # HARNESS_AB_BD_DIR (or missing env var vs expected dir) is visible
+    # at session start rather than silently writing to the wrong DB.
+    console.print(f"[dim]ab bd → {bd_dir}[/dim]")
     return adapter
 
 
