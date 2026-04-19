@@ -1152,7 +1152,16 @@ def _build_tool_grounding_block(registry: ToolRegistry, workspace_path: Path) ->
         "- The user CANNOT see raw tool output — only your final reply. "
         "Restate the key findings (names, numbers, quoted lines) in your "
         "reply. Do not answer with meta-phrases like 'awaiting input' or "
-        "'the content is available'."
+        "'the content is available'.\n"
+        "- SCOPE of the reply = THIS turn only. Describe only the "
+        "action you just took on this turn and the findings from the "
+        "tools you just called. Do NOT recap, restate, or summarize "
+        "prior turns' actions, tool calls, or results — the user saw "
+        "them already. Prior context surfaces only when the user "
+        "explicitly asks for it ('recap', 'what did we cover', "
+        "'status of X'). If a prior-turn fact is strictly required "
+        "for this turn's conclusion, cite it in one clause, not a "
+        "paragraph."
     )
     if "introspect" in registry:
         # Small belt-and-suspenders nudge (harness-u71). The tool's own
