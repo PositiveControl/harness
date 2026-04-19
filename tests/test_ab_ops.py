@@ -353,6 +353,54 @@ def test_capture_creates_with_scope_label() -> None:
     assert "deadline: 2026-06-01" in description
 
 
+def test_capture_passes_ab_assignee_when_ab_owned() -> None:
+    """ab_owned=True routes the create through assignee=airton_b so
+    the adapter's per-turn budget mechanism can count it. False (the
+    default) leaves assignee unset — user-owned captures stay
+    unassigned by default."""
+    adapter = FakeAdapter(next_create_id="harness-ab")
+    CaptureTool(adapter).call(
+        raw="track this hypothesis",
+        scope="personal",
+        outcome="confirmed or refuted",
+        next_action="check tests/test_foo.py",
+        ab_owned=True,
+    )
+    assert adapter.create_calls[0]["assignee"] == "airton_b"
+
+
+def test_capture_no_assignee_when_not_ab_owned() -> None:
+    adapter = FakeAdapter(next_create_id="harness-usr")
+    CaptureTool(adapter).call(
+        raw="buy milk",
+        scope="personal",
+        outcome="milk in fridge",
+        next_action="grocery run",
+    )
+    assert adapter.create_calls[0]["assignee"] is None
+
+
+def test_capture_surfaces_turn_cap_error() -> None:
+    """CaptureTool catches TurnCapExceededError through the generic
+    BeadsAdapterError branch and returns the informative message —
+    model sees 'capture failed: turn-cap reached …'."""
+    from harness.store.bd_adapter import TurnCapExceededError
+
+    class CappedAdapter(FakeAdapter):
+        def create(self, **kwargs: Any) -> str:
+            raise TurnCapExceededError("turn-cap reached (3 ab-owned beads this turn).")
+
+    out = CaptureTool(CappedAdapter()).call(
+        raw="new thought",
+        scope="personal",
+        outcome="resolved",
+        next_action="think",
+        ab_owned=True,
+    )
+    assert "capture failed" in out
+    assert "turn-cap reached" in out
+
+
 def test_capture_title_truncated_when_long() -> None:
     adapter = FakeAdapter()
     tool = CaptureTool(adapter)

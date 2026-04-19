@@ -96,6 +96,7 @@ class _Adapter(Protocol):
         parent: str | None = ...,
         deps: Sequence[str] = ...,
         extra_labels: Sequence[str] = ...,
+        assignee: str | None = ...,
     ) -> str: ...
 
     def close(self, issue_id: str, *, reason: str | None = ...) -> None: ...
@@ -384,6 +385,16 @@ class CaptureTool:
                         "type": "string",
                         "enum": ["S", "M", "L"],
                     },
+                    "ab_owned": {
+                        "type": "boolean",
+                        "description": (
+                            "True when the bead is ab-internal "
+                            "thought-graph work (hypothesis, question, "
+                            "plan-step). Counts against the per-turn "
+                            "budget (3 max). False (default) for "
+                            "user-initiated captures."
+                        ),
+                    },
                 },
                 "required": ["raw"],
             },
@@ -403,6 +414,7 @@ class CaptureTool:
         parent: str | None = None,
         deadline: str | None = None,
         estimate: str | None = None,
+        ab_owned: bool = False,
     ) -> str:
         missing = [
             f
@@ -436,6 +448,7 @@ class CaptureTool:
                 priority=priority,
                 parent=parent,
                 extra_labels=extra_labels,
+                assignee=AB_ASSIGNEE if ab_owned else None,
             )
         except (ValueError, BeadsAdapterError) as exc:
             return f"capture failed: {exc}"

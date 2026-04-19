@@ -29,6 +29,7 @@ from harness.store.bd_adapter import (
     BeadsAdapter,
     BeadsAdapterError,
     BeadsIssue,
+    TurnCapExceededError,
     _extract_created_id,
 )
 
@@ -738,6 +739,77 @@ def test_search_passes_assignee_flag(bd_dir: Path, runner: FakeRunner) -> None:
 
     cmd = runner.calls[0]["cmd"]
     assert cmd[cmd.index("--assignee") + 1] == "airton_b"
+
+
+def test_turn_cap_allows_creates_below_limit(bd_dir: Path, runner: FakeRunner) -> None:
+    """Three creates in a row with the default cap=3 should all
+    succeed; the fourth is the one that raises."""
+    # Preload: one types-get + three create responses. Fourth create
+    # should raise before the subprocess spawn, so no fourth response.
+    runner.queue(
+        FakeCompletedProcess(stdout="project,event,habit\n"),
+        FakeCompletedProcess(stdout="✓ Created issue: harness-1 — a\n"),
+        FakeCompletedProcess(stdout="✓ Created issue: harness-2 — b\n"),
+        FakeCompletedProcess(stdout="✓ Created issue: harness-3 — c\n"),
+    )
+    adapter = BeadsAdapter(bd_dir, ab_assignee="airton_b", turn_cap=3)
+
+    for title in ("a", "b", "c"):
+        adapter.create(title=title, scope="personal", assignee="airton_b")
+
+    with pytest.raises(TurnCapExceededError, match="turn-cap reached"):
+        adapter.create(title="d", scope="personal", assignee="airton_b")
+
+
+def test_turn_cap_resets_on_reset_turn_counter(bd_dir: Path, runner: FakeRunner) -> None:
+    """After reset_turn_counter, the budget refreshes so subsequent
+    creates go through. Simulates a new user-input boundary."""
+    runner.queue(
+        FakeCompletedProcess(stdout="project,event,habit\n"),
+        FakeCompletedProcess(stdout="✓ Created issue: harness-1 — a\n"),
+        FakeCompletedProcess(stdout="✓ Created issue: harness-2 — b\n"),
+        FakeCompletedProcess(stdout="✓ Created issue: harness-3 — c\n"),
+        FakeCompletedProcess(stdout="✓ Created issue: harness-4 — d\n"),
+    )
+    adapter = BeadsAdapter(bd_dir, ab_assignee="airton_b", turn_cap=3)
+    for title in ("a", "b", "c"):
+        adapter.create(title=title, scope="personal", assignee="airton_b")
+
+    adapter.reset_turn_counter()
+
+    # Fourth create now succeeds because budget refreshed.
+    adapter.create(title="d", scope="personal", assignee="airton_b")
+
+
+def test_turn_cap_ignores_non_ab_assignee(bd_dir: Path, runner: FakeRunner) -> None:
+    """Creates without assignee=ab_assignee don't count against the
+    budget — user-owned captures stay unlimited."""
+    runner.queue(
+        FakeCompletedProcess(stdout="project,event,habit\n"),
+        *[FakeCompletedProcess(stdout=f"✓ Created issue: harness-{i} — t\n") for i in range(5)],
+    )
+    adapter = BeadsAdapter(bd_dir, ab_assignee="airton_b", turn_cap=3)
+
+    # Five user-owned creates; cap does not trip.
+    for i in range(5):
+        adapter.create(title=f"t{i}", scope="personal")  # no assignee
+
+    # An ab-owned create after 5 user creates still has full budget.
+    runner.queue(FakeCompletedProcess(stdout="✓ Created issue: harness-ab — x\n"))
+    adapter.create(title="ab-bead", scope="personal", assignee="airton_b")
+
+
+def test_turn_cap_disabled_when_ab_assignee_unset(bd_dir: Path, runner: FakeRunner) -> None:
+    """No ab_assignee configured → budget mechanism is dormant; no
+    create ever raises TurnCapExceededError."""
+    runner.queue(
+        FakeCompletedProcess(stdout="project,event,habit\n"),
+        *[FakeCompletedProcess(stdout=f"✓ Created issue: harness-{i} — t\n") for i in range(10)],
+    )
+    adapter = BeadsAdapter(bd_dir)  # no ab_assignee
+    for i in range(10):
+        adapter.create(title=f"t{i}", scope="personal", assignee="airton_b")
+    # No exception raised across 10 creates.
 
 
 def test_default_exclude_drops_matching_assignee_from_list(

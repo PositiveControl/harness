@@ -43,6 +43,13 @@ class BeadsAdapterError(RuntimeError):
     about."""
 
 
+class TurnCapExceededError(BeadsAdapterError):
+    """Raised when an ab-assignee bead create would exceed the
+    per-turn budget. CaptureTool catches this and surfaces the hint
+    to the model; the adapter does not swallow it, so any other
+    caller sees it and can choose to ignore or report."""
+
+
 @dataclass(frozen=True)
 class BeadsIssue:
     """Lightweight view of a bd issue. Only the fields ab cares about;
@@ -92,16 +99,34 @@ class BeadsAdapter:
         *,
         bd_executable: str = "bd",
         default_exclude_assignee: str | None = None,
+        ab_assignee: str | None = None,
+        turn_cap: int = 3,
     ) -> None:
         """`default_exclude_assignee` (e.g. 'airton_b') hides beads owned
         by that assignee from the adapter's read methods — list_issues,
         ready, search, stale — unless a caller explicitly passes a
         positive `assignee=X` filter, which is respected as an opt-in.
-        Write methods are never filtered."""
+        Write methods are never filtered.
+
+        `ab_assignee` enables the per-turn create-cap budget. When set,
+        create() with that assignee counts against `turn_cap` (default
+        3) and raises TurnCapExceededError once the budget is spent.
+        Callers call `reset_turn_counter()` at each user-turn boundary
+        to refresh the budget. Leaving ab_assignee None disables the
+        cap entirely — tests and non-ab callers aren't affected."""
         self._bd_dir = bd_dir
         self._bd = bd_executable
         self._types_ensured = False
         self._default_exclude_assignee = default_exclude_assignee
+        self._ab_assignee = ab_assignee
+        self._turn_cap = turn_cap
+        self._ab_creates_this_turn = 0
+
+    def reset_turn_counter(self) -> None:
+        """Drop the per-turn ab-bead create counter to zero. Call from
+        the chat loop right after a user-input boundary so the budget
+        refreshes. Cheap — just an int write."""
+        self._ab_creates_this_turn = 0
 
     @property
     def bd_dir(self) -> Path:
@@ -236,10 +261,22 @@ class BeadsAdapter:
             args.extend(["--parent", parent])
         if assignee is not None:
             args.extend(["--assignee", assignee])
+        if (
+            self._ab_assignee is not None
+            and assignee == self._ab_assignee
+            and self._ab_creates_this_turn >= self._turn_cap
+        ):
+            raise TurnCapExceededError(
+                f"turn-cap reached ({self._turn_cap} ab-owned beads this turn). "
+                "Close or defer an existing open ab-bead, or wait for the "
+                "next user turn to refresh the budget."
+            )
         result = self._run(args)
         issue_id = _extract_created_id(result.stdout)
         if issue_id is None:
             raise BeadsAdapterError(f"could not parse created id from bd output: {result.stdout!r}")
+        if self._ab_assignee is not None and assignee == self._ab_assignee:
+            self._ab_creates_this_turn += 1
         for dep in deps:
             self._run(["dep", "add", issue_id, dep])
         return issue_id
