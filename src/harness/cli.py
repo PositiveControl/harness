@@ -46,6 +46,7 @@ from harness.orchestrator import (
     run_tool_loop,
 )
 from harness.persona import PersonaAdapter
+from harness.persona.caveman_rewriter import CavemanRewriter, load_register_map
 from harness.persona.rewriter import build_rewriter_messages
 from harness.retrieval import VoiceRetriever
 from harness.router import GrammarRouter, ModelRouter, Router
@@ -57,6 +58,7 @@ from harness.store import (
     SemanticStore,
     ensure_seeds_ingested,
 )
+from harness.store.bd_adapter import BeadsAdapter, BeadsAdapterError
 from harness.store.transcript import Transcript, TranscriptMessage
 from harness.tools import (
     DEFAULT_PROFILE,
@@ -85,6 +87,16 @@ from harness.tools import (
     ToolSpec,
     WriteFileTool,
     resolve_tool_names,
+)
+from harness.tools.ab_ops import (
+    CaptureTool,
+    CloseTool,
+    DeferTool,
+    DriftTool,
+    PlanTool,
+    ReprioritizeTool,
+    RetroTool,
+    StatusTool,
 )
 
 _EXIT_COMMANDS = frozenset({"/exit", "/quit", "exit", "quit", ":q", ":quit"})
@@ -230,6 +242,46 @@ def _open_semantic_store() -> SemanticStore | None:
     if embedder is None:
         return None
     return SemanticStore(settings.character_db_path, embedder=embedder)  # type: ignore[arg-type]
+
+
+def _maybe_ab_bd_adapter(character: Character) -> BeadsAdapter | None:
+    """Construct ab's bd adapter when the active character is
+    airton_b and its isolated beads DB is initialized. Returns None
+    (with a yellow warning to the console) when bd isn't runnable or
+    the dir hasn't been bootstrapped yet — ab's ops tools then skip
+    registration with a hint. Any other character gets None silently;
+    ab ops don't belong on other personas."""
+    if character.name != "airton_b":
+        return None
+    adapter = BeadsAdapter(settings.ab_bd_dir_resolved)
+    try:
+        adapter.verify()
+    except BeadsAdapterError as exc:
+        console.print(f"[yellow]⚠ ab ops tools unavailable: {exc}[/yellow]")
+        return None
+    return adapter
+
+
+def _ab_tool_builders(
+    ab_adapter: BeadsAdapter | None,
+) -> dict[str, Callable[[], Tool | None]]:
+    """Return tool-name → builder map for ab's ops surface. When the
+    adapter is None (wrong character or bd not runnable), returns an
+    empty dict so the caller's merge is a no-op. When present, every
+    builder is unconditional — the ops tools don't depend on episodic
+    or semantic stores the way the memory tools do."""
+    if ab_adapter is None:
+        return {}
+    return {
+        "plan": lambda: PlanTool(ab_adapter),
+        "capture": lambda: CaptureTool(ab_adapter),
+        "status": lambda: StatusTool(ab_adapter),
+        "drift": lambda: DriftTool(ab_adapter),
+        "reprioritize": lambda: ReprioritizeTool(ab_adapter),
+        "close": lambda: CloseTool(ab_adapter),
+        "defer": lambda: DeferTool(ab_adapter),
+        "retro": lambda: RetroTool(ab_adapter),
+    }
 
 
 def _format_ctx_meter(used: int, total: int) -> str:
@@ -934,6 +986,11 @@ def _build_tool_registry_for_tui(
             else None
         ),
     }
+    # Same ab-ops injection as the REPL builder. Character is required
+    # for this path so we can always compute the adapter.
+    if character is not None:
+        ab_adapter = _maybe_ab_bd_adapter(character)
+        builders.update(_ab_tool_builders(ab_adapter))
 
     registry = ToolRegistry()
     for name in wanted_names:
@@ -1165,7 +1222,22 @@ def _resolve_adapter(
     if persona:
         if character is None:
             raise typer.BadParameter("persona=True requires a character")
-        adapter = PersonaAdapter(adapter, character)
+        if character.name == "airton_b":
+            # ab ships its own voice layer — caveman compression with a
+            # per-surface intensity map — instead of Airton's style
+            # rewrite. The register_map lives next to the character so
+            # it ships and evolves with the persona data.
+            register_map = load_register_map(
+                settings.root / "character" / "airton_b" / "register_map.yaml"
+            )
+            adapter = CavemanRewriter(
+                adapter,
+                intensity=settings.ab_register,
+                register_map=register_map,
+                rewrite_on_tools=settings.ab_rewrite_on_tools,
+            )
+        else:
+            adapter = PersonaAdapter(adapter, character)
 
     # Honor an optional eager `.load()` method without making it part of
     # the ModelAdapter Protocol — only some adapters need it.
@@ -1556,6 +1628,11 @@ def chat(
                 )
             ),
         }
+        # Inject ab's ops builders when the active character is airton_b
+        # and the isolated bd dir is ready. Non-ab characters get an
+        # empty merge — no behavioural change.
+        ab_adapter = _maybe_ab_bd_adapter(character)
+        builders.update(_ab_tool_builders(ab_adapter))
 
         registry = ToolRegistry()
         for name in wanted_names:

@@ -19,7 +19,7 @@ Principles the rewriter and orchestrator enforce at generation time. Violations 
 - Capture runs until resolved. One clarifying question per turn, no batching.
 - Echo back every newly created item with scope, tier, and deadline.
 - Surface trade-offs when paths conflict; name them, don't decide for the user.
-- Offer (a) / (b) alternatives when multiple correct paths exist.
+- Offer (a), (b), (c),... alternatives when multiple correct paths exist; always itemize tradeoffs.
 - Teach the operating pattern; don't take the keyboard.
 
 ## Register
