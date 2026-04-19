@@ -43,7 +43,7 @@ class FakeAdapter:
     def __init__(self, complete_outputs: list[str] | None = None) -> None:
         self.complete_calls: list[list[ChatMessage]] = []
         self.stream_calls: list[list[ChatMessage]] = []
-        self.tool_calls: list[tuple[list[ChatMessage], list[dict[str, object]]]] = []
+        self.tool_calls: list[tuple[list[ChatMessage], object]] = []
         self._complete_outputs = list(complete_outputs or [])
         self._tool_result: object | None = None
 
@@ -84,8 +84,8 @@ class FakeAdapter:
     def complete_with_tools(
         self,
         messages: Iterable[ChatMessage],
-        tools: list[dict[str, object]],
         *,
+        tools: object = None,
         max_tokens: int = 512,
         temperature: float = 0.7,
     ) -> object:
@@ -260,6 +260,47 @@ def test_complete_with_tools_passes_through_by_default() -> None:
     assert result == "tool-produced-string"
     # No rewrite pass — base.complete was never called.
     assert base.complete_calls == []
+
+
+def test_complete_with_tools_forwards_tools_as_keyword_to_base() -> None:
+    """Regression: CavemanRewriter used to pass `tools` positionally
+    to the base adapter. Every real base (MLX / Ollama / Echo)
+    declares tools keyword-only, so every tool turn raised TypeError.
+    This test pins the contract: base is invoked with tools=<list>,
+    never positionally."""
+
+    class KeywordOnlyToolsBase:
+        id = "kwonly"
+        context_window = 8192
+        last_tools: object = None
+
+        def complete(
+            self,
+            messages: Iterable[ChatMessage],
+            *,
+            max_tokens: int = 512,
+            temperature: float = 0.7,
+        ) -> str:
+            return ""
+
+        def complete_with_tools(
+            self,
+            messages: Iterable[ChatMessage],
+            *,
+            tools: object = None,
+            max_tokens: int = 512,
+            temperature: float = 0.7,
+        ) -> str:
+            KeywordOnlyToolsBase.last_tools = tools
+            return "ok"
+
+    base = KeywordOnlyToolsBase()
+    rewriter = CavemanRewriter(base, intensity="lite")
+    payload = [{"name": "plan"}]
+
+    rewriter.complete_with_tools([_msg("user", "plan")], tools=payload)
+
+    assert KeywordOnlyToolsBase.last_tools == payload
 
 
 def test_complete_with_tools_rewrites_when_opted_in() -> None:

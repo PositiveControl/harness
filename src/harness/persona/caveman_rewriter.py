@@ -318,8 +318,8 @@ class CavemanRewriter:
     def complete_with_tools(
         self,
         messages: Iterable[ChatMessage],
-        tools: list[dict[str, object]],
         *,
+        tools: object = None,
         max_tokens: int = 512,
         temperature: float = 0.7,
         surface: str | None = None,
@@ -328,7 +328,12 @@ class CavemanRewriter:
         `rewrite_on_tools` is False (default), the rewriter stays out
         of the loop entirely — tool results stream unmodified to the
         caller. When True, the final string reply from the tool loop
-        is rewritten."""
+        is rewritten.
+
+        `tools` is keyword-only to match the _ToolCapableAdapter
+        protocol used by the orchestrator; previous positional-arg
+        wiring silently broke every real tool turn because MLX /
+        Ollama / Echo all declare tools keyword-only."""
         # The base adapter owns the tool-loop contract; re-exporting it
         # without touching the intermediate steps keeps the rewriter
         # from interfering with model ↔ tool message shaping.
@@ -337,7 +342,12 @@ class CavemanRewriter:
             raise AttributeError(
                 f"base adapter {type(self.base).__name__} has no complete_with_tools"
             )
-        result = adapter_with_tools(messages, tools, max_tokens=max_tokens, temperature=temperature)
+        result = adapter_with_tools(
+            messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
         if not self.rewrite_on_tools:
             return result
         if isinstance(result, str):
