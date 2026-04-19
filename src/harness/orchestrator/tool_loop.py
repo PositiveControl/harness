@@ -151,15 +151,38 @@ _FABRICATED_SEARCH_RE = re.compile(
 # Matches ab_ops-specific fabrication shapes — ab imitates its own
 # tool receipts (capture / plan) without emitting a <tool_call>.
 # Distinct tells:
-#   - `^Captured:\s` — real CaptureTool output is `Captured <id> — [scope]…`
-#     (no colon); the colon-prefix form is pure fabrication (harness-lbh).
+#   - `^Captured[.:]` — real CaptureTool output is `Captured <id> — [scope]…`
+#     (id, not punctuation, follows `Captured`). A colon OR period after
+#     `Captured` at line start is fabrication (harness-lbh colon form;
+#     harness-ce2x period form, "Captured. Scope: personal. Outcome: …").
 #   - `[prof/…]` / `[pers/…]` — real scopes are `professional` / `personal`,
 #     never abbreviated. The abbreviation is a telltale of imitation.
 #   - Two+ tier-label line headers (Shall/Should/Shmaybe/Watching) in one
 #     reply — the `_render_plan` shape. A single mention is prose; two
 #     together is plan imitation.
-_FABRICATED_AB_CAPTURE_RE = re.compile(r"(?:\A|\n)\s*Captured:\s", re.IGNORECASE)
+_FABRICATED_AB_CAPTURE_RE = re.compile(r"(?:\A|\n)\s*Captured\s*[.:]", re.IGNORECASE)
 _FABRICATED_AB_SCOPE_RE = re.compile(r"\[(?:prof|pers)/[^\]]+\]", re.IGNORECASE)
+# `Bead id: harness-xxx` in free text. Real CaptureTool output never
+# uses this phrasing — the id appears bare as the second token after
+# `Captured`. Any "Bead id:" / "Bead:" label with an id is the model
+# imitating an imagined schema and is always a fabrication tell
+# (harness-ce2x: user saw `Bead id: harness-abc123..`).
+_FABRICATED_BEAD_ID_RE = re.compile(
+    r"\bbead\s*(?:id)?\s*[:=]\s*(?:harness|bd|ab)-[a-z0-9]+",
+    re.IGNORECASE,
+)
+# Bare past-tense success claim as a standalone sentence — "Updated.",
+# "Captured.", "Created." — word flanked by whitespace/quote and
+# followed by end-of-sentence. Gated on `tools_ran_this_turn=False`
+# by the caller, so legitimate wrap-ups after a real tool ran never
+# trip. Observed fabrication (harness-ce2x):
+#   `Missed "…". Updated. Rerun /plan.` — no tool call, pure claim.
+_BARE_CLAIM_RE = re.compile(
+    r"(?:\A|[\s\"'])"
+    r"(?:Updated|Captured|Created|Deleted|Removed|Added|Saved|Noted|Done)"
+    r"\.(?:\s|$)",
+    re.IGNORECASE,
+)
 # 'Today — YYYY-MM-DD' is the exact _render_plan header shape; natural
 # prose basically never emits this prefix. Accept em-dash or hyphen
 # (harness-jj9: the observed fabrication reproduces the em-dash verbatim).
@@ -181,11 +204,15 @@ _AB_TIER_HEADER_RE = re.compile(
 def _looks_like_ab_fabrication(content: str) -> bool:
     if _FABRICATED_AB_CAPTURE_RE.search(content):
         return True
+    if _FABRICATED_BEAD_ID_RE.search(content):
+        return True
     if _FABRICATED_AB_SCOPE_RE.search(content):
         return True
     if _AB_DATE_HEADER_RE.search(content):
         return True
-    return len(_AB_TIER_HEADER_RE.findall(content)) >= 2
+    if len(_AB_TIER_HEADER_RE.findall(content)) >= 2:
+        return True
+    return bool(_BARE_CLAIM_RE.search(content))
 
 
 # Matches tool-intent statements that should be accompanied by an

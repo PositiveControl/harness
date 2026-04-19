@@ -1432,6 +1432,112 @@ def test_loop_allows_real_plan_output_after_tool_call() -> None:
     assert not nudges
 
 
+def test_loop_catches_period_prefixed_capture_fabrication() -> None:
+    """harness-ce2x: user saw 'Captured. Scope: personal. Outcome: …'
+    — fabrication used a period after 'Captured' where the old regex
+    required a colon. Broaden to match either punctuation at line
+    start."""
+    from harness.orchestrator.tool_loop import _looks_like_ab_fabrication
+
+    period_fab = (
+        'Captured. Scope: personal. Outcome: "dog poop in back yard cleaned". '
+        'Next action: "gather supplies and head to backyard". '
+        "Deadline: 2026-04-19."
+    )
+    assert _looks_like_ab_fabrication(period_fab), (
+        "period-prefixed 'Captured.' fabrication must be caught"
+    )
+
+
+def test_loop_catches_fabricated_bead_id() -> None:
+    """harness-ce2x: fabrication emits 'Bead id: harness-abc123..' in
+    free text. Real CaptureTool output never uses the 'Bead id:'
+    label — the id is the second bare token after 'Captured'. Any
+    'Bead id: <prefix>-...' is fabrication."""
+    from harness.orchestrator.tool_loop import _looks_like_ab_fabrication
+
+    assert _looks_like_ab_fabrication("…outcome set. Bead id: harness-abc123..")
+    # Variant without 'id:' label — the shorter 'Bead: harness-xxx'
+    # form is also imaginary schema.
+    assert _looks_like_ab_fabrication("work queued. Bead: harness-xyz789")
+    # Case-insensitive.
+    assert _looks_like_ab_fabrication("BEAD ID = harness-zzz")
+
+
+def test_loop_catches_bare_claim_sentence() -> None:
+    """harness-ce2x: bare 'Updated.' / 'Captured.' as a standalone
+    sentence in a turn with no tool call. Observed:
+      `Missed "…backyard." Updated. Rerun /plan.`
+    — past-tense claim with no tool layer to back it. Catcher must
+    fire even when the claim word is mid-reply, not line-start."""
+    from harness.orchestrator.tool_loop import _looks_like_ab_fabrication
+
+    inline_updated = (
+        'Missed "picking up the Ada\'s dog poop in the backyard." Updated. Rerun /plan.'
+    )
+    assert _looks_like_ab_fabrication(inline_updated), (
+        "bare 'Updated.' sentence inside a larger reply must be caught"
+    )
+
+    # Several other claim words should all fire.
+    for verb in ("Captured", "Created", "Deleted", "Removed", "Added", "Saved", "Noted"):
+        assert _looks_like_ab_fabrication(f"Ok. {verb}. Done."), (
+            f"bare '{verb}.' sentence must be caught"
+        )
+
+
+def test_loop_bare_claim_does_not_match_real_wrap_up() -> None:
+    """Negative case: real tool output `Captured harness-abc — [personal]
+    task` (id follows, no period after the word) must NOT trip the
+    bare-claim catcher. The catcher gates on tools_ran_this_turn=False
+    upstream, but the regex itself should still reject real shape so
+    the signal stays specific."""
+    from harness.orchestrator.tool_loop import (
+        _BARE_CLAIM_RE,
+        _FABRICATED_AB_CAPTURE_RE,
+    )
+
+    real = "Captured harness-abc — [personal] task under harness-parent. Next: go."
+    assert not _BARE_CLAIM_RE.search(real), "real Captured output has id after word, no period"
+    assert not _FABRICATED_AB_CAPTURE_RE.search(real), (
+        "real 'Captured <id> —' must not match the fabrication regex"
+    )
+    # Natural prose that mentions 'updated' as a verb should also pass.
+    prose = "I updated the plan based on your feedback and it looks better now."
+    assert not _BARE_CLAIM_RE.search(prose), (
+        "mid-sentence 'updated' (lowercase, no trailing period) must not match"
+    )
+
+
+def test_loop_catches_capture_fabrication_end_to_end() -> None:
+    """harness-ce2x end-to-end: the exact reply the user saw —
+    `Captured. Scope: personal. Outcome: … Bead id: harness-abc123..`
+    — must trigger the fabrication nudge when no tool ran this turn.
+    Regression for the shape that slipped past the colon-only
+    regex."""
+    fabrication = (
+        'Captured. Scope: personal. Outcome: "dog poop in back yard '
+        'cleaned". Next action: "gather supplies and head to backyard". '
+        "Deadline: 2026-04-19. Bead id: harness-abc123.."
+    )
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(content=fabrication),
+            ModelReply(content="actually I can't produce that without a tool"),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="/plan clean up dog poop")],
+        ToolRegistry(),
+        max_rounds=4,
+    )
+    nudges = [
+        m for m in result.messages if m.role == "user" and "fabricated tool output" in m.content
+    ]
+    assert nudges, "fabricated capture receipt must trigger the fabrication nudge"
+
+
 def test_loop_caps_bail_retries() -> None:
     """If the model keeps bailing, give up after the per-turn cap (2)
     rather than consuming the full max_rounds budget. Each retry emits
