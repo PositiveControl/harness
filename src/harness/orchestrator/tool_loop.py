@@ -161,6 +161,15 @@ _FABRICATED_SEARCH_RE = re.compile(
 #     reply — the `_render_plan` shape. A single mention is prose; two
 #     together is plan imitation.
 _FABRICATED_AB_CAPTURE_RE = re.compile(r"(?:\A|\n)\s*Captured\s*[.:]", re.IGNORECASE)
+# `Remembered:` receipt from ab_ops RememberTool. Real shape is
+# `Remembered: <insight>` (colon form), which is exactly what the model
+# imitates (harness-z734: user asked ab to remember a birthday; round 0
+# bail-retry fired on 'Updated.' bare-claim, round 1 fabricated
+# `Remembered: dad Steve's birthday is Oct 8th` and — because no
+# 'Remembered'-shaped catcher existed — slipped through as the final
+# answer). Safe because `_diagnose_bail` gates on
+# `tools_ran_this_turn=False`; real RememberTool output disarms this.
+_FABRICATED_REMEMBER_RE = re.compile(r"(?:\A|\n)\s*Remembered\s*[.:]", re.IGNORECASE)
 _FABRICATED_AB_SCOPE_RE = re.compile(r"\[(?:prof|pers)/[^\]]+\]", re.IGNORECASE)
 # `Bead id: harness-xxx` in free text. Real CaptureTool output never
 # uses this phrasing — the id appears bare as the second token after
@@ -179,7 +188,7 @@ _FABRICATED_BEAD_ID_RE = re.compile(
 #   `Missed "…". Updated. Rerun /plan.` — no tool call, pure claim.
 _BARE_CLAIM_RE = re.compile(
     r"(?:\A|[\s\"'])"
-    r"(?:Updated|Captured|Created|Deleted|Removed|Added|Saved|Noted|Done)"
+    r"(?:Updated|Captured|Created|Deleted|Removed|Added|Saved|Noted|Done|Remembered)"
     r"\.(?:\s|$)",
     re.IGNORECASE,
 )
@@ -203,6 +212,8 @@ _AB_TIER_HEADER_RE = re.compile(
 
 def _looks_like_ab_fabrication(content: str) -> bool:
     if _FABRICATED_AB_CAPTURE_RE.search(content):
+        return True
+    if _FABRICATED_REMEMBER_RE.search(content):
         return True
     if _FABRICATED_BEAD_ID_RE.search(content):
         return True

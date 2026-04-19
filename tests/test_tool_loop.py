@@ -1509,6 +1509,67 @@ def test_loop_bare_claim_does_not_match_real_wrap_up() -> None:
     )
 
 
+def test_loop_catches_remembered_fabrication() -> None:
+    """harness-z734: user asked ab to remember a fact. Round 0
+    fabricated ('Updated.' — caught by bare-claim). Round 1 fabricated
+    'Remembered: dad Steve's birthday is Oct 8th' and slipped through
+    because no 'Remembered'-shaped catcher existed. Add one."""
+    from harness.orchestrator.tool_loop import _looks_like_ab_fabrication
+
+    # Colon form — what RememberTool really emits, and what the model
+    # imitates. Gating on tools_ran_this_turn=False keeps this safe.
+    assert _looks_like_ab_fabrication("Remembered: dad Steve's birthday is Oct 8th")
+    # Line-start after other prose.
+    multi = (
+        "Missed your request to capture the task. Let's try again.\n"
+        "Remembered: dad Steve's birthday is Oct 8th."
+    )
+    assert _looks_like_ab_fabrication(multi)
+    # Period form — bare-claim catcher covers this.
+    assert _looks_like_ab_fabrication("Ok. Remembered. Done.")
+
+
+def test_loop_remembered_not_flagged_mid_sentence() -> None:
+    """Negative guard: prose that mentions 'remembered' mid-sentence
+    without the receipt shape must not trip. Real usage: 'I remembered
+    to look that up' should pass."""
+    from harness.orchestrator.tool_loop import _FABRICATED_REMEMBER_RE
+
+    assert not _FABRICATED_REMEMBER_RE.search(
+        "I remembered to look that up — should we check the notes?"
+    )
+
+
+def test_loop_second_round_remembered_fabrication_caught() -> None:
+    """harness-z734 end-to-end: round 0 fabricates 'Updated.' (caught
+    by bare-claim, bail_retry fires), round 1 fabricates 'Remembered:
+    ...' and must ALSO be caught. Before the fix, round 1 slipped
+    through as the final answer and the user saw the fabricated
+    receipt."""
+    round0 = ModelReply(
+        content=("Missed remembering dad Steve's birthday is Oct 8th. Updated. Rerun /plan.")
+    )
+    round1 = ModelReply(
+        content=(
+            "Missed your request to capture the task. Let's try again.\n"
+            "Remembered: dad Steve's birthday is Oct 8th."
+        )
+    )
+    round2 = ModelReply(content="ok — cannot do that without a tool")
+    adapter = _ScriptedAdapter(replies=[round0, round1, round2])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="remember dad steve's birthday is Oct 8th")],
+        ToolRegistry(),
+        max_rounds=6,
+    )
+    bail_events = [e for e in result.events if e.kind == "bail_retry"]
+    assert len(bail_events) == 2, (
+        f"expected 2 bail_retry events (one per fabricated round), got {len(bail_events)}"
+    )
+    assert result.content == "ok — cannot do that without a tool"
+
+
 def test_loop_catches_capture_fabrication_end_to_end() -> None:
     """harness-ce2x end-to-end: the exact reply the user saw —
     `Captured. Scope: personal. Outcome: … Bead id: harness-abc123..`
