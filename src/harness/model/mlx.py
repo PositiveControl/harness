@@ -1,229 +1,38 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Iterable, Iterator
-from datetime import UTC, datetime
 from typing import Any
 
 from harness.model.adapter import ChatMessage, approx_token_count
+from harness.model.qwen_parse import (
+    _log_tool_bail,
+    _messages_to_dicts,
+    _messages_to_dicts_with_tools,
+    _parse_qwen_tool_calls,
+    _TagMasker,
+    _tool_spec_to_schema,
+)
 from harness.tools.base import (
     ModelReply,
     StreamChunk,
     StreamComplete,
     StreamText,
-    ToolCall,
     ToolSpec,
 )
 
-
-def _messages_to_dicts(messages: Iterable[ChatMessage]) -> list[dict[str, str]]:
-    """Project ChatMessage records down to the {role, content} dicts that
-    tokenizer.apply_chat_template expects. Tool-role messages and the
-    `name` field are ignored here — non-tool-aware path."""
-    return [{"role": m.role, "content": m.content} for m in messages]
-
-
-def _messages_to_dicts_with_tools(
-    messages: Iterable[ChatMessage],
-) -> list[dict[str, Any]]:
-    """Render messages for tool-aware chat. Assistant turns with
-    tool_calls expose them in the dict; tool-role turns carry their
-    tool_call_id. Qwen's chat template reads these correctly.
-
-    `arguments` is rendered as the raw dict (not JSON-serialized) —
-    Qwen3-Coder's chat template iterates it with `|items`, and Qwen2.5's
-    template feeds it through `|tojson` internally, so the dict form
-    works for both families. Pre-dumping to a string breaks Qwen3-Coder."""
-    out: list[dict[str, Any]] = []
-    for m in messages:
-        d: dict[str, Any] = {"role": m.role, "content": m.content}
-        if m.tool_calls:
-            d["tool_calls"] = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tc.name,
-                        "arguments": tc.arguments,
-                    },
-                }
-                for tc in m.tool_calls
-            ]
-        if m.tool_call_id is not None:
-            d["tool_call_id"] = m.tool_call_id
-        if m.role == "tool" and m.name is not None:
-            d["name"] = m.name
-        out.append(d)
-    return out
-
-
-def _tool_spec_to_schema(spec: ToolSpec) -> dict[str, Any]:
-    """Render a ToolSpec as the OpenAI-style function-calling schema
-    that modern chat templates (Qwen, Hermes, etc.) understand."""
-    return {
-        "type": "function",
-        "function": {
-            "name": spec.name,
-            "description": spec.description,
-            "parameters": spec.parameters,
-        },
-    }
-
-
-# Qwen2.5 / Hermes: <tool_call>{...JSON...}</tool_call>
-_TOOL_CALL_JSON_PATTERN = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
-# Qwen3-Coder: <tool_call><function=NAME><parameter=KEY>VAL</parameter>...</function></tool_call>
-_TOOL_CALL_XML_PATTERN = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
-_FUNCTION_PATTERN = re.compile(r"<function=(\w+)>(.*?)</function>", re.DOTALL)
-_PARAMETER_PATTERN = re.compile(r"<parameter=(\w+)>(.*?)</parameter>", re.DOTALL)
-
-
-def _parse_qwen_tool_calls(raw: str) -> tuple[str, list[ToolCall]]:
-    """Extract tool-call blocks from a Qwen model's raw output.
-
-    Supports two formats:
-      - Qwen2.5 / Hermes JSON: `<tool_call>{"name": ..., "arguments": ...}</tool_call>`
-      - Qwen3-Coder XML: a `<tool_call>` block containing
-        `<function=NAME><parameter=KEY>VAL</parameter>…</function>`
-
-    Returns (content_with_blocks_stripped, list_of_calls). Malformed
-    blocks are dropped rather than raising — the model will retry on
-    the next round if it cared."""
-    calls: list[ToolCall] = []
-
-    # JSON first — if the inner body is a JSON object, this regex catches
-    # it. XML bodies won't match because they don't start with `{`.
-    for match in _TOOL_CALL_JSON_PATTERN.finditer(raw):
-        try:
-            data = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            continue
-        name = data.get("name")
-        arguments = data.get("arguments", {})
-        if not isinstance(name, str):
-            continue
-        if not isinstance(arguments, dict):
-            # Qwen sometimes emits arguments as a JSON-encoded string; try to recover.
-            if isinstance(arguments, str):
-                try:
-                    arguments = json.loads(arguments)
-                except json.JSONDecodeError:
-                    arguments = {}
-            else:
-                arguments = {}
-        calls.append(ToolCall(name=name, arguments=arguments))
-
-    # If nothing matched as JSON, try the XML function format (Qwen3-Coder).
-    # The outer `<tool_call>` wrapper is optional because the chat template
-    # often primes the opening tag as part of the generation prompt — the
-    # model only emits everything from `<function=...>` onward.
-    if not calls:
-        for fn_match in _FUNCTION_PATTERN.finditer(raw):
-            name = fn_match.group(1)
-            fn_body = fn_match.group(2)
-            args: dict[str, Any] = {}
-            for pm in _PARAMETER_PATTERN.finditer(fn_body):
-                args[pm.group(1)] = pm.group(2).strip()
-            calls.append(ToolCall(name=name, arguments=args))
-
-    # Strip every tool-call sigil from the surfaced content: JSON blocks,
-    # XML `<function>` blocks, and any orphan `<tool_call>` / `</tool_call>`
-    # tags left behind by prompt-primed openings.
-    content = _TOOL_CALL_JSON_PATTERN.sub("", raw)
-    content = _FUNCTION_PATTERN.sub("", content)
-    content = _TOOL_CALL_XML_PATTERN.sub("", content)
-    content = re.sub(r"</?tool_call>", "", content).strip()
-    return content, calls
-
-
-def _log_tool_bail(raw: str, parsed_content: str) -> None:
-    """Diagnostic: append a JSONL row to data/tool_bail.jsonl whenever
-    the model was offered tools but parsed 0 calls and still emitted
-    text. Three failure modes look identical from the loop: truncation
-    mid-call, malformed-JSON parse drop, and model bail-mid-thought.
-    Capturing raw_tail + tag-presence flags lets us tell them apart.
-
-    Errors are swallowed — never break a real turn for a diagnostic."""
-    try:
-        from harness.config import settings
-
-        path = settings.data_path / "tool_bail.jsonl"
-        entry = {
-            "ts": datetime.now(UTC).isoformat(),
-            "raw_len": len(raw),
-            "raw_tail": raw[-400:],
-            "parsed_content_tail": parsed_content[-200:],
-            "has_open_tag": "<tool_call>" in raw,
-            "has_close_tag": "</tool_call>" in raw,
-            "has_function_open": "<function=" in raw,
-        }
-        with path.open("a") as fh:
-            fh.write(json.dumps(entry) + "\n")
-    except Exception:  # noqa: S110 — diagnostic-only; never break a real turn
-        pass
-
-
-class _TagMasker:
-    """Stream filter that elides Qwen tool-call tag spans from a live
-    text stream. Hides everything between `<tool_call>` / `</tool_call>`
-    and between `<function=...>` / `</function>` so the user never sees
-    raw JSON or XML tool-call payloads mid-generation.
-
-    Keeps a small rolling tail in visible mode so a tag opening that
-    straddles a delta boundary ("...hello<to" + "ol_call>...") isn't
-    leaked before the masker can recognize it. `_MAX_TAIL` must be at
-    least the length of the longest recognized opening tag."""
-
-    _OPEN_TAGS = ("<tool_call>", "<function=")
-    _CLOSE_TAGS = ("</tool_call>", "</function>")
-    _MAX_TAIL = 15
-
-    def __init__(self) -> None:
-        self._buf = ""
-        self._hidden = False
-
-    def feed(self, delta: str) -> str:
-        self._buf += delta
-        out: list[str] = []
-        while True:
-            if not self._hidden:
-                earliest = -1
-                for tag in self._OPEN_TAGS:
-                    idx = self._buf.find(tag)
-                    if idx != -1 and (earliest == -1 or idx < earliest):
-                        earliest = idx
-                if earliest == -1:
-                    safe_cut = len(self._buf) - self._MAX_TAIL
-                    if safe_cut > 0:
-                        out.append(self._buf[:safe_cut])
-                        self._buf = self._buf[safe_cut:]
-                    break
-                out.append(self._buf[:earliest])
-                self._buf = self._buf[earliest:]
-                self._hidden = True
-            else:
-                end = -1
-                end_tag_len = 0
-                for close in self._CLOSE_TAGS:
-                    idx = self._buf.find(close)
-                    if idx != -1 and (end == -1 or idx < end):
-                        end = idx
-                        end_tag_len = len(close)
-                if end == -1:
-                    break
-                self._buf = self._buf[end + end_tag_len :]
-                self._hidden = False
-        return "".join(out)
-
-    def flush(self) -> str:
-        """Called at stream end. If still inside a hidden span the
-        buffer is dropped (mid-tag truncation — nothing safe to show)."""
-        if self._hidden:
-            self._buf = ""
-            return ""
-        out = self._buf
-        self._buf = ""
-        return out
+# Re-export Qwen parsers for tests and external callers that used to
+# import them from here (harness-782y moved the impl into
+# model/qwen_parse.py but kept the import path stable).
+__all__ = [
+    "MLXAdapter",
+    "_TagMasker",
+    "_log_tool_bail",
+    "_messages_to_dicts",
+    "_messages_to_dicts_with_tools",
+    "_parse_qwen_tool_calls",
+    "_tool_spec_to_schema",
+]
 
 
 class MLXAdapter:
@@ -277,14 +86,7 @@ class MLXAdapter:
         When `adapter_path` is set, mlx_lm applies the LoRA weights on
         top of the base model at load time. `adapter_path` must be a
         DIRECTORY produced by `mlx_lm.lora` training — it should
-        contain `adapter_config.json` plus the weight files. The
-        result behaves like any other adapter from our perspective —
-        no changes downstream.
-
-        Applies the cache limit (if one is configured) once per process.
-        `mx.set_cache_limit` is process-global: subsequent adapters in
-        the same process inherit the cap rather than each nudging the
-        limit further. Idempotent via the `_cache_limit_applied` flag."""
+        contain `adapter_config.json` plus the weight files."""
         if self._model is not None:
             return
         self._apply_cache_limit()
@@ -303,9 +105,8 @@ class MLXAdapter:
     def _apply_cache_limit(self) -> None:
         """Apply `self.cache_limit_mb` to MLX's free-cache cap. No-op if
         the limit is None or has already been applied in this process.
-        Errors from the MLX API (older builds without set_cache_limit,
-        platform mismatch) are swallowed — a missing cap should not
-        block model loading."""
+        Errors from the MLX API are swallowed — a missing cap should
+        not block model loading."""
         if self.cache_limit_mb is None or self._cache_limit_applied:
             return
         try:
@@ -327,8 +128,8 @@ class MLXAdapter:
 
     def count_tokens(self, messages: Iterable[ChatMessage]) -> int:
         """Exact token count via the model's own tokenizer when loaded;
-        char-heuristic fallback otherwise. We don't trigger `_ensure_loaded`
-        here — the CLI renders the meter every turn including before the
+        char-heuristic fallback otherwise. Never triggers `_ensure_loaded`
+        — the CLI renders the meter every turn including before the
         first generation, and forcing a load just for a display value
         would add tens of seconds of startup latency."""
         if self._tokenizer is None:
@@ -336,6 +137,43 @@ class MLXAdapter:
         dicts = _messages_to_dicts(messages)
         ids = self._tokenizer.apply_chat_template(dicts, tokenize=True, add_generation_prompt=True)
         return len(ids)
+
+    def _build_prompt(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        tools: list[ToolSpec] | None = None,
+    ) -> str:
+        """Shared prompt-assembly path for every generation entry point.
+        Loads the model lazily, renders the messages as dicts, and runs
+        `apply_chat_template` with tool schemas attached when provided."""
+        self._ensure_loaded()
+        assert self._tokenizer is not None
+        if tools is None:
+            dicts: list[dict[str, Any]] = list(_messages_to_dicts(messages))
+            return str(
+                self._tokenizer.apply_chat_template(
+                    dicts, tokenize=False, add_generation_prompt=True
+                )
+            )
+        dicts_with_tools = _messages_to_dicts_with_tools(messages)
+        tool_schemas = [_tool_spec_to_schema(t) for t in tools]
+        return str(
+            self._tokenizer.apply_chat_template(
+                dicts_with_tools,
+                tokenize=False,
+                add_generation_prompt=True,
+                tools=tool_schemas,
+            )
+        )
+
+    def _make_sampler(self, temperature: float) -> Any:
+        """Unified sampler config (top_p=0.9 across all entry points).
+        Isolated so the temperature policy per entry point stays
+        explicit at the call site."""
+        from mlx_lm.sample_utils import make_sampler
+
+        return make_sampler(temp=temperature, top_p=0.9)
 
     def stream(
         self,
@@ -347,16 +185,11 @@ class MLXAdapter:
         """Token-by-token streaming for plain chat. Each yielded string
         is the incremental text for that generation step (as reported by
         mlx_lm.stream_generate)."""
-        self._ensure_loaded()
         from mlx_lm import stream_generate as _stream_generate
-        from mlx_lm.sample_utils import make_sampler
 
-        dicts = _messages_to_dicts(messages)
-        assert self._tokenizer is not None
-        prompt = self._tokenizer.apply_chat_template(
-            dicts, tokenize=False, add_generation_prompt=True
-        )
-        sampler = make_sampler(temp=temperature, top_p=0.9)
+        prompt = self._build_prompt(messages)
+        assert self._tokenizer is not None  # narrows for mypy; _build_prompt loaded it
+        sampler = self._make_sampler(temperature)
         for resp in _stream_generate(
             self._model,
             self._tokenizer,
@@ -393,7 +226,6 @@ class MLXAdapter:
         outlines / runtime failure bubbles as an exception — the
         caller (GrammarRouter) catches and returns None to preserve
         the advisory contract."""
-        self._ensure_loaded()
         try:
             # outlines ships without py.typed; mypy sees `json` as
             # not-explicitly-exported even though it's the public API.
@@ -406,11 +238,8 @@ class MLXAdapter:
                 "Install with: uv sync --extra grammar"
             ) from exc
 
-        dicts = _messages_to_dicts(messages)
-        assert self._tokenizer is not None
-        prompt = self._tokenizer.apply_chat_template(
-            dicts, tokenize=False, add_generation_prompt=True
-        )
+        prompt = self._build_prompt(messages)
+        assert self._tokenizer is not None  # narrows for mypy; _build_prompt loaded it
         # MLXLM wraps our pre-loaded model + tokenizer; no extra load.
         wrapped = MLXLM(model=self._model, tokenizer=self._tokenizer)
         # outlines 0.2.x does not forward `temperature` to MLXLM.generate
@@ -418,18 +247,14 @@ class MLXAdapter:
         # rewrite). Temperature must be set at generator-construction
         # time via the sampler instead. Greedy when temp == 0 matches
         # our router's deterministic-decode contract.
-        # outlines lacks py.typed; greedy()/multinomial() return concrete
-        # sampler subclasses that mypy doesn't recognize as the Sampler
-        # protocol expected by outlines_json. Same pattern as the
-        # outlines_json attr-defined ignore above.
         sampler = (
             greedy()  # type: ignore[no-untyped-call]
             if temperature <= 0
             else multinomial(temperature=temperature)
         )
         # outlines 0.1.x expects the schema as a JSON string (not a dict) —
-        # docstring says it accepts a Pydantic class, a function, or a
-        # string containing the JSON Schema spec. Dump the dict here so
+        # its docstring says it accepts a Pydantic class, a function, or
+        # a string containing the JSON Schema spec. Dump the dict here so
         # the caller (GrammarRouter) can keep working with dicts.
         generator = outlines_json(wrapped, json.dumps(schema), sampler=sampler)  # type: ignore[arg-type]
         raw = generator(prompt, max_tokens=max_tokens)
@@ -459,20 +284,11 @@ class MLXAdapter:
 
         Temperature defaults to 0.5 — lower than chat default because
         tool use wants deliberate, parseable output, not creativity."""
-        self._ensure_loaded()
         from mlx_lm import stream_generate as _stream_generate
-        from mlx_lm.sample_utils import make_sampler
 
-        dicts = _messages_to_dicts_with_tools(messages)
-        tool_schemas = [_tool_spec_to_schema(t) for t in tools] if tools else None
-        assert self._tokenizer is not None
-        prompt = self._tokenizer.apply_chat_template(
-            dicts,
-            tokenize=False,
-            add_generation_prompt=True,
-            tools=tool_schemas,
-        )
-        sampler = make_sampler(temp=temperature, top_p=0.9)
+        prompt = self._build_prompt(messages, tools=tools)
+        assert self._tokenizer is not None  # narrows for mypy; _build_prompt loaded it
+        sampler = self._make_sampler(temperature)
 
         raw_parts: list[str] = []
         masker = _TagMasker()
@@ -496,6 +312,7 @@ class MLXAdapter:
 
         raw = "".join(raw_parts)
         content, tool_calls = _parse_qwen_tool_calls(raw)
+        assert self._tokenizer is not None
         try:
             out_tokens = self._tokenizer.encode(raw)
             was_truncated = len(out_tokens) >= max_tokens - 1
