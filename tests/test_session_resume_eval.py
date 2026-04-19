@@ -106,7 +106,7 @@ def test_eval_fails_when_unexpected_present(tmp_path: Path) -> None:
 def test_shipped_fixtures_pass_end_to_end() -> None:
     """The character's actual session-resume fixtures must all pass —
     this is the gate that catches regressions in build_resume_summary."""
-    shipped = Path(__file__).parent.parent / "character" / "airton" / "session_resume_eval.yaml"
+    shipped = Path(__file__).parent.parent / "character" / "airton_b" / "session_resume_eval.yaml"
     if not shipped.exists():  # sanity skip if repo layout shifts
         pytest.skip("shipped fixture missing; skipping end-to-end")
     result = run_session_resume_eval(load_fixture(shipped))

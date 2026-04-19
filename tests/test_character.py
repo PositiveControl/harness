@@ -6,6 +6,7 @@ from harness.character import load_character
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AIRTON = REPO_ROOT / "character" / "airton"
+AIRTON_B = REPO_ROOT / "character" / "airton_b"
 
 
 def test_load_airton_shape() -> None:
@@ -102,8 +103,10 @@ def test_system_prompt_embeds_voice_examples() -> None:
 
 def test_thought_graph_loaded() -> None:
     """harness-9qw: ab's thought-graph workflow rules live in
-    core.yaml and are surfaced on the loaded Character."""
-    character = load_character(AIRTON)
+    core.yaml and are surfaced on the loaded Character. They live
+    on airton_b (the character that actually activates the ab
+    adapter at runtime), not on airton proper."""
+    character = load_character(AIRTON_B)
     assert character.thought_graph is not None
     assert "Query bd before" in character.thought_graph.query_first
     assert "3 ab-owned beads" in character.thought_graph.budgets
@@ -113,8 +116,9 @@ def test_thought_graph_loaded() -> None:
 def test_system_prompt_includes_thought_graph_guidance() -> None:
     """harness-9qw: the rendered system prompt must carry the three
     workflow guardrails so the model sees them without a runtime
-    lookup."""
-    character = load_character(AIRTON)
+    lookup. Checked on airton_b — airton itself keeps a lighter
+    prompt since ab-ops never run there."""
+    character = load_character(AIRTON_B)
     prompt = character.system_prompt()
 
     assert "Thought-graph workflow" in prompt
