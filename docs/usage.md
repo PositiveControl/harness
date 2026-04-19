@@ -109,6 +109,35 @@ uv run harness memory search "some question"            # semantic search
 uv run harness memory fact-search "some question"
 ```
 
+## Ab's thought graph (bd as working memory)
+
+When the character is `airton_b` and the ops tool profile is loaded, ab uses bd as its own scratchpad — not just for tasks you capture, but for its own in-flight thoughts, hypotheses, and questions. Ab-owned beads carry `assignee=airton_b`; yours carry your username. By default the ops views hide ab's scratchpad so your work isn't buried.
+
+What you'll see:
+
+- **Session start + post-compaction**, the console prints a short resume summary: current focus bead, other in-progress ab-beads, recent bd memories, and any drifting ab-beads. If you're not interested, ignore it — it's meta-context, not a reply.
+- **Plan** (ab's `plan` tool) prepends a `Focus: [...]` banner when ab has an active focus bead. Tier buckets below unchanged.
+- **Drift** (ab's `drift` tool) surfaces stale work. User-owned beads use bd's native 14-day horizon; ab-owned beads have a tighter 7-day window because ab's thoughts rot faster.
+- **`/retro`** at the `you ›` prompt runs an on-demand retrospective. Summary first, then you get one line to record an insight (blank to skip). Also fires automatically on `/exit`, `:q`, or Ctrl-C.
+
+Budgets (tunable via `HARNESS_AB_*` env vars):
+
+- Max 3 ab-owned captures per turn (`HARNESS_AB_TURN_CAP`). Refreshes every user turn.
+- Max 10 open ab-owned beads in flight (`HARNESS_AB_INFLIGHT_CAP`). At the cap, ab must close one before capturing another — the hint lists low-priority / oldest candidates.
+- 3 defers on the same bead trigger a stall escalation (`HARNESS_AB_STALL_DEFERS`): ab spawns a `thought:question` child asking "still relevant?" to surface the stall for triage.
+- 7-day drift horizon for ab-owned beads (`HARNESS_AB_DRIFT_DAYS`).
+
+Flags:
+
+- `--include-internal` — show ab-owned beads in plan/list/drift/search views. `--dev` implies this.
+- The ab bd repo lives at `HARNESS_AB_BD_DIR` (defaults under the harness root). `bd → <path>` prints on session start so misconfiguration is visible.
+
+Common failure modes:
+
+- **"turn-cap reached"** when ab tries to capture a 4th bead in one turn. Expected — either close one first or wait for your next message.
+- **"in-flight cap reached"** with candidates listed. Close / defer one of them before the new capture.
+- **No focus set** when using `status` without an id. Ab needs an in-progress bead to anchor. Capture one or manually promote an existing open bead.
+
 ## When things feel off
 
 ### Airton responds generically with no Airton register
@@ -141,6 +170,8 @@ uv run harness memory fact-search "some question"
 - `character/airton/seed_memories/*.md` — Airton's formative narratives. Editable; reloaded on next character load.
 - `character/airton/core.yaml` — identity: pronouns, premise, values, taboos. Changes are structural.
 - `character/airton/constitution.md` — principles the critic enforces. Plain prose.
+- `character/airton/session_resume_eval.yaml` — fixtures that pin `build_resume_summary`'s contract. Edit when adding resume-protocol sections.
+- `airton_b/` (default `HARNESS_AB_BD_DIR`) — ab's isolated beads DB. `.beads/` subdir + Dolt metadata. Back up alongside `data/harness.sqlite`.
 
 ## Known limits
 

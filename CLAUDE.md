@@ -64,12 +64,17 @@ Router evals:
 - `uv run harness eval router --router-mode grammar --tool-set coding` — grammar-constrained router scored against a different profile's tool set.
 - Append `--json` for machine-readable output.
 
+Session-resume evals:
+
+- `uv run harness eval session-resume` — replay `character/<name>/session_resume_eval.yaml` against `build_resume_summary` and score contains / not_contains assertions per scenario. Pins the summary contract so changes can't silently drop a load-bearing section (focus, in-progress, memories, drift).
+- Append `--json` for machine-readable output.
+
 Quality gates (all must stay green; pre-commit runs them on every commit):
 
 - `uv run ruff check .` — lint.
 - `uv run ruff format .` — format in place.
 - `uv run mypy src tests` — strict type-check (src + tests).
-- `uv run pytest` — full test suite (currently ~470 tests).
+- `uv run pytest` — full test suite (currently ~780 tests).
 - `uv run pytest tests/test_character.py::test_load_airton_shape` — single test.
 - `uv run pre-commit run --all-files` — run all hooks against the working tree.
 
@@ -200,6 +205,7 @@ Done:
 - **Phase 3.3 — Intent router.** `Router` protocol + `ModelRouter` (free-form JSON + tolerant parse) + `GrammarRouter` (JSON-schema-constrained decoding via `outlines`). `--router`, `--router-repo`, `--router-mode` flags. Default router model: `mlx-community/Hermes-3-Llama-3.2-3B-4bit`. `harness eval router` with fixture-based scoring.
 - **Phase 3.4 — Textual TUI.** `--tui` flag launches a full Textual chat app: always-on input (stays enabled mid-turn; Enter while busy enqueues the next prompt and the metrics strip shows `queued N`), scrolling RichLog, live ctx + elapsed footer with persistent `last N.Ns` after each turn, Ctrl-X interrupt (seq-gated: drops the partial reply, preserves the queue, auto-runs the next queued prompt), tool-loop inline event rendering, token-delta streaming, write-tier confirmation modal, history replay on mount, `/exit` + `:q` slash commands. Behind the optional `tui` extra.
 - **Phase 3.5 — Self-introspection.** Single read-tier `introspect` tool with `scope ∈ {tools, model, memory, character, commands, session, all}` so the agent can answer 'what can you do', 'what tools do you have', 'how much do you remember', 'what can't you do this session', 'when did we start' without guessing. `scope=tools` also lists capability gaps (web/shell/git/memory-write absent) with `--tools-add` hints. `scope=model` reports persona + router state. `scope=memory` includes live retrieval health + last-scribe and last-consolidation watermarks. `scope=session` derives turn count + start/last activity from a single transcript aggregate query. Ships in `core`/`coding`/`diagnostic` profiles. System prompt gains a one-line nudge directing the model at `introspect` when the tool is loaded. CLI commands enumerated from the Typer app with a pinning test (`tests/test_cli_introspect.py`) so the output can't drift from the actual `@app.command` surface. Router eval fixtures added for self-introspection prompts.
+- **Phase 3.6 — ab thought-graph over beads.** Promotes bd from user-task tracker to ab's working-memory substrate. Ab-owned beads carry `assignee=airton_b` so they can be separated from user-captured items. `BeadsAdapter` enforces a hard single-focus invariant per assignee (`get_focus` lazy-reconciles, `set_focus` atomically demotes prior then promotes new), a per-turn create cap (default 3), an in-flight cap (default 10 open), and a shorter drift horizon (7d vs 14d) for ab-owned beads. `DeferTool` tracks defer count via `defer-count:N` labels and auto-spawns a `thought:question` child on the third defer (`stall-escalated` label prevents re-fire). `CaptureTool` exposes an `ab_owned` flag that routes the create through the budget. `PersistFocusNoteTool` lets ab append compaction breadcrumbs to the focus bead's notes. `--include-internal` CLI flag (implied by `--dev`) surfaces ab-internal beads in plan/list/drift views. `build_resume_summary` renders focus + in-progress ab-beads + recent bd memories + drift on chat start and post-compaction. `/retro` REPL slash command invokes `RetroTool` on demand; session-end (`/exit`, `:q`, Ctrl-C) auto-prints a retro. Budget knobs exposed as `HARNESS_AB_{TURN_CAP,INFLIGHT_CAP,STALL_DEFERS,DRIFT_DAYS}`. Fixture-backed `harness eval session-resume` pins the summary contract.
 - **Voice-capture ergonomics.** In-chat `/edit` (and alias `/capture`) opens `$EDITOR` with Airton's last reply pre-loaded; saving captures a new voice sample without leaving the session.
 
 Available but not started (no priority implied — tracked as `bd` issues):
@@ -222,6 +228,8 @@ Issue tracker: `bd ready` — see `AGENTS.md` for workflow.
 - **Character data is configuration, not code.** Never hardcode Airton's rules into `src/`. The runtime reads `character/<name>/`.
 - **Identity first, then voice, then content.** System prompt starts with premise + self-awareness + values + taboos, then retrieved examples, then memory/facts. If you find yourself re-stating identity inline in code, it belongs in `core.yaml`.
 - **User scoping is mandatory on retrieval.** Any `.search()` call that serves a user-facing turn must pass `user_id=speaker`. Omitting it is an owner-tier view — fine for dev tools, wrong for chat.
+- **Ab thought-graph beads carry `assignee=airton_b`.** User-captured work is assigned to the user. The adapter's `default_exclude_assignee` hides ab-owned beads from default plan/list/drift/search views unless `--include-internal` (or `--dev`) is set. Any new ab-scoped code path must respect the convention so the user doesn't get buried under ab's scratchpad.
+- **Thought labels are free-form, `thought:` prefix.** Common examples: `thought:hypothesis`, `thought:question`, `thought:decision`, `thought:observation`. Not an enum — pick the term that names the cognitive step.
 
 ## Quality tooling
 
