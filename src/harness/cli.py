@@ -275,7 +275,13 @@ def _maybe_ab_bd_adapter(
         return None
     bd_dir = settings.ab_bd_dir_resolved
     exclude = None if include_internal else "airton_b"
-    adapter = BeadsAdapter(bd_dir, default_exclude_assignee=exclude)
+    adapter = BeadsAdapter(
+        bd_dir,
+        default_exclude_assignee=exclude,
+        ab_assignee="airton_b",
+        turn_cap=settings.ab_turn_cap,
+        inflight_cap=settings.ab_inflight_cap,
+    )
     try:
         adapter.verify()
     except BeadsAdapterError as exc:
@@ -1906,6 +1912,11 @@ def chat(
             user_input = console.input("[bold cyan]you › [/bold cyan]").strip()
             if not user_input:
                 continue
+            if ab_adapter is not None:
+                # User-turn boundary — refresh the per-turn ab-bead
+                # create budget so this turn starts with 3 fresh slots
+                # regardless of how many the prior turn spent.
+                ab_adapter.reset_turn_counter()
             if user_input.lower() in _EXIT_COMMANDS:
                 break
             if user_input.lower() in _EDIT_COMMANDS:

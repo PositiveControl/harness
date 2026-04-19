@@ -50,6 +50,13 @@ class TurnCapExceededError(BeadsAdapterError):
     caller sees it and can choose to ignore or report."""
 
 
+class InflightCapExceededError(BeadsAdapterError):
+    """Raised when an ab-assignee bead create would push the open
+    ab-owned bead count past the in-flight cap. The message lists
+    candidate beads suitable for closing first (low-priority and
+    oldest-updated), so the caller can surface them to the model."""
+
+
 @dataclass(frozen=True)
 class BeadsIssue:
     """Lightweight view of a bd issue. Only the fields ab cares about;
@@ -101,6 +108,7 @@ class BeadsAdapter:
         default_exclude_assignee: str | None = None,
         ab_assignee: str | None = None,
         turn_cap: int = 3,
+        inflight_cap: int = 10,
     ) -> None:
         """`default_exclude_assignee` (e.g. 'airton_b') hides beads owned
         by that assignee from the adapter's read methods — list_issues,
@@ -108,18 +116,21 @@ class BeadsAdapter:
         positive `assignee=X` filter, which is respected as an opt-in.
         Write methods are never filtered.
 
-        `ab_assignee` enables the per-turn create-cap budget. When set,
-        create() with that assignee counts against `turn_cap` (default
-        3) and raises TurnCapExceededError once the budget is spent.
+        `ab_assignee` enables the ab-bead budget enforcement. When set,
+        create() with that assignee checks both the in-flight cap
+        (`inflight_cap`, default 10 open beads) and the per-turn cap
+        (`turn_cap`, default 3 creates per turn). Cap hits raise
+        InflightCapExceededError or TurnCapExceededError respectively.
         Callers call `reset_turn_counter()` at each user-turn boundary
-        to refresh the budget. Leaving ab_assignee None disables the
-        cap entirely — tests and non-ab callers aren't affected."""
+        to refresh the turn budget. Leaving ab_assignee None disables
+        both caps — tests and non-ab callers aren't affected."""
         self._bd_dir = bd_dir
         self._bd = bd_executable
         self._types_ensured = False
         self._default_exclude_assignee = default_exclude_assignee
         self._ab_assignee = ab_assignee
         self._turn_cap = turn_cap
+        self._inflight_cap = inflight_cap
         self._ab_creates_this_turn = 0
 
     def reset_turn_counter(self) -> None:
@@ -127,6 +138,29 @@ class BeadsAdapter:
         the chat loop right after a user-input boundary so the budget
         refreshes. Cheap — just an int write."""
         self._ab_creates_this_turn = 0
+
+    def _check_inflight_cap(self) -> None:
+        """Raise InflightCapExceededError if the count of open ab-owned
+        beads is already at or above the configured cap. Runs before a
+        new ab-owned create — so the cap is counted against the state
+        at check time, not including the one about to be created.
+        Candidate list sorted low-priority-first then oldest-updated-
+        first so the model has concrete ids to close."""
+        if self._ab_assignee is None:
+            return
+        open_ab = self.list_issues(status="open", assignee=self._ab_assignee)
+        if len(open_ab) < self._inflight_cap:
+            return
+        candidates = sorted(
+            open_ab,
+            key=lambda i: (-i.priority, str(i.raw.get("updated_at") or "")),
+        )[:5]
+        candidate_fragment = ", ".join(f"{i.id} (P{i.priority})" for i in candidates)
+        raise InflightCapExceededError(
+            f"in-flight cap reached ({self._inflight_cap} open ab-owned beads). "
+            "Close or defer one before capturing another. Candidates: "
+            f"{candidate_fragment}."
+        )
 
     @property
     def bd_dir(self) -> Path:
@@ -261,16 +295,14 @@ class BeadsAdapter:
             args.extend(["--parent", parent])
         if assignee is not None:
             args.extend(["--assignee", assignee])
-        if (
-            self._ab_assignee is not None
-            and assignee == self._ab_assignee
-            and self._ab_creates_this_turn >= self._turn_cap
-        ):
-            raise TurnCapExceededError(
-                f"turn-cap reached ({self._turn_cap} ab-owned beads this turn). "
-                "Close or defer an existing open ab-bead, or wait for the "
-                "next user turn to refresh the budget."
-            )
+        if self._ab_assignee is not None and assignee == self._ab_assignee:
+            self._check_inflight_cap()
+            if self._ab_creates_this_turn >= self._turn_cap:
+                raise TurnCapExceededError(
+                    f"turn-cap reached ({self._turn_cap} ab-owned beads this turn). "
+                    "Close or defer an existing open ab-bead, or wait for the "
+                    "next user turn to refresh the budget."
+                )
         result = self._run(args)
         issue_id = _extract_created_id(result.stdout)
         if issue_id is None:

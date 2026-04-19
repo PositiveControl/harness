@@ -29,6 +29,7 @@ from harness.store.bd_adapter import (
     BeadsAdapter,
     BeadsAdapterError,
     BeadsIssue,
+    InflightCapExceededError,
     TurnCapExceededError,
     _extract_created_id,
 )
@@ -741,16 +742,32 @@ def test_search_passes_assignee_flag(bd_dir: Path, runner: FakeRunner) -> None:
     assert cmd[cmd.index("--assignee") + 1] == "airton_b"
 
 
+def _empty_list() -> FakeCompletedProcess:
+    """Canned 'no open beads' list response. Used in tests to stub the
+    inflight-cap check that precedes every ab-owned create."""
+    return FakeCompletedProcess(stdout="[]")
+
+
+def _ab_create_responses(count: int) -> list[FakeCompletedProcess]:
+    """Alternating list + create responses for `count` ab-owned creates.
+    Each create triggers an inflight-cap list call first, then the
+    actual create. Keeps tests readable."""
+    responses: list[FakeCompletedProcess] = []
+    for i in range(count):
+        responses.append(_empty_list())
+        responses.append(FakeCompletedProcess(stdout=f"✓ Created issue: harness-{i} — t\n"))
+    return responses
+
+
 def test_turn_cap_allows_creates_below_limit(bd_dir: Path, runner: FakeRunner) -> None:
     """Three creates in a row with the default cap=3 should all
     succeed; the fourth is the one that raises."""
-    # Preload: one types-get + three create responses. Fourth create
-    # should raise before the subprocess spawn, so no fourth response.
     runner.queue(
         FakeCompletedProcess(stdout="project,event,habit\n"),
-        FakeCompletedProcess(stdout="✓ Created issue: harness-1 — a\n"),
-        FakeCompletedProcess(stdout="✓ Created issue: harness-2 — b\n"),
-        FakeCompletedProcess(stdout="✓ Created issue: harness-3 — c\n"),
+        *_ab_create_responses(3),
+        # Fourth attempt — inflight list is still consulted, but
+        # turn-cap fires before the actual create subprocess.
+        _empty_list(),
     )
     adapter = BeadsAdapter(bd_dir, ab_assignee="airton_b", turn_cap=3)
 
@@ -766,10 +783,7 @@ def test_turn_cap_resets_on_reset_turn_counter(bd_dir: Path, runner: FakeRunner)
     creates go through. Simulates a new user-input boundary."""
     runner.queue(
         FakeCompletedProcess(stdout="project,event,habit\n"),
-        FakeCompletedProcess(stdout="✓ Created issue: harness-1 — a\n"),
-        FakeCompletedProcess(stdout="✓ Created issue: harness-2 — b\n"),
-        FakeCompletedProcess(stdout="✓ Created issue: harness-3 — c\n"),
-        FakeCompletedProcess(stdout="✓ Created issue: harness-4 — d\n"),
+        *_ab_create_responses(4),
     )
     adapter = BeadsAdapter(bd_dir, ab_assignee="airton_b", turn_cap=3)
     for title in ("a", "b", "c"):
@@ -783,25 +797,27 @@ def test_turn_cap_resets_on_reset_turn_counter(bd_dir: Path, runner: FakeRunner)
 
 def test_turn_cap_ignores_non_ab_assignee(bd_dir: Path, runner: FakeRunner) -> None:
     """Creates without assignee=ab_assignee don't count against the
-    budget — user-owned captures stay unlimited."""
+    budget — user-owned captures stay unlimited and skip the inflight
+    list subprocess entirely."""
     runner.queue(
         FakeCompletedProcess(stdout="project,event,habit\n"),
+        # Five user-owned creates — no inflight list calls at all.
         *[FakeCompletedProcess(stdout=f"✓ Created issue: harness-{i} — t\n") for i in range(5)],
+        # Then an ab-owned create: list + create.
+        _empty_list(),
+        FakeCompletedProcess(stdout="✓ Created issue: harness-ab — x\n"),
     )
     adapter = BeadsAdapter(bd_dir, ab_assignee="airton_b", turn_cap=3)
 
-    # Five user-owned creates; cap does not trip.
     for i in range(5):
         adapter.create(title=f"t{i}", scope="personal")  # no assignee
 
-    # An ab-owned create after 5 user creates still has full budget.
-    runner.queue(FakeCompletedProcess(stdout="✓ Created issue: harness-ab — x\n"))
     adapter.create(title="ab-bead", scope="personal", assignee="airton_b")
 
 
 def test_turn_cap_disabled_when_ab_assignee_unset(bd_dir: Path, runner: FakeRunner) -> None:
     """No ab_assignee configured → budget mechanism is dormant; no
-    create ever raises TurnCapExceededError."""
+    create ever raises, and no inflight list subprocess fires."""
     runner.queue(
         FakeCompletedProcess(stdout="project,event,habit\n"),
         *[FakeCompletedProcess(stdout=f"✓ Created issue: harness-{i} — t\n") for i in range(10)],
@@ -809,7 +825,68 @@ def test_turn_cap_disabled_when_ab_assignee_unset(bd_dir: Path, runner: FakeRunn
     adapter = BeadsAdapter(bd_dir)  # no ab_assignee
     for i in range(10):
         adapter.create(title=f"t{i}", scope="personal", assignee="airton_b")
-    # No exception raised across 10 creates.
+
+
+def test_inflight_cap_raises_with_candidates(bd_dir: Path, runner: FakeRunner) -> None:
+    """When the open ab-bead count is already at cap, create() raises
+    InflightCapExceededError and the message lists candidate ids so the
+    caller can surface 'close one of these first' to the model."""
+    open_beads_payload = json.dumps(
+        [
+            {
+                "id": f"harness-{i}",
+                "title": f"t{i}",
+                "status": "open",
+                "priority": 3 if i < 5 else 1,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "airton_b",
+                "updated_at": f"2026-04-{10 + i:02d}T00:00:00Z",
+            }
+            for i in range(10)
+        ]
+    )
+    runner.queue(
+        FakeCompletedProcess(stdout="project,event,habit\n"),
+        FakeCompletedProcess(stdout=open_beads_payload),
+    )
+    adapter = BeadsAdapter(bd_dir, ab_assignee="airton_b", inflight_cap=10)
+
+    with pytest.raises(InflightCapExceededError) as excinfo:
+        adapter.create(title="new", scope="personal", assignee="airton_b")
+
+    message = str(excinfo.value)
+    assert "in-flight cap reached" in message
+    assert "Candidates:" in message
+    # Low-priority (P3) beads should be recommended first, not the P1 ones.
+    assert "P3" in message
+
+
+def test_inflight_cap_does_not_trip_below_limit(bd_dir: Path, runner: FakeRunner) -> None:
+    """With 9 open ab-beads and a cap of 10, the 10th create goes
+    through — the check is 'at or above cap', so 9 is still OK."""
+    nine_open = json.dumps(
+        [
+            {
+                "id": f"harness-{i}",
+                "title": f"t{i}",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+                "assignee": "airton_b",
+            }
+            for i in range(9)
+        ]
+    )
+    runner.queue(
+        FakeCompletedProcess(stdout="project,event,habit\n"),
+        FakeCompletedProcess(stdout=nine_open),
+        FakeCompletedProcess(stdout="✓ Created issue: harness-new — ok\n"),
+    )
+    adapter = BeadsAdapter(bd_dir, ab_assignee="airton_b", inflight_cap=10)
+
+    adapter.create(title="new", scope="personal", assignee="airton_b")
 
 
 def test_default_exclude_drops_matching_assignee_from_list(
