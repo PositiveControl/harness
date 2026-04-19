@@ -179,6 +179,30 @@ def test_plan_tool_uses_ready_and_renders() -> None:
     assert "default P2" in out
 
 
+def test_plan_rejects_invalid_scope() -> None:
+    """Defense in depth — schema enum alone doesn't stop small models
+    from emitting bogus scopes like 'today' or 'schmaybe'. The tool
+    must return an explicit error so the model can course-correct
+    instead of silently filtering to empty and hallucinating state."""
+    adapter = FakeAdapter(
+        ready_issues=[_issue(issue_id="harness-a", priority=1, scope="professional")]
+    )
+    out = PlanTool(adapter).call(scope="today")
+    assert "invalid scope" in out
+    assert "professional" in out
+    assert "personal" in out
+
+
+def test_drift_rejects_invalid_scope() -> None:
+    out = DriftTool(FakeAdapter()).call(scope="schmaybe")
+    assert "invalid scope" in out
+
+
+def test_reprioritize_rejects_invalid_scope() -> None:
+    out = ReprioritizeTool(FakeAdapter()).call(scope="nope")
+    assert "invalid scope" in out
+
+
 def test_plan_tool_respects_scope_filter() -> None:
     adapter = FakeAdapter(
         ready_issues=[

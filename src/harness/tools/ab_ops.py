@@ -205,6 +205,9 @@ class PlanTool:
         )
 
     def call(self, *, scope: str | None = None) -> str:
+        err = _validate_scope(scope)
+        if err:
+            return err
         ready = self.adapter.ready(scope=scope)
         lines = [_TieredLine(issue=i, **_classify_dict(i)) for i in ready]
         return _render_plan(lines, date.today())
@@ -213,6 +216,22 @@ class PlanTool:
 def _classify_dict(issue: BeadsIssue) -> dict[str, str]:
     tier, reason = classify_issue(issue)
     return {"tier": tier, "reason": reason}
+
+
+def _validate_scope(scope: str | None) -> str | None:
+    """Reject invalid scope values with a clear error string for the
+    model. Tool schemas declare `enum` but small-model tool emitters
+    sometimes ignore it; returning an explicit error lets the model
+    course-correct instead of silently filtering to an empty set and
+    then hallucinating state."""
+    if scope is None:
+        return None
+    if scope in ALLOWED_SCOPES:
+        return None
+    return (
+        f"invalid scope {scope!r}. Valid scopes: {', '.join(ALLOWED_SCOPES)}. "
+        "Retry the call with a valid scope, or omit `scope` to see all."
+    )
 
 
 @dataclass
@@ -415,6 +434,9 @@ class DriftTool:
         )
 
     def call(self, *, scope: str | None = None) -> str:
+        err = _validate_scope(scope)
+        if err:
+            return err
         try:
             items = self.adapter.stale()
         except BeadsAdapterError as exc:
@@ -460,6 +482,9 @@ class ReprioritizeTool:
         )
 
     def call(self, *, scope: str | None = None) -> str:
+        err = _validate_scope(scope)
+        if err:
+            return err
         ready = self.adapter.ready(scope=scope)
         lines = [_TieredLine(issue=i, **_classify_dict(i)) for i in ready]
         return _render_plan(lines, date.today())
