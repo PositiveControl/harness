@@ -100,6 +100,29 @@ def test_system_prompt_embeds_voice_examples() -> None:
     assert "How you speak" in prompt
 
 
+def test_thought_graph_loaded() -> None:
+    """harness-9qw: ab's thought-graph workflow rules live in
+    core.yaml and are surfaced on the loaded Character."""
+    character = load_character(AIRTON)
+    assert character.thought_graph is not None
+    assert "Query bd before" in character.thought_graph.query_first
+    assert "3 ab-owned beads" in character.thought_graph.budgets
+    assert "thought:" in character.thought_graph.thought_labels
+
+
+def test_system_prompt_includes_thought_graph_guidance() -> None:
+    """harness-9qw: the rendered system prompt must carry the three
+    workflow guardrails so the model sees them without a runtime
+    lookup."""
+    character = load_character(AIRTON)
+    prompt = character.system_prompt()
+
+    assert "Thought-graph workflow" in prompt
+    assert "Query bd before" in prompt
+    assert "3 ab-owned beads" in prompt
+    assert "thought:hypothesis" in prompt
+
+
 def test_system_prompt_excludes_named_voice_examples() -> None:
     character = load_character(AIRTON)
     excluded = frozenset({"self_reference"})

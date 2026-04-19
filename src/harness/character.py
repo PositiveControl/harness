@@ -33,6 +33,17 @@ class SeedMemory:
 
 
 @dataclass(frozen=True)
+class ThoughtGraph:
+    """Ab's thought-graph workflow rules (harness-9qw). These only bind
+    when the matching bd ops tools are actually loaded — the runtime
+    decides; the prompt just states the convention."""
+
+    query_first: str
+    budgets: str
+    thought_labels: str
+
+
+@dataclass(frozen=True)
 class Character:
     name: str
     pronouns: str
@@ -47,6 +58,7 @@ class Character:
     shallow_domains: tuple[str, ...]
     on_being_wrong: str
     constitution: str
+    thought_graph: ThoughtGraph | None
     voice_samples: tuple[VoiceSample, ...]
     # Canonical = curated samples in voice/canonical.yaml; captured =
     # live edits harvested from chat into voice/captured.yaml. `voice_samples`
@@ -112,6 +124,16 @@ class Character:
             else "(none shown for this turn)"
         )
 
+        thought_block = ""
+        if self.thought_graph is not None:
+            tg = self.thought_graph
+            thought_block = (
+                "Thought-graph workflow (when bd ops tools are loaded):\n"
+                f"  - Query-first: {tg.query_first.strip()}\n"
+                f"  - Budgets: {tg.budgets.strip()}\n"
+                f"  - Thought-labels: {tg.thought_labels.strip()}\n\n"
+            )
+
         return (
             f"You are {self.name}. Pronoun: {self.pronouns}. "
             f"Era of origin: {self.era}.\n\n"
@@ -124,6 +146,7 @@ class Character:
             f"Shallow domains: {shallow}\n\n"
             f"On being wrong:\n{self.on_being_wrong}\n\n"
             f"Constitution:\n{self.constitution}\n\n"
+            f"{thought_block}"
             f"{style_rules}\n\n"
             "Voice examples - this is how you talk. "
             "Match this register, not a generic assistant's:\n\n"
@@ -173,6 +196,17 @@ def load_character(path: Path) -> Character:
 
     values = tuple(Value(id=v["id"], rule=v["rule"]) for v in core["values"])
 
+    # Thought-graph block is optional: personas without bd ops tools
+    # simply omit the section.
+    tg_raw = core.get("thought_graph")
+    thought_graph: ThoughtGraph | None = None
+    if tg_raw:
+        thought_graph = ThoughtGraph(
+            query_first=str(tg_raw["query_first"]).strip(),
+            budgets=str(tg_raw["budgets"]).strip(),
+            thought_labels=str(tg_raw["thought_labels"]).strip(),
+        )
+
     return Character(
         name=core["name"],
         pronouns=core["pronouns"],
@@ -187,6 +221,7 @@ def load_character(path: Path) -> Character:
         shallow_domains=tuple(core["shallow_domains"]),
         on_being_wrong=core["on_being_wrong"].strip(),
         constitution=constitution,
+        thought_graph=thought_graph,
         voice_samples=voice_samples,
         canonical_voice_count=len(canonical_samples),
         captured_voice_count=len(captured_samples),

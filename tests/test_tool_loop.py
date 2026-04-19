@@ -1242,6 +1242,107 @@ def test_loop_allows_search_result_summary_after_real_call() -> None:
     assert not nudges
 
 
+def test_loop_catches_fabricated_ab_capture_receipt() -> None:
+    """Regression (harness-lbh): airton_b imitates CaptureTool's receipt
+    shape ('Captured: trim bushes (personal, Should, this weekend).') without
+    emitting a tool_call. Real capture output is 'Captured <id> — [scope]
+    <type> …'; the fabrication drops the id and restructures the parens.
+    _FALSE_SUCCESS_RE / _META_CONFIRM_RE / _TOOL_INTENT_RE all miss it."""
+    fabrication = (
+        "Captured: trim bushes (personal, Should, this weekend).\n"
+        "Every captured item is echoed back. This one is added to your "
+        "personal tasks with a clear deadline."
+    )
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(content=fabrication),
+            ModelReply(content="I cannot capture right now."),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="I need to trim the bushes in the backyard")],
+        ToolRegistry(),
+    )
+    nudges = [
+        m for m in result.messages if m.role == "user" and "fabricated tool output" in m.content
+    ]
+    assert len(nudges) == 1
+
+
+def test_loop_catches_fabricated_ab_plan_output() -> None:
+    """Regression (harness-lbh): asked 'plan', airton_b fabricates a full
+    tiered plan with fake scope abbreviations (prof/pers — real scopes are
+    professional/personal) and fake ids, with no tool_call emitted.
+    Real _render_plan output starts 'Today — <ISO>' and indents tier labels
+    two spaces; the fabrication reshapes the header but is unmistakably
+    imitating plan structure."""
+    fabrication = (
+        "Overload. Shall-tier holds 4 items, cutting 3 to Should with reasons.\n"
+        "Shall:\n"
+        "  1. [prof/web-gateway] Auth doc — blocks two tasks, stakeholders waiting\n"
+        "  2. [prof/retrieval-refactor] Contract tests — Mon deadline\n"
+        "Should (cut from Shall — reason each):\n"
+        "  3. [prof/router-eval] 30m on drift — caught early 10x cheaper\n"
+        "Watching:\n"
+        "  - [pers/passport] 51 days out, no action yet — fine\n"
+    )
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(content=fabrication),
+            ModelReply(content="I cannot plan right now."),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="plan")],
+        ToolRegistry(),
+    )
+    nudges = [
+        m for m in result.messages if m.role == "user" and "fabricated tool output" in m.content
+    ]
+    assert len(nudges) == 1
+
+
+def test_loop_allows_real_plan_output_after_tool_call() -> None:
+    """Guard: if `plan` really ran this turn, the model echoing back
+    'Shall: 1. [professional/harness-abc] …' as its wrap-up is legitimate,
+    not fabrication."""
+    registry = ToolRegistry()
+
+    class _FakePlan:
+        @property
+        def spec(self) -> ToolSpec:
+            return ToolSpec(
+                name="plan",
+                description="d",
+                parameters={"type": "object", "properties": {}},
+                tier="read",
+            )
+
+        def call(self) -> str:
+            return "Today — 2026-04-18\n  Shall:\n    (none)"
+
+    registry.register(_FakePlan())
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(content="", tool_calls=(ToolCall(name="plan", arguments={}),)),
+            ModelReply(
+                content=("Shall: nothing today. Should:\n  1. [professional/harness-abc] …")
+            ),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="plan")],
+        registry,
+    )
+    nudges = [
+        m for m in result.messages if m.role == "user" and "fabricated tool output" in m.content
+    ]
+    assert not nudges
+
+
 def test_loop_caps_bail_retries() -> None:
     """If the model keeps bailing, give up after the per-turn cap (2)
     rather than consuming the full max_rounds budget."""

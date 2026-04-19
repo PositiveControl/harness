@@ -136,6 +136,32 @@ _FABRICATED_SEARCH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Matches ab_ops-specific fabrication shapes — ab imitates its own
+# tool receipts (capture / plan) without emitting a <tool_call>.
+# Distinct tells:
+#   - `^Captured:\s` — real CaptureTool output is `Captured <id> — [scope]…`
+#     (no colon); the colon-prefix form is pure fabrication (harness-lbh).
+#   - `[prof/…]` / `[pers/…]` — real scopes are `professional` / `personal`,
+#     never abbreviated. The abbreviation is a telltale of imitation.
+#   - Two+ tier-label line headers (Shall/Should/Shmaybe/Watching) in one
+#     reply — the `_render_plan` shape. A single mention is prose; two
+#     together is plan imitation.
+_FABRICATED_AB_CAPTURE_RE = re.compile(r"(?:\A|\n)\s*Captured:\s", re.IGNORECASE)
+_FABRICATED_AB_SCOPE_RE = re.compile(r"\[(?:prof|pers)/[^\]]+\]", re.IGNORECASE)
+_AB_TIER_HEADER_RE = re.compile(
+    r"(?:\A|\n)\s*(?:Shall|Should|Shmaybe|Watching)\b[-:]",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_ab_fabrication(content: str) -> bool:
+    if _FABRICATED_AB_CAPTURE_RE.search(content):
+        return True
+    if _FABRICATED_AB_SCOPE_RE.search(content):
+        return True
+    return len(_AB_TIER_HEADER_RE.findall(content)) >= 2
+
+
 # Matches tool-intent statements that should be accompanied by an
 # actual <tool_call>. Broader than the trailing-teaser regex: doesn't
 # require end-of-content anchoring, and includes 'I will <verb>' not
@@ -210,6 +236,14 @@ def _diagnose_bail(reply: ModelReply, *, tools_ran_this_turn: bool) -> str | Non
             "tool this turn — you cannot know results without actually calling "
             "search_web / fetch_url / read_file. Call the appropriate tool now, "
             "or tell the user you cannot answer without live data."
+        )
+    if not tools_ran_this_turn and _looks_like_ab_fabrication(reply.content):
+        return (
+            "Your reply looks like fabricated tool output (ab_ops capture "
+            "receipt / tiered plan / fake scope abbreviation). You did NOT "
+            "call any tool this turn — you cannot produce a capture receipt "
+            "or plan without actually calling `capture` / `plan`. Call the "
+            "appropriate tool now, or tell the user plainly that you cannot."
         )
     if not tools_ran_this_turn and _TOOL_INTENT_RE.search(reply.content):
         return (
