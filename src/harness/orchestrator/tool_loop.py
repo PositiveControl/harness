@@ -22,6 +22,18 @@ _DUPLICATE_CALL_NUDGE = (
     "final answer now; do NOT emit any more tool calls.]"
 )
 
+# Final fallback when bail-retries are exhausted but the reply still trips
+# a fabrication catcher. Before this, we surfaced the last fabricated reply
+# verbatim (harness-24xj: "what is the date?" produced three stacked
+# fabricated plans because the final retry still fabricated and we returned
+# it). Swap to a canned refusal so the user never sees hallucinated tool
+# output as an answer.
+_EXHAUSTED_FABRICATION_FALLBACK = (
+    "I couldn't answer that without calling a tool, and my attempts to "
+    "call one didn't land cleanly. Try rephrasing, or ask me something I "
+    "can answer without live data."
+)
+
 
 def _call_key(call: ToolCall) -> tuple[str, str]:
     """Canonical (name, arguments-json) key for duplicate detection.
@@ -300,7 +312,7 @@ class ToolLoopEvent:
     print inline status. Kind is one of: router_intent, round_start,
     model_call_start, token_delta, model_call_end, tool_call_start,
     tool_call_end, tool_call_failed, tool_call_declined,
-    tool_call_deduped, truncated_retry, round_complete.
+    tool_call_deduped, truncated_retry, bail_retry, round_complete.
 
     `truncated_retry` fires when a wrap-up round stopped mid-stream at
     the token cap and the orchestrator is about to re-run it with a
@@ -308,6 +320,14 @@ class ToolLoopEvent:
     buffer and print a dim marker so the user knows the upcoming reply
     replaces the partial one they just saw, not appends to it
     (harness-6rl).
+
+    `bail_retry` fires when a 0-tool-calls reply tripped a fabrication /
+    teaser / meta-confirm / intent catcher and the orchestrator is
+    appending a nudge + re-running. Renderers MUST drop the in-flight
+    stream buffer (same contract as truncated_retry). Otherwise each
+    retry's stream stacks below the last and the user sees two or three
+    fabricated paragraphs concatenated under a single turn header
+    (harness-24xj).
 
     `router_intent` fires at most once per turn, before round 0, when a
     Router pre-pass routed to a tool. `call` carries the ToolCall the
@@ -566,14 +586,11 @@ def run_tool_loop(
             # all-errored turn (e.g. plan with invalid scope) must still
             # trip fabrication catchers because the model has no real
             # data to wrap up (harness-a0y).
-            recovery = (
-                _diagnose_bail(last_reply, tools_ran_this_turn=any_tool_succeeded)
-                if bail_retries > 0
-                else None
-            )
-            if recovery is not None and round_idx + 1 < max_rounds:
+            diag = _diagnose_bail(last_reply, tools_ran_this_turn=any_tool_succeeded)
+            can_retry = bail_retries > 0 and round_idx + 1 < max_rounds
+            if diag is not None and can_retry:
                 bail_retries -= 1
-                if recovery == "truncated":
+                if diag == "truncated":
                     current_max_tokens = min(current_max_tokens * 2, _MAX_TOKENS_CEILING)
                     # Wrap-up rounds need the widened budget too, else
                     # the round_max_tokens clamp still truncates at the
@@ -584,8 +601,26 @@ def run_tool_loop(
                     )
                     emit(ToolLoopEvent(kind="truncated_retry", round_index=round_idx))
                 else:
-                    working.append(ChatMessage(role="user", content=recovery))
+                    # Must fire BEFORE the nudge is queued so the CLI /
+                    # TUI can drop the in-flight stream buffer — each
+                    # retry re-streams from scratch and we don't want
+                    # the fabricated draft to stay on screen
+                    # (harness-24xj).
+                    emit(ToolLoopEvent(kind="bail_retry", round_index=round_idx))
+                    working.append(ChatMessage(role="user", content=diag))
                 continue
+            # Retries / rounds exhausted. If the reply is still
+            # fabrication-shaped, swap in the canned fallback rather
+            # than surfacing the hallucination as the final answer
+            # (harness-24xj). Truncation isn't fabrication — we'd
+            # rather show the partial than a refusal.
+            if diag is not None and diag != "truncated":
+                last_reply = ModelReply(
+                    content=_EXHAUSTED_FABRICATION_FALLBACK,
+                    tool_calls=(),
+                    was_truncated=last_reply.was_truncated,
+                    had_unparseable_call=last_reply.had_unparseable_call,
+                )
             emit(ToolLoopEvent(kind="round_complete", round_index=round_idx))
             return ToolLoopResult(
                 content=last_reply.content,

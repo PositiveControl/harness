@@ -1434,7 +1434,13 @@ def test_loop_allows_real_plan_output_after_tool_call() -> None:
 
 def test_loop_caps_bail_retries() -> None:
     """If the model keeps bailing, give up after the per-turn cap (2)
-    rather than consuming the full max_rounds budget."""
+    rather than consuming the full max_rounds budget. Each retry emits
+    a bail_retry event (harness-24xj) so renderers can drop the
+    in-flight stream buffer, and the final exhausted reply is replaced
+    with a canned fallback rather than surfacing the still-fabricated
+    teaser as the answer."""
+    from harness.orchestrator.tool_loop import _EXHAUSTED_FABRICATION_FALLBACK
+
     teaser = ModelReply(content="Let me check:")
     adapter = _ScriptedAdapter(replies=[teaser, teaser, teaser, teaser, teaser])
     result = run_tool_loop(
@@ -1443,9 +1449,66 @@ def test_loop_caps_bail_retries() -> None:
         ToolRegistry(),
         max_rounds=8,
     )
-    # 1 initial + 2 retries = 3 rounds, then terminate with last teaser
+    # 1 initial + 2 retries = 3 rounds, then terminate.
     assert result.rounds == 3
-    assert result.content == "Let me check:"
+    # Exhaustion fallback — NOT the fabricated teaser (harness-24xj).
+    assert result.content == _EXHAUSTED_FABRICATION_FALLBACK
+    # One bail_retry per retry (2 total): renderers use it to drop the
+    # partial stream buffer so retries replace rather than stack.
+    bail_events = [e for e in result.events if e.kind == "bail_retry"]
+    assert len(bail_events) == 2
+    assert [e.round_index for e in bail_events] == [0, 1]
+
+
+def test_loop_bail_retry_event_fires_for_fabrication() -> None:
+    """harness-24xj: a fabrication-shaped 0-tool-call reply (e.g. the
+    ab-plan date header) must emit bail_retry BEFORE the nudge is
+    queued, so CLI / TUI handlers can drop the in-flight stream buffer
+    before the retry starts streaming. If the event fires after, the
+    fabricated draft stays on screen above the retry."""
+    fabrication = ModelReply(content="Today — 2026-04-18. Nothing scheduled.")
+    recovery = ModelReply(content="actually I can't answer that")
+    adapter = _ScriptedAdapter(replies=[fabrication, recovery])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="what is the date?")],
+        ToolRegistry(),
+        max_rounds=4,
+    )
+    kinds = [e.kind for e in result.events]
+    # bail_retry must appear exactly once (first round fabricated,
+    # second round recovered cleanly).
+    assert kinds.count("bail_retry") == 1
+    # And must fire during round 0 (the round that produced the
+    # fabrication), not later.
+    bail = next(e for e in result.events if e.kind == "bail_retry")
+    assert bail.round_index == 0
+    # Recovery reply is the final content — no fallback substitution
+    # because diag returned None on round 1.
+    assert result.content == "actually I can't answer that"
+
+
+def test_loop_exhausted_fabrication_replaced_with_fallback() -> None:
+    """harness-24xj: when bail-retries run out and the reply is still
+    fabrication-shaped, return the canned fallback instead of the
+    hallucinated content. Before the fix we returned the fabricated
+    plan verbatim and the user saw 'Today — 2026-04-18 Shall: 1
+    [prof/web-gateway] ...' as airton_b's final answer."""
+    from harness.orchestrator.tool_loop import _EXHAUSTED_FABRICATION_FALLBACK
+
+    fab = ModelReply(content="Today — 2026-04-18. Nothing scheduled today.")
+    # All three attempts fabricate; retries exhaust.
+    adapter = _ScriptedAdapter(replies=[fab, fab, fab, fab])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="what is the date?")],
+        ToolRegistry(),
+        max_rounds=8,
+    )
+    assert result.content == _EXHAUSTED_FABRICATION_FALLBACK
+    # Substitution doesn't swallow the original — events trace shows
+    # the model ran 3 times (1 + 2 retries).
+    assert result.rounds == 3
 
 
 def test_loop_handles_unknown_tool_gracefully() -> None:
