@@ -1574,6 +1574,94 @@ class FindDuplicatesTool:
         return "\n".join(lines)
 
 
+def build_resume_summary(
+    adapter: _Adapter,
+    *,
+    memory_limit: int = 5,
+    ab_drift_days: int = AB_DRIFT_DAYS,
+) -> str:
+    """Render a multi-line session-resume summary: focus bead, active
+    ab-owned in-progress beads, recent bd memories, drifting items.
+    Shown at chat start + after a compaction so the user (and ab
+    itself) have the thought-graph state visible without guessing.
+
+    Degrades gracefully on per-step adapter errors — a failing drift
+    query shouldn't blank the whole summary."""
+    lines = ["── session resume ──"]
+
+    focus = _safe_get_focus(adapter)
+    lines.append("Focus: " + _render_focus_line(focus))
+
+    in_progress = _safe_in_progress(adapter)
+    if in_progress:
+        labels = ", ".join(i.id for i in in_progress)
+        lines.append(f"In-progress ab-beads: {labels}")
+    else:
+        lines.append("In-progress ab-beads: (none)")
+
+    memories = _safe_memories(adapter, memory_limit)
+    if memories:
+        lines.append(f"Recent memories:\n{memories}")
+    else:
+        lines.append("Recent memories: (none)")
+
+    drift = _safe_drift(adapter, ab_drift_days)
+    if drift:
+        drift_ids = ", ".join(i.id for i in drift[:5])
+        lines.append(f"Drifting ab-beads: {drift_ids}")
+
+    return "\n".join(lines)
+
+
+def _safe_get_focus(adapter: _Adapter) -> BeadsIssue | None:
+    try:
+        return adapter.get_focus(AB_ASSIGNEE)
+    except BeadsAdapterError:
+        return None
+
+
+def _safe_in_progress(adapter: _Adapter) -> list[BeadsIssue]:
+    try:
+        return adapter.list_issues(status="in_progress", assignee=AB_ASSIGNEE)
+    except BeadsAdapterError:
+        return []
+
+
+def _safe_memories(adapter: _Adapter, limit: int) -> str:
+    try:
+        raw = adapter.memories("")
+    except BeadsAdapterError:
+        return ""
+    lines = [line for line in raw.splitlines() if line.strip()]
+    return "\n".join(lines[-limit:])
+
+
+def _safe_drift(adapter: _Adapter, ab_drift_days: int) -> list[BeadsIssue]:
+    try:
+        candidates = adapter.list_issues(status="open", assignee=AB_ASSIGNEE)
+    except BeadsAdapterError:
+        return []
+    cutoff = datetime.now(UTC) - timedelta(days=ab_drift_days)
+    out: list[BeadsIssue] = []
+    for issue in candidates:
+        raw_ts = issue.raw.get("updated_at")
+        if not raw_ts:
+            continue
+        parsed = _parse_iso_utc(str(raw_ts))
+        if parsed is None:
+            continue
+        if parsed < cutoff:
+            out.append(issue)
+    return out
+
+
+def _render_focus_line(issue: BeadsIssue | None) -> str:
+    if issue is None:
+        return "(none)"
+    scope_tag = issue.scope or "?"
+    return f"[{scope_tag}/{issue.id}] {issue.title} (P{issue.priority})"
+
+
 @dataclass
 class PersistFocusNoteTool:
     """Append a single-line summary to the current focus bead's notes.

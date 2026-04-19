@@ -42,6 +42,7 @@ from harness.tools.ab_ops import (
     UpdateTool,
     _render_plan,
     _TieredLine,
+    build_resume_summary,
     classify_issue,
     make_ops_tools,
 )
@@ -1171,6 +1172,56 @@ def test_persist_focus_note_rejects_empty_summary() -> None:
     out = PersistFocusNoteTool(adapter).call(summary="   ")
     assert "non-empty" in out
     assert adapter.persist_to_focus_calls == []
+
+
+def test_resume_summary_renders_all_sections() -> None:
+    """Happy path: focus set, one in-progress bead, a memory line,
+    one drifting bead → every section renders with visible content."""
+    from datetime import UTC, datetime, timedelta
+
+    focus = _issue(issue_id="harness-focus", title="current", priority=1, scope="personal")
+    old_ts = (datetime.now(UTC) - timedelta(days=10)).isoformat()
+    drifter = _ab_issue_with_updated_at("harness-drift", old_ts)
+    adapter = FakeAdapter(
+        focus_issue=focus,
+        list_issues_data=[focus, drifter],  # shared list for both list calls
+        memories_output="insight A\ninsight B",
+    )
+
+    summary = build_resume_summary(adapter)
+
+    assert "── session resume ──" in summary
+    assert "harness-focus" in summary
+    assert "insight A" in summary
+    assert "harness-drift" in summary
+
+
+def test_resume_summary_degrades_gracefully_with_no_state() -> None:
+    """Cold session with no focus, no in-progress, no memories, no
+    drift — summary still renders with explicit (none) markers."""
+    adapter = FakeAdapter(focus_issue=None, list_issues_data=[], memories_output="")
+
+    summary = build_resume_summary(adapter)
+
+    assert "Focus: (none)" in summary
+    assert "In-progress ab-beads: (none)" in summary
+    assert "Recent memories: (none)" in summary
+
+
+def test_resume_summary_respects_memory_limit() -> None:
+    adapter = FakeAdapter(
+        focus_issue=None,
+        memories_output="\n".join(f"mem-{i}" for i in range(20)),
+    )
+
+    summary = build_resume_summary(adapter, memory_limit=3)
+
+    # Only the last 3 memory lines show up in the summary.
+    assert "mem-19" in summary
+    assert "mem-18" in summary
+    assert "mem-17" in summary
+    assert "mem-10" not in summary
+    assert "mem-0" not in summary
 
 
 def test_persist_focus_note_surfaces_no_focus_error() -> None:

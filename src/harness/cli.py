@@ -110,6 +110,7 @@ from harness.tools.ab_ops import (
     SearchTool,
     StatusTool,
     UpdateTool,
+    build_resume_summary,
 )
 
 _EXIT_COMMANDS = frozenset({"/exit", "/quit", "exit", "quit", ":q", ":quit"})
@@ -1901,11 +1902,21 @@ def chat(
                 f"[dim]compacted {outcome.covered_turns} turns "
                 f"(pointer → #{outcome.new_up_to_turn_id})[/dim]"
             )
+            if ab_adapter is not None:
+                # Post-compaction resume — context window shrank,
+                # reprint thought-graph state so the anchor is fresh.
+                console.print(f"[dim]{build_resume_summary(ab_adapter)}[/dim]")
         else:
             console.print(
                 "[yellow]compaction skipped — nothing qualified "
                 "(fewer turns than keep-recent, or model returned empty).[/yellow]"
             )
+
+    if ab_adapter is not None:
+        # Session-resume protocol (harness-jr3): show thought-graph
+        # state so ab + user resume from the bead graph rather than
+        # reconstructing from a cold conversation.
+        console.print(f"[dim]{build_resume_summary(ab_adapter)}[/dim]")
 
     try:
         while True:
