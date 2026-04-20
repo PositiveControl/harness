@@ -91,7 +91,12 @@ def build_classic_registry(
     --no-tools or the resolved profile comes back empty."""
     import typer
 
-    from harness.cli import _ab_tool_builders, _make_introspect_tool, _router_id_label
+    from harness.cli import (
+        _ab_tool_builders,
+        _make_introspect_tool,
+        _missing_builder_reason,
+        _router_id_label,
+    )
 
     if not tools:
         return None
@@ -177,7 +182,7 @@ def build_classic_registry(
             continue  # deferred until the registry is populated
         builder = builders.get(name)
         if builder is None:
-            console.print(f"[yellow]⚠ tool {name!r} not yet implemented — skipping[/yellow]")
+            console.print(f"[yellow]⚠ {_missing_builder_reason(name, character)}[/yellow]")
             continue
         tool = builder()
         if tool is None:
@@ -470,7 +475,7 @@ def run_classic_chat(
     import typer
 
     from harness.cli import (
-        _maybe_ab_bd_adapter,
+        _maybe_bd_adapter,
         _maybe_retriever,
         _open_episodic_store,
         _open_semantic_store,
@@ -519,7 +524,7 @@ def run_classic_chat(
     compaction_store = CompactionStore(settings.character_db_path) if compact_at > 0 else None
 
     retrieval_state = _RetrievalState()
-    ab_adapter = _maybe_ab_bd_adapter(character, include_internal=include_internal or dev)
+    ab_adapter = _maybe_bd_adapter(character, include_internal=include_internal or dev)
 
     registry = build_classic_registry(
         tools=tools,

@@ -91,12 +91,10 @@ class Settings(BaseSettings):
 
     @property
     def ab_bd_dir_resolved(self) -> Path:
-        """Resolve ab's bd working directory, falling back to
-        ~/.harness/airton_b/ when unset. The dir itself is not created
-        here — BeadsAdapter verifies on use."""
-        if self.ab_bd_dir is not None:
-            return self.ab_bd_dir
-        return Path.home() / ".harness" / "airton_b"
+        """Back-compat alias — resolves airton_b's bd working directory.
+        Kept so callers + env HARNESS_AB_BD_DIR continue to work while
+        the rest of the code migrates to `bd_dir_for(character_name)`."""
+        return self.bd_dir_for("airton_b")
 
     @property
     def ab_memory_dir_resolved(self) -> Path:
@@ -106,6 +104,21 @@ class Settings(BaseSettings):
         if self.ab_memory_dir is not None:
             return self.ab_memory_dir
         return self.ab_bd_dir_resolved / "memory"
+
+    def bd_dir_for(self, character_name: str) -> Path:
+        """Resolve the bd working directory for a character. airton_b
+        honours the legacy HARNESS_AB_BD_DIR override (→ `ab_bd_dir`);
+        every other character gets `~/.harness/<character_name>/`. The
+        dir is not created here — BeadsAdapter.verify() raises with a
+        bootstrap hint when it's missing, which is the intended UX.
+
+        Per-character isolation mirrors the memory-store split
+        (`db_path_for`): each character's thought-graph lives in its
+        own dir so ops writes from one character never cross into
+        another's graph."""
+        if character_name == "airton_b" and self.ab_bd_dir is not None:
+            return self.ab_bd_dir
+        return Path.home() / ".harness" / character_name
 
     def db_path_for(self, character_name: str) -> Path:
         """Resolve the memory DB path for a character. Airton (and any

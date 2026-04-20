@@ -52,7 +52,7 @@ def run_tui(
 ) -> None:
     from harness.cli import (
         _build_tool_registry_for_tui,
-        _maybe_ab_bd_adapter,
+        _maybe_bd_adapter,
         _maybe_retriever,
         _open_episodic_store,
         _open_semantic_store,
@@ -92,9 +92,7 @@ def run_tui(
     router: Router | None = None
     if router_enabled:
         if not tools:
-            raise typer.BadParameter(
-                "--router requires --tools (nothing to route to otherwise)."
-            )
+            raise typer.BadParameter("--router requires --tools (nothing to route to otherwise).")
         if router_mode not in {"free", "grammar"}:
             raise typer.BadParameter(
                 f"--router-mode must be 'free' or 'grammar' (got {router_mode!r})."
@@ -112,9 +110,7 @@ def run_tui(
     # Shared between ChatApp (which mutates it when retrieval raises)
     # and the introspect tool (which reads live status).
     retrieval_health = _RetrievalState()
-    ab_adapter = _maybe_ab_bd_adapter(
-        character, include_internal=include_internal or dev
-    )
+    ab_adapter = _maybe_bd_adapter(character, include_internal=include_internal or dev)
     registry: ToolRegistry | None = _build_tool_registry_for_tui(
         tools=tools,
         tool_set=tool_set,

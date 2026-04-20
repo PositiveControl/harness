@@ -262,24 +262,24 @@ def _print_session_end_retro(ab_adapter: BeadsAdapter | None) -> None:
     console.print(f"[dim]{summary}[/dim]")
 
 
-def _maybe_ab_bd_adapter(
+def _maybe_bd_adapter(
     character: Character,
     *,
     include_internal: bool = False,
 ) -> BeadsAdapter | None:
-    """Construct ab's bd adapter when the active character is
-    airton_b and its isolated beads DB is initialized. Returns None
-    (with a yellow warning to the console) when bd isn't runnable or
-    the dir hasn't been bootstrapped yet — ab's ops tools then skip
-    registration with a hint. Any other character gets None silently;
-    ab ops don't belong on other personas.
+    """Construct a bd adapter for the active character's ops plane.
+    Returns None (with a yellow warning) when bd isn't runnable or the
+    character's bd dir hasn't been bootstrapped — ops tools then skip
+    registration with a hint. Works for any character: per-character
+    bd dirs (~/.harness/<name>/) mirror the memory-store isolation,
+    so airton and airton_b never cross thought-graphs.
 
     `include_internal=False` (default) hides ab-owned thought-graph
     beads (assignee=airton_b) from read views. `--dev` or explicit
-    `--include-internal` on the CLI flip this on."""
-    if character.name != "airton_b":
-        return None
-    bd_dir = settings.ab_bd_dir_resolved
+    `--include-internal` on the CLI flip this on. The filter is a
+    no-op for characters with no airton_b-assigned beads; keeping it
+    uniform avoids branching on character name here."""
+    bd_dir = settings.bd_dir_for(character.name)
     exclude = None if include_internal else "airton_b"
     adapter = BeadsAdapter(
         bd_dir,
@@ -291,23 +291,77 @@ def _maybe_ab_bd_adapter(
     try:
         adapter.verify()
     except BeadsAdapterError as exc:
-        console.print(f"[yellow]⚠ ab ops tools unavailable: {exc}[/yellow]")
+        console.print(f"[yellow]⚠ ops tools unavailable: {exc}[/yellow]")
         return None
     # Surface which path the adapter landed on so misconfigured
-    # HARNESS_AB_BD_DIR (or missing env var vs expected dir) is visible
-    # at session start rather than silently writing to the wrong DB.
-    console.print(f"[dim]ab bd → {bd_dir}[/dim]")
+    # HARNESS_AB_BD_DIR (or missing bootstrap) is visible at session
+    # start rather than silently writing to the wrong DB.
+    console.print(f"[dim]{character.name} bd → {bd_dir}[/dim]")
     return adapter
+
+
+# Back-compat alias — external callers (tests, scripts) still import
+# the old name. Remove once all call sites are migrated.
+_maybe_ab_bd_adapter = _maybe_bd_adapter
+
+
+# Names of the ops (bd-backed) tools. Used by the registry warning
+# path to distinguish "unknown tool" from "ops tool whose bd adapter
+# didn't bind" — the user-facing hint is very different.
+OPS_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "plan",
+        "capture",
+        "status",
+        "drift",
+        "reprioritize",
+        "close",
+        "defer",
+        "retro",
+        "reopen",
+        "delete",
+        "update",
+        "search",
+        "list",
+        "memories",
+        "remember",
+        "forget",
+        "dep",
+        "label",
+        "comments",
+        "find_duplicates",
+        "persist_focus_note",
+    }
+)
+
+
+def _missing_builder_reason(name: str, character: Character | None) -> str:
+    """Explain why a requested tool name isn't in the registry. Splits
+    three cases the old 'not yet implemented' blanket message lumped
+    together: genuinely unknown tools, ops tools whose bd adapter
+    didn't bind, and everything else (forward-compat placeholders)."""
+    if name in OPS_TOOL_NAMES:
+        char = character.name if character is not None else "<character>"
+        bd_dir = settings.bd_dir_for(char) if character is not None else "<bd dir>"
+        return (
+            f"tool {name!r} needs a bd dir — run `cd {bd_dir} && bd init`, "
+            f"or set HARNESS_AB_BD_DIR (airton_b) to an existing bd working dir"
+        )
+    return f"tool {name!r} not yet implemented — skipping"
 
 
 def _ab_tool_builders(
     ab_adapter: BeadsAdapter | None,
 ) -> dict[str, Callable[[], Tool | None]]:
-    """Return tool-name → builder map for ab's ops surface. When the
-    adapter is None (wrong character or bd not runnable), returns an
-    empty dict so the caller's merge is a no-op. When present, every
-    builder is unconditional — the ops tools don't depend on episodic
-    or semantic stores the way the memory tools do."""
+    """Return tool-name → builder map for the ops surface. When the
+    adapter is None (bd not runnable or dir not bootstrapped), returns
+    an empty dict so the caller's merge is a no-op. When present,
+    every builder is unconditional — ops tools don't depend on
+    episodic or semantic stores the way the memory tools do.
+
+    Any character can get an ops surface if their per-character bd
+    dir is bootstrapped; the builders don't care which character the
+    adapter was constructed for."""
     if ab_adapter is None:
         return {}
     return {
@@ -1054,7 +1108,7 @@ def _build_tool_registry_for_tui(
         effective_ab = (
             ab_adapter
             if ab_adapter is not None
-            else _maybe_ab_bd_adapter(character, include_internal=include_internal)
+            else _maybe_bd_adapter(character, include_internal=include_internal)
         )
         builders.update(_ab_tool_builders(effective_ab))
 
@@ -1065,7 +1119,7 @@ def _build_tool_registry_for_tui(
         builder = builders.get(name)
         if builder is None:
             if warnings_out is not None:
-                warnings_out.append(f"tool {name!r} not yet implemented — skipping")
+                warnings_out.append(_missing_builder_reason(name, character))
             continue
         tool = builder()
         if tool is None:

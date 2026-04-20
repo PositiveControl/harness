@@ -137,3 +137,48 @@ def test_settings_monkeypatch_env_override(monkeypatch: pytest.MonkeyPatch, tmp_
     s = Settings(root=tmp_path)
     assert s.ab_memory_dir_resolved == override
     assert s.db_path_for("airton_b") == override / "harness.sqlite"
+
+
+# --- bd_dir_for: per-character bd-dir resolution (harness-55y) ---
+#
+# Any character can own a bd thought-graph. airton_b keeps its legacy
+# HARNESS_AB_BD_DIR override for back-compat; every other character
+# resolves to ~/.harness/<name>/. Tests here pin both branches.
+
+
+def test_bd_dir_for_airton_b_honours_legacy_env(tmp_path: Path) -> None:
+    """HARNESS_AB_BD_DIR (→ settings.ab_bd_dir) still controls airton_b's
+    bd dir exactly as before — the rename must not break existing
+    setups."""
+    legacy = tmp_path / "legacy_ab"
+    s = Settings(root=tmp_path, ab_bd_dir=legacy)
+    assert s.bd_dir_for("airton_b") == legacy
+    # ab_bd_dir_resolved is the back-compat alias; stays in lock-step.
+    assert s.ab_bd_dir_resolved == legacy
+
+
+def test_bd_dir_for_airton_b_defaults_to_home_when_env_unset(tmp_path: Path) -> None:
+    """With no HARNESS_AB_BD_DIR, airton_b falls back to the same
+    ~/.harness/airton_b/ default as every other character — the
+    legacy env is an override, not the default."""
+    s = Settings(root=tmp_path)
+    assert s.bd_dir_for("airton_b") == Path.home() / ".harness" / "airton_b"
+
+
+def test_bd_dir_for_airton_is_isolated_from_airton_b(tmp_path: Path) -> None:
+    """Core isolation invariant: airton and airton_b resolve to
+    distinct bd dirs by default. Writing ops through one character's
+    adapter cannot surface in another character's thought-graph."""
+    s = Settings(root=tmp_path, ab_bd_dir=tmp_path / "ab")
+    airton_dir = s.bd_dir_for("airton")
+    ab_dir = s.bd_dir_for("airton_b")
+    assert airton_dir != ab_dir
+    assert airton_dir == Path.home() / ".harness" / "airton"
+
+
+def test_bd_dir_for_unknown_character_uses_home_default(tmp_path: Path) -> None:
+    """Any new character automatically gets its own bd dir —
+    the helper is fully data-driven, not a string-match on known
+    names."""
+    s = Settings(root=tmp_path)
+    assert s.bd_dir_for("new_persona") == Path.home() / ".harness" / "new_persona"

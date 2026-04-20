@@ -1,16 +1,19 @@
-"""End-to-end wiring tests for the airton_b CLI path — harness-inj.6.
+"""End-to-end wiring tests for the bd-backed CLI path — harness-inj.6
+extended by harness-55y to cover every character, not just airton_b.
 
-Covers the two pieces of CLI glue that turn airton_b from 'character
-data on disk' into an invocable persona:
+Covers the CLI glue that turns a character's ops-tool request into a
+bound BeadsAdapter:
 
-- `_maybe_ab_bd_adapter(character)` returns a BeadsAdapter for airton_b
-  when its isolated dir is initialized; returns None with a warning
-  otherwise; returns None silently for any other character.
-- `_ab_tool_builders(adapter)` surfaces the 8 ops tool builders exactly
-  when an adapter is present.
+- `_maybe_bd_adapter(character)` returns a BeadsAdapter for *any*
+  character when that character's per-character bd dir is
+  bootstrapped; returns None with a warning when the dir is missing.
+  airton and airton_b resolve to distinct dirs so their thought
+  graphs stay isolated.
+- `_ab_tool_builders(adapter)` surfaces the 21 ops tool builders
+  exactly when an adapter is present — independent of character.
 - `_resolve_adapter` branches on character.name so airton_b gets the
   CavemanRewriter and every other character keeps PersonaAdapter.
-- Full-surface smoke: loading ab's character + calling every ab ops
+- Full-surface smoke: loading either character + calling every ops
   tool builder produces the expected Tool instances with the right
   `ToolSpec.name` — no silent drops, no rename drift.
 
@@ -29,7 +32,8 @@ import pytest
 from harness.character import load_character
 from harness.cli import (
     _ab_tool_builders,
-    _maybe_ab_bd_adapter,
+    _maybe_bd_adapter,
+    _missing_builder_reason,
     _resolve_adapter,
 )
 from harness.persona import PersonaAdapter
@@ -41,22 +45,14 @@ AIRTON = REPO_ROOT / "character" / "airton"
 AIRTON_B = REPO_ROOT / "character" / "airton_b"
 
 
-def test_maybe_ab_bd_adapter_returns_none_for_non_ab_character() -> None:
-    airton = load_character(AIRTON)
-    assert _maybe_ab_bd_adapter(airton) is None
+def _stub_bd_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the bd-CLI surface so verify() clears without real bd.
 
-
-def test_maybe_ab_bd_adapter_returns_adapter_when_dir_ready(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    (tmp_path / ".beads").mkdir()
-    monkeypatch.setattr("harness.cli.settings.ab_bd_dir", tmp_path)
-    # shutil.which returns a truthy path so verify() clears the
-    # bd-on-PATH gate without actually needing bd installed.
+    shutil.which returns a truthy path (bd-on-PATH gate) and
+    subprocess.run returns exit 0 + a connection-successful stdout
+    (Dolt-server-reachable gate)."""
     monkeypatch.setattr("harness.store.bd_adapter.shutil.which", lambda _: "/usr/local/bin/bd")
 
-    # verify() now also probes the Dolt server via `bd dolt test`; stub
-    # subprocess so the probe returns exit 0 without needing a real bd.
     def fake_run(*_a: object, **_k: object) -> MagicMock:
         proc = MagicMock()
         proc.returncode = 0
@@ -66,24 +62,62 @@ def test_maybe_ab_bd_adapter_returns_adapter_when_dir_ready(
 
     monkeypatch.setattr("harness.store.bd_adapter.subprocess.run", fake_run)
 
+
+def test_maybe_bd_adapter_returns_adapter_for_airton_b_when_dir_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / ".beads").mkdir()
+    monkeypatch.setattr("harness.cli.settings.ab_bd_dir", tmp_path)
+    _stub_bd_subprocess(monkeypatch)
+
     ab = load_character(AIRTON_B)
-    adapter = _maybe_ab_bd_adapter(ab)
+    adapter = _maybe_bd_adapter(ab)
 
     assert isinstance(adapter, BeadsAdapter)
     assert adapter.bd_dir == tmp_path
 
 
-def test_maybe_ab_bd_adapter_returns_none_when_dir_missing(
+def test_maybe_bd_adapter_returns_adapter_for_airton_when_dir_ready(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    missing = tmp_path / "not_here"
-    monkeypatch.setattr("harness.cli.settings.ab_bd_dir", missing)
+    """Foundational shift (harness-55y): any character — not just
+    airton_b — can bind an ops adapter when its bd dir exists. Point
+    airton's bd dir at an initialized tmp_path and confirm the helper
+    hands back a real adapter.
+
+    Path.home is redirected to tmp_path so the default bd-dir
+    resolver (~/.harness/<name>/) lands under the tmp root without
+    touching the user's real home."""
+    fake_home = tmp_path / "home"
+    airton_dir = fake_home / ".harness" / "airton"
+    airton_dir.mkdir(parents=True)
+    (airton_dir / ".beads").mkdir()
+    monkeypatch.setattr("harness.config.Path.home", lambda: fake_home)
+    _stub_bd_subprocess(monkeypatch)
+
+    airton = load_character(AIRTON)
+    adapter = _maybe_bd_adapter(airton)
+
+    assert isinstance(adapter, BeadsAdapter)
+    assert adapter.bd_dir == airton_dir
+
+
+def test_maybe_bd_adapter_returns_none_when_any_character_dir_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Previously this asserted 'any non-airton_b character returns
+    None unconditionally'. Post-55y, the gate is dir existence, not
+    character name — a missing dir is the only reason to skip."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()  # exists but has no .harness/ subtree
+    monkeypatch.setattr("harness.config.Path.home", lambda: fake_home)
+    monkeypatch.setattr("harness.cli.settings.ab_bd_dir", None)
     monkeypatch.setattr("harness.store.bd_adapter.shutil.which", lambda _: "/usr/local/bin/bd")
 
+    airton = load_character(AIRTON)
     ab = load_character(AIRTON_B)
-    adapter = _maybe_ab_bd_adapter(ab)
-
-    assert adapter is None
+    assert _maybe_bd_adapter(airton) is None
+    assert _maybe_bd_adapter(ab) is None
 
 
 def test_ab_tool_builders_empty_when_adapter_none() -> None:
@@ -201,4 +235,29 @@ def test_bd_adapter_error_path_logs_warning(
 
     monkeypatch.setattr(BeadsAdapter, "verify", boom)
     ab = load_character(AIRTON_B)
-    assert _maybe_ab_bd_adapter(ab) is None
+    assert _maybe_bd_adapter(ab) is None
+
+
+def test_missing_builder_reason_ops_tool_points_to_bd_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A requested ops tool that didn't bind must surface a bd-dir
+    bootstrap hint, not the old 'not yet implemented' message. The
+    hint names the actual resolved dir so the user knows exactly
+    where to run `bd init`."""
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr("harness.config.Path.home", lambda: fake_home)
+    airton = load_character(AIRTON)
+    reason = _missing_builder_reason("plan", airton)
+    assert "bd init" in reason
+    assert str(fake_home / ".harness" / "airton") in reason
+    assert "not yet implemented" not in reason
+
+
+def test_missing_builder_reason_unknown_tool_keeps_old_message() -> None:
+    """Genuine typos / forward-compat placeholders still say 'not yet
+    implemented' — conserves the message for the case where the user
+    actually needs to check the spelling."""
+    airton = load_character(AIRTON)
+    reason = _missing_builder_reason("totally_made_up_tool", airton)
+    assert "not yet implemented" in reason
