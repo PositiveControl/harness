@@ -905,6 +905,80 @@ def test_update_tool_requires_at_least_one_field() -> None:
     assert adapter.update_calls == []
 
 
+def test_update_tool_sets_scope_via_label_swap() -> None:
+    """harness-d7e: scope is a label-backed pseudo-field. Setting it
+    on an unscoped item adds the new scope:* label and triggers no
+    bd update call (scope isn't a native field)."""
+    adapter = FakeAdapter(
+        show_issues={"harness-x": _issue("harness-x", scope=None)},
+    )
+    out = UpdateTool(adapter).call(id="harness-x", scope="professional")
+
+    assert "Updated harness-x" in out
+    assert "scope=>professional" in out
+    assert adapter.label_add_calls == [("harness-x", "scope:professional")]
+    assert adapter.label_rm_calls == []
+    # No native bd update — scope isn't a column.
+    assert adapter.update_calls == []
+
+
+def test_update_tool_swaps_existing_scope_label() -> None:
+    """When scope is already set, swap atomically: drop the old label,
+    add the new. The model can flip personal → professional in one
+    call without thinking about labels."""
+    adapter = FakeAdapter(
+        show_issues={"harness-x": _issue("harness-x", scope="personal")},
+    )
+    UpdateTool(adapter).call(id="harness-x", scope="professional")
+
+    assert adapter.label_rm_calls == [("harness-x", "scope:personal")]
+    assert adapter.label_add_calls == [("harness-x", "scope:professional")]
+
+
+def test_update_tool_scope_no_op_when_already_set() -> None:
+    """Setting scope to the value the item already has shouldn't
+    churn bd. No add, no remove — but also not an error: the user's
+    intent is satisfied."""
+    adapter = FakeAdapter(
+        show_issues={"harness-x": _issue("harness-x", scope="professional")},
+    )
+    out = UpdateTool(adapter).call(id="harness-x", scope="professional")
+
+    assert "Updated harness-x" in out
+    assert adapter.label_add_calls == []
+    assert adapter.label_rm_calls == []
+
+
+def test_update_tool_rejects_invalid_scope() -> None:
+    """Off-enum scope values return a useful error and do not touch
+    bd. Mirror of the existing scope guard on capture/list."""
+    adapter = FakeAdapter(show_issues={"harness-x": _issue("harness-x")})
+    out = UpdateTool(adapter).call(id="harness-x", scope="ab")
+
+    assert "invalid scope" in out
+    assert adapter.label_add_calls == []
+    assert adapter.label_rm_calls == []
+    assert adapter.update_calls == []
+
+
+def test_update_tool_combines_scope_and_native_fields() -> None:
+    """A turn that says 'rename it and make it personal' should land
+    one bd update + one label swap, both reflected in the success
+    line. Pins that the two paths don't shadow each other."""
+    adapter = FakeAdapter(
+        show_issues={"harness-x": _issue("harness-x", scope="professional")},
+    )
+    out = UpdateTool(adapter).call(
+        id="harness-x", title="new title", scope="personal"
+    )
+
+    assert adapter.update_calls == [("harness-x", {"title": "new title"})]
+    assert adapter.label_rm_calls == [("harness-x", "scope:professional")]
+    assert adapter.label_add_calls == [("harness-x", "scope:personal")]
+    assert "title" in out
+    assert "scope=>personal" in out
+
+
 def test_search_tool_renders_hits() -> None:
     adapter = FakeAdapter(
         search_hits=[

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -122,7 +123,13 @@ class ToolRegistry:
     def call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         """Execute the named tool. Failures are returned as ToolResult,
         not raised — the caller is the orchestrator, which wants to
-        feed errors back to the model for it to recover from."""
+        feed errors back to the model for it to recover from.
+
+        Unknown-keyword TypeErrors get a structured rewrite (harness-d7e)
+        that lists the tool's accepted properties so the model can
+        retry without the offending field instead of repeating the
+        same call. Generic Python TypeError messages don't enumerate
+        valid kwargs, so the model has no way to know what to drop."""
         if name not in self._tools:
             return ToolResult(
                 tool_name=name,
@@ -130,10 +137,34 @@ class ToolRegistry:
                 success=False,
                 error="unknown_tool",
             )
+        tool = self._tools[name]
         try:
             # Tool's `call` is not on the Protocol (see Tool docstring); each
             # concrete implementation supplies it with typed kwargs.
-            out: str = self._tools[name].call(**arguments)  # type: ignore[attr-defined]
+            out: str = tool.call(**arguments)  # type: ignore[attr-defined]
+        except TypeError as exc:
+            unknown = _unknown_kwarg_from(exc)
+            if unknown is not None:
+                accepted = sorted(
+                    (tool.spec.parameters.get("properties") or {}).keys()
+                )
+                msg = (
+                    f"tool {name!r} rejected unknown argument {unknown!r}. "
+                    f"Accepts: {', '.join(accepted) or '(none)'}. "
+                    "Retry without the unknown field."
+                )
+                return ToolResult(
+                    tool_name=name,
+                    output=msg,
+                    success=False,
+                    error=f"unknown_kwarg:{unknown}",
+                )
+            return ToolResult(
+                tool_name=name,
+                output=f"error calling {name}: {exc}",
+                success=False,
+                error=f"TypeError: {exc}",
+            )
         except Exception as exc:  # any failure goes back to the model, not up the stack
             return ToolResult(
                 tool_name=name,
@@ -142,3 +173,17 @@ class ToolRegistry:
                 error=f"{type(exc).__name__}: {exc}",
             )
         return ToolResult(tool_name=name, output=out, success=True)
+
+
+_UNKNOWN_KWARG_RE = re.compile(
+    r"got an unexpected keyword argument ['\"]([^'\"]+)['\"]"
+)
+
+
+def _unknown_kwarg_from(exc: TypeError) -> str | None:
+    """Pluck the offending kwarg name from a TypeError raised by a
+    `call(**arguments)` invocation. Returns None when the TypeError
+    came from something else (shape mismatch, missing required arg)
+    — those flow through the generic error path."""
+    match = _UNKNOWN_KWARG_RE.search(str(exc))
+    return match.group(1) if match else None

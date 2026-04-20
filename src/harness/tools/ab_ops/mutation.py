@@ -20,6 +20,7 @@ from harness.tools.ab_ops._shared import (
     STALL_DEFERS,
     STALL_LABEL,
     _Adapter,
+    _validate_scope,
 )
 from harness.tools.base import ToolSpec
 
@@ -418,9 +419,16 @@ class DeleteTool:
 @dataclass
 class UpdateTool:
     """Generic bd update over common fields: title, description, notes,
-    assignee, priority, status. DeferTool stays as sugar for the
+    assignee, priority, status, scope. DeferTool stays as sugar for the
     priority-down flow; this tool covers everything else and also
-    accepts `priority` directly when the caller knows the target."""
+    accepts `priority` directly when the caller knows the target.
+
+    `scope` is a label-backed pseudo-field (harness-d7e): bd has no
+    native scope column, so set/change is implemented as a label swap
+    — drop any existing `scope:*` label, add `scope:<new>`. The user's
+    mental model is 'scope is a property', so exposing it as a field
+    on update is closer to that model than asking them to navigate to
+    LabelTool with a prefixed string."""
 
     adapter: _Adapter
 
@@ -430,9 +438,12 @@ class UpdateTool:
             name="update",
             description=(
                 "Update one or more fields on an item: title, "
-                "description, notes, assignee, priority (0-4), or "
-                "status. At least one field is required. For "
-                "priority-down-one-step, prefer `defer`."
+                "description, notes, assignee, priority (0-4), "
+                "status, or scope. At least one field is required. "
+                "For priority-down-one-step, prefer `defer`. To "
+                "change scope on an existing item ('make X "
+                "professional'), pass scope='professional' here — "
+                "it swaps the underlying scope:* label atomically."
             ),
             parameters={
                 "type": "object",
@@ -448,6 +459,11 @@ class UpdateTool:
                         "maximum": 4,
                     },
                     "status": {"type": "string"},
+                    "scope": {
+                        "type": "string",
+                        "enum": list(ALLOWED_SCOPES),
+                        "description": _SCOPE_PARAM_DESCRIPTION,
+                    },
                 },
                 "required": ["id"],
             },
@@ -465,6 +481,7 @@ class UpdateTool:
         assignee: str | None = None,
         priority: int | None = None,
         status: str | None = None,
+        scope: str | None = None,
     ) -> str:
         fields: dict[str, str] = {}
         if title is not None:
@@ -481,15 +498,46 @@ class UpdateTool:
             fields["priority"] = str(priority)
         if status is not None:
             fields["status"] = status
-        if not fields:
+        scope_changed = False
+        if scope is not None:
+            scope_err = _validate_scope(scope)
+            if scope_err:
+                return f"update failed: {scope_err}"
+            try:
+                self._swap_scope(id, scope)
+            except BeadsAdapterError as exc:
+                return f"update failed: {exc}"
+            scope_changed = True
+        if not fields and not scope_changed:
             return (
                 "update failed: no fields provided. Pass at least one of "
-                + ", ".join(sorted(_UPDATE_FIELD_FLAGS))
+                + ", ".join(sorted([*_UPDATE_FIELD_FLAGS, "scope"]))
                 + "."
             )
-        try:
-            self.adapter.update(id, **fields)
-        except BeadsAdapterError as exc:
-            return f"update failed: {exc}"
-        changed = ", ".join(sorted(fields))
-        return f"Updated {id}: {changed}."
+        if fields:
+            try:
+                self.adapter.update(id, **fields)
+            except BeadsAdapterError as exc:
+                return f"update failed: {exc}"
+        changed_keys = sorted(fields)
+        if scope_changed:
+            changed_keys.append(f"scope=>{scope}")
+        return f"Updated {id}: {', '.join(changed_keys)}."
+
+    def _swap_scope(self, issue_id: str, new_scope: str) -> None:
+        """Atomically (best-effort) replace the item's scope:* label
+        with `scope:<new_scope>`. Reads current labels via show(),
+        removes any non-matching scope:* label, adds the new one when
+        it isn't already present. bd's label add is idempotent enough
+        in practice that a duplicate add is harmless, but we skip it
+        to keep the bd command count down."""
+        target = f"scope:{new_scope}"
+        issue = self.adapter.show(issue_id)
+        existing_scope_labels = [
+            label for label in issue.labels if label.startswith("scope:")
+        ]
+        for label in existing_scope_labels:
+            if label != target:
+                self.adapter.label_rm(issue_id, label)
+        if target not in existing_scope_labels:
+            self.adapter.label_add(issue_id, target)

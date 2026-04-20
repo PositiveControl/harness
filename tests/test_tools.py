@@ -76,6 +76,46 @@ def test_registry_catches_tool_exceptions(tmp_path: Path) -> None:
     assert "FileNotFoundError" in (result.error or "")
 
 
+def test_registry_unknown_kwarg_returns_actionable_error(tmp_path: Path) -> None:
+    """harness-d7e: when the model passes an arg the tool's signature
+    doesn't accept, the bare Python TypeError ('unexpected keyword
+    argument deadline') doesn't tell the model what IS accepted, so
+    it tends to repeat the same call. Rewrite that case into a
+    'rejected unknown argument X. Accepts: a, b, c. Retry without
+    the unknown field.' message keyed by the tool's JSON-schema
+    properties."""
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+    (tmp_path / "hi.txt").write_text("hello")
+
+    result = registry.call("read_file", {"path": "hi.txt", "deadline": "today"})
+
+    assert not result.success
+    assert "rejected unknown argument 'deadline'" in result.output
+    # The accepted-args list is sourced from the spec's properties so
+    # additions to the schema flow into the hint automatically.
+    assert "Accepts:" in result.output
+    assert "path" in result.output
+    assert (result.error or "").startswith("unknown_kwarg:")
+
+
+def test_registry_typeerror_without_unknown_kwarg_falls_through(tmp_path: Path) -> None:
+    """A TypeError that ISN'T about unknown kwargs (shape mismatch,
+    missing required arg) flows through the generic error path so the
+    rewrite doesn't claim to know more than it does."""
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    # path is required; omitting it raises a different TypeError shape.
+    result = registry.call("read_file", {})
+
+    assert not result.success
+    # Generic TypeError prefix from the catch-all path, NOT the
+    # unknown-kwarg rewrite.
+    assert "rejected unknown argument" not in result.output
+    assert (result.error or "").startswith("TypeError")
+
+
 def test_every_tool_satisfies_protocol(tmp_path: Path) -> None:
     """Structural check — every concrete tool implements the Tool protocol."""
     store_ep = EpisodicStore(tmp_path / "e.sqlite", embedder=_FakeEmbedder())

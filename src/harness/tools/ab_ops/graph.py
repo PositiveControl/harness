@@ -81,9 +81,14 @@ class LabelTool:
             description=(
                 "Manage labels on an item. op='add' or op='remove' "
                 "needs a label string; op='list' returns the item's "
-                "current labels. The scope: label is special — don't "
-                "edit it via this tool; rescope by capturing a new "
-                "item or closing and recreating."
+                "current labels.\n\n"
+                "Scope is special: to set or change scope on an item "
+                "('make harness-x professional', 'change scope to "
+                "personal') use the `update` tool with scope=... — it "
+                "swaps the underlying scope:* label atomically. Don't "
+                "pass a bare 'professional'/'personal' to this tool; "
+                "you'll create an unprefixed label that no read path "
+                "filters on."
             ),
             parameters={
                 "type": "object",
