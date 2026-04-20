@@ -794,7 +794,7 @@ async def test_slash_palette_opens_on_slash_and_filters(tmp_path) -> None:  # ty
         await pilot.pause()
         assert palette.is_open
         # Default highlight is the alpha-first entry.
-        assert palette.selected_name() == "/compact"
+        assert palette.selected_name() == "/clear"
 
         prompt.value = "/q"
         await pilot.pause()
@@ -863,6 +863,51 @@ async def test_slash_palette_escape_closes(tmp_path) -> None:  # type: ignore[no
         assert palette.is_open
         await pilot.press("escape")
         assert not palette.is_open
+
+
+@pytest.mark.asyncio
+async def test_slash_clear_wipes_history_and_log(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """/clear drops model-visible history and wipes the RichLog but
+    leaves the transcript DB intact so memory/scribe/retro still have
+    everything. Post-clear the log shows only the separator banner;
+    _state.history is empty; transcript row count is unchanged."""
+    from harness.model.adapter import ChatMessage
+
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        # Seed the in-memory history the way a real turn would — two
+        # messages representing one completed exchange. We also
+        # persist them so the transcript side of the invariant has
+        # something to compare against post-clear.
+        tui_app._state.history = [
+            ChatMessage(role="user", content="hello"),
+            ChatMessage(role="assistant", content="hi there"),
+        ]
+        for role, content in (("user", "hello"), ("assistant", "hi there")):
+            tui_app._transcript.append(
+                session=tui_app._session,
+                channel=tui_app._channel,
+                speaker="mark" if role == "user" else "airton",
+                role=role,  # type: ignore[arg-type]
+                content=content,
+            )
+        transcript_rows_before = len(tui_app._transcript.tail(tui_app._session, limit=100))
+
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "/clear"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert tui_app._state.history == []
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "context cleared" in rendered
+        # Transcript rows survive — scribe + retro rely on this.
+        assert (
+            len(tui_app._transcript.tail(tui_app._session, limit=100))
+            == transcript_rows_before
+        )
 
 
 @pytest.mark.asyncio

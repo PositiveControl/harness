@@ -7,6 +7,8 @@ Extracted from cli.chat() (harness-0n1r). Covers:
 - `handle_retro_slash` — /retro summary + optional insight record.
 - `handle_edit_slash` — /edit + /capture: open $EDITOR on the last
   reply, write the edited text as a new voice sample.
+- `handle_clear_slash` — /clear: wipe the model-visible history for
+  the current session without deleting the persisted transcript.
 
 The chat() command still owns the REPL loop shape; these helpers let
 it stop juggling closure state and make the individual flows
@@ -15,7 +17,7 @@ testable in isolation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import TYPE_CHECKING
 
@@ -50,14 +52,28 @@ class ContextMeter:
     compaction_store: CompactionStore | None
     session: str
     console: Console
+    # /clear sets this to the highest transcript row id at the moment
+    # the command ran. `load_history` then returns only rows > cutoff
+    # AND ignores any prior compaction summary — the next turn sees
+    # the system prompt + new user msg, nothing else. Persisted rows
+    # stay in the DB for audit, scribe, and retro. Ephemeral to the
+    # running process (harness-c1r).
+    clear_after_id: int | None = field(default=None)
 
     def load_history(self) -> tuple[ChatMessage | None, list[ChatMessage]]:
         """Return (optional summary-system-message, turns-since-pointer).
         When a compaction summary exists, turns before the pointer are
         represented by the summary only; raw rows stay in the transcript
-        for audit but never hit the model."""
+        for audit but never hit the model.
+
+        A live /clear cutoff beats both the compaction summary and the
+        plain tail path — post-clear turns are the only thing the
+        model should see."""
         from harness.cli import _decode_transcript_message
 
+        if self.clear_after_id is not None:
+            rows = self.transcript.fetch_after(self.session, after_id=self.clear_after_id)
+            return None, [_decode_transcript_message(m) for m in rows]
         record = (
             self.compaction_store.latest_for_session(self.session)
             if self.compaction_store
@@ -75,6 +91,14 @@ class ContextMeter:
             return summary_msg, [_decode_transcript_message(m) for m in rows]
         rows = self.transcript.tail(self.session, limit=50)
         return None, [_decode_transcript_message(m) for m in rows]
+
+    def clear(self) -> None:
+        """Mark the model-visible history as reset at the current
+        transcript tip. Subsequent `load_history` calls return only
+        rows appended after this moment until the process exits or
+        `clear_after_id` is explicitly reset."""
+        rows = self.transcript.tail(self.session, limit=1)
+        self.clear_after_id = rows[-1].id if rows else 0
 
     def measure(self) -> int:
         """Estimate tokens for what the NEXT turn will start with:
@@ -148,6 +172,18 @@ class ContextMeter:
                 "[yellow]compaction skipped — nothing qualified "
                 "(fewer turns than keep-recent, or model returned empty).[/yellow]"
             )
+
+
+def handle_clear_slash(ctx_meter: ContextMeter, console: Console) -> None:
+    """/clear — reset the model-visible context to a fresh start.
+
+    Wipes the history the next turn will see and prints a confirmation
+    line. Persisted stores (transcript, memory, facts, compaction,
+    voice corpus) are untouched; scribe + retro still have everything.
+    Ephemeral to this process — restarting without `/clear` will
+    replay the full session."""
+    ctx_meter.clear()
+    console.print("[dim]─── context cleared ───[/dim]")
 
 
 def handle_retro_slash(ab_adapter: BeadsAdapter | None, console: Console) -> None:

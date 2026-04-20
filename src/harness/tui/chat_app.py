@@ -166,6 +166,7 @@ def _make_assistant_badge(speaker: str) -> Text:
 # `/capture` is a hidden alias for /edit; both stay routable from the
 # submit handler so typing them directly still works. harness-kg9.
 _SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("/clear", "wipe model-visible history; persisted stores untouched"),
     ("/compact", "summarize older turns into a session summary"),
     ("/consolidate", "merge near-duplicate memories + facts"),
     ("/edit", "edit Airton's last reply as a new voice sample"),
@@ -732,6 +733,10 @@ class ChatApp(App[None]):
         if cmd in {"/edit", "/capture"}:
             event.input.value = ""
             self._ops.run_edit_capture()
+            return
+        if cmd == "/clear":
+            event.input.value = ""
+            self._ops.run_clear()
             return
         if cmd == "/compact":
             event.input.value = ""

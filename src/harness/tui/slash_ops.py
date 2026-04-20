@@ -67,6 +67,24 @@ class SlashOps:
         line.append(f" (now {total} captured sample(s))", style="dim")
         log.write(line)
 
+    def run_clear(self) -> None:
+        """/clear — wipe the model-visible history and the visual log.
+
+        The transcript DB, memory/fact stores, compaction record, and
+        voice corpus are all untouched — scribe + retro still have
+        every past turn. After /clear the next model turn starts with
+        system prompt + new user msg, nothing else. Ephemeral to the
+        process: a fresh `harness chat` restart replays history from
+        the DB as before."""
+        app = self._app
+        log = app.query_one("#output", RichLog)
+        app._state.history = []
+        log.clear()
+        log.write(Text("─── context cleared ───", style="dim"))
+        # Re-render the metrics strip so the ctx-used number drops to
+        # zero immediately instead of waiting for the next tick.
+        app._refresh_metrics()
+
     def run_retro(self) -> None:
         """/retro — ab's thought-graph retrospective (read-only bd
         query, fast + safe on the UI thread)."""

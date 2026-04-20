@@ -22,7 +22,12 @@ from rich.console import Console
 from rich.markdown import Markdown
 
 from harness.character import Character, load_character
-from harness.cli_repl import ContextMeter, handle_edit_slash, handle_retro_slash
+from harness.cli_repl import (
+    ContextMeter,
+    handle_clear_slash,
+    handle_edit_slash,
+    handle_retro_slash,
+)
 from harness.compaction import CompactionStore
 from harness.config import settings
 from harness.model.adapter import ChatMessage, ModelAdapter
@@ -65,6 +70,7 @@ if TYPE_CHECKING:
 _EXIT_COMMANDS = frozenset({"/exit", "/quit", ":q"})
 _RETRO_COMMANDS = frozenset({"/retro"})
 _EDIT_COMMANDS = frozenset({"/edit", "/capture"})
+_CLEAR_COMMANDS = frozenset({"/clear"})
 
 
 def build_classic_registry(
@@ -645,6 +651,9 @@ def run_classic_chat(
                 continue
             if user_input.lower() in _EDIT_COMMANDS:
                 handle_edit_slash(transcript=transcript, session=session, console=console)
+                continue
+            if user_input.lower() in _CLEAR_COMMANDS:
+                handle_clear_slash(ctx_meter, console)
                 continue
             chat_session.run_turn(user_input)
     except (KeyboardInterrupt, EOFError):
