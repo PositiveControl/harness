@@ -189,8 +189,13 @@ class BeadsCrudMixin(BeadsRunner):
     ) -> list[BeadsIssue]:
         """Wrap `bd list`. status/priority/type/assignee pass through to
         bd's native flags; scope is filtered client-side since bd
-        doesn't recognize ab's scope: label as a first-class filter."""
-        args = ["list", "--json"]
+        doesn't recognize ab's scope: label as a first-class filter.
+
+        `--flat` is required: bd 0.59 made `--tree` the default and it
+        silently overrides `--json` so `bd list --json` alone returns
+        the human tree view, which trips the JSON decoder in
+        `_parse_issue_list` (harness-crh)."""
+        args = ["list", "--flat", "--json"]
         if status is not None:
             args.extend(["--status", status])
         if priority is not None:

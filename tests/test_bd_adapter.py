@@ -238,7 +238,7 @@ def test_list_filters_by_scope(bd_dir: Path, runner: FakeRunner) -> None:
     assert only_pers[0].id == "harness-2"
     assert only_pers[0].scope == "personal"
     list_cmd = runner.calls[0]["cmd"]
-    assert list_cmd[:3] == ["bd", "list", "--json"]
+    assert list_cmd[:4] == ["bd", "list", "--flat", "--json"]
 
 
 def test_ready_returns_empty_list_for_empty_stdout(bd_dir: Path, runner: FakeRunner) -> None:
@@ -394,11 +394,31 @@ def test_list_passes_priority_and_type(bd_dir: Path, runner: FakeRunner) -> None
     adapter.list_issues(status="open", priority="2", issue_type="task", limit=10)
 
     cmd = runner.calls[0]["cmd"]
-    assert cmd[:3] == ["bd", "list", "--json"]
+    assert cmd[:4] == ["bd", "list", "--flat", "--json"]
     assert cmd[cmd.index("--status") + 1] == "open"
     assert cmd[cmd.index("--priority") + 1] == "2"
     assert cmd[cmd.index("--type") + 1] == "task"
     assert cmd[cmd.index("--limit") + 1] == "10"
+
+
+def test_list_uses_flat_json_not_tree(bd_dir: Path, runner: FakeRunner) -> None:
+    """Regression guard (harness-crh): bd 0.59 made tree-format the
+    default for `bd list`, and `--tree` silently overrides `--json`
+    unless `--flat` is present. Drop `--flat` and every ops-tool
+    `list` call dies with a JSON decode error mid-chat. Pin both
+    flags explicitly so a future refactor can't quietly remove one."""
+    runner.queue(FakeCompletedProcess(stdout="[]"))
+    adapter = BeadsAdapter(bd_dir)
+
+    adapter.list_issues()
+
+    cmd = runner.calls[0]["cmd"]
+    assert "--flat" in cmd, f"bd list must pass --flat or --tree hijacks --json: {cmd}"
+    assert "--json" in cmd
+    # --flat must appear before --json isn't required by bd, but
+    # keeping the order stable makes the command-shape assertions
+    # elsewhere in this file read cleanly.
+    assert cmd.index("--flat") < cmd.index("--json")
 
 
 def test_forget_command_shape(bd_dir: Path, runner: FakeRunner) -> None:
@@ -1060,7 +1080,7 @@ def test_get_focus_returns_none_when_no_in_progress(bd_dir: Path, runner: FakeRu
 
     assert focus is None
     cmd = runner.calls[0]["cmd"]
-    assert cmd[:3] == ["bd", "list", "--json"]
+    assert cmd[:4] == ["bd", "list", "--flat", "--json"]
     assert cmd[cmd.index("--status") + 1] == "in_progress"
     assert cmd[cmd.index("--assignee") + 1] == "airton_b"
 
@@ -1266,7 +1286,7 @@ def test_set_focus_noop_when_already_focused(bd_dir: Path, runner: FakeRunner) -
     assert prior_id is None
     # Only the get_focus list call; no update dispatched.
     assert len(runner.calls) == 1
-    assert runner.calls[0]["cmd"][:3] == ["bd", "list", "--json"]
+    assert runner.calls[0]["cmd"][:4] == ["bd", "list", "--flat", "--json"]
 
 
 def test_update_accepts_assignee_kwarg(bd_dir: Path, runner: FakeRunner) -> None:
