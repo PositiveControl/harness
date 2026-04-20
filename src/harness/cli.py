@@ -344,8 +344,9 @@ def _missing_builder_reason(name: str, character: Character | None) -> str:
         char = character.name if character is not None else "<character>"
         bd_dir = settings.bd_dir_for(char) if character is not None else "<bd dir>"
         return (
-            f"tool {name!r} needs a bd dir — run `cd {bd_dir} && bd init`, "
-            f"or set HARNESS_AB_BD_DIR (airton_b) to an existing bd working dir"
+            f"tool {name!r} needs a working bd dir at {bd_dir} "
+            f"(run `cd {bd_dir} && bd init` if none, or `bd dolt start` "
+            f"to bring the Dolt server back up)"
         )
     return f"tool {name!r} not yet implemented — skipping"
 

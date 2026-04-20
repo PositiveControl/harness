@@ -106,19 +106,24 @@ class Settings(BaseSettings):
         return self.ab_bd_dir_resolved / "memory"
 
     def bd_dir_for(self, character_name: str) -> Path:
-        """Resolve the bd working directory for a character. airton_b
-        honours the legacy HARNESS_AB_BD_DIR override (→ `ab_bd_dir`);
-        every other character gets `~/.harness/<character_name>/`. The
-        dir is not created here — BeadsAdapter.verify() raises with a
-        bootstrap hint when it's missing, which is the intended UX.
+        """Resolve the bd working directory for a character. Every
+        character shares the project's `.beads/` by default (=
+        `self.root`) — that's a healthy Dolt instance the project
+        already runs, and isolation between characters is enforced
+        by `assignee` attribution, not directory separation. airton_b
+        honours the legacy HARNESS_AB_BD_DIR override when the user
+        explicitly wants its thought-graph in an isolated dir.
 
-        Per-character isolation mirrors the memory-store split
-        (`db_path_for`): each character's thought-graph lives in its
-        own dir so ops writes from one character never cross into
-        another's graph."""
+        Why shared-dir + assignee beats per-character dirs: a fresh
+        `bd init` outside a repo context requires a Dolt server that
+        bd doesn't always set up cleanly (55y session surfaced this
+        on airton's first init). Reusing the project's working store
+        avoids the bootstrap burden; every ops-tool write already
+        threads an assignee, so cross-contamination is a config bug
+        away regardless of filesystem layout."""
         if character_name == "airton_b" and self.ab_bd_dir is not None:
             return self.ab_bd_dir
-        return Path.home() / ".harness" / character_name
+        return self.root
 
     def db_path_for(self, character_name: str) -> Path:
         """Resolve the memory DB path for a character. Airton (and any

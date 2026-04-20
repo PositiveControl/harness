@@ -77,40 +77,37 @@ def test_maybe_bd_adapter_returns_adapter_for_airton_b_when_dir_ready(
     assert adapter.bd_dir == tmp_path
 
 
-def test_maybe_bd_adapter_returns_adapter_for_airton_when_dir_ready(
+def test_maybe_bd_adapter_returns_adapter_for_airton_from_project_dir(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Foundational shift (harness-55y): any character — not just
-    airton_b — can bind an ops adapter when its bd dir exists. Point
-    airton's bd dir at an initialized tmp_path and confirm the helper
-    hands back a real adapter.
-
-    Path.home is redirected to tmp_path so the default bd-dir
-    resolver (~/.harness/<name>/) lands under the tmp root without
-    touching the user's real home."""
-    fake_home = tmp_path / "home"
-    airton_dir = fake_home / ".harness" / "airton"
-    airton_dir.mkdir(parents=True)
-    (airton_dir / ".beads").mkdir()
-    monkeypatch.setattr("harness.config.Path.home", lambda: fake_home)
+    airton_b — can bind an ops adapter. Post-Path-2, that adapter
+    defaults to the project's bd dir (settings.root), which the
+    project already maintains as a healthy Dolt instance. Here we
+    point settings.root at a stand-in tmp_path with its own .beads/
+    subtree to avoid mutating the real project store."""
+    (tmp_path / ".beads").mkdir()
+    monkeypatch.setattr("harness.cli.settings.root", tmp_path)
+    # airton_b has no env override so it also resolves to the
+    # project dir — the shared-dir invariant.
+    monkeypatch.setattr("harness.cli.settings.ab_bd_dir", None)
     _stub_bd_subprocess(monkeypatch)
 
     airton = load_character(AIRTON)
     adapter = _maybe_bd_adapter(airton)
 
     assert isinstance(adapter, BeadsAdapter)
-    assert adapter.bd_dir == airton_dir
+    assert adapter.bd_dir == tmp_path
 
 
 def test_maybe_bd_adapter_returns_none_when_any_character_dir_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Previously this asserted 'any non-airton_b character returns
-    None unconditionally'. Post-55y, the gate is dir existence, not
-    character name — a missing dir is the only reason to skip."""
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()  # exists but has no .harness/ subtree
-    monkeypatch.setattr("harness.config.Path.home", lambda: fake_home)
+    """Dir-existence is the only skip reason now; character name
+    doesn't gate registration. Point settings.root at an empty
+    tmp_path (no .beads/ subtree) and both characters come back
+    empty-handed."""
+    monkeypatch.setattr("harness.cli.settings.root", tmp_path)
     monkeypatch.setattr("harness.cli.settings.ab_bd_dir", None)
     monkeypatch.setattr("harness.store.bd_adapter.shutil.which", lambda _: "/usr/local/bin/bd")
 
@@ -243,14 +240,14 @@ def test_missing_builder_reason_ops_tool_points_to_bd_dir(
 ) -> None:
     """A requested ops tool that didn't bind must surface a bd-dir
     bootstrap hint, not the old 'not yet implemented' message. The
-    hint names the actual resolved dir so the user knows exactly
-    where to run `bd init`."""
-    fake_home = tmp_path / "home"
-    monkeypatch.setattr("harness.config.Path.home", lambda: fake_home)
+    hint names the actual resolved dir (= settings.root under
+    Path 2) so the user knows exactly where bd should run."""
+    monkeypatch.setattr("harness.cli.settings.root", tmp_path)
+    monkeypatch.setattr("harness.cli.settings.ab_bd_dir", None)
     airton = load_character(AIRTON)
     reason = _missing_builder_reason("plan", airton)
     assert "bd init" in reason
-    assert str(fake_home / ".harness" / "airton") in reason
+    assert str(tmp_path) in reason
     assert "not yet implemented" not in reason
 
 
