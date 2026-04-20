@@ -194,7 +194,14 @@ class BeadsCrudMixin(BeadsRunner):
         `--flat` is required: bd 0.59 made `--tree` the default and it
         silently overrides `--json` so `bd list --json` alone returns
         the human tree view, which trips the JSON decoder in
-        `_parse_issue_list` (harness-crh)."""
+        `_parse_issue_list` (harness-crh).
+
+        `limit` handling (harness-z3f): when `scope` is set, `--limit`
+        MUST NOT go to bd. bd applies the limit server-side before
+        we see any rows, so any scope-matching items past the
+        server-side cutoff get silently dropped and the caller sees
+        an empty list even though qualifying rows exist. Defer
+        slicing to client-side after the label filter in that case."""
         args = ["list", "--flat", "--json"]
         if status is not None:
             args.extend(["--status", status])
@@ -204,13 +211,19 @@ class BeadsCrudMixin(BeadsRunner):
             args.extend(["--type", issue_type])
         if assignee is not None:
             args.extend(["--assignee", assignee])
-        if limit is not None:
+        # Only pass --limit to bd when no client-side filter (scope)
+        # follows. Otherwise we'd prune rows the scope filter was
+        # about to keep.
+        defer_limit = limit is not None and scope is not None
+        if limit is not None and not defer_limit:
             args.extend(["--limit", str(limit)])
         result = self._run(args)
         issues = _parse_issue_list(result.stdout)
         if scope is not None:
             label = f"scope:{scope}"
             issues = [i for i in issues if label in i.labels]
+        if defer_limit:
+            issues = issues[: limit or 0]
         return self._apply_default_exclude(issues, explicit_assignee=assignee)
 
     def search(

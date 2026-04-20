@@ -889,7 +889,7 @@ async def test_slash_clear_wipes_history_and_log(tmp_path) -> None:  # type: ign
                 session=tui_app._session,
                 channel=tui_app._channel,
                 speaker="mark" if role == "user" else "airton",
-                role=role,  # type: ignore[arg-type]
+                role=role,
                 content=content,
             )
         transcript_rows_before = len(tui_app._transcript.tail(tui_app._session, limit=100))

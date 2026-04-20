@@ -401,6 +401,101 @@ def test_list_passes_priority_and_type(bd_dir: Path, runner: FakeRunner) -> None
     assert cmd[cmd.index("--limit") + 1] == "10"
 
 
+def test_list_with_scope_defers_limit_to_client_side(
+    bd_dir: Path, runner: FakeRunner
+) -> None:
+    """Regression guard (harness-z3f): when a scope filter is set,
+    `--limit` must NOT go to bd. bd applies --limit server-side BEFORE
+    the client-side scope filter runs, so any scope-matching row past
+    that cutoff is silently dropped and `list` returns fewer items
+    than exist — a real capture-vs-list user bug.
+
+    Fixture: three scope:professional rows buried among personal/no-
+    scope noise. Asking for limit=2 + scope=professional must still
+    return two professional rows (not zero, not one)."""
+    payload = json.dumps(
+        [
+            {
+                "id": "harness-p1",
+                "title": "pers",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": ["scope:personal"],
+            },
+            {
+                "id": "harness-p2",
+                "title": "pers2",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": ["scope:personal"],
+            },
+            {
+                "id": "harness-prof1",
+                "title": "prof1",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": ["scope:professional"],
+            },
+            {
+                "id": "harness-noscope",
+                "title": "no-scope",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+            },
+            {
+                "id": "harness-prof2",
+                "title": "prof2",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": ["scope:professional"],
+            },
+            {
+                "id": "harness-prof3",
+                "title": "prof3",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": ["scope:professional"],
+            },
+        ]
+    )
+    runner.queue(FakeCompletedProcess(stdout=payload))
+    adapter = BeadsAdapter(bd_dir)
+
+    items = adapter.list_issues(scope="professional", limit=2)
+
+    # limit is applied AFTER scope filter, so we get the first two
+    # professional rows, not two arbitrary rows that happened to land
+    # in bd's pre-filter top-N.
+    assert [i.id for i in items] == ["harness-prof1", "harness-prof2"]
+    cmd = runner.calls[0]["cmd"]
+    # --limit must NOT have been passed to bd — that's the whole fix.
+    assert "--limit" not in cmd, f"scope-filtered list must not pass --limit to bd: {cmd}"
+
+
+def test_list_without_scope_passes_limit_to_bd(
+    bd_dir: Path, runner: FakeRunner
+) -> None:
+    """Complement to the deferred-limit test: with no client-side
+    filter in play, passing --limit to bd is strictly more efficient
+    (smaller JSON payload) and semantically correct, so we keep that
+    path untouched."""
+    runner.queue(FakeCompletedProcess(stdout="[]"))
+    adapter = BeadsAdapter(bd_dir)
+
+    adapter.list_issues(limit=5)
+
+    cmd = runner.calls[0]["cmd"]
+    assert "--limit" in cmd
+    assert cmd[cmd.index("--limit") + 1] == "5"
+
+
 def test_list_uses_flat_json_not_tree(bd_dir: Path, runner: FakeRunner) -> None:
     """Regression guard (harness-crh): bd 0.59 made tree-format the
     default for `bd list`, and `--tree` silently overrides `--json`
