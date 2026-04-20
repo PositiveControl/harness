@@ -496,6 +496,140 @@ def test_list_without_scope_passes_limit_to_bd(
     assert cmd[cmd.index("--limit") + 1] == "5"
 
 
+def _scope_fixture_payload() -> str:
+    """Four rows spanning the three categories an airton_b read
+    surface has to discriminate: scope:professional, scope:personal,
+    no-scope non-internal (a pure dev bead), and ab-internal
+    (assignee=airton_b). Returned as bd-list-json stdout."""
+    return json.dumps(
+        [
+            {
+                "id": "harness-prof",
+                "title": "prof",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": ["scope:professional"],
+            },
+            {
+                "id": "harness-pers",
+                "title": "pers",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": ["scope:personal"],
+            },
+            {
+                "id": "harness-dev",
+                "title": "dev bead (no scope, no ab assignee)",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": [],
+            },
+            {
+                "id": "harness-internal",
+                "title": "ab thought",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": ["thought:hypothesis"],
+                "assignee": "airton_b",
+            },
+        ]
+    )
+
+
+def test_scope_allowlist_keeps_scoped_and_drops_dev_beads(
+    bd_dir: Path, runner: FakeRunner
+) -> None:
+    """airton_b's read surface (harness-j7y): only beads carrying a
+    scope:* label in the allowlist survive the default read, plus
+    ab-internal beads which pass through to default_exclude (which
+    decides whether to show them — here it's set to 'airton_b' so
+    internals are hidden by default)."""
+    runner.queue(FakeCompletedProcess(stdout=_scope_fixture_payload()))
+    adapter = BeadsAdapter(
+        bd_dir,
+        default_exclude_assignee="airton_b",
+        ab_assignee="airton_b",
+        default_scope_allowlist=("professional", "personal"),
+    )
+
+    items = adapter.list_issues(status="all")
+
+    # Dev bead dropped (no scope label), internal dropped (excluded).
+    assert [i.id for i in items] == ["harness-prof", "harness-pers"]
+
+
+def test_scope_allowlist_include_internal_surfaces_ab_beads(
+    bd_dir: Path, runner: FakeRunner
+) -> None:
+    """With --include-internal (default_exclude_assignee=None) the
+    allowlist must still let ab-internal beads through — they're
+    ab's own thought-graph, not pure project dev beads, so visibility
+    of internals is governed by default_exclude, not by scope:* labels."""
+    runner.queue(FakeCompletedProcess(stdout=_scope_fixture_payload()))
+    adapter = BeadsAdapter(
+        bd_dir,
+        default_exclude_assignee=None,  # --include-internal
+        ab_assignee="airton_b",
+        default_scope_allowlist=("professional", "personal"),
+    )
+
+    items = adapter.list_issues(status="all")
+
+    # Internal passes allowlist via ab_assignee bypass; dev still drops.
+    assert sorted(i.id for i in items) == [
+        "harness-internal",
+        "harness-pers",
+        "harness-prof",
+    ]
+
+
+def test_scope_allowlist_unset_is_a_noop(bd_dir: Path, runner: FakeRunner) -> None:
+    """Characters without a configured allowlist see every bead (minus
+    default_exclude hits). Guards against airton accidentally inheriting
+    airton_b's narrowing."""
+    runner.queue(FakeCompletedProcess(stdout=_scope_fixture_payload()))
+    adapter = BeadsAdapter(
+        bd_dir,
+        # No default_scope_allowlist, no ab config — generic adapter.
+    )
+
+    items = adapter.list_issues(status="all")
+
+    assert sorted(i.id for i in items) == [
+        "harness-dev",
+        "harness-internal",
+        "harness-pers",
+        "harness-prof",
+    ]
+
+
+def test_scope_allowlist_applies_to_search_and_ready(
+    bd_dir: Path, runner: FakeRunner
+) -> None:
+    """list is the obvious user-facing call, but search/ready feed
+    the ops model too. Any read path that can surface a pure dev
+    bead to ab must go through the same filter."""
+    # search and ready each run their own bd call, so queue twice.
+    runner.queue(FakeCompletedProcess(stdout=_scope_fixture_payload()))
+    runner.queue(FakeCompletedProcess(stdout=_scope_fixture_payload()))
+    adapter = BeadsAdapter(
+        bd_dir,
+        default_exclude_assignee="airton_b",
+        ab_assignee="airton_b",
+        default_scope_allowlist=("professional", "personal"),
+    )
+
+    searched = adapter.search("isaac")
+    ready = adapter.ready()
+
+    assert sorted(i.id for i in searched) == ["harness-pers", "harness-prof"]
+    assert sorted(i.id for i in ready) == ["harness-pers", "harness-prof"]
+
+
 def test_list_uses_flat_json_not_tree(bd_dir: Path, runner: FakeRunner) -> None:
     """Regression guard (harness-crh): bd 0.59 made tree-format the
     default for `bd list`, and `--tree` silently overrides `--json`

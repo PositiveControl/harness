@@ -251,6 +251,29 @@ def test_missing_builder_reason_ops_tool_points_to_bd_dir(
     assert "not yet implemented" not in reason
 
 
+def test_maybe_bd_adapter_sets_scope_allowlist_for_airton_b(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-j7y: airton_b's adapter gets the (professional, personal)
+    scope allowlist wired by the factory. airton stays unconstrained
+    so the same-dir setup doesn't accidentally narrow its view."""
+    (tmp_path / ".beads").mkdir()
+    monkeypatch.setattr("harness.cli.settings.root", tmp_path)
+    monkeypatch.setattr("harness.cli.settings.ab_bd_dir", None)
+    _stub_bd_subprocess(monkeypatch)
+
+    ab_adapter = _maybe_bd_adapter(load_character(AIRTON_B))
+    airton_adapter = _maybe_bd_adapter(load_character(AIRTON))
+
+    assert ab_adapter is not None
+    assert airton_adapter is not None
+    # Private attr read here because it's the contract the _bd_crud
+    # mixin consumes; exposing a property is more surface area than
+    # this test rates.
+    assert ab_adapter._default_scope_allowlist == ("professional", "personal")
+    assert airton_adapter._default_scope_allowlist is None
+
+
 def test_missing_builder_reason_unknown_tool_keeps_old_message() -> None:
     """Genuine typos / forward-compat placeholders still say 'not yet
     implemented' — conserves the message for the case where the user

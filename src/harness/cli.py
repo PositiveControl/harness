@@ -281,10 +281,19 @@ def _maybe_bd_adapter(
     uniform avoids branching on character name here."""
     bd_dir = settings.bd_dir_for(character.name)
     exclude = None if include_internal else "airton_b"
+    # airton_b shares the project bd dir (Path 2, harness-55y) so the
+    # adapter sees every bead in the graph. Restrict ab's read surface
+    # to items scoped to its domain (professional/personal) — dev /
+    # maintenance beads never carry those labels and so fall out
+    # (harness-j7y). Other characters stay unconstrained.
+    scope_allowlist = (
+        ("professional", "personal") if character.name == "airton_b" else None
+    )
     adapter = BeadsAdapter(
         bd_dir,
         default_exclude_assignee=exclude,
         ab_assignee="airton_b",
+        default_scope_allowlist=scope_allowlist,
         turn_cap=settings.ab_turn_cap,
         inflight_cap=settings.ab_inflight_cap,
     )

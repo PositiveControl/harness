@@ -50,6 +50,7 @@ class BeadsRunner:
         bd_executable: str = "bd",
         default_exclude_assignee: str | None = None,
         ab_assignee: str | None = None,
+        default_scope_allowlist: tuple[str, ...] | None = None,
         turn_cap: int = 3,
         inflight_cap: int = 10,
     ) -> None:
@@ -66,12 +67,22 @@ class BeadsRunner:
         InflightCapExceededError or TurnCapExceededError respectively.
         Callers call `reset_turn_counter()` at each user-turn boundary
         to refresh the turn budget. Leaving ab_assignee None disables
-        both caps — tests and non-ab callers aren't affected."""
+        both caps — tests and non-ab callers aren't affected.
+
+        `default_scope_allowlist` (harness-j7y) narrows reads to
+        items carrying any `scope:<value>` label in the allowlist,
+        OR items whose assignee is `ab_assignee` (so ab's internal
+        thought-graph beads aren't collateral-filtered — they flow
+        through to `default_exclude_assignee` which decides whether
+        to show them). Unset (None) = no scope filter; every read is
+        unconstrained, same as before. Enables airton_b to ignore
+        pure-project dev beads when browsing shared-dir state."""
         self._bd_dir = bd_dir
         self._bd = bd_executable
         self._types_ensured = False
         self._default_exclude_assignee = default_exclude_assignee
         self._ab_assignee = ab_assignee
+        self._default_scope_allowlist = default_scope_allowlist
         self._turn_cap = turn_cap
         self._inflight_cap = inflight_cap
         self._ab_creates_this_turn = 0

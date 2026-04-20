@@ -287,16 +287,50 @@ class BeadsCrudMixin(BeadsRunner):
         *,
         explicit_assignee: str | None,
     ) -> list[BeadsIssue]:
-        """Drop rows whose assignee matches the adapter's configured
-        default exclude — but only if the caller didn't pass a positive
-        `assignee=` filter. A positive filter is an opt-in and beats
-        the default exclude."""
-        if explicit_assignee is not None:
+        """Chain the two adapter-default read filters: first drop
+        rows whose assignee matches `default_exclude_assignee` (unless
+        the caller passed a positive `assignee=` override), then
+        apply the scope allowlist if one is configured.
+
+        The order matters: exclude runs first so ab-internal beads
+        are dropped before the allowlist check, which prevents
+        internals-without-scope-labels from leaking into allowlist-
+        filtered reads. Callers that *want* internals visible set
+        `default_exclude_assignee=None` (via `--include-internal`);
+        the allowlist then pipes them through because their assignee
+        matches `ab_assignee` (bypass clause)."""
+        if explicit_assignee is None:
+            exclude = self._default_exclude_assignee
+            if exclude:
+                issues = [i for i in issues if i.assignee != exclude]
+        return self._apply_scope_allowlist(issues)
+
+    def _apply_scope_allowlist(
+        self,
+        issues: list[BeadsIssue],
+    ) -> list[BeadsIssue]:
+        """Drop rows with no `scope:<value>` label in the configured
+        allowlist, except ab-internal rows (assignee == ab_assignee)
+        which pass through — they're ab's own thought-graph items and
+        visibility of those is owned by `default_exclude_assignee`,
+        not by the scope allowlist.
+
+        Unset allowlist = no-op. Used today by airton_b to narrow
+        reads to `scope:professional` + `scope:personal` items when
+        the adapter targets the shared project bd dir."""
+        allow = self._default_scope_allowlist
+        if not allow:
             return issues
-        exclude = self._default_exclude_assignee
-        if not exclude:
-            return issues
-        return [i for i in issues if i.assignee != exclude]
+        labels = {f"scope:{s}" for s in allow}
+        ab_assignee = self._ab_assignee
+        kept: list[BeadsIssue] = []
+        for issue in issues:
+            if ab_assignee is not None and issue.assignee == ab_assignee:
+                kept.append(issue)
+                continue
+            if any(label in issue.labels for label in labels):
+                kept.append(issue)
+        return kept
 
 
 __all__ = [
