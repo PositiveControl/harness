@@ -277,6 +277,27 @@ def test_build_system_prompt_covers_each_failure_mode_with_an_example() -> None:
     assert "hash table" in prompt
 
 
+def test_build_system_prompt_has_ops_browsing_few_shot() -> None:
+    """harness-nom: small models invent args for ab ops tools when
+    they have no positive example to imitate. The prompt must carry
+    at least one 'browsing query → list with NO args' few-shot so the
+    model has a template, plus a disambiguation paragraph that says
+    'OMIT defaults; only fill args when the user names them'."""
+    prompt = _build_system_prompt([_spec("search_web")])
+    # Browsing example with the empty-args output — the load-bearing
+    # template that breaks the in_progress / scope='ab' default-
+    # invention pattern.
+    assert "what tasks do we have coming up?" in prompt
+    assert '"tool": "list", "arguments": {}' in prompt
+    # Disambiguation paragraph addresses ops tools by name and the
+    # specific anti-patterns we hit (in_progress for vague time, scope
+    # for identity terms). Substring assertions tolerate prompt
+    # rewraps — load-bearing tokens, not full phrases.
+    assert "ab ops tools" in prompt
+    assert "NEVER pass status='in_progress'" in prompt
+    assert "in_progress signals" in prompt  # the "vague time != in_progress" rule
+
+
 # ---------- ModelRouter ----------
 
 

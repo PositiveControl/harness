@@ -68,6 +68,16 @@ Disambiguation for common overlaps:
   "recall", "what did we discuss").
 - search_facts: stored attributes or preferences about a subject. The
   word "fact(s)" is a strong cue for search_facts over search_memory.
+- list / plan / status / drift / ready (ab ops tools): for browsing
+  questions like "what tasks do we have coming up?", "what's on the
+  plate?", "what's in our future?", call the tool with NO arguments.
+  bd's defaults already filter to open work. Only fill in `status`,
+  `scope`, `priority`, or `issue_type` when the user explicitly names
+  one ("list closed items" → status='closed'; "professional
+  things" → scope='professional'). NEVER pass status='in_progress'
+  unless the user said "in progress", "currently working on",
+  "started", or similar — vague time phrasings ("upcoming", "future",
+  "next") are NOT in_progress signals.
 
 Examples:
 
@@ -94,6 +104,12 @@ Output: {{"tool": "search_memory", "arguments": {{"query": "retrieval thresholds
 
 User message: what facts do you have about Mark's workflow
 Output: {{"tool": "search_facts", "arguments": {{"query": "Mark's workflow"}}}}
+
+User message: what tasks do we have coming up?
+Output: {{"tool": "list", "arguments": {{}}}}
+
+User message: list closed personal items
+Output: {{"tool": "list", "arguments": {{"status": "closed", "scope": "personal"}}}}
 
 User message: hey how's it going
 Output: {{"tool": null, "arguments": {{}}}}
