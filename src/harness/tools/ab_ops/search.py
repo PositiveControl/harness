@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from harness.store.bd_adapter import ALLOWED_SCOPES, ALLOWED_TYPES, BeadsAdapterError
 from harness.tools.ab_ops._shared import (
     _SCOPE_PARAM_DESCRIPTION,
+    _STATUS_PARAM_DESCRIPTION,
     _Adapter,
     _render_issue_list,
     _validate_scope,
@@ -37,10 +38,7 @@ class SearchTool:
                     "query": {"type": "string"},
                     "status": {
                         "type": "string",
-                        "description": (
-                            "Optional status filter (open, in_progress, "
-                            "blocked, deferred, closed, all)."
-                        ),
+                        "description": _STATUS_PARAM_DESCRIPTION,
                     },
                     "limit": {"type": "integer", "minimum": 1},
                 },
@@ -88,7 +86,10 @@ class ListTool:
             parameters={
                 "type": "object",
                 "properties": {
-                    "status": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "description": _STATUS_PARAM_DESCRIPTION,
+                    },
                     "priority": {
                         "type": "integer",
                         "minimum": 0,

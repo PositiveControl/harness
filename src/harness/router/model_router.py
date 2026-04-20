@@ -110,20 +110,44 @@ _FENCE_STRIP = re.compile(r"^```[a-zA-Z]*\n?|\n?```$")
 
 
 def _format_spec(spec: ToolSpec) -> str:
-    """Render a ToolSpec as one `- name(args) — description` line for
-    the router system prompt. Compact on purpose: the small model
-    loses focus with sprawling schemas."""
+    """Render a ToolSpec for the router system prompt. Each tool gets:
+
+    - `- name(arg: type|enum, ...) — description`
+    - optional indented per-arg hints when the JSON schema carries a
+      non-trivial `description` (the contracts that say things like
+      'scope is categorical, not who-or-when' — without these the
+      router invents bad values for ambiguous params, harness-nom)
+
+    Enums are rendered inline (`enum[a|b|c]`) instead of as `string`
+    so the router model has an immediate constraint signal. Hints
+    are collapsed to their first line so the prompt stays tight —
+    the small model loses focus with sprawling schemas."""
     props = spec.parameters.get("properties", {}) or {}
     required = set(spec.parameters.get("required", []) or [])
     args: list[str] = []
+    hint_lines: list[str] = []
     if isinstance(props, dict):
         for arg_name, schema in props.items():
-            arg_type = schema.get("type", "any") if isinstance(schema, dict) else "any"
-            label = f"{arg_name}: {arg_type}"
+            if not isinstance(schema, dict):
+                args.append(f"{arg_name}: any?")
+                continue
+            enum = schema.get("enum")
+            if isinstance(enum, list) and enum:
+                type_label = f"enum[{'|'.join(str(v) for v in enum)}]"
+            else:
+                type_label = schema.get("type", "any")
+            label = f"{arg_name}: {type_label}"
             if arg_name not in required:
                 label += "?"
             args.append(label)
-    return f"- {spec.name}({', '.join(args)}) — {spec.description.strip()}"
+            desc = (schema.get("description") or "").strip()
+            if len(desc) > 30:
+                first_line = desc.splitlines()[0].strip()
+                hint_lines.append(f"  · {arg_name}: {first_line}")
+    head = f"- {spec.name}({', '.join(args)}) — {spec.description.strip()}"
+    if hint_lines:
+        return head + "\n" + "\n".join(hint_lines)
+    return head
 
 
 def _build_system_prompt(tool_specs: Sequence[ToolSpec]) -> str:

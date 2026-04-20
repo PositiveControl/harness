@@ -124,16 +124,37 @@ _DEFER_COUNT_PREFIX = "defer-count:"
 # lives at Settings.ab_drift_days (harness-6y5).
 AB_DRIFT_DAYS = 7
 
-# Shared description for every scope parameter (harness-ilru). Small
-# models ignore JSON-schema enums when the description is vague and
-# will pass 'tomorrow' / 'this week' after a time-phrased user turn,
-# conflating scope (categorical) with when (temporal). Spelling out
-# the contract and naming concrete anti-examples is what stops it.
+# Shared description for every scope parameter (harness-ilru,
+# harness-nom). Small models ignore JSON-schema enums when the
+# description is vague and will pass identity / temporal terms after
+# casual user turns, conflating scope (categorical) with assignee /
+# time. Spelling out the contract and naming concrete anti-examples
+# is what stops it.
 _SCOPE_PARAM_DESCRIPTION = (
-    "Scope is CATEGORICAL, not temporal — one of {professional, personal}. "
-    "OMIT this field on time phrasings like 'tomorrow', 'today', 'this week', "
-    "'next month' — scope does not filter by time. Omit also when the user "
-    "hasn't specified a category."
+    "CATEGORICAL only — pass 'professional' or 'personal'. NOT a time "
+    "('tomorrow', 'this week', 'in our future'), NOT a person/agent "
+    "('ab', 'mark', 'mine'). Omit when uncategorized.\n"
+    "Detail: scope filters by life-area, not by when or by whom. For "
+    "owner filtering use `assignee=<name>` on calls that accept it; "
+    "for time filtering, the bd graph has no native support — surface "
+    "the relevant items and let the user pick."
+)
+
+# Shared description for status filters (harness-nom). The previous
+# spec listed valid values without guidance on when to set vs omit;
+# the result was small models defaulting to 'in_progress' for any
+# turn that mentioned activity ('what tasks are in our future', 'work
+# on the deploy') and getting empty results because almost nothing
+# is in_progress at any moment. The default omit-for-open contract
+# matches bd's own behavior and is what the user usually wants.
+_STATUS_PARAM_DESCRIPTION = (
+    "OMIT for the default 'open' filter — what almost every browsing "
+    "query wants ('what tasks are in our future?', 'what's on the "
+    "plate?'). Use 'in_progress' ONLY when the user explicitly asks "
+    "about work currently underway ('what am I working on?').\n"
+    "Detail: valid values are open, in_progress, blocked, deferred, "
+    "closed, all. Pass 'all' to include closed items ('history', "
+    "'including done'). 'open' covers ready+blocked+deferred work."
 )
 
 _UPDATE_FIELD_FLAGS: dict[str, str] = {

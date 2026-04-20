@@ -1058,8 +1058,9 @@ def test_scope_parameter_docs_call_out_categorical_not_temporal() -> None:
     / scope='current tasks', conflating the user's time phrasing with the
     scope field even though the JSON schema already declares the enum
     [professional, personal]. Each tool that accepts scope must carry a
-    description that explicitly calls out 'categorical, not temporal'
-    and warns to OMIT scope on time phrasings — so free-form adapters
+    description that explicitly calls scope categorical, warns to OMIT
+    on time phrasings (harness-ilru), AND warns to OMIT on identity /
+    owner / agent phrasings (harness-nom) — so free-form adapters
     (which don't enforce enum) still have a textual anchor."""
     adapter = FakeAdapter()
     tools_with_scope = (
@@ -1069,7 +1070,6 @@ def test_scope_parameter_docs_call_out_categorical_not_temporal() -> None:
         ReprioritizeTool(adapter),
         ListTool(adapter),
     )
-    required_phrases = ("categorical", "not temporal")
     for tool in tools_with_scope:
         scope_schema = tool.spec.parameters["properties"]["scope"]
         # Enum must stay as the hard grammar anchor.
@@ -1077,14 +1077,22 @@ def test_scope_parameter_docs_call_out_categorical_not_temporal() -> None:
             f"{tool.spec.name}: scope enum must be the canonical ALLOWED_SCOPES tuple"
         )
         desc = scope_schema.get("description", "").lower()
-        for phrase in required_phrases:
-            assert phrase in desc, (
-                f"{tool.spec.name}: scope description must say '{phrase}' — got {desc!r}"
-            )
+        # 'categorical' is the load-bearing word that anchors the
+        # axis claim — kept verbatim so the test rejects rewrites
+        # that drop the central concept.
+        assert "categorical" in desc, (
+            f"{tool.spec.name}: scope description must say 'categorical' — got {desc!r}"
+        )
         # Must name at least one time-phrasing anti-example so the model
-        # has a concrete pattern-match to reject.
+        # has a concrete pattern-match to reject (harness-ilru).
         assert any(t in desc for t in ("tomorrow", "today", "this week", "next month")), (
             f"{tool.spec.name}: scope description must cite at least one temporal anti-example"
+        )
+        # Must also name at least one identity-phrasing anti-example
+        # (harness-nom) — model kept passing scope='ab' meaning 'ab's
+        # stuff', collapsing the assignee axis into the scope axis.
+        assert any(t in desc for t in ("ab", "mark", "agent", "person", "mine", "my")), (
+            f"{tool.spec.name}: scope description must cite at least one identity anti-example"
         )
 
 

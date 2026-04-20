@@ -150,6 +150,81 @@ def test_format_spec_marks_required_and_optional() -> None:
     assert "Search the public web" in line
 
 
+def test_format_spec_renders_enum_inline() -> None:
+    """harness-nom: small models ignore json-schema enum constraints
+    they don't see, and the router's `name(args)` line is the only
+    schema view they get. Render `enum[a|b|c]` inline so the router
+    has the constraint in plain sight, not just `string`."""
+    spec = ToolSpec(
+        name="t",
+        description="d",
+        parameters={
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string", "enum": ["professional", "personal"]},
+            },
+        },
+        tier="read",
+    )
+    line = _format_spec(spec)
+    assert "scope: enum[professional|personal]?" in line
+    assert "scope: string" not in line
+
+
+def test_format_spec_emits_per_arg_hints_for_long_descriptions() -> None:
+    """Per-arg `description` strings on the JSON schema were silently
+    dropped pre-harness-nom — the router never saw them, so carefully
+    written 'OMIT for default' guidance went nowhere. Pin the
+    behavior: a non-trivial description (>30 chars) shows up as a
+    `· name: hint` indented bullet under the spec line."""
+    spec = ToolSpec(
+        name="t",
+        description="d",
+        parameters={
+            "type": "object",
+            "properties": {
+                "long_arg": {
+                    "type": "string",
+                    "description": "OMIT this when the user phrasing is vague.",
+                },
+                "short_arg": {"type": "string", "description": "tiny"},
+            },
+        },
+        tier="read",
+    )
+    line = _format_spec(spec)
+    assert "  · long_arg: OMIT this when the user phrasing is vague." in line
+    # Tiny descriptions don't earn a hint — keeps the prompt tight.
+    assert "short_arg:" not in line.split("\n", 1)[1]
+
+
+def test_format_spec_collapses_multiline_hints_to_first_line() -> None:
+    """Hints stay one line each so the router prompt doesn't explode.
+    A description spanning 5 lines should surface only the first."""
+    spec = ToolSpec(
+        name="t",
+        description="d",
+        parameters={
+            "type": "object",
+            "properties": {
+                "x": {
+                    "type": "string",
+                    "description": (
+                        "FIRST LINE GUIDANCE that fits in one row.\n"
+                        "Second line — important context but not for the router.\n"
+                        "Third line — even more detail."
+                    ),
+                },
+            },
+        },
+        tier="read",
+    )
+    line = _format_spec(spec)
+    assert "  · x: FIRST LINE GUIDANCE that fits in one row." in line
+    assert "Second line" not in line
+    assert "Third line" not in line
+
+
 def test_build_system_prompt_lists_tools() -> None:
     prompt = _build_system_prompt([_spec("search_web"), _spec("read_file")])
     assert "search_web(" in prompt
