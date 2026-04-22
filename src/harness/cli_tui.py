@@ -36,6 +36,7 @@ def run_tui(
     summarize_tool_results: bool,
     harvest_skills: bool,
     persona: bool,
+    chain_rewrites: bool,
     top_k: int,
     memories: int,
     memories_threshold: float,
@@ -89,6 +90,7 @@ def run_tui(
         model_repo=model_repo,
         lora_path=lora_path,
         draft_repo=draft_repo,
+        chain_rewrites=chain_rewrites,
     )
     retriever = _maybe_retriever(character, top_k)
     memory_store = _open_episodic_store(character) if memories > 0 else None

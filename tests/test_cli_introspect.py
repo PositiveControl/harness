@@ -47,6 +47,23 @@ def test_enumerated_commands_match_pin() -> None:
     )
 
 
+def test_chat_command_exposes_chain_rewrites_flag() -> None:
+    """Regression for harness-n9k: `--chain-rewrites` was advertised in
+    docs/usage.md and CLAUDE.md but never wired into the chat command.
+    Pin the flag's presence so a silent removal fails here. Pair with
+    `test_resolve_adapter_threads_chain_rewrites_into_persona_adapter`
+    in test_airton_b_integration.py (the orchestration half)."""
+    import inspect
+
+    from harness.cli import chat
+
+    params = inspect.signature(chat).parameters
+    assert "chain_rewrites" in params, (
+        "chat command lost --chain-rewrites. Either re-add it or strip "
+        "the flag from docs/usage.md and CLAUDE.md."
+    )
+
+
 def test_every_command_has_a_summary() -> None:
     """Introspection's scope=commands output relies on the summary
     line. Every registered callback must have a docstring so the

@@ -300,6 +300,7 @@ class ClassicChatSession:
     channel: str
     persona: bool
     rewrite_on_tools: bool
+    chain_rewrites: bool
     top_k: int
     memories: int
     memories_threshold: float
@@ -479,7 +480,7 @@ class ClassicChatSession:
             # need, or (b) the tool loop left no substantive draft.
             if self.persona and self.rewrite_on_tools and draft.strip():
                 self.console.print("\n[dim]*— voice pass —*[/dim]")
-                rewrite_msgs = build_rewriter_messages(self.character, draft)
+                rewrite_msgs = build_rewriter_messages(self.character, draft, focus="style")
                 reply, _ = _stream_or_complete(
                     self.adapter,
                     rewrite_msgs,
@@ -487,6 +488,16 @@ class ClassicChatSession:
                     temperature=0.2,
                     max_tokens=2048,
                 )
+                if self.chain_rewrites and reply.strip():
+                    self.console.print("\n[dim]*— concrete pass —*[/dim]")
+                    concrete_msgs = build_rewriter_messages(self.character, reply, focus="concrete")
+                    reply, _ = _stream_or_complete(
+                        self.adapter,
+                        concrete_msgs,
+                        stream_renderer=self.stream_renderer,
+                        temperature=0.2,
+                        max_tokens=2048,
+                    )
             else:
                 reply = draft or "(no reply — model returned empty text after tool calls)"
         else:
@@ -533,6 +544,7 @@ def run_classic_chat(
     tools_add: str | None,
     tools_drop: str | None,
     rewrite_on_tools: bool,
+    chain_rewrites: bool = False,
     workspace: str | None,
     compact_at: float,
     compact_keep_recent: int,
@@ -572,6 +584,7 @@ def run_classic_chat(
         model_repo=model_repo,
         lora_path=lora_path,
         draft_repo=draft_repo,
+        chain_rewrites=chain_rewrites,
     )
 
     router: Router | None = None
@@ -699,6 +712,7 @@ def run_classic_chat(
         channel=channel,
         persona=persona,
         rewrite_on_tools=rewrite_on_tools,
+        chain_rewrites=chain_rewrites,
         top_k=top_k,
         memories=memories,
         memories_threshold=memories_threshold,

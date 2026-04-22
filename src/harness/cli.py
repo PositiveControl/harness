@@ -1473,6 +1473,7 @@ def _resolve_adapter(
     model_repo: str | None = None,
     lora_path: str | None = None,
     draft_repo: str | None = None,
+    chain_rewrites: bool = False,
 ) -> ModelAdapter:
     # Custom configs bypass the factory and instantiate the adapter
     # directly. --lora-path is MLX-only; --model-repo works for MLX
@@ -1527,7 +1528,7 @@ def _resolve_adapter(
                 rewrite_on_tools=settings.ab_rewrite_on_tools,
             )
         else:
-            adapter = PersonaAdapter(adapter, character)
+            adapter = PersonaAdapter(adapter, character, chain_rewrites=chain_rewrites)
 
     # Honor an optional eager `.load()` method without making it part of
     # the ModelAdapter Protocol — only some adapters need it.
@@ -1655,6 +1656,13 @@ def chat(
         "which is wrong for summarize / investigate tasks that need prose. Turn "
         "on for casual tooled chat where you want Airton-voice on every reply.",
     ),
+    chain_rewrites: bool = typer.Option(
+        False,
+        "--chain-rewrites/--no-chain-rewrites",
+        help="Add a second 'concrete substitution' rewrite pass on top of the "
+        "style pass. Requires --persona. Doubles persona latency but pulls "
+        "the reply further toward Airton's register for drift-prone prompts.",
+    ),
     workspace: str | None = typer.Option(
         None,
         "--workspace",
@@ -1756,6 +1764,7 @@ def chat(
             summarize_tool_results=summarize_tool_results,
             harvest_skills=harvest_skills,
             persona=persona,
+            chain_rewrites=chain_rewrites,
             top_k=top_k,
             memories=memories,
             memories_threshold=memories_threshold,
@@ -1790,6 +1799,7 @@ def chat(
         summarize_tool_results=summarize_tool_results,
         harvest_skills=harvest_skills,
         persona=persona,
+        chain_rewrites=chain_rewrites,
         top_k=top_k,
         memories=memories,
         memories_threshold=memories_threshold,

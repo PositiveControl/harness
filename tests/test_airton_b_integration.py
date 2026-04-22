@@ -188,6 +188,30 @@ def test_resolve_adapter_keeps_persona_adapter_for_airton(
     assert not isinstance(adapter, CavemanRewriter)
 
 
+def test_resolve_adapter_threads_chain_rewrites_into_persona_adapter() -> None:
+    """Regression: `--chain-rewrites` on chat must reach `PersonaAdapter`
+    so the second concrete-substitution pass actually runs. This used
+    to silently no-op because the chat command never accepted the flag
+    and _resolve_adapter never took the kwarg (harness-n9k). Verify
+    both defaults-off and on-demand-on so a future refactor can't
+    collapse the flag to a constant."""
+    base = MagicMock()
+    base.id = "echo"
+    base.context_window = 8192
+    with patch("harness.cli.make_adapter", return_value=base):
+        airton = load_character(AIRTON)
+
+        default_adapter = _resolve_adapter("echo", persona=True, character=airton)
+        assert isinstance(default_adapter, PersonaAdapter)
+        assert default_adapter.chain_rewrites is False
+
+        chained_adapter = _resolve_adapter(
+            "echo", persona=True, character=airton, chain_rewrites=True
+        )
+        assert isinstance(chained_adapter, PersonaAdapter)
+        assert chained_adapter.chain_rewrites is True
+
+
 def test_resolve_adapter_no_persona_bypasses_rewriter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
