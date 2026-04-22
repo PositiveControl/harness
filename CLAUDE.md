@@ -126,7 +126,7 @@ Load-bearing invariants — they shape almost every decision:
   - `compaction/` — context-window management.
     - `store.py` — persists per-session compaction summaries so reruns don't re-summarize unchanged history.
     - `summarizer.py` — folds older turns into a single session summary using the same adapter.
-    - `runner.py` — `maybe_compact(messages, tokens_used, window, compact_at, keep_recent)`; fires when the context meter crosses `--compact-at` (default 0.8 of the window) and leaves `--compact-keep-recent` turns verbatim.
+    - `runner.py` — `maybe_compact(messages, tokens_used, window, compact_at, keep_recent)`; fires when the context meter crosses `--compact-at` (default 0.8 of the window) and leaves `--compact-keep-recent` turns verbatim. When `--auto-scribe` is on (default) and both memory/semantic stores are wired, it scribes unprocessed turns into episodic + semantic memory *before* the summarizer folds them — so `search_memory` can still answer "what did we talk about" after the transcript compresses (harness-0kw).
   - `tools/` — built-in tools for the agent loop. Currently 18 tools across filesystem, shell, git, memory, web, and self-introspection domains.
     - `base.py` — `Tool` protocol + `ToolResult`; tools declare schema, execute given a workspace-scoped context, return content + optional metadata. Write-tier tools are marked and trigger per-session user confirmation.
     - `profiles.py` — named tool-set profiles (`minimal`, `core`, `coding`, `memory`, `diagnostic`, `research`) that group tools by use case. `resolve_tool_names(profile, add=, drop=)` returns the final set. Profiles may list forward-compatible names that don't exist yet; the CLI warns + skips. Each profile targets ≤ ~1,500 tokens of schema overhead.
@@ -150,7 +150,7 @@ Load-bearing invariants — they shape almost every decision:
     - `voice_score.py` — heuristic scorer: length / openers / bullet-discipline / bullet-density / filler. Aggregate is the mean.
     - `voice_judge.py` — LLM-as-judge; parses 1-10 from the adapter.
     - `router.py` — fixture-based router eval: loads `character/<name>/router_eval.yaml`, runs each prompt through the router, scores tool-name accuracy + arg-shape match.
-  - `cli.py` — Typer app: `chat` (with `--tools`, `--tool-set`, `--tools-add/drop`, `--workspace`, `--model-repo`, `--lora-path`, `--rewrite-on-tools`, `--compact-at`, `--compact-keep-recent`, `--router`, `--router-repo`, `--router-mode`, `--tui`, `--dev`, in-chat `/edit` + `/capture` for voice capture), `describe`, `eval {voice,router}`, `memory {list,search,scribe,consolidate,wipe,rebuild-embeddings,fact-*,ingest}`, `voice {capture,list-captured}`.
+  - `cli.py` — Typer app: `chat` (with `--tools`, `--tool-set`, `--tools-add/drop`, `--workspace`, `--model-repo`, `--lora-path`, `--rewrite-on-tools`, `--compact-at`, `--compact-keep-recent`, `--auto-scribe`, `--router`, `--router-repo`, `--router-mode`, `--tui`, `--dev`, in-chat `/edit` + `/capture` for voice capture), `describe`, `eval {voice,router}`, `memory {list,search,scribe,consolidate,wipe,rebuild-embeddings,fact-*,ingest}`, `voice {capture,list-captured}`.
 
 - `tests/` — pytest. Tests hit real stores (SQLite in `tmp_path`) rather than mocks. ~510 tests across character, stores, retrieval, scribe, consolidator, persona, voice eval, dimension tracking, relationship memory, voice capture, tool loop, all 18 tools, compaction, Ollama adapter, CLI helpers, router (model + grammar), router eval, TUI chat app, CLI commands enumerator, tool grounding block.
 

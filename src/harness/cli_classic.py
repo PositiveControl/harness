@@ -536,6 +536,7 @@ def run_classic_chat(
     workspace: str | None,
     compact_at: float,
     compact_keep_recent: int,
+    auto_scribe: bool,
     dev: bool,
     include_internal: bool,
     router_enabled: bool,
@@ -655,6 +656,7 @@ def run_classic_chat(
         router_repo=router_repo if router is not None else None,
         compact_at=compact_at,
         compact_keep_recent=compact_keep_recent,
+        auto_scribe=auto_scribe,
         dev=dev,
     )
     console.print(
@@ -669,6 +671,10 @@ def run_classic_chat(
         compaction_store=compaction_store,
         session=session,
         console=console,
+        memory_store=memory_store,
+        semantic_store=semantic_store,
+        scribe_user_id=speaker,
+        auto_scribe=auto_scribe,
     )
 
     hooks = _build_hook_pipeline(

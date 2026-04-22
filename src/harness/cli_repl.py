@@ -24,15 +24,20 @@ from typing import TYPE_CHECKING
 from harness.compaction import run_compaction, should_compact
 from harness.config import settings
 from harness.model.adapter import ChatMessage, count_tokens
+from harness.scribe import run_scribe
 from harness.tools.ab_ops import RetroTool, build_resume_summary
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from rich.console import Console
 
     from harness.character import Character
     from harness.compaction import CompactionStore
     from harness.model.adapter import ModelAdapter
     from harness.store.bd_adapter import BeadsAdapter
+    from harness.store.episodic import EpisodicStore
+    from harness.store.semantic import SemanticStore
     from harness.store.transcript import Transcript
 
 
@@ -52,6 +57,17 @@ class ContextMeter:
     compaction_store: CompactionStore | None
     session: str
     console: Console
+    # Optional auto-scribe wiring (harness-0kw). When `auto_scribe` is
+    # on and both stores are present, `maybe_compact` runs scribe over
+    # unprocessed turns *before* the summarizer folds them — so salient
+    # facts land in episodic/semantic memory while the transcript is
+    # still detailed. scribe_user_id tags every candidate with a user
+    # scope (the speaker); None writes shared character memory.
+    memory_store: EpisodicStore | None = field(default=None)
+    semantic_store: SemanticStore | None = field(default=None)
+    scribe_user_id: str | None = field(default=None)
+    scribe_lock_dir: Path | None = field(default=None)
+    auto_scribe: bool = field(default=True)
     # /clear sets this to the highest transcript row id at the moment
     # the command ran. `load_history` then returns only rows > cutoff
     # AND ignores any prior compaction summary — the next turn sees
@@ -149,6 +165,37 @@ class ContextMeter:
         )
         thinking.start()  # type: ignore[attr-defined]
         try:
+            # Scribe unprocessed turns into episodic/semantic before the
+            # summarizer folds them. Watermark-gated, so reruns only hit
+            # new turns. Failure is non-fatal — compaction still runs.
+            if (
+                self.auto_scribe
+                and self.memory_store is not None
+                and self.semantic_store is not None
+            ):
+                try:
+                    scribe_summary = run_scribe(
+                        self.adapter,
+                        self.character,
+                        self.transcript,
+                        self.memory_store,
+                        self.semantic_store,
+                        session_id=self.session,
+                        user_id=self.scribe_user_id,
+                        lock_dir=self.scribe_lock_dir,
+                    )
+                except Exception as exc:
+                    self.console.print(
+                        f"[yellow]auto-scribe failed ({type(exc).__name__}: {exc}) "
+                        "— compacting without memory write.[/yellow]"
+                    )
+                else:
+                    if scribe_summary.turns_processed > 0:
+                        self.console.print(
+                            f"[dim]auto-scribed {scribe_summary.turns_processed} turn(s) → "
+                            f"{scribe_summary.episodic_written} episodic, "
+                            f"{scribe_summary.semantic_written} semantic[/dim]"
+                        )
             outcome = run_compaction(
                 self.adapter,
                 self.transcript,
@@ -197,16 +244,12 @@ def handle_retro_slash(ab_adapter: BeadsAdapter | None, console: Console) -> Non
         return
     retro = RetroTool(ab_adapter)
     console.print(f"[dim]{retro.call(mode='summary')}[/dim]")
-    insight = console.input(
-        "[bold cyan]insight to record (blank to skip) › [/bold cyan]"
-    ).strip()
+    insight = console.input("[bold cyan]insight to record (blank to skip) › [/bold cyan]").strip()
     if insight:
         console.print(f"[dim]{retro.call(mode='record', insight=insight)}[/dim]")
 
 
-def handle_edit_slash(
-    *, transcript: Transcript, session: str, console: Console
-) -> None:
+def handle_edit_slash(*, transcript: Transcript, session: str, console: Console) -> None:
     """/edit + /capture — open $EDITOR on the last assistant reply,
     write the edited text as a new captured voice sample paired with
     the preceding user prompt. Closes the loop between 'reply was
@@ -218,8 +261,7 @@ def handle_edit_slash(
     assistant_turns = [m for m in history_tail if m.role == "assistant"]
     if not user_turns or not assistant_turns:
         console.print(
-            "[yellow]no exchange to capture yet — have a turn first, "
-            "then run /edit.[/yellow]"
+            "[yellow]no exchange to capture yet — have a turn first, then run /edit.[/yellow]"
         )
         return
     prev_prompt = user_turns[-1].content

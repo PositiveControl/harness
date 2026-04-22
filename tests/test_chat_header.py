@@ -56,6 +56,7 @@ def _render(**overrides: object) -> str:
         "router_repo": None,
         "compact_at": 0.8,
         "compact_keep_recent": 10,
+        "auto_scribe": True,
         "dev": False,
     }
     defaults.update(overrides)
@@ -187,6 +188,24 @@ def test_header_compact_off() -> None:
     out = _render(compact_at=0.0)
     assert "compact" in out
     assert "off" in out
+
+
+def test_header_auto_scribe_visible_when_memory_stores_active() -> None:
+    """Auto-scribe bit only surfaces when compaction is on AND both
+    memory/semantic stores are active — otherwise the pre-compaction
+    scribe pass would be a no-op and the badge would mislead."""
+    out = _render(auto_scribe=True, memories_active=True, facts_active=True)
+    assert "auto-scribe" in out
+
+
+def test_header_auto_scribe_hidden_when_stores_inactive() -> None:
+    out = _render(auto_scribe=True, memories_active=False, facts_active=False)
+    assert "auto-scribe" not in out
+
+
+def test_header_auto_scribe_hidden_when_disabled() -> None:
+    out = _render(auto_scribe=False, memories_active=True, facts_active=True)
+    assert "auto-scribe" not in out
 
 
 def test_header_dev_mode_flag_shown() -> None:

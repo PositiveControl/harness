@@ -596,6 +596,7 @@ def _render_chat_header(
     router_repo: str | None,
     compact_at: float,
     compact_keep_recent: int,
+    auto_scribe: bool,
     dev: bool,
 ) -> None:
     """Render the chat-session loading header as an aligned key-value grid.
@@ -662,9 +663,14 @@ def _render_chat_header(
         grid.add_row("tools", "[dim]off[/dim]")
 
     if compact_at > 0:
+        auto_scribe_bit = (
+            " · [green]auto-scribe[/green]"
+            if auto_scribe and memories_active and facts_active
+            else ""
+        )
         grid.add_row(
             "compact",
-            f"{int(compact_at * 100)}% of window · keep {compact_keep_recent}",
+            f"{int(compact_at * 100)}% of window · keep {compact_keep_recent}{auto_scribe_bit}",
         )
     else:
         grid.add_row("compact", "[dim]off[/dim]")
@@ -1344,6 +1350,24 @@ def _build_tool_grounding_block(registry: ToolRegistry, workspace_path: Path) ->
         "for this turn's conclusion, cite it in one clause, not a "
         "paragraph."
     )
+    # Follow-up fetch nudge (harness-f5x). When fetch_url is loaded and
+    # the user references an item from an earlier fetch ("more details
+    # on 8", "tell me about the second one"), the ONLY correct path is
+    # to re-call fetch_url on THAT item's URL — not to paraphrase from
+    # context. Small models default to regenerating a fake summary list
+    # when the index→URL lookup is too much work; this directive +
+    # the FabricatedItemizationHook together catch the class.
+    if "fetch_url" in registry:
+        base += (
+            "\n- FOLLOW-UP DETAIL ASKS. When the user references an "
+            "item from an earlier tool result ('more details on 8', "
+            "'expand the second one', 'what's story 3 about'), you "
+            "MUST call `fetch_url` on THAT item's URL from the prior "
+            "tool output. Do NOT regenerate a summary list, "
+            "paraphrase, or invent one-line 'details' from context. "
+            "If you can't find the URL for the item the user named, "
+            "tell them you need the URL pasted."
+        )
     if "introspect" in registry:
         # Small belt-and-suspenders nudge (harness-u71). The tool's own
         # schema already describes it, but models prone to hallucinating
@@ -1639,6 +1663,16 @@ def chat(
         help="Number of most-recent turns to leave verbatim when "
         "compaction fires. Older turns become summary.",
     ),
+    auto_scribe: bool = typer.Option(
+        True,
+        "--auto-scribe/--no-auto-scribe",
+        help="When compaction fires, scribe unprocessed transcript "
+        "turns into episodic + semantic memory *before* the summarizer "
+        "folds them. Default on — keeps 'what have we talked about' "
+        "answerable via memory search after the transcript compresses. "
+        "Needs --memories > 0 and --facts > 0; otherwise no-op. "
+        "Watermark-gated, so repeat compactions only scribe new turns.",
+    ),
     dev: bool = typer.Option(
         False,
         "--dev/--no-dev",
@@ -1719,6 +1753,7 @@ def chat(
             tools_drop=tools_drop,
             workspace=workspace,
             compact_at=compact_at,
+            auto_scribe=auto_scribe,
             router_enabled=router_enabled,
             router_repo=router_repo,
             router_mode=router_mode,
@@ -1754,6 +1789,7 @@ def chat(
         workspace=workspace,
         compact_at=compact_at,
         compact_keep_recent=compact_keep_recent,
+        auto_scribe=auto_scribe,
         dev=dev,
         include_internal=include_internal,
         router_enabled=router_enabled,

@@ -481,6 +481,7 @@ class ChatApp(App[None]):
         compaction_store: CompactionStore | None = None,
         scribe_lock_dir: Path | None = None,
         scribe_user_id: str | None = None,
+        auto_scribe: bool = True,
         ab_adapter: BeadsAdapter | None = None,
         hooks: object | None = None,
     ) -> None:
@@ -514,6 +515,11 @@ class ChatApp(App[None]):
         self._compaction_store = compaction_store
         self._scribe_lock_dir = scribe_lock_dir
         self._scribe_user_id = scribe_user_id
+        # When True, /compact first scribes unprocessed turns into
+        # episodic + semantic memory, then folds older turns into a
+        # summary. Default on so the user doesn't have to remember to
+        # /scribe before /compact. See harness-0kw.
+        self._auto_scribe = auto_scribe
         # Ab's bd adapter — only populated when character=airton_b and
         # the isolated bd dir verifies. Feeds /retro and the
         # per-turn reset_turn_counter hook. None for every other

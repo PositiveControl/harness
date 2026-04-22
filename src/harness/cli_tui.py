@@ -47,6 +47,7 @@ def run_tui(
     tools_drop: str | None,
     workspace: str | None,
     compact_at: float,
+    auto_scribe: bool,
     router_enabled: bool,
     router_repo: str,
     router_mode: str,
@@ -178,6 +179,7 @@ def run_tui(
         retrieval_health=retrieval_health,
         compaction_store=compaction_store,
         scribe_user_id=speaker,
+        auto_scribe=auto_scribe,
         ab_adapter=ab_adapter,
         hooks=hooks,
     ).run()

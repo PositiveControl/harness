@@ -109,7 +109,10 @@ class SlashOps:
 
     def run_compact_sync(self) -> None:
         """Worker-thread. /compact — fold older turns into a session
-        summary. Hops back to the UI thread with call_from_thread."""
+        summary. When auto-scribe is on and the memory stores are
+        wired, scribe unprocessed turns first so the salient facts
+        land in memory before the transcript compresses (harness-0kw).
+        Hops back to the UI thread with call_from_thread."""
         app = self._app
         if app._compaction_store is None:
             app.call_from_thread(
@@ -118,6 +121,30 @@ class SlashOps:
                 True,
             )
             return
+        pre_msg: str | None = None
+        if app._auto_scribe and app._memory_store is not None and app._semantic_store is not None:
+            try:
+                scribe_summary = run_scribe(
+                    app._adapter,
+                    app._character,
+                    app._transcript,
+                    app._memory_store,
+                    app._semantic_store,
+                    session_id=app._session,
+                    user_id=app._scribe_user_id or app._speaker,
+                    lock_dir=app._scribe_lock_dir,
+                )
+            except Exception as exc:
+                pre_msg = f"auto-scribe failed ({type(exc).__name__}: {exc}) — compacting anyway"
+                app.call_from_thread(self._render, pre_msg, True)
+            else:
+                if scribe_summary.turns_processed > 0:
+                    pre_msg = (
+                        f"✓ auto-scribed {scribe_summary.turns_processed} turn(s) → "
+                        f"{scribe_summary.episodic_written} episodic, "
+                        f"{scribe_summary.semantic_written} semantic"
+                    )
+                    app.call_from_thread(self._render, pre_msg, False)
         try:
             outcome = run_compaction(
                 app._adapter,
@@ -126,9 +153,7 @@ class SlashOps:
                 session_id=app._session,
             )
         except Exception as exc:
-            app.call_from_thread(
-                self._render, f"compact failed: {type(exc).__name__}: {exc}", True
-            )
+            app.call_from_thread(self._render, f"compact failed: {type(exc).__name__}: {exc}", True)
             return
         msg = (
             f"✓ compacted {outcome.covered_turns} turn(s) up to id={outcome.new_up_to_turn_id}"
@@ -169,9 +194,7 @@ class SlashOps:
                 lock_dir=app._scribe_lock_dir,
             )
         except Exception as exc:
-            app.call_from_thread(
-                self._render, f"scribe failed: {type(exc).__name__}: {exc}", True
-            )
+            app.call_from_thread(self._render, f"scribe failed: {type(exc).__name__}: {exc}", True)
             return
         msg = (
             f"✓ scribed: {summary.episodic_written} episodic + "
