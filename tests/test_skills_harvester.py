@@ -58,11 +58,7 @@ class _StubAdapter:
                 "assignee": assignee,
             }
         )
-        return [
-            i
-            for i in self.issues
-            if status is None or status == "all" or i.status == status
-        ]
+        return [i for i in self.issues if status is None or status == "all" or i.status == status]
 
 
 def _issue(
@@ -98,9 +94,7 @@ def episodic(tmp_path: Path) -> EpisodicStore:
 
 def test_principle_from_labels_picks_first_thought_label() -> None:
     assert _principle_from_labels(("scope:professional", "thought:decision")) == "decision"
-    assert (
-        _principle_from_labels(("thought:observation", "thought:decision")) == "observation"
-    )
+    assert _principle_from_labels(("thought:observation", "thought:decision")) == "observation"
 
 
 def test_principle_from_labels_returns_none_when_no_thought_label() -> None:

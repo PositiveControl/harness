@@ -968,9 +968,7 @@ def test_update_tool_combines_scope_and_native_fields() -> None:
     adapter = FakeAdapter(
         show_issues={"harness-x": _issue("harness-x", scope="professional")},
     )
-    out = UpdateTool(adapter).call(
-        id="harness-x", title="new title", scope="personal"
-    )
+    out = UpdateTool(adapter).call(id="harness-x", title="new title", scope="personal")
 
     assert adapter.update_calls == [("harness-x", {"title": "new title"})]
     assert adapter.label_rm_calls == [("harness-x", "scope:professional")]

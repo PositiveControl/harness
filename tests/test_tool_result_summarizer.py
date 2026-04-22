@@ -257,9 +257,7 @@ def test_tool_loop_applies_summarizer_between_exec_and_append() -> None:
 
     summarizer = _ScriptedSummarizer(replies=["grep.py:42 match"])
     hooks = default_hook_pipeline()
-    hooks.post_tool.append(
-        ToolResultSummarizerHook(summarizer=summarizer, threshold_chars=1024)
-    )
+    hooks.post_tool.append(ToolResultSummarizerHook(summarizer=summarizer, threshold_chars=1024))
 
     run_tool_loop(
         adapter,

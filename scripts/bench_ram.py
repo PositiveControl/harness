@@ -170,8 +170,7 @@ def run(args: argparse.Namespace) -> _Run:
                     ChatMessage(
                         role="system",
                         content=(
-                            "You are Airton, a gruff senior engineer. Answer in "
-                            "two sentences."
+                            "You are Airton, a gruff senior engineer. Answer in two sentences."
                         ),
                     ),
                     ChatMessage(

@@ -112,11 +112,7 @@ def harvest_bd_skills(
     # status filter, then narrow to thought-labels in Python.
     # assignee=None lets the call see both ab-owned and user-owned
     # beads, matching the bd adapter's default exclude behavior.
-    issues = (
-        ab_adapter.list_issues()
-        if status == "all"
-        else ab_adapter.list_issues(status=status)
-    )
+    issues = ab_adapter.list_issues() if status == "all" else ab_adapter.list_issues(status=status)
 
     matching = [issue for issue in issues if _matches_filter(issue, labels)]
     newly: list[str] = []

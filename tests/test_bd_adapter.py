@@ -401,9 +401,7 @@ def test_list_passes_priority_and_type(bd_dir: Path, runner: FakeRunner) -> None
     assert cmd[cmd.index("--limit") + 1] == "10"
 
 
-def test_list_with_scope_defers_limit_to_client_side(
-    bd_dir: Path, runner: FakeRunner
-) -> None:
+def test_list_with_scope_defers_limit_to_client_side(bd_dir: Path, runner: FakeRunner) -> None:
     """Regression guard (harness-z3f): when a scope filter is set,
     `--limit` must NOT go to bd. bd applies --limit server-side BEFORE
     the client-side scope filter runs, so any scope-matching row past
@@ -479,9 +477,7 @@ def test_list_with_scope_defers_limit_to_client_side(
     assert "--limit" not in cmd, f"scope-filtered list must not pass --limit to bd: {cmd}"
 
 
-def test_list_without_scope_passes_limit_to_bd(
-    bd_dir: Path, runner: FakeRunner
-) -> None:
+def test_list_without_scope_passes_limit_to_bd(bd_dir: Path, runner: FakeRunner) -> None:
     """Complement to the deferred-limit test: with no client-side
     filter in play, passing --limit to bd is strictly more efficient
     (smaller JSON payload) and semantically correct, so we keep that
@@ -540,9 +536,7 @@ def _scope_fixture_payload() -> str:
     )
 
 
-def test_scope_allowlist_keeps_scoped_and_drops_dev_beads(
-    bd_dir: Path, runner: FakeRunner
-) -> None:
+def test_scope_allowlist_keeps_scoped_and_drops_dev_beads(bd_dir: Path, runner: FakeRunner) -> None:
     """airton_b's read surface (harness-j7y): only beads carrying a
     scope:* label in the allowlist survive the default read, plus
     ab-internal beads which pass through to default_exclude (which
@@ -607,9 +601,7 @@ def test_scope_allowlist_unset_is_a_noop(bd_dir: Path, runner: FakeRunner) -> No
     ]
 
 
-def test_scope_allowlist_applies_to_search_and_ready(
-    bd_dir: Path, runner: FakeRunner
-) -> None:
+def test_scope_allowlist_applies_to_search_and_ready(bd_dir: Path, runner: FakeRunner) -> None:
     """list is the obvious user-facing call, but search/ready feed
     the ops model too. Any read path that can surface a pure dev
     bead to ab must go through the same filter."""

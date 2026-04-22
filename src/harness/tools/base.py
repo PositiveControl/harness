@@ -152,9 +152,7 @@ class ToolRegistry:
         except TypeError as exc:
             unknown = _unknown_kwarg_from(exc)
             if unknown is not None:
-                accepted = sorted(
-                    (tool.spec.parameters.get("properties") or {}).keys()
-                )
+                accepted = sorted((tool.spec.parameters.get("properties") or {}).keys())
                 msg = (
                     f"tool {name!r} rejected unknown argument {unknown!r}. "
                     f"Accepts: {', '.join(accepted) or '(none)'}. "
@@ -182,9 +180,7 @@ class ToolRegistry:
         return ToolResult(tool_name=name, output=out, success=True)
 
 
-_UNKNOWN_KWARG_RE = re.compile(
-    r"got an unexpected keyword argument ['\"]([^'\"]+)['\"]"
-)
+_UNKNOWN_KWARG_RE = re.compile(r"got an unexpected keyword argument ['\"]([^'\"]+)['\"]")
 
 
 def _unknown_kwarg_from(exc: TypeError) -> str | None:

@@ -34,9 +34,7 @@ def test_echo_complete_with_tools_returns_modelreply_no_calls() -> None:
     returns the echo text with an empty tool_calls tuple. Keeps the
     --tools path runnable for wiring tests without a real model."""
     adapter = EchoAdapter()
-    reply = adapter.complete_with_tools(
-        [ChatMessage(role="user", content="try tools")]
-    )
+    reply = adapter.complete_with_tools([ChatMessage(role="user", content="try tools")])
     assert isinstance(reply, ModelReply)
     assert reply.content == "[echo] try tools"
     assert reply.tool_calls == ()

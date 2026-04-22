@@ -533,9 +533,7 @@ class UpdateTool:
         to keep the bd command count down."""
         target = f"scope:{new_scope}"
         issue = self.adapter.show(issue_id)
-        existing_scope_labels = [
-            label for label in issue.labels if label.startswith("scope:")
-        ]
+        existing_scope_labels = [label for label in issue.labels if label.startswith("scope:")]
         for label in existing_scope_labels:
             if label != target:
                 self.adapter.label_rm(issue_id, label)
