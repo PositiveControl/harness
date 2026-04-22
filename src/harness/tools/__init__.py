@@ -32,6 +32,7 @@ from harness.tools.search_facts import SearchFactsTool
 from harness.tools.search_memory import SearchMemoryTool
 from harness.tools.search_web import SearchWebTool
 from harness.tools.shell import ShellTool
+from harness.tools.subagent import SpawnSubagentTool
 from harness.tools.write_file import WriteFileTool
 
 __all__ = [
@@ -56,6 +57,7 @@ __all__ = [
     "SearchMemoryTool",
     "SearchWebTool",
     "ShellTool",
+    "SpawnSubagentTool",
     "StreamChunk",
     "StreamComplete",
     "StreamText",

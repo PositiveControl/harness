@@ -1057,6 +1057,7 @@ def _build_tool_registry_for_tui(
     warnings_out: list[str] | None = None,
     include_internal: bool = False,
     ab_adapter: BeadsAdapter | None = None,
+    router: Router | None = None,
 ) -> ToolRegistry | None:
     """Build a ToolRegistry for the Textual app. Subset of the
     classic REPL's setup — skips scribe_session and
@@ -1122,10 +1123,15 @@ def _build_tool_registry_for_tui(
         )
         builders.update(_ab_tool_builders(effective_ab))
 
+    # `introspect` and `spawn_subagent` both inspect / operate on the
+    # already-populated registry, so they're constructed in a second
+    # pass after the concrete tools are in place.
+    _deferred = {"introspect", "spawn_subagent"}
+
     registry = ToolRegistry()
     for name in wanted_names:
-        if name == "introspect":
-            continue  # handled after the main loop — needs the populated registry
+        if name in _deferred:
+            continue
         builder = builders.get(name)
         if builder is None:
             if warnings_out is not None:
@@ -1159,6 +1165,23 @@ def _build_tool_registry_for_tui(
                     router_id=router_id,
                     transcript=transcript,
                     session_id=session,
+                )
+            )
+
+    if "spawn_subagent" in wanted_names:
+        if adapter is None:
+            if warnings_out is not None:
+                warnings_out.append("tool 'spawn_subagent' needs an adapter — skipping")
+        else:
+            from harness.orchestrator.hooks import default_hook_pipeline
+            from harness.tools import SpawnSubagentTool
+
+            registry.register(
+                SpawnSubagentTool(
+                    adapter=adapter,  # type: ignore[arg-type]  # narrower _ToolCapableAdapter, checked at runtime
+                    registry=registry,
+                    hooks=default_hook_pipeline(),
+                    router=router,
                 )
             )
 

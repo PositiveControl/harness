@@ -130,6 +130,7 @@ def run_tui(
         warnings_out=registry_warnings,
         include_internal=include_internal or dev,
         ab_adapter=ab_adapter,
+        router=router,
     )
 
     compaction_store = CompactionStore(settings.character_db_path) if compact_at > 0 else None

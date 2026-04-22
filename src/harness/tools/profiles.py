@@ -25,6 +25,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_memory",
         "search_facts",
         "search_web",
+        "spawn_subagent",
     ),
     # Read-only everyday chat: open a file, find files, grep, recall.
     "core": (
@@ -51,6 +52,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_memory",
         "search_facts",
         "introspect",
+        "spawn_subagent",
     ),
     # ab's personal-operations tool set — harness-inj.5. Every tool
     # dispatches through the BeadsAdapter to ab's isolated beads DB
@@ -96,6 +98,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_memory",
         "search_facts",
         "introspect",
+        "spawn_subagent",
     ),
     # Kitchen-sink — every built-in tool the registry knows about.
     # Intended as the starting point for scripts/chat.sh + power users

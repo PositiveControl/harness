@@ -182,10 +182,16 @@ def build_classic_registry(
     }
     builders.update(_ab_tool_builders(ab_adapter))
 
+    # `introspect` and `spawn_subagent` are meta-tools that reflect on
+    # the already-populated registry, so they get registered after the
+    # first pass. Listing their names here keeps the deferral logic in
+    # one place and mirrors the TUI builder.
+    _deferred = {"introspect", "spawn_subagent"}
+
     registry = ToolRegistry()
     for name in wanted_names:
-        if name == "introspect":
-            continue  # deferred until the registry is populated
+        if name in _deferred:
+            continue
         builder = builders.get(name)
         if builder is None:
             console.print(f"[yellow]⚠ {_missing_builder_reason(name, character)}[/yellow]")
@@ -214,6 +220,19 @@ def build_classic_registry(
                 router_id=_router_id_label(router),
                 transcript=transcript,
                 session_id=session,
+            )
+        )
+
+    if "spawn_subagent" in wanted_names:
+        from harness.orchestrator.hooks import default_hook_pipeline
+        from harness.tools import SpawnSubagentTool
+
+        registry.register(
+            SpawnSubagentTool(
+                adapter=adapter,  # type: ignore[arg-type]  # narrower _ToolCapableAdapter, checked at runtime
+                registry=registry,
+                hooks=default_hook_pipeline(),
+                router=router,
             )
         )
 
