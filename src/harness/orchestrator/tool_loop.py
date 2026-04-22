@@ -1,12 +1,39 @@
 from __future__ import annotations
 
-import json
-import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from harness.model.adapter import ChatMessage
+from harness.orchestrator.hooks import (
+    AB_DATE_HEADER_RE,
+    AB_TIER_HEADER_RE,
+    BARE_CLAIM_RE,
+    DUPLICATE_CALL_NUDGE,
+    EXHAUSTED_FABRICATION_FALLBACK,
+    FABRICATED_AB_CAPTURE_RE,
+    FABRICATED_AB_SCOPE_RE,
+    FABRICATED_BEAD_ID_RE,
+    FABRICATED_REMEMBER_RE,
+    FABRICATED_SEARCH_RE,
+    FALSE_SUCCESS_RE,
+    META_CONFIRM_RE,
+    TEASER_RE,
+    TOOL_INTENT_RE,
+    BailContext,
+    BailOutcome,
+    Continue,
+    FinalizeContext,
+    Halt,
+    HookPipeline,
+    PostModelContext,
+    PreToolContext,
+    Replace,
+    Skip,
+    Truncated,
+    default_hook_pipeline,
+    looks_like_ab_fabrication,
+)
 from harness.tools.base import (
     ModelReply,
     StreamComplete,
@@ -16,23 +43,14 @@ from harness.tools.base import (
     ToolResult,
 )
 
-# Canonical catcher names. Each guard below checks `_catcher_enabled(name)`
-# so the attribution eval (harness-cfm7) can toggle a single catcher off
-# and measure which scenarios it uniquely saves. Production code never
-# mutates `_DISABLED_CATCHERS`; only `harness.evals.tool_loop` does.
-_CATCHER_NAMES: tuple[str, ...] = (
-    "truncated",
-    "unparseable",
-    "teaser",
-    "false_success",
-    "meta_confirm",
-    "fabricated_search",
-    "ab_fabrication",
-    "tool_intent",
-    "paired_meta_confirm_strip",
-    "duplicate_call",
-    "fabrication_fallback",
-)
+# Canonical catcher names. Exposed for the attribution eval
+# (harness-cfm7) to disable one catcher at a time and measure which
+# scenarios it uniquely saves. Derived from the default hook pipeline
+# so adding a new hook automatically updates the surface. Production
+# code never mutates `_DISABLED_CATCHERS`; only `harness.evals.tool_loop`
+# does (via its `disable_catchers` context manager).
+_DEFAULT_PIPELINE: HookPipeline = default_hook_pipeline()
+_CATCHER_NAMES: tuple[str, ...] = _DEFAULT_PIPELINE.names()
 _DISABLED_CATCHERS: set[str] = set()
 
 
@@ -40,33 +58,56 @@ def _catcher_enabled(name: str) -> bool:
     return name not in _DISABLED_CATCHERS
 
 
-_DUPLICATE_CALL_NUDGE = (
-    "[duplicate call — identical arguments to an earlier call this turn. "
-    "Result is unchanged from the earlier tool message. Give the user your "
-    "final answer now; do NOT emit any more tool calls.]"
-)
+# Re-exported for historical import stability. The hooks module owns
+# these now, but tests + the CLI stream filter + ab_ops eval fixtures
+# import them through `harness.orchestrator.tool_loop` and
+# `harness.orchestrator`.
+_DUPLICATE_CALL_NUDGE = DUPLICATE_CALL_NUDGE
+_EXHAUSTED_FABRICATION_FALLBACK = EXHAUSTED_FABRICATION_FALLBACK
+_TEASER_RE = TEASER_RE
+_FALSE_SUCCESS_RE = FALSE_SUCCESS_RE
+_META_CONFIRM_RE = META_CONFIRM_RE
+_FABRICATED_SEARCH_RE = FABRICATED_SEARCH_RE
+_FABRICATED_AB_CAPTURE_RE = FABRICATED_AB_CAPTURE_RE
+_FABRICATED_REMEMBER_RE = FABRICATED_REMEMBER_RE
+_FABRICATED_AB_SCOPE_RE = FABRICATED_AB_SCOPE_RE
+_FABRICATED_BEAD_ID_RE = FABRICATED_BEAD_ID_RE
+_BARE_CLAIM_RE = BARE_CLAIM_RE
+_AB_DATE_HEADER_RE = AB_DATE_HEADER_RE
+_AB_TIER_HEADER_RE = AB_TIER_HEADER_RE
+_TOOL_INTENT_RE = TOOL_INTENT_RE
+_looks_like_ab_fabrication = looks_like_ab_fabrication
 
-# Final fallback when bail-retries are exhausted but the reply still trips
-# a fabrication catcher. Before this, we surfaced the last fabricated reply
-# verbatim (harness-24xj: "what is the date?" produced three stacked
-# fabricated plans because the final retry still fabricated and we returned
-# it). Swap to a canned refusal so the user never sees hallucinated tool
-# output as an answer.
-_EXHAUSTED_FABRICATION_FALLBACK = (
-    "I couldn't answer that without calling a tool, and my attempts to "
-    "call one didn't land cleanly. Try rephrasing, or ask me something I "
-    "can answer without live data."
-)
 
-
-def _call_key(call: ToolCall) -> tuple[str, str]:
-    """Canonical (name, arguments-json) key for duplicate detection.
-    Sorting keys means argument order doesn't create false-positive
-    uniqueness ({'a':1,'b':2} == {'b':2,'a':1}); default=str keeps the
-    key stable if a model emits exotic-but-JSON-stringifiable types
-    (dates, Paths). We never decode the key back — only equality
-    matters — so lossy coercion is fine."""
-    return (call.name, json.dumps(call.arguments, sort_keys=True, default=str))
+# Public + historically-imported names. `_CATCHER_NAMES` etc. are
+# underscore-prefixed "internal" identifiers that the attribution eval
+# and CLI stream filter pull from this module; re-declaring them in
+# __all__ documents the compatibility surface.
+__all__ = [
+    "_AB_DATE_HEADER_RE",
+    "_AB_TIER_HEADER_RE",
+    "_BARE_CLAIM_RE",
+    "_CATCHER_NAMES",
+    "_DISABLED_CATCHERS",
+    "_DUPLICATE_CALL_NUDGE",
+    "_EXHAUSTED_FABRICATION_FALLBACK",
+    "_FABRICATED_AB_CAPTURE_RE",
+    "_FABRICATED_AB_SCOPE_RE",
+    "_FABRICATED_BEAD_ID_RE",
+    "_FABRICATED_REMEMBER_RE",
+    "_FABRICATED_SEARCH_RE",
+    "_FALSE_SUCCESS_RE",
+    "_META_CONFIRM_RE",
+    "_TEASER_RE",
+    "_TOOL_INTENT_RE",
+    "ConfirmFn",
+    "ObserverFn",
+    "ToolLoopEvent",
+    "ToolLoopResult",
+    "_catcher_enabled",
+    "_looks_like_ab_fabrication",
+    "run_tool_loop",
+]
 
 
 if TYPE_CHECKING:
@@ -76,199 +117,7 @@ if TYPE_CHECKING:
     from harness.tools.base import StreamChunk, ToolSpec
 
 
-# Matches "Let me check…", "I'll now read…", "Next, I'll…" etc. — the
-# model announcing more work without actually emitting tool calls. Anchored
-# to end of content so a teaser mid-paragraph (followed by real prose) doesn't
-# trigger.
-_TEASER_RE = re.compile(
-    r"\b(let me|i'?ll|now i'?ll|now let me|next,?\s+i'?ll?)\b[^.\n]*[:.]\s*$",
-    re.IGNORECASE,
-)
-
-# Matches past-tense / present-perfect claims that an action was completed —
-# "has been added", "is now included", "I've created", "successfully updated",
-# etc. When the reply contains one of these AND no tool was executed in the
-# turn, the model is hallucinating success (harness-3fn).
-_ACTION_VERBS = (
-    r"(?:added|included|updated|created|written|modified|"
-    r"replaced|removed|set|appended|saved|deleted)"
-)
-_FALSE_SUCCESS_RE = re.compile(
-    r"\b(?:"
-    rf"has been\s+{_ACTION_VERBS}"
-    r"|"
-    r"(?:is|are)\s+now\s+(?:in|included|added|excluded|"
-    r"set|present|updated|available|saved)"
-    r"|"
-    rf"(?:i(?:'ve|\shave))(?:\s+(?:just|now|successfully))?\s+{_ACTION_VERBS}"
-    r"|"
-    rf"successfully\s+{_ACTION_VERBS}"
-    r"|"
-    r"the\s+\S+\s+(?:has\s+been|is\s+now|will\s+be)\s+"
-    r"(?:added|included|updated|created|excluded|modified|replaced)"
-    r")\b",
-    re.IGNORECASE,
-)
-
-# Matches chat-level meta-confirm prompts — "Would you like me to…?",
-# "Should I…?", "Please confirm…", "Shall I…?" etc. Small models default
-# to this pattern when they misunderstand that the user's request IS
-# the instruction and the tool layer handles confirmation. Broad on
-# purpose: 7B Qwen hit several variants in a single reply
-# ("let's confirm", "would you like to", "please confirm your approval")
-# so we catch all of them.
-_META_CONFIRM_RE = re.compile(
-    r"(?:"
-    r"would you like (?:(?:me|us|you)\s+)?to\s+"
-    r"(?:add|proceed|continue|update|create|edit|write|change|append|"
-    r"remove|modify|delete|run|install|make|do|confirm|go\s+ahead)"
-    r"|"
-    r"shall i\b"
-    r"|"
-    r"should i (?:proceed|go ahead|continue|update|add|edit|change|"
-    r"write|do|run)"
-    r"|"
-    r"do you want me to"
-    r"|"
-    r"please confirm"
-    r"|"
-    r"confirm (?:your |the |my )?(?:approval|request|intent|instruction)"
-    r"|"
-    r"let(?:'s|\s+us)\s+confirm"
-    r"|"
-    r"we\s+need\s+to\s+make\s+sure\s+(?:the\s+user|you)\s+confirms?"
-    r"|"
-    r"(?:please\s+)?approve\s+(?:the\s+|this\s+)?action"
-    r")",
-    re.IGNORECASE,
-)
-
-# Matches replies that look like fabricated search-tool output — a
-# numbered results intro or URLs hosted on classic placeholder domains
-# (example.com/org/net, your-site, localhost, etc.). Small models
-# sometimes respond to 'search the web for X' by inventing a result
-# list with a made-up URL and snippet rather than calling search_web.
-# Paired with 'no tool has run this turn' this is a strong fabrication
-# tell (see harness-q27, harness-j1d).
-_FABRICATED_SEARCH_RE = re.compile(
-    r"(?:"
-    r"here\s+are\s+the\s+results"
-    r"|"
-    r"here\s+(?:is|are)\s+(?:what\s+)?i\s+found"
-    r"|"
-    r"(?:top|first|search)\s+results?\s*:"
-    r"|"
-    r"https?://(?:www\.)?(?:example|your-?site|your-?domain|"
-    r"placeholder|localhost|test|dummy|fake)\.(?:com|org|net|io)\b"
-    r"|"
-    # Numbered-list entry whose content ends with terminal punctuation
-    # plus a closing double-quote (`."`, `!"`, `?"`) and contains no
-    # URL. Classic fabricated-snippet shape: 7B-class models imitate
-    # search-tool output in an HTML-excerpt style instead of emitting
-    # a <tool_call>. Tempered match rules out real `1. TITLE —
-    # https://...` search_web entries. See harness-j1d.
-    r"(?:\A|\n)\s*\d+\.\s+(?:(?!https?://).)*?[.!?]\"(?=\s|$)"
-    r")",
-    re.IGNORECASE,
-)
-
-# Matches ab_ops-specific fabrication shapes — ab imitates its own
-# tool receipts (capture / plan) without emitting a <tool_call>.
-# Distinct tells:
-#   - `^Captured[.:]` — real CaptureTool output is `Captured <id> — [scope]…`
-#     (id, not punctuation, follows `Captured`). A colon OR period after
-#     `Captured` at line start is fabrication (harness-lbh colon form;
-#     harness-ce2x period form, "Captured. Scope: personal. Outcome: …").
-#   - `[prof/…]` / `[pers/…]` — real scopes are `professional` / `personal`,
-#     never abbreviated. The abbreviation is a telltale of imitation.
-#   - Two+ tier-label line headers (Shall/Should/Shmaybe/Watching) in one
-#     reply — the `_render_plan` shape. A single mention is prose; two
-#     together is plan imitation.
-_FABRICATED_AB_CAPTURE_RE = re.compile(r"(?:\A|\n)\s*Captured\s*[.:]", re.IGNORECASE)
-# `Remembered:` receipt from ab_ops RememberTool. Real shape is
-# `Remembered: <insight>` (colon form), which is exactly what the model
-# imitates (harness-z734: user asked ab to remember a birthday; round 0
-# bail-retry fired on 'Updated.' bare-claim, round 1 fabricated
-# `Remembered: dad Steve's birthday is Oct 8th` and — because no
-# 'Remembered'-shaped catcher existed — slipped through as the final
-# answer). Safe because `_diagnose_bail` gates on
-# `tools_ran_this_turn=False`; real RememberTool output disarms this.
-_FABRICATED_REMEMBER_RE = re.compile(r"(?:\A|\n)\s*Remembered\s*[.:]", re.IGNORECASE)
-_FABRICATED_AB_SCOPE_RE = re.compile(r"\[(?:prof|pers)/[^\]]+\]", re.IGNORECASE)
-# `Bead id: harness-xxx` in free text. Real CaptureTool output never
-# uses this phrasing — the id appears bare as the second token after
-# `Captured`. Any "Bead id:" / "Bead:" label with an id is the model
-# imitating an imagined schema and is always a fabrication tell
-# (harness-ce2x: user saw `Bead id: harness-abc123..`).
-_FABRICATED_BEAD_ID_RE = re.compile(
-    r"\bbead\s*(?:id)?\s*[:=]\s*(?:harness|bd|ab)-[a-z0-9]+",
-    re.IGNORECASE,
-)
-# Bare past-tense success claim as a standalone sentence — "Updated.",
-# "Captured.", "Created." — word flanked by whitespace/quote and
-# followed by end-of-sentence. Gated on `tools_ran_this_turn=False`
-# by the caller, so legitimate wrap-ups after a real tool ran never
-# trip. Observed fabrication (harness-ce2x):
-#   `Missed "…". Updated. Rerun /plan.` — no tool call, pure claim.
-_BARE_CLAIM_RE = re.compile(
-    r"(?:\A|[\s\"'])"
-    r"(?:Updated|Captured|Created|Deleted|Removed|Added|Saved|Noted|Done|Remembered)"
-    r"\.(?:\s|$)",
-    re.IGNORECASE,
-)
-# 'Today — YYYY-MM-DD' is the exact _render_plan header shape; natural
-# prose basically never emits this prefix. Accept em-dash or hyphen
-# (harness-jj9: the observed fabrication reproduces the em-dash verbatim).
-_AB_DATE_HEADER_RE = re.compile(
-    r"\bToday\s*[\u2014\-]\s*\d{4}-\d{2}-\d{2}\b",
-    re.IGNORECASE,
-)
-# Tier labels anywhere in the reply (not just line-start): the user's
-# observed fabrication emitted them inline after the date header, so the
-# earlier line-start anchor missed the case entirely. Two+ labels with a
-# colon/dash suffix is a plan-imitation signal regardless of layout
-# (harness-jj9).
-_AB_TIER_HEADER_RE = re.compile(
-    r"\b(?:Shall|Should|Shmaybe|Watching)\b[-:]",
-    re.IGNORECASE,
-)
-
-
-def _looks_like_ab_fabrication(content: str) -> bool:
-    if _FABRICATED_AB_CAPTURE_RE.search(content):
-        return True
-    if _FABRICATED_REMEMBER_RE.search(content):
-        return True
-    if _FABRICATED_BEAD_ID_RE.search(content):
-        return True
-    if _FABRICATED_AB_SCOPE_RE.search(content):
-        return True
-    if _AB_DATE_HEADER_RE.search(content):
-        return True
-    if len(_AB_TIER_HEADER_RE.findall(content)) >= 2:
-        return True
-    return bool(_BARE_CLAIM_RE.search(content))
-
-
-# Matches tool-intent statements that should be accompanied by an
-# actual <tool_call>. Broader than the trailing-teaser regex: doesn't
-# require end-of-content anchoring, and includes 'I will <verb>' not
-# just "I'll <verb>". When a reply contains one of these AND no tool
-# was called this turn, the model has announced intent without acting
-# on it — classic 7B failure mode (harness-q27 follow-up).
-_TOOL_INTENT_RE = re.compile(
-    r"\b(?:"
-    r"i['\u2019]?ll|i\s+will|i\s+need\s+to|i\s+should|i'?m\s+going\s+to|"
-    r"let\s+me|let['\u2019]?s|"
-    r"now\s+i['\u2019]?ll|now\s+let\s+me|next,?\s+i['\u2019]?ll"
-    r")\s+"
-    r"(?:search|look\s+(?:up|for|at)|find|check|read|run|fetch|call|"
-    r"invoke|execute|list|grep|edit|write|open|browse|query|"
-    r"retrieve|download|inspect|examine)\b",
-    re.IGNORECASE,
-)
-
-# Upper bound on the auto-widen loop triggered by _diagnose_bail=="truncated".
+# Upper bound on the auto-widen loop triggered by a truncated bail.
 # 32k is deep into safe territory for the 131k-window Qwen 2.5 7B we ship —
 # the real UX wall shows up well before: ~40-60 tok/s on an M4 Pro means an
 # 8k reply already takes 2-3 minutes. See harness-cs9 for the architectural
@@ -279,94 +128,13 @@ _MAX_TOKENS_CEILING = 32768
 _BAIL_RETRIES_PER_TURN = 2
 
 
-def _diagnose_bail(reply: ModelReply, *, tools_ran_this_turn: bool) -> str | None:
-    """Classify a 0-tool-calls reply. Returns:
-    - "truncated" — caller should retry with a larger token budget
-    - a nudge string — caller should append it as a user message and retry
-    - None — genuine final reply, terminate normally
-
-    `tools_ran_this_turn` distinguishes a first-round bail (no tools
-    have executed yet) from a wrap-up round (tools ran in a prior
-    round; this round is summarizing). Completion claims are legitimate
-    in wrap-ups but hallucinations in first-round bails."""
-    if _catcher_enabled("truncated") and reply.was_truncated:
-        return "truncated"
-    if _catcher_enabled("unparseable") and reply.had_unparseable_call:
-        return (
-            "Your last <tool_call> block was malformed and could not be parsed. "
-            "Re-emit it as a single line of valid JSON inside <tool_call>…</tool_call>: "
-            '<tool_call>{"name": "...", "arguments": {...}}</tool_call>'
-        )
-    if _catcher_enabled("teaser") and _TEASER_RE.search(reply.content.strip()):
-        return (
-            "Your reply announced more work but didn't include any tool calls. "
-            "Either call the tool now, or give the user your final answer."
-        )
-    if (
-        _catcher_enabled("false_success")
-        and not tools_ran_this_turn
-        and _FALSE_SUCCESS_RE.search(reply.content)
-    ):
-        return (
-            "Your reply claims that a file was changed / created / updated, "
-            "but you did not call any tool this turn. You CANNOT modify the "
-            "workspace without calling a write-tier tool (edit_file, "
-            "write_file, shell). Either call the appropriate tool now, or "
-            "tell the user you cannot make that change."
-        )
-    if (
-        _catcher_enabled("meta_confirm")
-        and not tools_ran_this_turn
-        and _META_CONFIRM_RE.search(reply.content)
-    ):
-        return (
-            "Do NOT ask the user to confirm in chat. The user's previous "
-            "message IS the instruction — call the tool right now. Write-tier "
-            "tools have their own approve/decline UX at the tool layer; "
-            "re-asking in chat just wastes a round."
-        )
-    if (
-        _catcher_enabled("fabricated_search")
-        and not tools_ran_this_turn
-        and _FABRICATED_SEARCH_RE.search(reply.content)
-    ):
-        return (
-            "Your reply looks like fabricated tool output (search results / "
-            "placeholder URLs / 'here are the results'). You did NOT call any "
-            "tool this turn — you cannot know results without actually calling "
-            "search_web / fetch_url / read_file. Call the appropriate tool now, "
-            "or tell the user you cannot answer without live data."
-        )
-    if (
-        _catcher_enabled("ab_fabrication")
-        and not tools_ran_this_turn
-        and _looks_like_ab_fabrication(reply.content)
-    ):
-        return (
-            "Your reply looks like fabricated tool output (ab_ops capture "
-            "receipt / tiered plan / fake scope abbreviation). You did NOT "
-            "call any tool this turn — you cannot produce a capture receipt "
-            "or plan without actually calling `capture` / `plan`. Call the "
-            "appropriate tool now, or tell the user plainly that you cannot."
-        )
-    if (
-        _catcher_enabled("tool_intent")
-        and not tools_ran_this_turn
-        and _TOOL_INTENT_RE.search(reply.content)
-    ):
-        return (
-            "Your reply said you would do something ('I will search…', "
-            "'let me check…', etc.) but you did NOT emit a tool_call. "
-            "Stated intent is not action. To call a tool, emit EXACTLY "
-            "this block (no wrapping text, no commentary) as part of "
-            "your next reply:\n"
-            '<tool_call>{"name": "<tool_name>", "arguments": {<args>}}</tool_call>\n'
-            "Example for search_web:\n"
-            '<tool_call>{"name": "search_web", "arguments": '
-            '{"query": "ahwatukee bbq"}}</tool_call>\n'
-            "If you cannot figure out the right tool/args, say so plainly."
-        )
-    return None
+def _disabled_snapshot() -> frozenset[str]:
+    """Snapshot the module-level disabled set at hook-invocation time.
+    Pipeline methods take a frozenset so they can't mutate it; the
+    attribution eval toggles the underlying `_DISABLED_CATCHERS` set
+    via its context manager, and each hook call re-reads via this
+    snapshot (matches the pre-refactor `_catcher_enabled` semantics)."""
+    return frozenset(_DISABLED_CATCHERS)
 
 
 class _ToolCapableAdapter(Protocol):
@@ -487,6 +255,8 @@ def _router_prelude(
     key is recorded so a downstream main-model re-invocation with
     identical arguments gets short-circuited by the main loop's
     duplicate guard."""
+    from harness.orchestrator.hooks import _call_key
+
     user_message = _last_user_message(working)
     if user_message is None:
         return (False, False)
@@ -578,13 +348,14 @@ def _run_model_round(
     temperature: float,
     round_idx: int,
     emit: Callable[[ToolLoopEvent], None],
+    hooks: HookPipeline,
 ) -> ModelReply:
     """Call the adapter for one round. Streams via `stream_with_tools`
     when available (emitting token_delta events); falls back to
     blocking `complete_with_tools` otherwise. Emits model_call_start
-    / model_call_end around the call. Strips paired-meta-confirm
-    narrative from replies that also carry a valid tool call
-    (harness-fup / harness-q27)."""
+    / model_call_end around the call. Runs the post-model hook pass
+    (strips paired-meta-confirm narrative when the reply also carries
+    a valid tool call — harness-fup / harness-q27)."""
     emit(ToolLoopEvent(kind="model_call_start", round_index=round_idx))
     stream_fn = getattr(adapter, "stream_with_tools", None)
     try:
@@ -620,22 +391,11 @@ def _run_model_round(
     finally:
         emit(ToolLoopEvent(kind="model_call_end", round_index=round_idx))
 
-    # Small models sometimes emit meta-confirm narrative AND a tool call
-    # in the same reply ("Would you like me to …? <tool_call>…"). The
-    # tool call is valid but the narrative is noise — strip it from the
-    # assistant turn's content so the wrap-up round doesn't see the model
-    # hallucinating a confirmation dialog in its own history.
-    if (
-        _catcher_enabled("paired_meta_confirm_strip")
-        and last_reply.tool_calls
-        and _META_CONFIRM_RE.search(last_reply.content)
-    ):
-        last_reply = ModelReply(
-            content="",
-            tool_calls=last_reply.tool_calls,
-            was_truncated=last_reply.was_truncated,
-            had_unparseable_call=last_reply.had_unparseable_call,
-        )
+    outcome = hooks.run_post_model(
+        PostModelContext(reply=last_reply), disabled=_disabled_snapshot()
+    )
+    if isinstance(outcome, Replace):
+        return outcome.reply
     return last_reply
 
 
@@ -648,23 +408,26 @@ def _execute_tool_calls(
     confirm: ConfirmFn | None,
     emit: Callable[[ToolLoopEvent], None],
     round_idx: int,
+    hooks: HookPipeline,
 ) -> bool:
-    """Execute the round's tool calls: duplicate-call guard, write-tier
+    """Execute the round's tool calls: duplicate-call hook, write-tier
     confirm, dispatch, append tool-role messages. Returns True if any
     call returned success=True (used to gate fabrication catchers on
     later rounds)."""
+    from harness.orchestrator.hooks import _call_key
+
     any_success = False
     for call in calls:
         key = _call_key(call)
-        if _catcher_enabled("duplicate_call") and key in seen_calls:
+        pre_outcome = hooks.run_pre_tool(
+            PreToolContext(call=call, seen_calls=frozenset(seen_calls)),
+            disabled=_disabled_snapshot(),
+        )
+        if isinstance(pre_outcome, Skip):
             # Duplicate of an earlier call this turn — skip execution.
             # Feed the nudge back as the tool-role message so the next
             # round sees 'finalize, don't re-call'.
-            result = ToolResult(
-                tool_name=call.name,
-                output=_DUPLICATE_CALL_NUDGE,
-                success=True,
-            )
+            result = pre_outcome.result
             emit(
                 ToolLoopEvent(
                     kind="tool_call_deduped",
@@ -712,6 +475,7 @@ def run_tool_loop(
     wrap_up_max_tokens: int = 1024,
     temperature: float = 0.5,
     router: Router | None = None,
+    hooks: HookPipeline | None = None,
 ) -> ToolLoopResult:
     """Drive a model + tool registry until the model emits a text-only
     reply or `max_rounds` rounds are spent.
@@ -734,7 +498,12 @@ def run_tool_loop(
     required args present), the orchestrator synthesizes the tool call
     itself, executes it, and the main model only sees a wrap-up round.
     This skips the fabrication-and-nudge loop that small adapters fall
-    into on factual queries (see harness-j1d / harness-q27)."""
+    into on factual queries (see harness-j1d / harness-q27).
+
+    `hooks` lets callers supply a custom HookPipeline — useful for
+    subagent loops (1.A) that want to share or layer on the parent's
+    catchers. Defaults to the module-level pipeline."""
+    pipeline = hooks if hooks is not None else _DEFAULT_PIPELINE
     working: list[ChatMessage] = list(messages)
     initial_count = len(working)
     events: list[ToolLoopEvent] = []
@@ -752,9 +521,9 @@ def run_tool_loop(
             observe(event)
 
     # Tracks whether any tool call THIS TURN returned success=True. The
-    # fabrication catchers (_diagnose_bail) gate on this: if every tool
-    # this turn errored, the model has no real data to wrap up, so a
-    # completion-style reply is still hallucination (harness-a0y).
+    # fabrication catchers gate on this: if every tool this turn errored,
+    # the model has no real data to wrap up, so a completion-style reply
+    # is still hallucination (harness-a0y).
     any_tool_succeeded = False
 
     if router is not None:
@@ -772,17 +541,21 @@ def run_tool_loop(
             temperature=temperature,
             round_idx=round_idx,
             emit=emit,
+            hooks=pipeline,
         )
 
         if not last_reply.tool_calls:
             # Gate on successful tool execution, not mere execution: an
             # all-errored turn (e.g. plan with invalid scope) must still
             # trip fabrication catchers (harness-a0y).
-            diag = _diagnose_bail(last_reply, tools_ran_this_turn=any_tool_succeeded)
+            bail_outcome: BailOutcome = pipeline.run_bail(
+                BailContext(reply=last_reply, tools_ran_this_turn=any_tool_succeeded),
+                disabled=_disabled_snapshot(),
+            )
             can_retry = bail.retries_left > 0 and round_idx + 1 < max_rounds
-            if diag is not None and can_retry:
+            if not isinstance(bail_outcome, Continue) and can_retry:
                 bail.consume_retry()
-                if diag == "truncated":
+                if isinstance(bail_outcome, Truncated):
                     bail.on_truncated()
                     emit(ToolLoopEvent(kind="truncated_retry", round_index=round_idx))
                 else:
@@ -790,23 +563,20 @@ def run_tool_loop(
                     # TUI can drop the in-flight stream buffer — each
                     # retry re-streams from scratch (harness-24xj).
                     emit(ToolLoopEvent(kind="bail_retry", round_index=round_idx))
-                    working.append(ChatMessage(role="user", content=diag))
+                    working.append(ChatMessage(role="user", content=bail_outcome.text))
                 continue
-            # Retries exhausted. If the reply is still fabrication-shaped,
-            # swap in the canned fallback rather than surfacing the
-            # hallucination as the final answer (harness-24xj).
-            # Truncation isn't fabrication — prefer the partial.
-            if (
-                _catcher_enabled("fabrication_fallback")
-                and diag is not None
-                and diag != "truncated"
-            ):
-                last_reply = ModelReply(
-                    content=_EXHAUSTED_FABRICATION_FALLBACK,
-                    tool_calls=(),
-                    was_truncated=last_reply.was_truncated,
-                    had_unparseable_call=last_reply.had_unparseable_call,
-                )
+            # Retries exhausted (or none needed). Let finalize hooks
+            # decide whether to substitute a canned fallback —
+            # fabrication_fallback fires only when THIS round's reply
+            # still trips a fabrication-shaped Nudge. A Continue outcome
+            # (legitimate final reply) disarms the fallback; a Truncated
+            # outcome keeps the partial reply.
+            finalize_outcome = pipeline.run_finalize(
+                FinalizeContext(reply=last_reply, last_outcome=bail_outcome),
+                disabled=_disabled_snapshot(),
+            )
+            if isinstance(finalize_outcome, Halt):
+                last_reply = finalize_outcome.reply
             emit(ToolLoopEvent(kind="round_complete", round_index=round_idx))
             return ToolLoopResult(
                 content=last_reply.content,
@@ -832,6 +602,7 @@ def run_tool_loop(
             confirm=confirm,
             emit=emit,
             round_idx=round_idx,
+            hooks=pipeline,
         )
         any_tool_succeeded = any_tool_succeeded or round_success
 
