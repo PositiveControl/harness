@@ -5,12 +5,17 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
+from harness.store._hybrid import reciprocal_rank_fusion, sanitize_fts_query
+
 if TYPE_CHECKING:
     from harness.retrieval.embed import Embedder
+
+
+SearchMode = Literal["hybrid", "dense", "text"]
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS semantic (
@@ -37,6 +42,25 @@ _CREATE_INDEXES = """
 CREATE INDEX IF NOT EXISTS semantic_subject_idx       ON semantic (subject);
 CREATE INDEX IF NOT EXISTS semantic_tier_idx          ON semantic (tier);
 CREATE INDEX IF NOT EXISTS semantic_superseded_by_idx ON semantic (superseded_by);
+"""
+
+# FTS5 sidecar — same design as episodic_fts. Indexes the triple
+# (subject, predicate, object) so queries on identifier-heavy data
+# ("BeadsAdapter.get_focus", "mark@ucollect.com") don't lose to dense
+# cosine's semantic smoothing.
+_CREATE_FTS = """
+CREATE VIRTUAL TABLE IF NOT EXISTS semantic_fts USING fts5(
+    subject, predicate, object,
+    content='semantic',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS semantic_fts_ai
+AFTER INSERT ON semantic BEGIN
+    INSERT INTO semantic_fts(rowid, subject, predicate, object)
+    VALUES (new.id, new.subject, new.predicate, new.object);
+END;
 """
 
 
@@ -87,6 +111,20 @@ class SemanticStore:
         )
         self._conn.execute("UPDATE semantic SET embedder_id = 'legacy' WHERE embedder_id IS NULL")
         self._conn.executescript(_CREATE_INDEXES)
+        # FTS5 sidecar — rebuild on first create so pre-existing rows
+        # are indexed. See episodic.py for the schema-existence
+        # rationale (COUNT(*) on external-content FTS mirrors the
+        # main table count, so a row-count check can't see the empty-
+        # index case).
+        fts_existed_before = (
+            self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='semantic_fts'"
+            ).fetchone()
+            is not None
+        )
+        self._conn.executescript(_CREATE_FTS)
+        if not fts_existed_before:
+            self._conn.execute("INSERT INTO semantic_fts(semantic_fts) VALUES('rebuild')")
 
     def add(
         self,
@@ -186,16 +224,54 @@ class SemanticStore:
         min_confidence: float = 0.0,
         min_score: float = 0.0,
         user_id: str | None = None,
+        mode: SearchMode = "hybrid",
     ) -> list[tuple[SemanticFact, float]]:
         """Return up to `k` active facts (not superseded) where stored
-        confidence >= `min_confidence` AND retrieval cosine similarity
-        >= `min_score`. Confidence gates by trustworthiness; the score
-        gate gates by relevance. Both matter — a high-confidence fact
-        about an unrelated topic still pollutes the prompt.
+        confidence >= `min_confidence`, ranked by `mode`.
 
-        `user_id` scopes to relationship memory: when given, returns
-        rows where `user_id IS NULL` OR `user_id = <this user>`.
-        Other users' private facts are never returned."""
+        `mode='hybrid'` (default) — fuse dense cosine + FTS5 BM25 via
+        RRF (k=60). `min_score` still filters the dense component
+        pre-fusion; the returned score is the RRF score.
+
+        `mode='dense'` — legacy pure-cosine path. `min_score` is the
+        cosine threshold.
+
+        `mode='text'` — BM25 only. `min_confidence` still applies.
+
+        Confidence gates by trustworthiness; the score gate gates by
+        relevance. Both matter — a high-confidence fact about an
+        unrelated topic still pollutes the prompt.
+
+        `user_id` scopes to relationship memory across all modes:
+        when given, returns rows where `user_id IS NULL` OR
+        `user_id = <this user>`."""
+        if mode == "dense":
+            return self._search_dense(
+                query,
+                k=k,
+                min_confidence=min_confidence,
+                min_score=min_score,
+                user_id=user_id,
+            )
+        if mode == "text":
+            return self._search_text(query, k=k, min_confidence=min_confidence, user_id=user_id)
+        return self._search_hybrid(
+            query,
+            k=k,
+            min_confidence=min_confidence,
+            min_score=min_score,
+            user_id=user_id,
+        )
+
+    def _search_dense(
+        self,
+        query: str,
+        *,
+        k: int,
+        min_confidence: float,
+        min_score: float,
+        user_id: str | None,
+    ) -> list[tuple[SemanticFact, float]]:
         if user_id is None:
             rows = self._conn.execute(
                 """SELECT id, subject, predicate, object, confidence, source,
@@ -228,6 +304,82 @@ class SemanticStore:
                 scored.append((_row_to_fact(row[:13]), sim))
         scored.sort(key=lambda t: t[1], reverse=True)
         return scored[:k]
+
+    def _search_text(
+        self,
+        query: str,
+        *,
+        k: int,
+        min_confidence: float,
+        user_id: str | None,
+    ) -> list[tuple[SemanticFact, float]]:
+        match = sanitize_fts_query(query)
+        if not match:
+            return []
+        if user_id is None:
+            rows = self._conn.execute(
+                """SELECT s.id, s.subject, s.predicate, s.object, s.confidence,
+                          s.source, s.attributed_to, s.session_id, s.user_id,
+                          s.supersedes, s.tier, s.created_at, s.superseded_by,
+                          bm25(semantic_fts) AS bm25_score
+                   FROM semantic_fts
+                   JOIN semantic s ON s.id = semantic_fts.rowid
+                   WHERE semantic_fts MATCH ?
+                     AND s.superseded_by IS NULL
+                     AND s.confidence >= ?
+                   ORDER BY bm25_score
+                   LIMIT ?""",
+                (match, min_confidence, k),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """SELECT s.id, s.subject, s.predicate, s.object, s.confidence,
+                          s.source, s.attributed_to, s.session_id, s.user_id,
+                          s.supersedes, s.tier, s.created_at, s.superseded_by,
+                          bm25(semantic_fts) AS bm25_score
+                   FROM semantic_fts
+                   JOIN semantic s ON s.id = semantic_fts.rowid
+                   WHERE semantic_fts MATCH ?
+                     AND s.superseded_by IS NULL
+                     AND s.confidence >= ?
+                     AND (s.user_id IS NULL OR s.user_id = ?)
+                   ORDER BY bm25_score
+                   LIMIT ?""",
+                (match, min_confidence, user_id, k),
+            ).fetchall()
+        return [(_row_to_fact(row[:13]), -float(row[13])) for row in rows]
+
+    def _search_hybrid(
+        self,
+        query: str,
+        *,
+        k: int,
+        min_confidence: float,
+        min_score: float,
+        user_id: str | None,
+    ) -> list[tuple[SemanticFact, float]]:
+        candidate_k = max(k * 4, 20)
+        dense_hits = self._search_dense(
+            query,
+            k=candidate_k,
+            min_confidence=min_confidence,
+            min_score=min_score,
+            user_id=user_id,
+        )
+        text_hits = self._search_text(
+            query, k=candidate_k, min_confidence=min_confidence, user_id=user_id
+        )
+        if not dense_hits and not text_hits:
+            return []
+        record_map: dict[int, SemanticFact] = {}
+        for fact, _ in dense_hits:
+            record_map[fact.id] = fact
+        for fact, _ in text_hits:
+            record_map.setdefault(fact.id, fact)
+        fused = reciprocal_rank_fusion(
+            [[fact.id for fact, _ in dense_hits], [fact.id for fact, _ in text_hits]]
+        )
+        return [(record_map[rid], score) for rid, score in fused[:k] if rid in record_map]
 
     def fetch_embedding(self, record_id: int) -> np.ndarray:
         row = self._conn.execute(

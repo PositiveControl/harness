@@ -6,13 +6,18 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
+
+from harness.store._hybrid import reciprocal_rank_fusion, sanitize_fts_query
 
 if TYPE_CHECKING:
     from harness.character import Character
     from harness.retrieval.embed import Embedder
+
+
+SearchMode = Literal["hybrid", "dense", "text"]
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS episodic (
@@ -39,6 +44,28 @@ _CREATE_INDEXES = """
 CREATE INDEX IF NOT EXISTS episodic_external_id_idx   ON episodic (external_id);
 CREATE INDEX IF NOT EXISTS episodic_tier_idx          ON episodic (tier);
 CREATE INDEX IF NOT EXISTS episodic_superseded_by_idx ON episodic (superseded_by);
+"""
+
+# FTS5 sidecar for BM25 text search. External-content table points at
+# `episodic` as the source of truth; the AFTER INSERT trigger keeps
+# the sidecar in sync. Text columns (title / body / principle) are
+# never UPDATE'd after insert — only administrative columns like
+# superseded_by / embedding / last_accessed change — so we don't need
+# UPDATE or DELETE triggers. Backfill on first init handles pre-
+# existing rows from the pre-FTS5 schema.
+_CREATE_FTS = """
+CREATE VIRTUAL TABLE IF NOT EXISTS episodic_fts USING fts5(
+    title, body, principle,
+    content='episodic',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS episodic_fts_ai
+AFTER INSERT ON episodic BEGIN
+    INSERT INTO episodic_fts(rowid, title, body, principle)
+    VALUES (new.id, new.title, new.body, COALESCE(new.principle, ''));
+END;
 """
 
 
@@ -101,6 +128,22 @@ class EpisodicStore:
         # Indexes created after migration so the superseded_by index can
         # reference the freshly-added column.
         self._conn.executescript(_CREATE_INDEXES)
+        # FTS5 sidecar for the hybrid retrieval path. Create the
+        # virtual table if missing; on first-install / post-migration
+        # the main table can already carry rows from the pre-FTS
+        # schema, so we must rebuild the index. Note: COUNT(*) on
+        # external-content FTS mirrors the main table count even
+        # when the index is empty, so counting can't detect the
+        # migration case — check schema existence instead.
+        fts_existed_before = (
+            self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='episodic_fts'"
+            ).fetchone()
+            is not None
+        )
+        self._conn.executescript(_CREATE_FTS)
+        if not fts_existed_before:
+            self._conn.execute("INSERT INTO episodic_fts(episodic_fts) VALUES('rebuild')")
 
     def has(self, external_id: str) -> bool:
         row = self._conn.execute(
@@ -226,18 +269,44 @@ class EpisodicStore:
         k: int = 3,
         min_score: float = 0.0,
         user_id: str | None = None,
+        mode: SearchMode = "hybrid",
     ) -> list[tuple[EpisodicRecord, float]]:
-        """Return up to `k` active records with cosine similarity >=
-        `min_score`. Rows whose embedding dimension doesn't match the
-        current embedder are silently skipped — they belong to a
-        previous embedder generation and need a `rebuild-embeddings`
-        run before they'll participate in search again.
+        """Return up to `k` active records ranked by `mode`.
 
-        `user_id` scopes to relationship memory: when given, returns
-        rows where `user_id IS NULL` (shared / character-level) OR
+        `mode='hybrid'` (default) — fuse dense cosine + FTS5 BM25 via
+        Reciprocal Rank Fusion (k=60). Best recall on queries that
+        mix semantic intent with proper nouns or code identifiers
+        ('when did we decide to rename BeadsAdapter.get_focus').
+        `min_score` is applied to the dense component pre-fusion; the
+        returned score is the RRF score, not a cosine similarity.
+
+        `mode='dense'` — legacy path, pure cosine similarity. Rows
+        whose embedding dim doesn't match the current embedder are
+        silently skipped (run `rebuild-embeddings` to bring them back).
+        Returned score is cosine similarity.
+
+        `mode='text'` — BM25 only. Returned score is the raw FTS5
+        BM25 score (negated so higher=better for consistency with the
+        other modes).
+
+        `user_id` scopes to relationship memory across all modes:
+        when given, returns rows where `user_id IS NULL` (shared) OR
         `user_id = <this user>`. Other users' private memories are
-        never returned. When `user_id` is None, this is an owner-tier
-        view that sees everything."""
+        never returned. `user_id=None` is an owner-tier view."""
+        if mode == "dense":
+            return self._search_dense(query, k=k, min_score=min_score, user_id=user_id)
+        if mode == "text":
+            return self._search_text(query, k=k, user_id=user_id)
+        return self._search_hybrid(query, k=k, min_score=min_score, user_id=user_id)
+
+    def _search_dense(
+        self,
+        query: str,
+        *,
+        k: int,
+        min_score: float,
+        user_id: str | None,
+    ) -> list[tuple[EpisodicRecord, float]]:
         if user_id is None:
             rows = self._conn.execute(
                 """SELECT id, external_id, title, body, principle, tags, tier,
@@ -271,6 +340,78 @@ class EpisodicStore:
 
         scored.sort(key=lambda t: t[1], reverse=True)
         return scored[:k]
+
+    def _search_text(
+        self,
+        query: str,
+        *,
+        k: int,
+        user_id: str | None,
+    ) -> list[tuple[EpisodicRecord, float]]:
+        match = sanitize_fts_query(query)
+        if not match:
+            return []
+        # Join FTS rowids back to the main table so we inherit the
+        # same scope filters as the dense path (superseded + user_id).
+        # bm25() returns lower=better; ORDER BY bm25(...) ASC plus a
+        # score negation on the way out keeps the "higher is better"
+        # external contract consistent with cosine.
+        if user_id is None:
+            rows = self._conn.execute(
+                """SELECT e.id, e.external_id, e.title, e.body, e.principle,
+                          e.tags, e.tier, e.source, e.session_id, e.user_id,
+                          e.created_at, e.superseded_by,
+                          bm25(episodic_fts) AS bm25_score
+                   FROM episodic_fts
+                   JOIN episodic e ON e.id = episodic_fts.rowid
+                   WHERE episodic_fts MATCH ?
+                     AND e.superseded_by IS NULL
+                   ORDER BY bm25_score
+                   LIMIT ?""",
+                (match, k),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """SELECT e.id, e.external_id, e.title, e.body, e.principle,
+                          e.tags, e.tier, e.source, e.session_id, e.user_id,
+                          e.created_at, e.superseded_by,
+                          bm25(episodic_fts) AS bm25_score
+                   FROM episodic_fts
+                   JOIN episodic e ON e.id = episodic_fts.rowid
+                   WHERE episodic_fts MATCH ?
+                     AND e.superseded_by IS NULL
+                     AND (e.user_id IS NULL OR e.user_id = ?)
+                   ORDER BY bm25_score
+                   LIMIT ?""",
+                (match, user_id, k),
+            ).fetchall()
+        return [(_row_to_record(row[:12]), -float(row[12])) for row in rows]
+
+    def _search_hybrid(
+        self,
+        query: str,
+        *,
+        k: int,
+        min_score: float,
+        user_id: str | None,
+    ) -> list[tuple[EpisodicRecord, float]]:
+        # Widen the candidate sets ~4x so RRF has room to reorder.
+        # Past ~50 candidates the tail contributes <0.001 per match
+        # so further widening is wasted.
+        candidate_k = max(k * 4, 20)
+        dense_hits = self._search_dense(query, k=candidate_k, min_score=min_score, user_id=user_id)
+        text_hits = self._search_text(query, k=candidate_k, user_id=user_id)
+        if not dense_hits and not text_hits:
+            return []
+        record_map: dict[int, EpisodicRecord] = {}
+        for rec, _ in dense_hits:
+            record_map[rec.id] = rec
+        for rec, _ in text_hits:
+            record_map.setdefault(rec.id, rec)
+        fused = reciprocal_rank_fusion(
+            [[rec.id for rec, _ in dense_hits], [rec.id for rec, _ in text_hits]]
+        )
+        return [(record_map[rid], score) for rid, score in fused[:k] if rid in record_map]
 
     def count(
         self,
