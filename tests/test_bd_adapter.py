@@ -664,6 +664,61 @@ def test_memories_passes_query(bd_dir: Path, runner: FakeRunner) -> None:
     assert runner.calls[0]["cmd"] == ["bd", "memories", "dolt"]
 
 
+def test_memories_json_returns_parsed_dict(bd_dir: Path, runner: FakeRunner) -> None:
+    payload = {
+        "mark-is-the-creator-and-primary-user": "Mark is the creator and primary user.",
+        "mark-first-computer": "Mark's first computer was a Macintosh Performa 405.",
+    }
+    runner.queue(FakeCompletedProcess(stdout=json.dumps(payload)))
+    adapter = BeadsAdapter(bd_dir)
+    out = adapter.memories_json()
+    assert out["mark-is-the-creator-and-primary-user"] == "Mark is the creator and primary user."
+    assert runner.calls[0]["cmd"] == ["bd", "memories", "--json"]
+
+
+def test_memories_json_passes_query(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(stdout='{"dolt-phantoms": "note"}'))
+    adapter = BeadsAdapter(bd_dir)
+    out = adapter.memories_json("dolt")
+    assert out == {"dolt-phantoms": "note"}
+    assert runner.calls[0]["cmd"] == ["bd", "memories", "--json", "dolt"]
+
+
+def test_memories_json_empty_store(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(stdout="{}\n"))
+    adapter = BeadsAdapter(bd_dir)
+    assert adapter.memories_json() == {}
+
+
+def test_memories_json_blank_stdout_returns_empty(bd_dir: Path, runner: FakeRunner) -> None:
+    # bd's empty-store output is `{}`, but guard the "blank stdout" edge so
+    # a future bd build can't wedge the harvester on whitespace.
+    runner.queue(FakeCompletedProcess(stdout="   \n"))
+    adapter = BeadsAdapter(bd_dir)
+    assert adapter.memories_json() == {}
+
+
+def test_memories_json_raises_on_invalid_json(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(stdout="not json at all"))
+    adapter = BeadsAdapter(bd_dir)
+    with pytest.raises(BeadsAdapterError, match="non-JSON"):
+        adapter.memories_json()
+
+
+def test_memories_json_raises_on_non_dict_payload(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(stdout="[]"))
+    adapter = BeadsAdapter(bd_dir)
+    with pytest.raises(BeadsAdapterError, match="expected a dict"):
+        adapter.memories_json()
+
+
+def test_memories_json_raises_on_non_string_value(bd_dir: Path, runner: FakeRunner) -> None:
+    runner.queue(FakeCompletedProcess(stdout='{"some-key": 42}'))
+    adapter = BeadsAdapter(bd_dir)
+    with pytest.raises(BeadsAdapterError, match="non-string"):
+        adapter.memories_json()
+
+
 def test_label_add_command_shape(bd_dir: Path, runner: FakeRunner) -> None:
     runner.queue(FakeCompletedProcess())
     adapter = BeadsAdapter(bd_dir)
