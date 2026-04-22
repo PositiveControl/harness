@@ -34,6 +34,7 @@ def run_tui(
     lora_path: str | None,
     draft_repo: str | None,
     summarize_tool_results: bool,
+    harvest_skills: bool,
     persona: bool,
     top_k: int,
     memories: int,
@@ -115,6 +116,13 @@ def run_tui(
     # and the introspect tool (which reads live status).
     retrieval_health = _RetrievalState()
     ab_adapter = _maybe_bd_adapter(character, include_internal=include_internal or dev)
+
+    # Harvest newly-closed thought:* beads before the TUI opens. See
+    # cli_classic for the same pattern + rationale.
+    from harness.cli import _maybe_harvest_skills
+
+    _maybe_harvest_skills(ab_adapter, memory_store, enabled=harvest_skills)
+
     registry: ToolRegistry | None = _build_tool_registry_for_tui(
         tools=tools,
         tool_set=tool_set,

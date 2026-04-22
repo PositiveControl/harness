@@ -98,9 +98,7 @@ def _build_hook_pipeline(
     summarizer_adapter: Any
     if router is not None and hasattr(router, "adapter"):
         summarizer_adapter = router.adapter  # duck-typed; ModelRouter + GrammarRouter both carry it
-        console.print(
-            f"[dim]tool-result summarizer: reusing router adapter ({router_repo})[/dim]"
-        )
+        console.print(f"[dim]tool-result summarizer: reusing router adapter ({router_repo})[/dim]")
     else:
         from harness.model.mlx import MLXAdapter
 
@@ -521,6 +519,7 @@ def run_classic_chat(
     lora_path: str | None,
     draft_repo: str | None,
     summarize_tool_results: bool,
+    harvest_skills: bool,
     persona: bool,
     top_k: int,
     memories: int,
@@ -597,6 +596,14 @@ def run_classic_chat(
 
     retrieval_state = _RetrievalState()
     ab_adapter = _maybe_bd_adapter(character, include_internal=include_internal or dev)
+
+    # Harvest newly-closed thought:* beads into episodic memory so
+    # decisions/observations made since last session are searchable
+    # this session. Idempotent; no-op when either substrate is
+    # missing. See harness-j5b (sota punch #7 follow-up).
+    from harness.cli import _maybe_harvest_skills
+
+    _maybe_harvest_skills(ab_adapter, memory_store, enabled=harvest_skills)
 
     registry = build_classic_registry(
         tools=tools,

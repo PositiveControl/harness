@@ -312,6 +312,39 @@ def _maybe_bd_adapter(
 _maybe_ab_bd_adapter = _maybe_bd_adapter
 
 
+def _maybe_harvest_skills(
+    ab_adapter: BeadsAdapter | None,
+    episodic: EpisodicStore | None,
+    *,
+    enabled: bool = True,
+) -> None:
+    """Run the bd → episodic skill harvester at session start, when
+    both halves of the substrate are available.
+
+    Idempotent on external_id (bead id), so the steady-state cost is
+    one `bd list` call + zero embeds. The first run after new
+    decisions / observations close batches the new rows through the
+    embedder — still fast (<1 s) for realistic working-set sizes.
+
+    Failures log a yellow warning but never raise: self-improvement is
+    a comfort, not a correctness requirement, and a flaky bd
+    subprocess must not block the user from opening chat."""
+    if not enabled or ab_adapter is None or episodic is None:
+        return
+    try:
+        from harness.skills import harvest_bd_skills
+
+        report = harvest_bd_skills(ab_adapter=ab_adapter, episodic=episodic)
+    except Exception as exc:
+        console.print(f"[yellow]⚠ skill harvest skipped: {exc}[/yellow]")
+        return
+    if report.newly_ingested > 0:
+        console.print(
+            f"[dim]harvested {report.newly_ingested} new skill(s) from bd "
+            f"({report.already_present} already present)[/dim]"
+        )
+
+
 # Names of the ops (bd-backed) tools. Used by the registry warning
 # path to distinguish "unknown tool" from "ops tool whose bd adapter
 # didn't bind" — the user-facing hint is very different.
@@ -1504,6 +1537,15 @@ def chat(
         "--router-repo. Attacks context drift from bulk tool output "
         "(sota punch #3).",
     ),
+    harvest_skills: bool = typer.Option(
+        True,
+        "--harvest-skills/--no-harvest-skills",
+        help="At session start, harvest closed thought:decision / "
+        "thought:observation beads from ab's bd store into the episodic "
+        "memory as tier='procedural'. Idempotent — only new beads cost "
+        "embedding work. Lets relevant past decisions surface on future "
+        "user turns via the normal retrieval path (sota punch #7).",
+    ),
     persona: bool = typer.Option(
         False,
         "--persona/--no-persona",
@@ -1662,6 +1704,7 @@ def chat(
             lora_path=lora_path,
             draft_repo=draft_repo,
             summarize_tool_results=summarize_tool_results,
+            harvest_skills=harvest_skills,
             persona=persona,
             top_k=top_k,
             memories=memories,
@@ -1694,6 +1737,7 @@ def chat(
         lora_path=lora_path,
         draft_repo=draft_repo,
         summarize_tool_results=summarize_tool_results,
+        harvest_skills=harvest_skills,
         persona=persona,
         top_k=top_k,
         memories=memories,
