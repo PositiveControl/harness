@@ -87,6 +87,7 @@ class GrepTool:
             },
             tier="read",
             display_name="Grep",
+            high_noise=True,
         )
 
     def call(

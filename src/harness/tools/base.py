@@ -15,6 +15,13 @@ class ToolSpec:
     parameters: dict[str, Any]  # JSON schema for arguments
     tier: str  # "read" | "write" — write-tier tools need user confirmation
     display_name: str | None = None  # human-readable label for UI; falls back to `name`
+    # Tools flagged high_noise dump large, often-unhelpful bulk into
+    # the message thread — grep / list_dir / search_web results are
+    # classic offenders. When the tool-result summarizer hook is
+    # registered (CLI --summarize-tool-results), outputs from these
+    # tools above a size threshold get compressed before the model
+    # sees them. Everything else passes through untouched.
+    high_noise: bool = False
 
     @property
     def label(self) -> str:

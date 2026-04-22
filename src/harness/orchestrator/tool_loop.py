@@ -27,8 +27,10 @@ from harness.orchestrator.hooks import (
     Halt,
     HookPipeline,
     PostModelContext,
+    PostToolContext,
     PreToolContext,
     Replace,
+    ReplaceResult,
     Skip,
     Truncated,
     default_hook_pipeline,
@@ -455,6 +457,20 @@ def _execute_tool_calls(
             result = registry.call(call.name, call.arguments)
             kind = "tool_call_end" if result.success else "tool_call_failed"
         emit(ToolLoopEvent(kind=kind, call=call, result=result, round_index=round_idx))
+
+        # post_tool hooks (sota punch #3) may replace the result's
+        # visible text before it lands in the thread — e.g. the
+        # summarizer compressing a 12 KB grep dump to 200 tokens.
+        # Runs only when we have a spec (we own this tool) and after
+        # the tool-success/tool-failed event has fired so observers
+        # see the original (non-summarized) outcome for telemetry.
+        if spec is not None:
+            post_outcome = hooks.run_post_tool(
+                PostToolContext(call=call, result=result, spec=spec),
+                disabled=_disabled_snapshot(),
+            )
+            if isinstance(post_outcome, ReplaceResult):
+                result = post_outcome.result
 
         seen_calls.add(key)
         if result.success:

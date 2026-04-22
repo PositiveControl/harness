@@ -27,10 +27,12 @@ method — toggle a name, watch which scenarios it uniquely saves.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from harness.tools.base import ModelReply, ToolCall, ToolResult
+from harness.model.adapter import ChatMessage
+from harness.tools.base import ModelReply, ToolCall, ToolResult, ToolSpec
 
 # ---------- canned strings ----------
 
@@ -297,9 +299,21 @@ class Skip:
     result: ToolResult
 
 
+@dataclass(frozen=True)
+class ReplaceResult:
+    """Replace a just-executed tool's result before it's appended to
+    the model-visible message thread. Used by the tool-result
+    summarizer (sota punch #3, harness-zoz) to compress high-noise
+    outputs before they eat through context. The tool DID run; only
+    the string the model sees is rewritten."""
+
+    result: ToolResult
+
+
 BailOutcome = Continue | Nudge | Truncated
 PostModelOutcome = Continue | Replace
 PreToolOutcome = Continue | Skip
+PostToolOutcome = Continue | ReplaceResult
 FinalizeOutcome = Continue | Halt
 
 
@@ -326,6 +340,18 @@ class PostModelContext:
 class PreToolContext:
     call: ToolCall
     seen_calls: frozenset[tuple[str, str]]
+
+
+@dataclass(frozen=True)
+class PostToolContext:
+    """Inputs to a post-tool hook. `spec` is the ToolSpec of the
+    tool that just executed — the summarizer hook uses `spec.high_noise`
+    to decide whether to compress, so we pass it in rather than have
+    the hook hold a registry reference."""
+
+    call: ToolCall
+    result: ToolResult
+    spec: ToolSpec
 
 
 @dataclass(frozen=True)
@@ -361,6 +387,13 @@ class PreToolHook(Protocol):
     def name(self) -> str: ...
 
     def check(self, ctx: PreToolContext) -> PreToolOutcome: ...
+
+
+class PostToolHook(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    def check(self, ctx: PostToolContext) -> PostToolOutcome: ...
 
 
 class FinalizeHook(Protocol):
@@ -618,14 +651,22 @@ class HookPipeline:
     bail: list[BailHook] = field(default_factory=list)
     post_model: list[PostModelHook] = field(default_factory=list)
     pre_tool: list[PreToolHook] = field(default_factory=list)
+    post_tool: list[PostToolHook] = field(default_factory=list)
     finalize: list[FinalizeHook] = field(default_factory=list)
 
     def names(self) -> tuple[str, ...]:
-        """Canonical ordering: bail → post_model → pre_tool → finalize.
-        The attribution eval enumerates these to disable one catcher at
-        a time; stable order makes diagnostic output reproducible."""
+        """Canonical ordering: bail → post_model → pre_tool →
+        post_tool → finalize. The attribution eval enumerates these
+        to disable one catcher at a time; stable order keeps
+        diagnostic output reproducible."""
         out: list[str] = []
-        for phase in (self.bail, self.post_model, self.pre_tool, self.finalize):
+        for phase in (
+            self.bail,
+            self.post_model,
+            self.pre_tool,
+            self.post_tool,
+            self.finalize,
+        ):
             out.extend(h.name for h in phase)
         return tuple(out)
 
@@ -658,6 +699,17 @@ class HookPipeline:
                 return outcome
         return Continue()
 
+    def run_post_tool(
+        self, ctx: PostToolContext, *, disabled: frozenset[str]
+    ) -> PostToolOutcome:
+        for hook in self.post_tool:
+            if hook.name in disabled:
+                continue
+            outcome = hook.check(ctx)
+            if not isinstance(outcome, Continue):
+                return outcome
+        return Continue()
+
     def run_finalize(self, ctx: FinalizeContext, *, disabled: frozenset[str]) -> FinalizeOutcome:
         for hook in self.finalize:
             if hook.name in disabled:
@@ -672,7 +724,12 @@ def default_hook_pipeline() -> HookPipeline:
     """Build the shipping pipeline. Order mirrors the pre-refactor
     `_diagnose_bail` branch order so first-match semantics stay
     identical — swapping two hooks could change which nudge text the
-    user sees for a reply that trips both."""
+    user sees for a reply that trips both.
+
+    `post_tool` ships empty by default: the only hook that currently
+    targets this phase is `ToolResultSummarizerHook`, which requires
+    a summarizer adapter and is registered opt-in by the CLI when
+    --summarize-tool-results is set."""
     return HookPipeline(
         bail=[
             TruncatedHook(),
@@ -686,8 +743,113 @@ def default_hook_pipeline() -> HookPipeline:
         ],
         post_model=[PairedMetaConfirmStripHook()],
         pre_tool=[DuplicateCallHook()],
+        post_tool=[],
         finalize=[FabricationFallbackHook()],
     )
+
+
+# ---------- post-tool summarizer ----------
+
+
+_SUMMARIZER_SYSTEM_PROMPT = (
+    "You compress tool output. Return a concise summary (<= 200 words) "
+    "that preserves EVERY file path, line number, identifier, URL, "
+    "error message, and proper noun verbatim. Do not add commentary, "
+    "recommendations, or lists of next steps. Do not wrap the output "
+    "in markdown fences. Do not start with 'Summary:' or similar "
+    "preambles. Just the compressed content."
+)
+
+_SUMMARIZER_USER_TEMPLATE = (
+    "Tool {tool_name!r} was called with arguments: {arguments}\n\n"
+    "The raw output was:\n\n"
+    "{output}\n\n"
+    "Compress it per the rules above."
+)
+
+
+class _SummarizerAdapter(Protocol):
+    """Narrow structural type for the summarizer. Only needs
+    `complete` — any ModelAdapter satisfies this, as does the router's
+    adapter. Reduces the coupling surface from hooks.py into the
+    adapter hierarchy."""
+
+    def complete(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> str: ...
+
+
+@dataclass
+class ToolResultSummarizerHook:
+    """Compress high-noise tool outputs before they're appended to the
+    model-visible message thread.
+
+    Fires only when BOTH of:
+    - `ctx.spec.high_noise` is True — the tool is flagged as prone to
+      dumping bulk (grep / list_dir / search_web / etc).
+    - `len(result.output) > threshold_chars` — there's enough text to
+      be worth the summarization round-trip.
+
+    Summarization failures (adapter raises, empty response) fall
+    through as Continue — the original result reaches the model
+    untouched, so context drift is the worst case, never a broken
+    turn."""
+
+    summarizer: _SummarizerAdapter
+    threshold_chars: int = 1024
+    max_summary_tokens: int = 256
+    temperature: float = 0.0  # deterministic compression
+    name: str = "tool_result_summarizer"
+
+    def check(self, ctx: PostToolContext) -> PostToolOutcome:
+        if not ctx.spec.high_noise:
+            return Continue()
+        if not ctx.result.success:
+            # Errors are already small AND load-bearing — the model
+            # needs the exact error text to recover. Never summarize.
+            return Continue()
+        if len(ctx.result.output) <= self.threshold_chars:
+            return Continue()
+        prompt = _SUMMARIZER_USER_TEMPLATE.format(
+            tool_name=ctx.call.name,
+            arguments=ctx.call.arguments,
+            output=ctx.result.output,
+        )
+        messages = [
+            ChatMessage(role="system", content=_SUMMARIZER_SYSTEM_PROMPT),
+            ChatMessage(role="user", content=prompt),
+        ]
+        try:
+            summary = self.summarizer.complete(
+                messages,
+                max_tokens=self.max_summary_tokens,
+                temperature=self.temperature,
+            )
+        except Exception:
+            # Never let a summarization failure break the turn.
+            return Continue()
+        summary = summary.strip()
+        if not summary:
+            return Continue()
+        # Tag the output so the main model knows what it's looking at
+        # and can't accidentally quote it back as literal tool output
+        # (fabrication catchers would flag a quoted summary as
+        # fabricated-search, for example). Preserve success + name.
+        annotated = (
+            f"[tool output summarized from {len(ctx.result.output)} chars]\n{summary}"
+        )
+        return ReplaceResult(
+            ToolResult(
+                tool_name=ctx.result.tool_name,
+                output=annotated,
+                success=ctx.result.success,
+                error=ctx.result.error,
+            )
+        )
 
 
 def _call_key(call: ToolCall) -> tuple[str, str]:
@@ -737,13 +899,18 @@ __all__ = [
     "PostModelContext",
     "PostModelHook",
     "PostModelOutcome",
+    "PostToolContext",
+    "PostToolHook",
+    "PostToolOutcome",
     "PreToolContext",
     "PreToolHook",
     "PreToolOutcome",
     "Replace",
+    "ReplaceResult",
     "Skip",
     "TeaserHook",
     "ToolIntentHook",
+    "ToolResultSummarizerHook",
     "Truncated",
     "TruncatedHook",
     "UnparseableHook",

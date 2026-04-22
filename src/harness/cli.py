@@ -1494,6 +1494,16 @@ def chat(
         "7B/32B targets. Zero quality loss — output is distribution-identical. "
         "Defaults to HARNESS_MLX_DRAFT_MODEL_REPO. Requires --model mlx.",
     ),
+    summarize_tool_results: bool = typer.Option(
+        False,
+        "--summarize-tool-results/--no-summarize-tool-results",
+        help="Compress high-noise tool outputs (grep / list_dir / search_web) "
+        "above ~1KB before the main model sees them. Preserves identifiers / "
+        "paths / line numbers verbatim. Uses the router's adapter when "
+        "--router is on; otherwise builds a small MLX adapter from "
+        "--router-repo. Attacks context drift from bulk tool output "
+        "(sota punch #3).",
+    ),
     persona: bool = typer.Option(
         False,
         "--persona/--no-persona",
@@ -1651,6 +1661,7 @@ def chat(
             model_repo=model_repo,
             lora_path=lora_path,
             draft_repo=draft_repo,
+            summarize_tool_results=summarize_tool_results,
             persona=persona,
             top_k=top_k,
             memories=memories,
@@ -1682,6 +1693,7 @@ def chat(
         model_repo=model_repo,
         lora_path=lora_path,
         draft_repo=draft_repo,
+        summarize_tool_results=summarize_tool_results,
         persona=persona,
         top_k=top_k,
         memories=memories,

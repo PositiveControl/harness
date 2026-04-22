@@ -72,6 +72,7 @@ class ListDirTool:
             },
             tier="read",
             display_name="List directory",
+            high_noise=True,
         )
 
     def call(

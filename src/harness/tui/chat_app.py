@@ -482,6 +482,7 @@ class ChatApp(App[None]):
         scribe_lock_dir: Path | None = None,
         scribe_user_id: str | None = None,
         ab_adapter: BeadsAdapter | None = None,
+        hooks: object | None = None,
     ) -> None:
         super().__init__()
         self._character = character
@@ -518,6 +519,11 @@ class ChatApp(App[None]):
         # per-turn reset_turn_counter hook. None for every other
         # character; the /retro handler reports 'not configured'.
         self._ab_adapter = ab_adapter
+        # Optional HookPipeline override — CLI injects one when
+        # --summarize-tool-results is set so a post_tool hook can
+        # compress grep / list_dir / search_web dumps before they
+        # hit the main model's context.
+        self._hooks = hooks
         # Accept an external retrieval_health reference so the
         # IntrospectTool (harness-8is) can see live voice/episodic/
         # semantic health without a callback plumbing. When None the
@@ -951,6 +957,7 @@ class ChatApp(App[None]):
                     confirm=self._confirm_write_tool,
                     observe=observe,
                     router=self._router,
+                    hooks=self._hooks,  # type: ignore[arg-type]  # typed `object` to skip import
                 )
                 if self._state.turn_seq != seq:
                     return  # interrupted; drop partial reply + skip persistence

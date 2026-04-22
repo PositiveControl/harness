@@ -65,12 +65,53 @@ from harness.tools.ab_ops import build_resume_summary
 
 if TYPE_CHECKING:
     from harness.cli import _RetrievalState, _StreamRenderer, _ThinkingSpinner
+    from harness.orchestrator.hooks import HookPipeline
 
 
 _EXIT_COMMANDS = frozenset({"/exit", "/quit", ":q"})
 _RETRO_COMMANDS = frozenset({"/retro"})
 _EDIT_COMMANDS = frozenset({"/edit", "/capture"})
 _CLEAR_COMMANDS = frozenset({"/clear"})
+
+
+def _build_hook_pipeline(
+    *,
+    summarize_tool_results: bool,
+    router: Router | None,
+    router_repo: str,
+    console: Console,
+) -> HookPipeline | None:
+    """Return a HookPipeline override when the summarizer is requested,
+    else None so the orchestrator uses its module default.
+
+    The summarizer reuses the router's adapter when available — it's
+    a small MLX model already loaded into the process. Otherwise we
+    build a fresh MLX adapter from `router_repo`. Either way the
+    extra model cost is bounded (~1 GB for a 3B-4bit router)."""
+    if not summarize_tool_results:
+        return None
+    from harness.orchestrator.hooks import (
+        ToolResultSummarizerHook,
+        default_hook_pipeline,
+    )
+
+    summarizer_adapter: Any
+    if router is not None and hasattr(router, "adapter"):
+        summarizer_adapter = router.adapter  # duck-typed; ModelRouter + GrammarRouter both carry it
+        console.print(
+            f"[dim]tool-result summarizer: reusing router adapter ({router_repo})[/dim]"
+        )
+    else:
+        from harness.model.mlx import MLXAdapter
+
+        summarizer_adapter = MLXAdapter(repo=router_repo)
+        console.print(
+            f"[dim]tool-result summarizer: loading {router_repo} (first turn is slower)[/dim]"
+        )
+
+    pipeline = default_hook_pipeline()
+    pipeline.post_tool.append(ToolResultSummarizerHook(summarizer=summarizer_adapter))
+    return pipeline
 
 
 def build_classic_registry(
@@ -271,6 +312,10 @@ class ClassicChatSession:
     router: Router | None
     ab_adapter: BeadsAdapter | None
     ctx_meter: ContextMeter
+    # Optional HookPipeline override. None means use the orchestrator's
+    # module-default pipeline; the CLI injects a custom pipeline when
+    # --summarize-tool-results is set (adds a post_tool summarizer).
+    hooks: HookPipeline | None = None
     approved_tools: set[str] = field(default_factory=set)
 
     def tool_label(self, name: str) -> str:
@@ -394,6 +439,7 @@ class ClassicChatSession:
                 confirm=self.confirm_write_tool,
                 observe=self.render_tool_event,
                 router=self.router,
+                hooks=self.hooks,
             )
             streamed = True
             _persist_tool_exchange(
@@ -474,6 +520,7 @@ def run_classic_chat(
     model_repo: str | None,
     lora_path: str | None,
     draft_repo: str | None,
+    summarize_tool_results: bool,
     persona: bool,
     top_k: int,
     memories: int,
@@ -615,6 +662,13 @@ def run_classic_chat(
         console=console,
     )
 
+    hooks = _build_hook_pipeline(
+        summarize_tool_results=summarize_tool_results,
+        router=router,
+        router_repo=router_repo,
+        console=console,
+    )
+
     chat_session = ClassicChatSession(
         character=character,
         adapter=adapter,
@@ -641,6 +695,7 @@ def run_classic_chat(
         router=router,
         ab_adapter=ab_adapter,
         ctx_meter=ctx_meter,
+        hooks=hooks,
     )
 
     if ab_adapter is not None:

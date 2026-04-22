@@ -33,6 +33,7 @@ def run_tui(
     model_repo: str | None,
     lora_path: str | None,
     draft_repo: str | None,
+    summarize_tool_results: bool,
     persona: bool,
     top_k: int,
     memories: int,
@@ -60,6 +61,7 @@ def run_tui(
         _resolve_adapter,
         _RetrievalState,
         _router_id_label,
+        console,
     )
 
     try:
@@ -136,6 +138,16 @@ def run_tui(
     )
 
     compaction_store = CompactionStore(settings.character_db_path) if compact_at > 0 else None
+
+    from harness.cli_classic import _build_hook_pipeline
+
+    hooks = _build_hook_pipeline(
+        summarize_tool_results=summarize_tool_results,
+        router=router,
+        router_repo=router_repo,
+        console=console,
+    )
+
     ChatApp(
         character=character,
         speaker=speaker,
@@ -159,6 +171,7 @@ def run_tui(
         compaction_store=compaction_store,
         scribe_user_id=speaker,
         ab_adapter=ab_adapter,
+        hooks=hooks,
     ).run()
     if compaction_store is not None:
         compaction_store.close()

@@ -107,6 +107,7 @@ class SearchWebTool:
             },
             tier="read",
             display_name="Search web",
+            high_noise=True,
         )
 
     def call(self, *, query: str, max_results: int | None = None) -> str:
