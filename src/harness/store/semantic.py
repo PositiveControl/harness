@@ -79,6 +79,17 @@ class SemanticFact:
     tier: str
     created_at: datetime
     superseded_by: int | None = None
+    # Temporal validity window (sota punch #4, harness-kr2). None means
+    # unbounded on that side:
+    #   valid_from=None — the fact has always been true (or the
+    #     start isn't known / doesn't matter).
+    #   valid_to=None — still true as of last assertion.
+    # asserted_at is when the user / scribe communicated the fact to
+    # the agent; separate from created_at so backfilled facts ("mark
+    # moved last March") can carry accurate provenance.
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    asserted_at: datetime | None = None
 
 
 class SemanticStore:
@@ -106,6 +117,19 @@ class SemanticStore:
             self._conn.execute("ALTER TABLE semantic ADD COLUMN embedder_id TEXT")
         if "embedding_dim" not in cols:
             self._conn.execute("ALTER TABLE semantic ADD COLUMN embedding_dim INTEGER")
+        # Temporal fields (sota punch #4). NULL on legacy rows = the
+        # window is unbounded on that side; asserted_at backfills to
+        # created_at so provenance is preserved without losing the
+        # "when the agent heard about this" signal.
+        if "valid_from" not in cols:
+            self._conn.execute("ALTER TABLE semantic ADD COLUMN valid_from TEXT")
+        if "valid_to" not in cols:
+            self._conn.execute("ALTER TABLE semantic ADD COLUMN valid_to TEXT")
+        if "asserted_at" not in cols:
+            self._conn.execute("ALTER TABLE semantic ADD COLUMN asserted_at TEXT")
+            self._conn.execute(
+                "UPDATE semantic SET asserted_at = created_at WHERE asserted_at IS NULL"
+            )
         self._conn.execute(
             "UPDATE semantic SET embedding_dim = LENGTH(embedding) / 4 WHERE embedding_dim IS NULL"
         )
@@ -139,10 +163,24 @@ class SemanticStore:
         user_id: str | None = None,
         supersedes: int | None = None,
         tier: str = "working",
+        valid_from: datetime | None = None,
+        valid_to: datetime | None = None,
+        asserted_at: datetime | None = None,
     ) -> SemanticFact:
         """Insert a fact. Always appends — deduplication and supersession
-        are the consolidator's job, not this method's."""
-        now = datetime.now(UTC).isoformat()
+        are the consolidator's job, not this method's.
+
+        Temporal fields (sota punch #4): `valid_from` / `valid_to`
+        define the window during which the fact was / is true. Both
+        default to None = unbounded. `asserted_at` is when the user
+        communicated the fact to the agent (defaults to now); this
+        is separate from `created_at` so backfilled facts can keep
+        accurate provenance."""
+        now_dt = datetime.now(UTC)
+        now = now_dt.isoformat()
+        asserted_iso = (asserted_at or now_dt).isoformat()
+        valid_from_iso = valid_from.isoformat() if valid_from is not None else None
+        valid_to_iso = valid_to.isoformat() if valid_to is not None else None
         # Embed "subject predicate object" so natural-language search hits
         # all three axes. Tuple-stringification keeps it simple.
         text = f"{subject} {predicate} {object}"
@@ -151,8 +189,9 @@ class SemanticStore:
             """INSERT INTO semantic (
                 subject, predicate, object, confidence, source,
                 attributed_to, session_id, user_id, supersedes, tier,
-                created_at, embedding, embedder_id, embedding_dim
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                created_at, embedding, embedder_id, embedding_dim,
+                valid_from, valid_to, asserted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 subject,
                 predicate,
@@ -168,6 +207,9 @@ class SemanticStore:
                 vec.tobytes(),
                 self.embedder.id,
                 self.embedder.dimension,
+                valid_from_iso,
+                valid_to_iso,
+                asserted_iso,
             ),
         )
         return self.get(cur.lastrowid or 0)
@@ -176,7 +218,8 @@ class SemanticStore:
         row = self._conn.execute(
             """SELECT id, subject, predicate, object, confidence, source,
                       attributed_to, session_id, user_id, supersedes, tier,
-                      created_at, superseded_by
+                      created_at, superseded_by,
+                      valid_from, valid_to, asserted_at
                FROM semantic WHERE id = ?""",
             (record_id,),
         ).fetchone()
@@ -193,7 +236,8 @@ class SemanticStore:
     ) -> list[SemanticFact]:
         query = """SELECT id, subject, predicate, object, confidence, source,
                       attributed_to, session_id, user_id, supersedes, tier,
-                      created_at, superseded_by FROM semantic"""
+                      created_at, superseded_by,
+                      valid_from, valid_to, asserted_at FROM semantic"""
         conditions: list[str] = []
         params: list[object] = []
         if tier is not None:
@@ -225,9 +269,11 @@ class SemanticStore:
         min_score: float = 0.0,
         user_id: str | None = None,
         mode: SearchMode = "hybrid",
+        as_of: datetime | None = None,
     ) -> list[tuple[SemanticFact, float]]:
         """Return up to `k` active facts (not superseded) where stored
-        confidence >= `min_confidence`, ranked by `mode`.
+        confidence >= `min_confidence`, ranked by `mode` and filtered
+        to the time window containing `as_of`.
 
         `mode='hybrid'` (default) — fuse dense cosine + FTS5 BM25 via
         RRF (k=60). `min_score` still filters the dense component
@@ -238,6 +284,12 @@ class SemanticStore:
 
         `mode='text'` — BM25 only. `min_confidence` still applies.
 
+        `as_of` (sota punch #4) selects which time the retrieval is
+        asking about: facts whose `valid_from > as_of` (future-only)
+        or `valid_to <= as_of` (expired) are filtered out. Default
+        None means now. NULL on either column is treated as unbounded
+        on that side.
+
         Confidence gates by trustworthiness; the score gate gates by
         relevance. Both matter — a high-confidence fact about an
         unrelated topic still pollutes the prompt.
@@ -245,6 +297,7 @@ class SemanticStore:
         `user_id` scopes to relationship memory across all modes:
         when given, returns rows where `user_id IS NULL` OR
         `user_id = <this user>`."""
+        as_of_iso = (as_of or datetime.now(UTC)).isoformat()
         if mode == "dense":
             return self._search_dense(
                 query,
@@ -252,15 +305,23 @@ class SemanticStore:
                 min_confidence=min_confidence,
                 min_score=min_score,
                 user_id=user_id,
+                as_of_iso=as_of_iso,
             )
         if mode == "text":
-            return self._search_text(query, k=k, min_confidence=min_confidence, user_id=user_id)
+            return self._search_text(
+                query,
+                k=k,
+                min_confidence=min_confidence,
+                user_id=user_id,
+                as_of_iso=as_of_iso,
+            )
         return self._search_hybrid(
             query,
             k=k,
             min_confidence=min_confidence,
             min_score=min_score,
             user_id=user_id,
+            as_of_iso=as_of_iso,
         )
 
     def _search_dense(
@@ -271,37 +332,51 @@ class SemanticStore:
         min_confidence: float,
         min_score: float,
         user_id: str | None,
+        as_of_iso: str,
     ) -> list[tuple[SemanticFact, float]]:
         if user_id is None:
             rows = self._conn.execute(
                 """SELECT id, subject, predicate, object, confidence, source,
                           attributed_to, session_id, user_id, supersedes, tier,
-                          created_at, superseded_by, embedding
+                          created_at, superseded_by,
+                          valid_from, valid_to, asserted_at, embedding
                    FROM semantic
                    WHERE confidence >= ? AND superseded_by IS NULL
-                     AND embedding_dim = ?""",
-                (min_confidence, self.embedder.dimension),
+                     AND embedding_dim = ?
+                     AND (valid_from IS NULL OR valid_from <= ?)
+                     AND (valid_to IS NULL OR valid_to > ?)""",
+                (min_confidence, self.embedder.dimension, as_of_iso, as_of_iso),
             ).fetchall()
         else:
             rows = self._conn.execute(
                 """SELECT id, subject, predicate, object, confidence, source,
                           attributed_to, session_id, user_id, supersedes, tier,
-                          created_at, superseded_by, embedding
+                          created_at, superseded_by,
+                          valid_from, valid_to, asserted_at, embedding
                    FROM semantic
                    WHERE confidence >= ? AND superseded_by IS NULL
                      AND embedding_dim = ?
-                     AND (user_id IS NULL OR user_id = ?)""",
-                (min_confidence, self.embedder.dimension, user_id),
+                     AND (user_id IS NULL OR user_id = ?)
+                     AND (valid_from IS NULL OR valid_from <= ?)
+                     AND (valid_to IS NULL OR valid_to > ?)""",
+                (
+                    min_confidence,
+                    self.embedder.dimension,
+                    user_id,
+                    as_of_iso,
+                    as_of_iso,
+                ),
             ).fetchall()
         if not rows:
             return []
         q_vec = self.embedder.embed([query])[0].astype(np.float32)
         scored: list[tuple[SemanticFact, float]] = []
         for row in rows:
-            vec = np.frombuffer(row[13], dtype=np.float32)
+            # Embedding is at index 16 now that temporal fields precede it.
+            vec = np.frombuffer(row[16], dtype=np.float32)
             sim = float(np.dot(q_vec, vec))
             if sim >= min_score:
-                scored.append((_row_to_fact(row[:13]), sim))
+                scored.append((_row_to_fact(row[:16]), sim))
         scored.sort(key=lambda t: t[1], reverse=True)
         return scored[:k]
 
@@ -312,6 +387,7 @@ class SemanticStore:
         k: int,
         min_confidence: float,
         user_id: str | None,
+        as_of_iso: str,
     ) -> list[tuple[SemanticFact, float]]:
         match = sanitize_fts_query(query)
         if not match:
@@ -321,21 +397,25 @@ class SemanticStore:
                 """SELECT s.id, s.subject, s.predicate, s.object, s.confidence,
                           s.source, s.attributed_to, s.session_id, s.user_id,
                           s.supersedes, s.tier, s.created_at, s.superseded_by,
+                          s.valid_from, s.valid_to, s.asserted_at,
                           bm25(semantic_fts) AS bm25_score
                    FROM semantic_fts
                    JOIN semantic s ON s.id = semantic_fts.rowid
                    WHERE semantic_fts MATCH ?
                      AND s.superseded_by IS NULL
                      AND s.confidence >= ?
+                     AND (s.valid_from IS NULL OR s.valid_from <= ?)
+                     AND (s.valid_to IS NULL OR s.valid_to > ?)
                    ORDER BY bm25_score
                    LIMIT ?""",
-                (match, min_confidence, k),
+                (match, min_confidence, as_of_iso, as_of_iso, k),
             ).fetchall()
         else:
             rows = self._conn.execute(
                 """SELECT s.id, s.subject, s.predicate, s.object, s.confidence,
                           s.source, s.attributed_to, s.session_id, s.user_id,
                           s.supersedes, s.tier, s.created_at, s.superseded_by,
+                          s.valid_from, s.valid_to, s.asserted_at,
                           bm25(semantic_fts) AS bm25_score
                    FROM semantic_fts
                    JOIN semantic s ON s.id = semantic_fts.rowid
@@ -343,11 +423,13 @@ class SemanticStore:
                      AND s.superseded_by IS NULL
                      AND s.confidence >= ?
                      AND (s.user_id IS NULL OR s.user_id = ?)
+                     AND (s.valid_from IS NULL OR s.valid_from <= ?)
+                     AND (s.valid_to IS NULL OR s.valid_to > ?)
                    ORDER BY bm25_score
                    LIMIT ?""",
-                (match, min_confidence, user_id, k),
+                (match, min_confidence, user_id, as_of_iso, as_of_iso, k),
             ).fetchall()
-        return [(_row_to_fact(row[:13]), -float(row[13])) for row in rows]
+        return [(_row_to_fact(row[:16]), -float(row[16])) for row in rows]
 
     def _search_hybrid(
         self,
@@ -357,6 +439,7 @@ class SemanticStore:
         min_confidence: float,
         min_score: float,
         user_id: str | None,
+        as_of_iso: str,
     ) -> list[tuple[SemanticFact, float]]:
         candidate_k = max(k * 4, 20)
         dense_hits = self._search_dense(
@@ -365,9 +448,14 @@ class SemanticStore:
             min_confidence=min_confidence,
             min_score=min_score,
             user_id=user_id,
+            as_of_iso=as_of_iso,
         )
         text_hits = self._search_text(
-            query, k=candidate_k, min_confidence=min_confidence, user_id=user_id
+            query,
+            k=candidate_k,
+            min_confidence=min_confidence,
+            user_id=user_id,
+            as_of_iso=as_of_iso,
         )
         if not dense_hits and not text_hits:
             return []
@@ -506,4 +594,13 @@ def _row_to_fact(row: Iterable[Any]) -> SemanticFact:
         tier=str(r[10]),
         created_at=datetime.fromisoformat(str(r[11])),
         superseded_by=int(r[12]) if len(r) > 12 and r[12] is not None else None,
+        valid_from=(
+            datetime.fromisoformat(str(r[13])) if len(r) > 13 and r[13] is not None else None
+        ),
+        valid_to=(
+            datetime.fromisoformat(str(r[14])) if len(r) > 14 and r[14] is not None else None
+        ),
+        asserted_at=(
+            datetime.fromisoformat(str(r[15])) if len(r) > 15 and r[15] is not None else None
+        ),
     )

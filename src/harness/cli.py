@@ -2312,18 +2312,42 @@ def memory_fact_list(
         store.close()
 
 
+def _parse_as_of(value: str) -> datetime:
+    """Accept ISO 8601 ('2024-03-15T00:00:00+00:00') or plain date
+    ('2024-03-15'). Plain dates are interpreted at UTC midnight so
+    the temporal filter has a deterministic boundary regardless of
+    the user's local time zone."""
+    import typer
+
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise typer.BadParameter(f"--as-of must be ISO 8601 or YYYY-MM-DD (got {value!r})") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
 @memory_app.command("fact-search")
 def memory_fact_search(
     query: str = typer.Argument(..., help="Query text"),
     k: int = typer.Option(5, help="How many matches to return"),
     min_confidence: float = typer.Option(0.0, help="Minimum confidence to include"),
+    as_of: str | None = typer.Option(
+        None,
+        "--as-of",
+        help="Shift the temporal lens to this date (ISO 8601 or YYYY-MM-DD). "
+        "Facts whose validity window doesn't contain this moment are filtered out. "
+        "Defaults to now.",
+    ),
 ) -> None:
     """Semantic-search the fact store."""
     store = _open_semantic_store()
     if store is None:
         raise typer.Exit(code=1)
     try:
-        hits = store.search(query, k=k, min_confidence=min_confidence)
+        as_of_dt = _parse_as_of(as_of) if as_of is not None else None
+        hits = store.search(query, k=k, min_confidence=min_confidence, as_of=as_of_dt)
         if not hits:
             console.print("[dim](no matches)[/dim]")
             return
@@ -2351,6 +2375,22 @@ def memory_fact_add(
         help="Relationship scope. Leave unset (or pass empty) to write a "
         "shared fact visible to everyone.",
     ),
+    valid_from: str | None = typer.Option(
+        None,
+        "--valid-from",
+        help="Earliest time the fact was true (ISO 8601 or YYYY-MM-DD). Unset = unbounded past.",
+    ),
+    valid_to: str | None = typer.Option(
+        None,
+        "--valid-to",
+        help="Time after which the fact ceased to be true. Unset = still valid.",
+    ),
+    asserted_at: str | None = typer.Option(
+        None,
+        "--asserted-at",
+        help="When the fact was communicated (vs. when the row was created). "
+        "Useful for backfill: user describes something that happened last year.",
+    ),
 ) -> None:
     """Add a single fact to the semantic store."""
     store = _open_semantic_store()
@@ -2365,6 +2405,9 @@ def memory_fact_add(
             source=source,
             user_id=user if user else None,
             tier=tier,
+            valid_from=_parse_as_of(valid_from) if valid_from else None,
+            valid_to=_parse_as_of(valid_to) if valid_to else None,
+            asserted_at=_parse_as_of(asserted_at) if asserted_at else None,
         )
         console.print(
             f"[green]added[/green] id={fact.id}: "
