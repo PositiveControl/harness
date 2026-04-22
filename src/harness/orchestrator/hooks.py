@@ -156,6 +156,50 @@ FABRICATED_SEARCH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Past-tense claim of having searched the web / online / the internet
+# when no web-fetch tool actually ran. Harness-78z shape: search_memory
+# returned empty, model narrates "I've searched the web for X and
+# found..." without ever calling search_web. Split from
+# FABRICATED_SEARCH_RE because its gate is narrower: any tool running
+# disarms the result-list patterns (legit wrap-up), but NO amount of
+# non-web tool activity legitimizes a "I've searched the web" claim —
+# only search_web / fetch_url actually running does.
+_APOS_CLASS = "['’]"  # noqa: RUF001 — straight + curly apostrophe in a char class
+FABRICATED_WEB_CLAIM_RE = re.compile(
+    rf"(?:"
+    rf"\bi(?:{_APOS_CLASS}ve|\s+have|\s+just)?\s+searched\s+"
+    rf"(?:the\s+(?:web|internet)|online)"
+    rf"|"
+    rf"\b(?:after|upon)\s+searching\s+(?:the\s+(?:web|internet)|online)"
+    rf")",
+    re.IGNORECASE,
+)
+
+# Matches replies that regenerate a "here are the articles/stories/
+# headlines…" summary list without calling any tool this turn — the
+# classic follow-up fabrication shape (harness-f5x). User asks "more
+# details on 8" from an earlier fetch result; 3B model skips the
+# index→URL lookup and fakes a new summary. Distinct from
+# FABRICATED_SEARCH_RE because the intro phrasing names articles /
+# stories / headlines rather than "results" / "what I found".
+# Alternatives listed first for regex efficiency (Python re backs off).
+FABRICATED_ITEMIZATION_RE = re.compile(
+    r"(?:"
+    r"here\s+are\s+(?:some|the|a\s+few)\s+"
+    r"(?:of\s+the\s+)?(?:first|top|latest|popular|recent|main)?\s*"
+    r"(?:\d+\s+)?"
+    r"(?:articles|stories|headlines|items|posts|entries|news|"
+    r"top\s+stories)"
+    r"|"
+    r"let'?s\s+focus\s+on\s+(?:one|a\s+few)\s+of\s+the"
+    r"|"
+    r"here'?s\s+(?:a\s+)?(?:summary|rundown|overview|recap)\s+of\s+"
+    r"(?:the\s+)?(?:articles|stories|headlines|items|posts)"
+    r")",
+    re.IGNORECASE,
+)
+
+
 # Matches ab_ops-specific fabrication shapes — ab imitates its own
 # tool receipts (capture / plan) without emitting a <tool_call>.
 # Distinct tells:
@@ -188,6 +232,63 @@ FABRICATED_BEAD_ID_RE = re.compile(
     r"\bbead\s*(?:id)?\s*[:=]\s*(?:harness|bd|ab)-[a-z0-9]+",
     re.IGNORECASE,
 )
+# Domain-like token inside a tool argument's string value: matches
+# `example.com`, `dailydrop.fm`, `sub.example.co.uk`, etc. Captures the
+# leftmost label ("example", "dailydrop") — that's the "root" the
+# grounding hook matches against the user message. TLD whitelist is
+# intentionally narrow: catches the public-web TLDs that show up in
+# real fetch_url / search_web args without false-positiving on
+# filenames like `new.txt`, `config.yaml`, `data.json` (file extensions
+# are NOT in the list). A missing TLD is cheap — legitimate calls pass;
+# only "leaked fabricated domain" cases get caught. Extend as needed
+# when a legitimate domain appears that isn't covered.
+_KNOWN_TLDS = (
+    "com|org|net|io|ai|dev|me|co|edu|gov|fm|tv|app|info|biz|xyz|"
+    "uk|us|de|fr|jp|ca|au|nz|nl|es|it|ru|in|cn|br|mx|ly|to|cc|so|"
+    "gg|pro|tech|site|online|store|cloud|news|blog|wiki"
+)
+ARG_DOMAIN_RE = re.compile(
+    rf"\b([a-z0-9][a-z0-9-]*)\.(?:[a-z]{{2,}}\.)*(?:{_KNOWN_TLDS})\b",
+    re.IGNORECASE,
+)
+
+
+def _arg_string_values(arguments: dict[str, object]) -> list[str]:
+    """Flatten a tool-call's argument dict into its string values (one
+    level deep). Non-string values are stringified via `str()` so a
+    `max_results=1` doesn't count as a URL but also doesn't silently
+    drop any string-like content. Nested dicts/lists get their leaf
+    strings pulled too — covers `arguments={"filters": ["python"]}`
+    shapes without recursion blow-ups on cycles (tool args are
+    JSON-serializable, so no cycles by construction)."""
+
+    out: list[str] = []
+
+    def _walk(value: object) -> None:
+        if isinstance(value, str):
+            out.append(value)
+        elif isinstance(value, dict):
+            for v in value.values():
+                _walk(v)
+        elif isinstance(value, list | tuple):
+            for v in value:
+                _walk(v)
+
+    _walk(arguments)
+    return out
+
+
+def _arg_domain_roots(arg_values: list[str]) -> set[str]:
+    """Collect the lowercased leftmost labels of every domain-like
+    token embedded in `arg_values`. Duplicates are collapsed; order
+    doesn't matter."""
+    roots: set[str] = set()
+    for value in arg_values:
+        for match in ARG_DOMAIN_RE.finditer(value):
+            roots.add(match.group(1).lower())
+    return roots
+
+
 # Bare past-tense success claim as a standalone sentence — "Updated.",
 # "Captured.", "Created." — word flanked by whitespace/quote and
 # followed by end-of-sentence. Gated on `tools_ran_this_turn=False`
@@ -325,10 +426,15 @@ class BailContext:
     """Inputs to a bail hook. `tools_ran_this_turn` distinguishes
     first-round bails (no tools executed yet → completion claims are
     hallucinations) from wrap-up rounds (tools ran earlier → claims
-    are legitimate)."""
+    are legitimate). `tools_ran` carries the finer signal — the set
+    of tool names that succeeded this turn — so hooks can gate on
+    specific tools (e.g. fabricated_search only cares whether a
+    web-fetch tool ran; search_memory running doesn't legitimize
+    a fabricated web-search narration)."""
 
     reply: ModelReply
     tools_ran_this_turn: bool
+    tools_ran: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -338,8 +444,15 @@ class PostModelContext:
 
 @dataclass(frozen=True)
 class PreToolContext:
+    """Inputs to a pre-tool hook. `user_message` is the verbatim content
+    of the most recent user-role turn in the loop's working thread — the
+    grounding hook uses it to verify that entity-specific arguments
+    (URLs, domains) trace back to something the user actually named. Nil
+    when no user turn exists yet (system-only bootstrap)."""
+
     call: ToolCall
     seen_calls: frozenset[tuple[str, str]]
+    user_message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -495,15 +608,65 @@ _FABRICATED_SEARCH_NUDGE = (
 )
 
 
+_WEB_FETCH_TOOLS: frozenset[str] = frozenset({"search_web", "fetch_url"})
+
+
 @dataclass(frozen=True)
 class FabricatedSearchHook:
+    """Catches two shapes of web-search fabrication.
+
+    1. Result-list patterns (FABRICATED_SEARCH_RE): "here are the
+       results", placeholder-domain URLs, quoted-snippet numbered
+       lists. Gated on `tools_ran_this_turn` — ANY tool running
+       disarms the catcher because the wrap-up may legitimately
+       summarize that tool's output.
+    2. Past-tense web-claim (FABRICATED_WEB_CLAIM_RE): "I've
+       searched the web", "after searching online". Gated more
+       narrowly on `tools_ran` — only a real search_web or
+       fetch_url disarms it. Rationale (harness-78z): the model
+       claims to have done a web search; only an actual web call
+       legitimizes that claim. A search_memory miss followed by
+       "I've searched the web" narration is still fabrication."""
+
     name: str = "fabricated_search"
 
     def check(self, ctx: BailContext) -> BailOutcome:
+        web_ran = bool(ctx.tools_ran & _WEB_FETCH_TOOLS)
+        if not web_ran and FABRICATED_WEB_CLAIM_RE.search(ctx.reply.content):
+            return Nudge(_FABRICATED_SEARCH_NUDGE)
         if ctx.tools_ran_this_turn:
             return Continue()
         if FABRICATED_SEARCH_RE.search(ctx.reply.content):
             return Nudge(_FABRICATED_SEARCH_NUDGE)
+        return Continue()
+
+
+_FABRICATED_ITEMIZATION_NUDGE = (
+    "Your reply looks like a regenerated summary list ('here are the "
+    "articles/stories/headlines…') but you did NOT call any tool this "
+    "turn. When the user asks for more detail on a specific item from "
+    "an earlier tool result, the ONLY correct response is to call "
+    "`fetch_url` on THAT item's URL from the prior tool output. Do NOT "
+    "paraphrase, re-list, or summarize from context. If you can't find "
+    "the URL for the item the user named, tell them you need it pasted."
+)
+
+
+@dataclass(frozen=True)
+class FabricatedItemizationHook:
+    """Catches the follow-up-fabrication shape: user asks for more
+    detail on item N from an earlier fetch, small model skips the
+    index→URL lookup and regenerates a fake summary list. Gated on
+    `tools_ran_this_turn=False` so legitimate wrap-up lists after a
+    real tool ran never trip (harness-f5x)."""
+
+    name: str = "fabricated_itemization"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if ctx.tools_ran_this_turn:
+            return Continue()
+        if FABRICATED_ITEMIZATION_RE.search(ctx.reply.content):
+            return Nudge(_FABRICATED_ITEMIZATION_NUDGE)
         return Continue()
 
 
@@ -607,6 +770,84 @@ class DuplicateCallHook:
         )
 
 
+# Nudge fed back as the tool-role message when the grounding hook
+# skips a call. Phrased so the next round knows exactly what failed
+# (the arg that didn't trace back to the user) and what the remedy is
+# (re-plan from what the user ACTUALLY said). Deliberately avoids
+# imperatives like "call this tool instead" — the hook can't know the
+# right replacement, only that the current one is off-prompt.
+_ARG_GROUNDING_NUDGE = (
+    "[grounded-args check failed — your tool arguments named entities "
+    "({offenders}) that the user did not mention. The user's message "
+    "was: {user_message!r}. Re-read that message and either call the "
+    "tool with arguments derived from it, or tell the user you cannot "
+    "answer. Do NOT reuse entities from memory / prior turns / your "
+    "own prior replies.]"
+)
+
+
+@dataclass(frozen=True)
+class ArgumentGroundingHook:
+    """Reject tool calls whose argument entities don't trace back to the
+    current user turn.
+
+    Failure mode this catches: router or main model picks a specific
+    domain / URL that appears nowhere in the user's message. The entity
+    leaks in from retrieved episodic memory, a prior conversation, or
+    the small router model's training bias. Stackoverflow-asked prompt
+    becomes a `search_web(query='dailydrop.fm')` call — coherent-sounding
+    but wrong. Without this hook, the orchestrator executes the call,
+    the main model wraps a confident-looking summary around the
+    irrelevant result, and the user gets a fabricated answer.
+
+    Rule (narrow by design):
+      1. Extract domain-like roots from the tool's string arguments.
+      2. For each root, check whether it appears as a substring in the
+         user message (case-insensitive).
+      3. If ANY root has no match in the user message, Skip the call
+         with a re-plan nudge.
+
+    Skip conditions (never fire):
+      - No user_message threaded through the context (rare; bootstrap
+        cases / subagent calls).
+      - No domain-like tokens in the args (prose queries pass; we only
+        flag entity-specific arguments).
+      - Every domain root is grounded in the user message.
+
+    The hook runs AFTER `duplicate_call` so re-calls short-circuit first
+    without a spurious grounding nudge. The attribution eval can disable
+    it by name ('argument_grounding') to measure which failures it
+    uniquely catches."""
+
+    name: str = "argument_grounding"
+
+    def check(self, ctx: PreToolContext) -> PreToolOutcome:
+        if ctx.user_message is None:
+            return Continue()
+        arg_strings = _arg_string_values(ctx.call.arguments)
+        if not arg_strings:
+            return Continue()
+        roots = _arg_domain_roots(arg_strings)
+        if not roots:
+            return Continue()
+        user_lower = ctx.user_message.lower()
+        ungrounded = sorted(root for root in roots if root not in user_lower)
+        if not ungrounded:
+            return Continue()
+        offenders = ", ".join(repr(r) for r in ungrounded)
+        return Skip(
+            ToolResult(
+                tool_name=ctx.call.name,
+                output=_ARG_GROUNDING_NUDGE.format(
+                    offenders=offenders,
+                    user_message=ctx.user_message,
+                ),
+                success=False,
+                error="argument_grounding",
+            )
+        )
+
+
 # ---------- finalize hooks ----------
 
 
@@ -699,9 +940,7 @@ class HookPipeline:
                 return outcome
         return Continue()
 
-    def run_post_tool(
-        self, ctx: PostToolContext, *, disabled: frozenset[str]
-    ) -> PostToolOutcome:
+    def run_post_tool(self, ctx: PostToolContext, *, disabled: frozenset[str]) -> PostToolOutcome:
         for hook in self.post_tool:
             if hook.name in disabled:
                 continue
@@ -738,11 +977,17 @@ def default_hook_pipeline() -> HookPipeline:
             FalseSuccessHook(),
             MetaConfirmHook(),
             FabricatedSearchHook(),
+            FabricatedItemizationHook(),
             AbFabricationHook(),
             ToolIntentHook(),
         ],
         post_model=[PairedMetaConfirmStripHook()],
-        pre_tool=[DuplicateCallHook()],
+        # Order matters inside pre_tool: duplicate_call fires first so
+        # a repeat call short-circuits before the grounding check
+        # spends cycles analyzing it (and so the user sees the
+        # "duplicate — skipped" nudge, not a grounding complaint,
+        # when both would fire).
+        pre_tool=[DuplicateCallHook(), ArgumentGroundingHook()],
         post_tool=[],
         finalize=[FabricationFallbackHook()],
     )
@@ -839,9 +1084,7 @@ class ToolResultSummarizerHook:
         # and can't accidentally quote it back as literal tool output
         # (fabrication catchers would flag a quoted summary as
         # fabricated-search, for example). Preserve success + name.
-        annotated = (
-            f"[tool output summarized from {len(ctx.result.output)} chars]\n{summary}"
-        )
+        annotated = f"[tool output summarized from {len(ctx.result.output)} chars]\n{summary}"
         return ReplaceResult(
             ToolResult(
                 tool_name=ctx.result.tool_name,
@@ -867,12 +1110,14 @@ def _call_key(call: ToolCall) -> tuple[str, str]:
 __all__ = [
     "AB_DATE_HEADER_RE",
     "AB_TIER_HEADER_RE",
+    "ARG_DOMAIN_RE",
     "BARE_CLAIM_RE",
     "DUPLICATE_CALL_NUDGE",
     "EXHAUSTED_FABRICATION_FALLBACK",
     "FABRICATED_AB_CAPTURE_RE",
     "FABRICATED_AB_SCOPE_RE",
     "FABRICATED_BEAD_ID_RE",
+    "FABRICATED_ITEMIZATION_RE",
     "FABRICATED_REMEMBER_RE",
     "FABRICATED_SEARCH_RE",
     "FALSE_SUCCESS_RE",
@@ -880,11 +1125,13 @@ __all__ = [
     "TEASER_RE",
     "TOOL_INTENT_RE",
     "AbFabricationHook",
+    "ArgumentGroundingHook",
     "BailContext",
     "BailHook",
     "BailOutcome",
     "Continue",
     "DuplicateCallHook",
+    "FabricatedItemizationHook",
     "FabricatedSearchHook",
     "FabricationFallbackHook",
     "FalseSuccessHook",

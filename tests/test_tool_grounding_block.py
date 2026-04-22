@@ -74,6 +74,30 @@ def test_grounding_block_omits_preference_nudge_without_remember(tmp_path: Path)
     assert "remember to" not in block.lower()
 
 
+def test_grounding_block_adds_followup_fetch_nudge_when_fetch_url_present(
+    tmp_path: Path,
+) -> None:
+    """harness-f5x: with fetch_url loaded, the block carries a directive
+    telling the model to re-fetch on item-index follow-ups ('more details
+    on 8') rather than regenerating a fake summary list."""
+    from harness.tools import FetchUrlTool
+
+    registry = _registry_with([ReadFileTool(root=tmp_path), FetchUrlTool()])
+    block = _build_tool_grounding_block(registry, tmp_path)
+    assert "FOLLOW-UP DETAIL ASKS" in block
+    assert "more details on 8" in block
+    # Must direct to fetch_url specifically, not a generic "call a tool".
+    assert "fetch_url" in block.lower()
+
+
+def test_grounding_block_omits_followup_nudge_without_fetch_url(tmp_path: Path) -> None:
+    """When fetch_url isn't loaded, the follow-up nudge doesn't appear —
+    the model has no fetch tool to redirect users to anyway."""
+    registry = _registry_with([ReadFileTool(root=tmp_path)])
+    block = _build_tool_grounding_block(registry, tmp_path)
+    assert "FOLLOW-UP DETAIL ASKS" not in block
+
+
 def test_grounding_block_adds_nudge_when_introspect_present(tmp_path: Path) -> None:
     """harness-u71: with introspect loaded, the block carries a
     directive pointing the model at it for self-capability questions."""

@@ -62,7 +62,12 @@ class SearchFactsTool:
             user_id=self.user_id,
         )
         if not hits:
-            return "(no facts above threshold)"
+            return (
+                "(no facts matched — if this is about external facts, "
+                "people, or live information, try search_web next; "
+                "otherwise answer from general knowledge or ask a "
+                "clarifying question)"
+            )
         lines = []
         for fact, score in hits:
             lines.append(

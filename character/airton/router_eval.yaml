@@ -29,6 +29,51 @@
   expected_tool: search_web
   expected_args: [query]
 
+# harness-78z: "do a search for X" where X is an external person is
+# search_web, NOT search_memory. The small model had been grabbing
+# the verb "search" over the external-entity signal. These pin the
+# fix so a router-prompt or model swap can't silently regress.
+- prompt: do a search for brad hintze in phoenix, tell me about this person
+  expected_tool: search_web
+  expected_args: [query]
+
+- prompt: search for acme corp's ceo
+  expected_tool: search_web
+  expected_args: [query]
+
+# fetch_url — concrete URL or bare domain goes to fetch_url, not
+# read_file (harness-057). Hermes-3-3B had been mode-collapsing these
+# into read_file and jamming a pseudo search_web call into `path`.
+#
+# The stackoverflow case pins the "verbatim domain" contract
+# (harness-w1z): the router had been copying a dailydrop.fm few-shot's
+# args when the user said 'stackoverflow'. `expected_arg_values`
+# requires the actual `url` to contain "stackoverflow" — a wrong
+# domain fails the eval even if fetch_url + `url` are correct.
+- prompt: go to stackoverflow and fetch the first question
+  expected_tool: fetch_url
+  expected_args: [url]
+  expected_arg_values:
+    url: stackoverflow
+
+- prompt: go to dailydrop.fm and tell me about the website
+  expected_tool: fetch_url
+  expected_args: [url]
+  expected_arg_values:
+    url: dailydrop
+
+- prompt: open https://example.com and summarize the page
+  expected_tool: fetch_url
+  expected_args: [url]
+
+- prompt: fetch the content of https://docs.python.org/3/library/asyncio.html
+  expected_tool: fetch_url
+  expected_args: [url]
+
+- prompt: read anthropic.com/news and tell me what's new
+  expected_tool: fetch_url
+  expected_args: [url]
+
 - prompt: show me what's in src/harness/cli.py
   expected_tool: read_file
   expected_args: [path]

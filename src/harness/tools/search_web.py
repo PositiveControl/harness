@@ -85,8 +85,12 @@ class SearchWebTool:
                 "Returns a numbered list of `TITLE — URL — SNIPPET` "
                 "triples. Use when the user asks a factual question "
                 "you can't answer from memory or the workspace. "
-                "Follow up with fetch_url if you need the page "
-                "contents (when that tool is available)."
+                "Prefer a broad fetch (default 5 results) so you can "
+                "compare sources and pick the best candidates, then "
+                "follow up with fetch_url on the most promising one "
+                "or two URLs when the snippets aren't enough. Do not "
+                "set max_results to 1 unless the user explicitly asked "
+                "for a single top result."
             ),
             parameters={
                 "type": "object",
@@ -99,7 +103,9 @@ class SearchWebTool:
                         "type": "integer",
                         "description": (
                             "Number of results to return. Default 5. Cap around 10 "
-                            "to keep the tool output readable."
+                            "to keep the tool output readable. Only set this when "
+                            "the user named a specific count — otherwise omit it "
+                            "and take the default broad fetch."
                         ),
                     },
                 },

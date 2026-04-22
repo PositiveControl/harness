@@ -181,6 +181,51 @@
   expected_messages_contain: ["<tool_call>…</tool_call>"]
   expected_events_contain: [bail_retry]
 
+- id: fabricated_itemization_regen
+  label: fabricated_itemization
+  description: Follow-up fabrication (harness-f5x). User asks for more
+    detail on item N from an earlier fetch; model regenerates a fake
+    "here are the first N articles" summary list without calling
+    fetch_url. The itemization catcher fires on the regen shape; every
+    retry keeps regenerating so the fabrication-exhaustion fallback
+    takes over.
+  messages:
+    - role: user
+      content: "Yes, get more details on 8"
+  scripted_replies:
+    - content: "Sure — here are the first 5 articles from the BBC News website:\n1. Iran blockade...\n2. US-Iran standoff..."
+    - content: "Let's focus on one of the top stories. Here are the first 5 headlines:"
+    - content: "Here's a rundown of the headlines:"
+  expected_fallback: true
+  expected_events_contain: [bail_retry]
+  expected_not_contains: ["here are the first"]
+
+- id: argument_grounding_leaked_domain
+  label: argument_grounding
+  description: Router or main model emits a tool call whose `query` names a
+    domain (`dailydrop.fm`) that the user never mentioned — classic
+    retrieved-memory leak when the user actually asked about
+    stackoverflow. Grounding hook skips the call with a re-plan nudge;
+    the recovery round gives a plain answer (harness-7od).
+  messages:
+    - role: user
+      content: go to stackoverflow and summarize the first question there
+  registry:
+    - name: search_web
+      output: "search-result"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: {"query": "dailydrop.fm", "max_results": 1}
+    - content: "I couldn't figure out the right search for that — can you paste the stackoverflow URL?"
+  expected_contains: ["stackoverflow"]
+  expected_messages_contain:
+    - "grounded-args check failed"
+    - "dailydrop"
+  expected_events_contain: [tool_call_deduped]
+  expected_messages_not_contain: ["search-result"]
+
 - id: duplicate_call_short_circuit
   label: duplicate_call
   description: Model re-emits the same (name, args) tool call — orchestrator

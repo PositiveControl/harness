@@ -2109,6 +2109,113 @@ def test_router_prelude_call_seeds_dedup_set() -> None:
     assert kinds.count("tool_call_deduped") == 1
 
 
+def test_router_skips_call_when_args_ungrounded() -> None:
+    """harness-7od: router picks a tool with a domain in args that the
+    user never named — grounding hook rejects it at the pre-tool gate
+    and the main model handles the turn instead. Without this, the
+    main model wraps confident prose around unrelated tool output."""
+    from harness.router.intent import RouterIntent
+
+    registry = ToolRegistry()
+    registry.register(_ReadTool(name="search_web", output="1. Daily Drop — https://dailydrop.fm/"))
+    adapter = _ScriptedAdapter(
+        replies=[ModelReply(content="I can't help with that without more info.")]
+    )
+    router = _ScriptedRouter(
+        intents=[RouterIntent(tool_name="search_web", arguments={"query": "dailydrop.fm"})]
+    )
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="go to stackoverflow and fetch the first question")],
+        registry,
+        router=router,  # type: ignore[arg-type]  # structural match
+    )
+
+    # Router's pick was skipped by grounding → no router_intent event,
+    # no tool ran, main model took the turn directly.
+    kinds = [e.kind for e in result.events]
+    assert "router_intent" not in kinds
+    assert "tool_call_start" not in kinds
+    assert result.content == "I can't help with that without more info."
+
+
+def test_main_model_tool_call_skipped_when_args_ungrounded() -> None:
+    """Grounding also applies to main-model tool calls (not just the
+    router prelude). An ungrounded domain arg gets Skipped with the
+    re-plan nudge as the tool-role message; next round produces the
+    final answer."""
+    registry = ToolRegistry()
+    registry.register(_ReadTool(name="search_web", output="search-result"))
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        name="search_web",
+                        arguments={"query": "dailydrop.fm"},
+                    ),
+                ),
+            ),
+            ModelReply(content="I need the stackoverflow URL — can you paste it?"),
+        ]
+    )
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="go to stackoverflow and summarize the first question")],
+        registry,
+    )
+
+    # tool_call_deduped (the event kind used for any pre-tool Skip,
+    # including grounding) replaces tool_call_start/end.
+    kinds = [e.kind for e in result.events]
+    assert "tool_call_deduped" in kinds
+    # The grounding nudge landed in the tool-role message, not the
+    # search_web output.
+    tool_msgs = [m for m in result.messages if m.role == "tool"]
+    assert len(tool_msgs) == 1
+    assert "grounded-args check failed" in tool_msgs[0].content
+    assert "dailydrop" in tool_msgs[0].content
+    # Final answer is the recovery prose, not fabricated search prose.
+    assert "stackoverflow" in result.content
+
+
+def test_grounded_main_model_call_runs_normally() -> None:
+    """Counter-case: when the main-model tool call's domain DOES trace
+    back to the user message, grounding stays out of the way and the
+    tool executes normally."""
+    registry = ToolRegistry()
+    registry.register(_ReadTool(name="search_web", output="SO result"))
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        name="search_web",
+                        arguments={"query": "stackoverflow.com python"},
+                    ),
+                ),
+            ),
+            ModelReply(content="here's what I found"),
+        ]
+    )
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="search stackoverflow for python")],
+        registry,
+    )
+
+    kinds = [e.kind for e in result.events]
+    assert "tool_call_end" in kinds
+    assert "tool_call_deduped" not in kinds
+    tool_msgs = [m for m in result.messages if m.role == "tool"]
+    assert tool_msgs[0].content == "SO result"
+
+
 # Explicit import to confirm we can pass pytest from the tests folder
 def test_tools_module_importable() -> None:
     import harness.tools  # noqa: F401 — import-for-side-effect check

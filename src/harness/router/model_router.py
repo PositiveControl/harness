@@ -33,6 +33,13 @@ Return STRICT JSON only — no prose, no markdown fences — in exactly
 this shape:
 {{"tool": "<tool_name>" or null, "arguments": {{...}}}}
 
+CRITICAL: when the user's message names a specific entity — a domain
+(`stackoverflow`, `example.com`), URL, filename, path, subject, or
+identifier — your arguments MUST use that exact entity. Copy it
+verbatim. Do NOT substitute a domain or identifier from these examples
+when the user named a DIFFERENT one. If the user said "stackoverflow",
+the URL is stackoverflow.com, not any example below.
+
 A tool is needed ONLY when the answer depends on:
 - Live web data (current prices, news, weather, events, real-world entities)
 - Specific file contents, directory listings, or filename searches
@@ -56,18 +63,38 @@ Available tools:
 Disambiguation for common overlaps:
 - read_file: user wants the CONTENTS of a specific named file. A
   concrete filename like `pyproject.toml` or `README.md` is read_file,
-  even when the verb is "open" or "find".
+  even when the verb is "open" or "find". A URL or bare domain
+  (`example.com`, `foo.fm`, `https://...`) is NOT a file — use
+  fetch_url. Never put a tool name or query string into `path`.
 - list_dir: user wants to see what's IN a directory.
 - glob: user wants to FIND files matching a WILDCARD pattern (must
   contain `*`, `?`, or `[...]`). A bare filename is not a glob.
 - grep: user wants to SEARCH INSIDE files for a text pattern.
-- search_web: anything about live external data. "Online", "on the
-  web", "latest", "current" are search_web even when the verb is
-  "find".
-- search_memory: past conversations, specific events ("remember",
-  "recall", "what did we discuss").
-- search_facts: stored attributes or preferences about a subject. The
-  word "fact(s)" is a strong cue for search_facts over search_memory.
+- fetch_url: user names a concrete URL or bare domain and wants its
+  contents. "Go to X", "open this page", "fetch this site", "read
+  <domain>", or even "tell me about <domain>.<tld>" when <domain> is
+  a real host. Anything with a `.com`/`.org`/`.fm`/`.io`/etc. tail is
+  a URL, not a file. Prepend `https://` if the user's URL omits the
+  scheme.
+- search_web: live external data with NO specific URL. "Online", "on
+  the web", "latest", "current", "search for X" are search_web even
+  when the verb is "find". If the user names a concrete domain to
+  visit, use fetch_url instead. Pass ONLY `query` by default — do not
+  set `max_results`. Only include `max_results` when the user names a
+  specific count ("top 3", "first result", "give me 10"); otherwise
+  omit it and let the tool return its default broad set.
+- search_memory: ONLY for past conversations between us and specific
+  events we experienced together. REQUIRES an explicit memory signal:
+  "remember", "recall", "what did we discuss", "last time", "before",
+  "earlier". The bare verb "search" on its own is NOT a memory signal.
+  If the query is about an external person, place, company, or any
+  live-world fact — even when the user says "search for X" — use
+  search_web instead.
+- search_facts: stored attributes or preferences about a subject the
+  user has previously told us about. The word "fact(s)" is a strong
+  cue for search_facts over search_memory. External people or entities
+  the user has not previously discussed are search_web, not
+  search_facts.
 - list / plan / status / drift / ready (ab ops tools): for browsing
   questions like "what tasks do we have coming up?", "what's on the
   plate?", "what's in our future?", call the tool with NO arguments.
@@ -86,6 +113,27 @@ Output: {{"tool": "search_web", "arguments": {{"query": "bbq restaurants 85048"}
 
 User message: find a good recipe for X online
 Output: {{"tool": "search_web", "arguments": {{"query": "good recipe for X"}}}}
+
+User message: search the web for "Jane Doe" and give me a short biography
+Output: {{"tool": "search_web", "arguments": {{"query": "Jane Doe biography"}}}}
+
+User message: do a search for brad hintze in phoenix, tell me about this person
+Output: {{"tool": "search_web", "arguments": {{"query": "brad hintze phoenix"}}}}
+
+User message: search for acme corp's ceo
+Output: {{"tool": "search_web", "arguments": {{"query": "acme corp ceo"}}}}
+
+User message: give me the top 3 articles on claude 4.7 pricing
+Output: {{"tool": "search_web", "arguments": {{"query": "claude 4.7 pricing", "max_results": 3}}}}
+
+User message: go to stackoverflow and summarize the first question
+Output: {{"tool": "fetch_url", "arguments": {{"url": "https://stackoverflow.com"}}}}
+
+User message: go to dailydrop.fm and tell me about it
+Output: {{"tool": "fetch_url", "arguments": {{"url": "https://dailydrop.fm"}}}}
+
+User message: open https://example.com/post and summarize it
+Output: {{"tool": "fetch_url", "arguments": {{"url": "https://example.com/post"}}}}
 
 User message: show me the contents of src/main.py
 Output: {{"tool": "read_file", "arguments": {{"path": "src/main.py"}}}}

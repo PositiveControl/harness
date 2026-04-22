@@ -341,7 +341,9 @@ def test_search_memory_empty_store_returns_note(tmp_path: Path) -> None:
     store = EpisodicStore(tmp_path / "e.sqlite", embedder=_FakeEmbedder())
     try:
         tool = SearchMemoryTool(store=store)
-        assert tool.call(query="anything") == "(no memories above similarity threshold)"
+        result = tool.call(query="anything")
+        assert result.startswith("(no memories matched")
+        assert "search_web" in result
     finally:
         store.close()
 

@@ -237,6 +237,9 @@ def _router_prelude(
     confirm: ConfirmFn | None,
     emit: Callable[[ToolLoopEvent], None],
     seen_calls: set[tuple[str, str]],
+    hooks: HookPipeline,
+    user_message: str | None,
+    succeeded_tools: set[str],
 ) -> tuple[bool, bool]:
     """Classify the last user turn and, on a usable intent, append a
     synthetic assistant tool-call turn + the tool result to `working`
@@ -245,7 +248,9 @@ def _router_prelude(
     `succeeded` is True iff that tool returned ToolResult.success=True.
     The main loop needs both signals: routed-but-failed still counts as
     "tool executed" for the wrap-up token cap but NOT for disarming
-    fabrication catchers (see harness-a0y).
+    fabrication catchers (see harness-a0y). On success, `succeeded_tools`
+    gains the router-executed tool name so downstream narrow gates can
+    see it.
 
     Conservative guards: read-tier tools only (write-tier needs the
     main model's richer context + its own confirmation UX), intent
@@ -253,13 +258,20 @@ def _router_prelude(
     present. Any failure falls through silently — the router is
     advisory, never blocking.
 
+    The pre_tool hook pipeline runs before the router-chosen call
+    executes — so the argument-grounding hook gets a shot at rejecting
+    a router misfire (query entities that don't trace back to what the
+    user said) just like it does for main-model calls. A Skip outcome
+    here falls through (returns `(False, False)`) so the main loop
+    handles the turn instead of letting the main model wrap prose
+    around a leaked-entity tool result.
+
     `seen_calls` is mutated: on success, the router's (name, args-json)
     key is recorded so a downstream main-model re-invocation with
     identical arguments gets short-circuited by the main loop's
     duplicate guard."""
     from harness.orchestrator.hooks import _call_key
 
-    user_message = _last_user_message(working)
     if user_message is None:
         return (False, False)
     intent = router.classify(user_message, registry.specs())
@@ -275,6 +287,20 @@ def _router_prelude(
         return (False, False)
 
     call = ToolCall(name=intent.tool_name, arguments=dict(intent.arguments))
+    # Run pre_tool hooks BEFORE announcing the router_intent — a Skip
+    # outcome (grounding rejection) should fall through silently so the
+    # user sees the main-model path, not a "router picked X, discarded"
+    # trace. The router is advisory and its misfires are noise.
+    pre_outcome = hooks.run_pre_tool(
+        PreToolContext(
+            call=call,
+            seen_calls=frozenset(seen_calls),
+            user_message=user_message,
+        ),
+        disabled=_disabled_snapshot(),
+    )
+    if isinstance(pre_outcome, Skip):
+        return (False, False)
     emit(ToolLoopEvent(kind="router_intent", call=call, round_index=0))
     emit(ToolLoopEvent(kind="tool_call_start", call=call, round_index=0))
     if confirm is not None and spec.tier == "write" and not confirm(call):
@@ -295,6 +321,8 @@ def _router_prelude(
     seen_calls.add(_call_key(call))
     working.append(ChatMessage(role="assistant", content="", tool_calls=(call,)))
     working.append(ChatMessage(role="tool", content=result.output, name=call.name))
+    if result.success:
+        succeeded_tools.add(call.name)
     return (True, result.success)
 
 
@@ -411,18 +439,27 @@ def _execute_tool_calls(
     emit: Callable[[ToolLoopEvent], None],
     round_idx: int,
     hooks: HookPipeline,
+    user_message: str | None,
+    succeeded_tools: set[str],
 ) -> bool:
     """Execute the round's tool calls: duplicate-call hook, write-tier
     confirm, dispatch, append tool-role messages. Returns True if any
     call returned success=True (used to gate fabrication catchers on
-    later rounds)."""
+    later rounds). Mutates `succeeded_tools` with the names of tools
+    whose calls succeeded — lets narrow gates (e.g. fabricated_search
+    only disarming on web-fetch tools) inspect which specific tools
+    ran this turn."""
     from harness.orchestrator.hooks import _call_key
 
     any_success = False
     for call in calls:
         key = _call_key(call)
         pre_outcome = hooks.run_pre_tool(
-            PreToolContext(call=call, seen_calls=frozenset(seen_calls)),
+            PreToolContext(
+                call=call,
+                seen_calls=frozenset(seen_calls),
+                user_message=user_message,
+            ),
             disabled=_disabled_snapshot(),
         )
         if isinstance(pre_outcome, Skip):
@@ -475,6 +512,7 @@ def _execute_tool_calls(
         seen_calls.add(key)
         if result.success:
             any_success = True
+            succeeded_tools.add(call.name)
         working.append(ChatMessage(role="tool", content=result.output, name=call.name))
     return any_success
 
@@ -539,11 +577,33 @@ def run_tool_loop(
     # Tracks whether any tool call THIS TURN returned success=True. The
     # fabrication catchers gate on this: if every tool this turn errored,
     # the model has no real data to wrap up, so a completion-style reply
-    # is still hallucination (harness-a0y).
+    # is still hallucination (harness-a0y). `succeeded_tools` carries the
+    # finer signal — the set of tool names that succeeded — so narrow
+    # gates (e.g. fabricated_search disarming only on search_web /
+    # fetch_url, not on search_memory) can inspect it (harness-78z).
     any_tool_succeeded = False
+    succeeded_tools: set[str] = set()
+
+    # Captured once per turn — the last user message at loop entry is
+    # the question we're answering. The grounding hook uses it to reject
+    # tool calls whose argument entities trace back to memory / prior
+    # turns instead of what the user just asked. Does NOT change when
+    # the orchestrator appends its own user-role nudges during
+    # bail-retries (those aren't the real user question).
+    turn_user_message = _last_user_message(working[:initial_count])
 
     if router is not None:
-        _, router_success = _router_prelude(router, working, registry, confirm, emit, seen_calls)
+        _, router_success = _router_prelude(
+            router,
+            working,
+            registry,
+            confirm,
+            emit,
+            seen_calls,
+            pipeline,
+            turn_user_message,
+            succeeded_tools,
+        )
         any_tool_succeeded = any_tool_succeeded or router_success
 
     for round_idx in range(max_rounds):
@@ -565,7 +625,11 @@ def run_tool_loop(
             # all-errored turn (e.g. plan with invalid scope) must still
             # trip fabrication catchers (harness-a0y).
             bail_outcome: BailOutcome = pipeline.run_bail(
-                BailContext(reply=last_reply, tools_ran_this_turn=any_tool_succeeded),
+                BailContext(
+                    reply=last_reply,
+                    tools_ran_this_turn=any_tool_succeeded,
+                    tools_ran=frozenset(succeeded_tools),
+                ),
                 disabled=_disabled_snapshot(),
             )
             can_retry = bail.retries_left > 0 and round_idx + 1 < max_rounds
@@ -619,6 +683,8 @@ def run_tool_loop(
             emit=emit,
             round_idx=round_idx,
             hooks=pipeline,
+            user_message=turn_user_message,
+            succeeded_tools=succeeded_tools,
         )
         any_tool_succeeded = any_tool_succeeded or round_success
 

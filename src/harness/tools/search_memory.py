@@ -50,7 +50,12 @@ class SearchMemoryTool:
     def call(self, *, query: str, k: int = 5) -> str:
         hits = self.store.search(query, k=k, user_id=self.user_id)
         if not hits:
-            return "(no memories above similarity threshold)"
+            return (
+                "(no memories matched — if this is about external facts, "
+                "people, places, or live information, try search_web next; "
+                "otherwise answer from general knowledge or ask a clarifying "
+                "question)"
+            )
         lines: list[str] = []
         for rec, score in hits:
             lines.append(f"[{score:.3f}] {rec.title}")
