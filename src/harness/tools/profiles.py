@@ -25,6 +25,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_memory",
         "search_facts",
         "search_web",
+        "fetch_url",
         "spawn_subagent",
     ),
     # Read-only everyday chat: open a file, find files, grep, recall.
@@ -51,6 +52,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "git_log",
         "search_memory",
         "search_facts",
+        "fetch_url",
         "introspect",
         "spawn_subagent",
     ),
@@ -126,6 +128,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "scribe_session",
         "consolidate_memory",
         "search_web",
+        "fetch_url",
         "introspect",
     ),
 }

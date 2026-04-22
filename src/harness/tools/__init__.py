@@ -15,6 +15,7 @@ from harness.tools.base import (
     ToolSpec,
 )
 from harness.tools.edit_file import EditFileTool
+from harness.tools.fetch_url import FetchUrlTool
 from harness.tools.git import GitDiffTool, GitLogTool, GitStatusTool
 from harness.tools.glob import GlobTool
 from harness.tools.grep import GrepTool
@@ -40,6 +41,7 @@ __all__ = [
     "TOOL_PROFILES",
     "ConsolidateMemoryTool",
     "EditFileTool",
+    "FetchUrlTool",
     "GitDiffTool",
     "GitLogTool",
     "GitStatusTool",

@@ -55,6 +55,7 @@ from harness.tools import (
     DEFAULT_PROFILE,
     TOOL_PROFILES,
     EditFileTool,
+    FetchUrlTool,
     GitDiffTool,
     GitLogTool,
     GitStatusTool,
@@ -1131,6 +1132,7 @@ def _build_tool_registry_for_tui(
             else None
         ),
         "search_web": lambda: SearchWebTool(),
+        "fetch_url": lambda: FetchUrlTool(),
         "remember_fact": lambda: (
             RememberFactTool(store=semantic_store, user_id=speaker, session_id=session)
             if semantic_store is not None

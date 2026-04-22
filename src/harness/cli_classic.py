@@ -41,6 +41,7 @@ from harness.store.transcript import Transcript
 from harness.tools import (
     ConsolidateMemoryTool,
     EditFileTool,
+    FetchUrlTool,
     GitDiffTool,
     GitLogTool,
     GitStatusTool,
@@ -180,6 +181,7 @@ def build_classic_registry(
             )
         ),
         "search_web": lambda: SearchWebTool(),
+        "fetch_url": lambda: FetchUrlTool(),
         "remember_fact": (
             lambda: (
                 RememberFactTool(store=semantic_store, user_id=speaker, session_id=session)
