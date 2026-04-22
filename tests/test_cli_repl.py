@@ -78,6 +78,38 @@ def _ctx_meter(
     return meter, transcript, compaction
 
 
+def test_clear_mutes_retrieval_when_state_is_wired(tmp_path: Path) -> None:
+    """/clear should also flip `retrieval_state.muted=True` so the
+    retriever stops leaking prior-session memories into the fresh
+    start. Stored data is untouched — restart the process to
+    re-enable retrieval (harness-zpe)."""
+    from harness.cli import _RetrievalState
+
+    db = tmp_path / "harness.sqlite"
+    transcript = Transcript(db)
+    retrieval_state = _RetrievalState()
+    meter = ContextMeter(
+        adapter=EchoAdapter(),
+        character=load_character(AIRTON),
+        transcript=transcript,
+        compaction_store=None,
+        session="test",
+        console=Console(file=open("/dev/null", "w")),  # noqa: SIM115 — test lifetime
+        retrieval_state=retrieval_state,
+    )
+    assert retrieval_state.muted is False
+    meter.clear()
+    assert retrieval_state.muted is True
+
+
+def test_clear_without_retrieval_state_is_safe(tmp_path: Path) -> None:
+    """When no retrieval_state is wired (legacy callers / echo dry
+    runs), /clear still works — the mute step is a no-op."""
+    meter, _, _ = _ctx_meter(tmp_path)
+    assert meter.retrieval_state is None
+    meter.clear()  # must not raise
+
+
 def test_clear_pins_cutoff_to_current_tip(tmp_path: Path) -> None:
     """After clear(), load_history must return only rows appended
     after the moment of the clear. Rows already in the transcript

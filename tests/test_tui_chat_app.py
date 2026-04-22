@@ -904,10 +904,10 @@ async def test_slash_clear_wipes_history_and_log(tmp_path) -> None:  # type: ign
         rendered = "\n".join(str(line) for line in log.lines)
         assert "context cleared" in rendered
         # Transcript rows survive — scribe + retro rely on this.
-        assert (
-            len(tui_app._transcript.tail(tui_app._session, limit=100))
-            == transcript_rows_before
-        )
+        assert len(tui_app._transcript.tail(tui_app._session, limit=100)) == transcript_rows_before
+        # Retrieval is muted for the rest of the process so prior-session
+        # memories don't leak back via the retriever (harness-zpe).
+        assert tui_app._state.retrieval_health.muted is True
 
 
 @pytest.mark.asyncio

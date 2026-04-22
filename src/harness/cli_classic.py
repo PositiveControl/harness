@@ -675,6 +675,7 @@ def run_classic_chat(
         semantic_store=semantic_store,
         scribe_user_id=speaker,
         auto_scribe=auto_scribe,
+        retrieval_state=retrieval_state,
     )
 
     hooks = _build_hook_pipeline(

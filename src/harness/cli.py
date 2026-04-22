@@ -1010,11 +1010,17 @@ class _RetrievalState:
     """Per-chat-session health of the three retrieval sources. Once a
     source raises we disable it for the rest of the session so the user
     doesn't get a warning on every turn. The chat still works — just
-    without that source's prompt context."""
+    without that source's prompt context.
+
+    `muted` is a separate axis flipped by `/clear` (harness-zpe): when
+    True, all three sources return empty without querying so prior-
+    session memories can't leak back into the fresh start. Stored data
+    is untouched — restart the process to re-enable retrieval."""
 
     voice_ok: bool = True
     episodic_ok: bool = True
     semantic_ok: bool = True
+    muted: bool = False
 
 
 def _retrieve_turn_context(
@@ -1035,7 +1041,15 @@ def _retrieve_turn_context(
     """Run the three retrieval sources for one turn. Any that raise are
     disabled for the rest of the session (flagged on `state`) and a
     one-time `warn(msg)` fires. Returns the hits from the sources that
-    are still healthy — empty lists for the ones that aren't."""
+    are still healthy — empty lists for the ones that aren't.
+
+    When `state.muted` is set (by `/clear`), all three sources return
+    empty immediately — a cleared session must feel cleared, and prior-
+    session memories landing in the system prompt via retrieval is
+    exactly what causes the 'why is the agent still asking about Brad
+    Hintze' symptom."""
+    if state.muted:
+        return [], [], []
     examples: list[VoiceSample] = []
     if retriever is not None and state.voice_ok and top_k > 0:
         try:

@@ -75,11 +75,18 @@ class SlashOps:
         every past turn. After /clear the next model turn starts with
         system prompt + new user msg, nothing else. Ephemeral to the
         process: a fresh `harness chat` restart replays history from
-        the DB as before."""
+        the DB as before.
+
+        Also mutes retrieval (voice + episodic + semantic) for the
+        rest of the process when retrieval health is wired — stops
+        prior-session memories from leaking back via the retriever
+        even though the underlying stores stay untouched
+        (harness-zpe)."""
         app = self._app
         log = app.query_one("#output", RichLog)
         app._state.history = []
         log.clear()
+        app._state.retrieval_health.muted = True
         log.write(Text("─── context cleared ───", style="dim"))
         # Re-render the metrics strip so the ctx-used number drops to
         # zero immediately instead of waiting for the next tick.

@@ -175,6 +175,38 @@ def test_retrieve_turn_context_disables_each_source_independently() -> None:
     assert len(warnings) == 2
 
 
+def test_retrieve_turn_context_returns_empty_when_muted() -> None:
+    """/clear flips `state.muted=True` so prior-session memories can't
+    leak into a fresh start via retrieval. The function must skip all
+    three sources even when stores would happily return hits
+    (harness-zpe). The raising stores prove no call is made at all."""
+    warnings: list[str] = []
+    state = _RetrievalState(muted=True)
+    examples, recalled, facts = _retrieve_turn_context(
+        user_input="My name is Mark",
+        speaker="mark",
+        retriever=_RaisingRetriever(),  # type: ignore[arg-type]
+        memory_store=_RaisingStore(kind="memory"),  # type: ignore[arg-type]
+        semantic_store=_RaisingStore(kind="semantic"),  # type: ignore[arg-type]
+        top_k=6,
+        memories=3,
+        memories_threshold=0.5,
+        facts=5,
+        facts_threshold=0.45,
+        state=state,
+        warn=warnings.append,
+    )
+    assert examples == []
+    assert recalled == []
+    assert facts == []
+    # No source was touched, so no 'disabled' warning fires either.
+    assert warnings == []
+    # Health flags unchanged — mute is a separate axis from error health.
+    assert state.voice_ok is True
+    assert state.episodic_ok is True
+    assert state.semantic_ok is True
+
+
 def test_retrieve_turn_context_returns_hits_when_healthy() -> None:
     fake_record = object()
     store = _StaticMemoryStore(hits=[(fake_record, 0.9)])

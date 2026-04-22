@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from rich.console import Console
 
     from harness.character import Character
+    from harness.cli import _RetrievalState
     from harness.compaction import CompactionStore
     from harness.model.adapter import ModelAdapter
     from harness.store.bd_adapter import BeadsAdapter
@@ -68,6 +69,10 @@ class ContextMeter:
     scribe_user_id: str | None = field(default=None)
     scribe_lock_dir: Path | None = field(default=None)
     auto_scribe: bool = field(default=True)
+    # Shared per-session retrieval state — `/clear` flips `muted=True`
+    # so prior-session memories stop leaking into the fresh start via
+    # retrieval. Stored data is untouched (harness-zpe).
+    retrieval_state: _RetrievalState | None = field(default=None)
     # /clear sets this to the highest transcript row id at the moment
     # the command ran. `load_history` then returns only rows > cutoff
     # AND ignores any prior compaction summary — the next turn sees
@@ -112,9 +117,17 @@ class ContextMeter:
         """Mark the model-visible history as reset at the current
         transcript tip. Subsequent `load_history` calls return only
         rows appended after this moment until the process exits or
-        `clear_after_id` is explicitly reset."""
+        `clear_after_id` is explicitly reset.
+
+        Also mutes retrieval (voice + episodic + semantic) for the
+        rest of the process when a `retrieval_state` is wired — so
+        prior-session memories can't leak back in via the retriever
+        even though /clear otherwise leaves the stores untouched.
+        See harness-zpe."""
         rows = self.transcript.tail(self.session, limit=1)
         self.clear_after_id = rows[-1].id if rows else 0
+        if self.retrieval_state is not None:
+            self.retrieval_state.muted = True
 
     def measure(self) -> int:
         """Estimate tokens for what the NEXT turn will start with:
