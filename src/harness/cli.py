@@ -2590,6 +2590,65 @@ def memory_ingest() -> None:
         store.close()
 
 
+@memory_app.command("harvest-skills")
+def memory_harvest_skills(
+    status: str = typer.Option(
+        "closed",
+        "--status",
+        help="bd status filter: 'closed' (default — decisions / observations "
+        "that have resolved) or 'all' (include open thoughts; speculative, "
+        "not recommended for routine runs).",
+    ),
+    labels: str | None = typer.Option(
+        None,
+        "--labels",
+        help="Comma-separated list of thought labels to harvest. Defaults to "
+        "'thought:decision,thought:observation'. Use this to run a one-off "
+        "sweep over hypotheses / questions for diagnostic purposes.",
+    ),
+) -> None:
+    """Harvest ab's bd thought-graph into the episodic store as
+    tier='procedural' records so relevant decisions / observations
+    surface on future user turns. Idempotent — re-running after new
+    beads close picks up only the new ones."""
+    from harness.skills import DEFAULT_HARVEST_LABELS, harvest_bd_skills
+
+    character = load_character(settings.character_path)
+    ab_adapter = _maybe_bd_adapter(character, include_internal=True)
+    if ab_adapter is None:
+        console.print(
+            "[red]no bd adapter available — set HARNESS_AB_BD_DIR to ab's "
+            "bd working directory first[/red]"
+        )
+        raise typer.Exit(code=1)
+    store = _open_episodic_store(character)
+    if store is None:
+        console.print("[red]episodic store not enabled[/red]")
+        raise typer.Exit(code=1)
+    try:
+        label_filter = (
+            tuple(lbl.strip() for lbl in labels.split(",") if lbl.strip())
+            if labels
+            else DEFAULT_HARVEST_LABELS
+        )
+        report = harvest_bd_skills(
+            ab_adapter=ab_adapter,
+            episodic=store,
+            labels=label_filter,
+            status=status,
+        )
+        console.print(
+            f"[bold]{report.newly_ingested}[/bold] new, "
+            f"[bold]{report.already_present}[/bold] already present, "
+            f"{report.scanned} matched filter "
+            f"({', '.join(report.labels_filtered)}, status={report.status_filter})."
+        )
+        if report.ingested_ids:
+            console.print(f"[dim]ingested: {', '.join(report.ingested_ids)}[/dim]")
+    finally:
+        store.close()
+
+
 @voice_app.command("capture")
 def _write_voice_capture(
     *,
