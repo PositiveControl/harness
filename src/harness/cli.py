@@ -286,9 +286,7 @@ def _maybe_bd_adapter(
     # to items scoped to its domain (professional/personal) — dev /
     # maintenance beads never carry those labels and so fall out
     # (harness-j7y). Other characters stay unconstrained.
-    scope_allowlist = (
-        ("professional", "personal") if character.name == "airton_b" else None
-    )
+    scope_allowlist = ("professional", "personal") if character.name == "airton_b" else None
     adapter = BeadsAdapter(
         bd_dir,
         default_exclude_assignee=exclude,
@@ -1401,15 +1399,18 @@ def _resolve_adapter(
     character: Character | None = None,
     model_repo: str | None = None,
     lora_path: str | None = None,
+    draft_repo: str | None = None,
 ) -> ModelAdapter:
     # Custom configs bypass the factory and instantiate the adapter
     # directly. --lora-path is MLX-only; --model-repo works for MLX
     # (HF repo) and Ollama (model tag like "gemma4:latest").
     if lora_path and name != "mlx":
         raise typer.BadParameter("--lora-path requires --model mlx.")
+    if draft_repo and name != "mlx":
+        raise typer.BadParameter("--draft-repo requires --model mlx.")
 
     adapter: ModelAdapter
-    if model_repo or lora_path:
+    if model_repo or lora_path or draft_repo:
         if name == "mlx":
             from harness.model.mlx import MLXAdapter
 
@@ -1418,6 +1419,8 @@ def _resolve_adapter(
                 mlx_kwargs["repo"] = model_repo
             if lora_path:
                 mlx_kwargs["adapter_path"] = lora_path
+            if draft_repo:
+                mlx_kwargs["draft_repo"] = draft_repo
             adapter = MLXAdapter(**mlx_kwargs)  # type: ignore[arg-type]
         elif name == "ollama":
             from harness.model.ollama import OllamaAdapter
@@ -1481,6 +1484,15 @@ def chat(
         help="Path to a DIRECTORY produced by `mlx_lm.lora` training (contains "
         "adapter_config.json plus weight files). Applied on top of the base MLX "
         "model. Requires --model mlx.",
+    ),
+    draft_repo: str | None = typer.Option(
+        None,
+        "--draft-repo",
+        help="HF repo of a smaller draft model for MLX speculative decoding "
+        "(e.g. mlx-community/Qwen2.5-0.5B-Instruct-4bit). Must share the "
+        "target model's tokenizer vocab. Typical uplift: 1.5-2x tok/s on "
+        "7B/32B targets. Zero quality loss — output is distribution-identical. "
+        "Defaults to HARNESS_MLX_DRAFT_MODEL_REPO. Requires --model mlx.",
     ),
     persona: bool = typer.Option(
         False,
@@ -1638,6 +1650,7 @@ def chat(
             model=model,
             model_repo=model_repo,
             lora_path=lora_path,
+            draft_repo=draft_repo,
             persona=persona,
             top_k=top_k,
             memories=memories,
@@ -1668,6 +1681,7 @@ def chat(
         model=model,
         model_repo=model_repo,
         lora_path=lora_path,
+        draft_repo=draft_repo,
         persona=persona,
         top_k=top_k,
         memories=memories,
@@ -1723,6 +1737,13 @@ def eval_voice(
         "--lora-path",
         help="LoRA adapter directory (from `mlx_lm.lora` training). Requires --model mlx.",
     ),
+    draft_repo: str | None = typer.Option(
+        None,
+        "--draft-repo",
+        help="HF repo of a smaller MLX draft model for speculative decoding. "
+        "Distribution-preserving throughput boost on 7B/32B targets. "
+        "Defaults to HARNESS_MLX_DRAFT_MODEL_REPO.",
+    ),
     sample: list[str] | None = typer.Option(
         None, "--sample", help="Limit to a specific sample id (repeatable)"
     ),
@@ -1762,7 +1783,9 @@ def eval_voice(
     character = load_character(settings.character_path)
     # eval runs persona inline in run_voice_eval so both passes stay
     # leave-one-out-consistent — do not wrap adapter here.
-    adapter = _resolve_adapter(model, model_repo=model_repo, lora_path=lora_path)
+    adapter = _resolve_adapter(
+        model, model_repo=model_repo, lora_path=lora_path, draft_repo=draft_repo
+    )
     retriever = _maybe_retriever(character, top_k)
 
     results = run_voice_eval(

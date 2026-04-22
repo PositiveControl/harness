@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     # HARNESS_MLX_CACHE_LIMIT_MB; benchmarked per tuning commit under
     # harness-0kw (see bench_results/mlx_cache_*.json).
     mlx_cache_limit_mb: int | None = None
+    # MLX speculative-decoding draft model (HARNESS_MLX_DRAFT_MODEL_REPO).
+    # When set, MLXAdapter loads this smaller same-vocab model alongside
+    # the main model and lets mlx_lm.stream_generate use it as a draft
+    # for speculative decoding. Distribution-preserving — output is
+    # mathematically identical to non-speculative decoding; the only
+    # cost is +~350 MB RAM for a 0.5B Qwen draft vs the default ~1-2x
+    # single-stream throughput gain on 7B/32B targets. Recommended
+    # pairing for the default Qwen2.5 family: mlx-community/Qwen2.5-
+    # 0.5B-Instruct-4bit. None = disabled (MLX default).
+    mlx_draft_model_repo: str | None = None
     # ab (airton_b) data-plane isolation. ab wraps bd as its backing
     # store; its beads DB lives outside the repo so personal tasks
     # don't leak into the harness git history, get a different backup

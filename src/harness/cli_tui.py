@@ -32,6 +32,7 @@ def run_tui(
     model: str,
     model_repo: str | None,
     lora_path: str | None,
+    draft_repo: str | None,
     persona: bool,
     top_k: int,
     memories: int,
@@ -83,6 +84,7 @@ def run_tui(
         character=character,
         model_repo=model_repo,
         lora_path=lora_path,
+        draft_repo=draft_repo,
     )
     retriever = _maybe_retriever(character, top_k)
     memory_store = _open_episodic_store(character) if memories > 0 else None

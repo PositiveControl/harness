@@ -52,6 +52,7 @@ class MLXAdapter:
         adapter_path: str | None = None,
         context_window: int = 131_072,
         cache_limit_mb: int | None = None,
+        draft_repo: str | None = None,
     ) -> None:
         self.repo = repo
         self.adapter_path = adapter_path
@@ -75,8 +76,17 @@ class MLXAdapter:
         self.cache_limit_mb = (
             cache_limit_mb if cache_limit_mb is not None else _settings.mlx_cache_limit_mb
         )
+        # Speculative-decoding draft model. A smaller same-vocab model
+        # (e.g. Qwen2.5-0.5B-Instruct-4bit paired with 7B/32B target)
+        # drafts candidate tokens that the target model verifies in
+        # parallel — distribution-preserving, so output quality is
+        # mathematically identical to non-speculative decoding. Falls
+        # back to Settings.mlx_draft_model_repo (HARNESS_MLX_DRAFT_
+        # MODEL_REPO env) when caller passes None. None = disabled.
+        self.draft_repo = draft_repo if draft_repo is not None else _settings.mlx_draft_model_repo
         self._model: Any | None = None
         self._tokenizer: Any | None = None
+        self._draft_model: Any | None = None
         self._cache_limit_applied: bool = False
 
     def load(self) -> None:
@@ -86,7 +96,13 @@ class MLXAdapter:
         When `adapter_path` is set, mlx_lm applies the LoRA weights on
         top of the base model at load time. `adapter_path` must be a
         DIRECTORY produced by `mlx_lm.lora` training — it should
-        contain `adapter_config.json` plus the weight files."""
+        contain `adapter_config.json` plus the weight files.
+
+        When `draft_repo` is set, also loads a smaller draft model for
+        speculative decoding. The draft must share the main model's
+        tokenizer vocab; mismatched drafts are dropped with a warning
+        rather than raising, so a misconfigured env var doesn't kill
+        the session."""
         if self._model is not None:
             return
         self._apply_cache_limit()
@@ -101,6 +117,44 @@ class MLXAdapter:
             loaded = _load(self.repo)
         self._model = loaded[0]
         self._tokenizer = loaded[1]
+        if self.draft_repo:
+            self._load_draft(_load)
+
+    def _load_draft(self, loader: Any) -> None:
+        """Load the draft model + verify vocab compatibility. On any
+        failure (download error, vocab mismatch) we warn and continue
+        non-speculative — speculative decoding is a throughput
+        optimization, never a correctness requirement."""
+        import warnings
+
+        try:
+            loaded = loader(self.draft_repo)
+        except Exception as exc:
+            warnings.warn(
+                f"draft model {self.draft_repo!r} failed to load "
+                f"({type(exc).__name__}: {exc}); running without "
+                "speculative decoding",
+                stacklevel=3,
+            )
+            return
+        draft_model = loaded[0]
+        draft_tokenizer = loaded[1]
+        # mlx_lm's speculative_generate_step requires the draft and main
+        # to share a tokenizer vocab. Compare vocab sizes as a cheap
+        # proxy — tokenizers that actually agree on ids will have the
+        # same size. A deep equality check would catch more cases but
+        # is overkill for the Qwen-family happy path this targets.
+        main_vocab = getattr(self._tokenizer, "vocab_size", None)
+        draft_vocab = getattr(draft_tokenizer, "vocab_size", None)
+        if main_vocab is not None and draft_vocab is not None and main_vocab != draft_vocab:
+            warnings.warn(
+                f"draft model {self.draft_repo!r} vocab size {draft_vocab} "
+                f"!= main vocab {main_vocab}; running without speculative "
+                "decoding",
+                stacklevel=3,
+            )
+            return
+        self._draft_model = draft_model
 
     def _apply_cache_limit(self) -> None:
         """Apply `self.cache_limit_mb` to MLX's free-cache cap. No-op if
@@ -196,6 +250,7 @@ class MLXAdapter:
             prompt=prompt,
             sampler=sampler,
             max_tokens=max_tokens,
+            draft_model=self._draft_model,
         ):
             if resp.text:
                 yield resp.text
@@ -298,6 +353,7 @@ class MLXAdapter:
             prompt=prompt,
             sampler=sampler,
             max_tokens=max_tokens,
+            draft_model=self._draft_model,
         ):
             delta = resp.text
             if not delta:

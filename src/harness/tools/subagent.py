@@ -131,10 +131,7 @@ class SpawnSubagentTool:
                     },
                     "max_rounds": {
                         "type": "integer",
-                        "description": (
-                            "Hard cap on the subagent's loop rounds. "
-                            "Defaults to 6."
-                        ),
+                        "description": ("Hard cap on the subagent's loop rounds. Defaults to 6."),
                     },
                     "system_prompt": {
                         "type": "string",

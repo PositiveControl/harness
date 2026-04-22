@@ -292,9 +292,7 @@ class ClassicChatSession:
             return True
         label = self.tool_label(call.name)
         summary = _describe_call(call, self.workspace_path)
-        self.console.print(
-            f"[yellow]🔧 Airton wants to [bold]{label}[/bold] — {summary}[/yellow]"
-        )
+        self.console.print(f"[yellow]🔧 Airton wants to [bold]{label}[/bold] — {summary}[/yellow]")
         answer = self.console.input("   approve? [y/N/always]: ").strip().lower()
         if answer == "always":
             self.approved_tools.add(call.name)
@@ -475,6 +473,7 @@ def run_classic_chat(
     model: str,
     model_repo: str | None,
     lora_path: str | None,
+    draft_repo: str | None,
     persona: bool,
     top_k: int,
     memories: int,
@@ -523,6 +522,7 @@ def run_classic_chat(
         character=character,
         model_repo=model_repo,
         lora_path=lora_path,
+        draft_repo=draft_repo,
     )
 
     router: Router | None = None
