@@ -20,19 +20,36 @@ from harness.store.semantic import SemanticStore
 @dataclass
 class _ControlledEmbedder:
     """Returns embeddings taken from a stable dict keyed by input text.
-    Lets tests force specific similarity relationships between records."""
+    Lets tests force specific similarity relationships between records.
+
+    The table keys match the post-contextual-chunking format — the
+    episodic store prepends a `[tier: X; principle: Y; date: Z]`
+    header (harness-2am) before embedding. `_lookup_key` strips that
+    header so test fixtures can key on logical body text without
+    pinning the current date."""
 
     table: dict[str, np.ndarray]
     id: str = "controlled"
     dimension: int = 4
 
+    @staticmethod
+    def _lookup_key(text: str) -> str:
+        # Drop a leading "[...]\n\n" tag header if present so the
+        # table matches on the stable content suffix.
+        if text.startswith("["):
+            end = text.find("]")
+            if end != -1 and text[end + 1 : end + 3] == "\n\n":
+                return text[end + 3 :]
+        return text
+
     def embed(self, texts: Iterable[str]) -> np.ndarray:
         out: list[np.ndarray] = []
         for text in texts:
-            vec = self.table.get(text)
+            key = self._lookup_key(text)
+            vec = self.table.get(key)
             if vec is None:
                 # Default to a stable deterministic vector for unknown text.
-                h = sum(ord(c) for c in text.lower())
+                h = sum(ord(c) for c in key.lower())
                 v = np.array([h % 7, h % 11, h % 13, h % 17], dtype=np.float32)
                 norm = float(np.linalg.norm(v))
                 vec = v / norm if norm > 0 else v

@@ -19,6 +19,45 @@ if TYPE_CHECKING:
 
 SearchMode = Literal["hybrid", "dense", "text"]
 
+
+def _build_embed_text(
+    *,
+    title: str,
+    body: str,
+    principle: str | None,
+    tier: str,
+    created_at_iso: str | None,
+) -> str:
+    """Compose the text that gets fed into the embedder. Prepends a
+    structured tag header so dense-cosine retrieval can match by
+    lesson (`[principle: X]`) or timeframe (`[date: YYYY-MM-DD]`) —
+    the seed-memory frontmatter already carries this metadata, but
+    under the pre-contextual-chunking format it only reached columns,
+    never the embedding. See sota punch #6 / harness-2am.
+
+    Existing installs need one `harness memory rebuild-embeddings`
+    run after this lands: rows embedded under the old format are
+    still valid cosine vectors but don't get the tag-match lift.
+    """
+    tags: list[str] = [f"tier: {tier}"]
+    if principle:
+        tags.append(f"principle: {principle}")
+    if created_at_iso:
+        # ISO 8601 splits at T between date and time; keep only the
+        # date — hour/minute/second noise rarely helps retrieval and
+        # fights tokenization on small embedders.
+        tags.append(f"date: {created_at_iso.split('T')[0]}")
+    header = "[" + "; ".join(tags) + "]"
+    parts: list[str] = [header, title]
+    # Keep principle as a standalone line so it contributes to the
+    # embedding semantically (full-sentence phrasing) in addition to
+    # the structured tag.
+    if principle:
+        parts.append(principle)
+    parts.append(body)
+    return "\n\n".join(parts)
+
+
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS episodic (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,13 +215,13 @@ class EpisodicStore:
                 return self.get(existing[0])
 
         now = datetime.now(UTC).isoformat()
-        # Embed title + principle + body — so searches on the lesson or
-        # the title hit too, not just the narrative body.
-        parts = [title]
-        if principle:
-            parts.append(principle)
-        parts.append(body)
-        content = "\n\n".join(parts)
+        content = _build_embed_text(
+            title=title,
+            body=body,
+            principle=principle,
+            tier=tier,
+            created_at_iso=now,
+        )
         vec = self.embedder.embed([content])[0].astype(np.float32)
 
         cur = self._conn.execute(
@@ -488,22 +527,27 @@ class EpisodicStore:
         old model. Returns (rows_updated, rows_skipped). Skipped rows
         are superseded ones; no point re-embedding retired data."""
         cur = self._conn.execute(
-            """SELECT id, title, body, principle FROM episodic
+            """SELECT id, title, body, principle, tier, created_at FROM episodic
                WHERE superseded_by IS NULL ORDER BY id"""
         )
         rows = cur.fetchall()
         if not rows:
             return 0, 0
-        texts: list[str] = []
-        for _id, title, body, principle in rows:
-            parts = [title]
-            if principle:
-                parts.append(principle)
-            parts.append(body)
-            texts.append("\n\n".join(parts))
+        texts = [
+            _build_embed_text(
+                title=title,
+                body=body,
+                principle=principle,
+                tier=tier,
+                created_at_iso=created_at,
+            )
+            for _id, title, body, principle, tier, created_at in rows
+        ]
         vectors = self.embedder.embed(texts)
         updated = 0
-        for (record_id, _title, _body, _principle), vec in zip(rows, vectors, strict=True):
+        for (record_id, _title, _body, _principle, _tier, _created_at), vec in zip(
+            rows, vectors, strict=True
+        ):
             self._conn.execute(
                 """UPDATE episodic
                       SET embedding = ?, embedder_id = ?, embedding_dim = ?
