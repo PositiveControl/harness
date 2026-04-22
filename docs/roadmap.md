@@ -2,27 +2,35 @@
 
 Living document. Authoritative architecture + commands reference is `CLAUDE.md`; daily-use workflow is `docs/usage.md`. This file tracks phase sequencing and open questions.
 
-## Where we are (2026-04-17)
+## Where we are (2026-04-22)
 
 **Working end-to-end**:
 
-- Chat with Airton locally via MLX-hosted Qwen 2.5 (7B default for dev speed; 32B available via `--model-repo`), swappable to any MLX HF repo, or to Ollama via `--model ollama`.
+- Chat with Airton locally via MLX-hosted Qwen 2.5 (7B default for dev speed; 32B available via `--model-repo`), swappable to any MLX HF repo, or to Ollama via `--model ollama`. Optional speculative decoding via `--draft-repo` — distribution-preserving, typical 1.5–2× tok/s uplift (`harness-5zv`).
 - Optional LoRA adapter on top of the base MLX model (`--lora-path`) — plumbed through chat / eval / scribe.
 - Voice-rewrite post-pass keeps Airton's register on responses the base model would otherwise drift on.
-- Episodic and semantic memory: seed + scribe-written + consolidator-promoted tiers, all retrieval-indexed with mxbai-embed-large-v1 (1024 dim).
-- Per-user relationship scoping — Alice can't see Bob's private memories; shared seeds reach everyone.
+- Episodic and semantic memory: seed + working + consolidated + procedural tiers (procedural = bd thought-graph harvest, `harness-vu3`), all retrieval-indexed. Default embedder `BAAI/bge-small-en-v1.5` (384 dim, ~130 MB) with mxbai-embed-large-v1 one env export away.
+- **Hybrid retrieval**: `search(mode="hybrid"|"dense"|"text")` on both stores fuses FTS5 BM25 with dense cosine via reciprocal-rank fusion (`harness-hda`). Identifier-heavy queries stop losing to semantic smoothing.
+- **Contextual chunking** on episodic (`harness-2am`): `[tier: X; principle: Y; date: Z]` tag header in the embed text so retrieval can match by lesson/timeframe. Needs one `rebuild-embeddings` pass for pre-refactor rows.
+- **Temporal validity** on facts (`harness-kr2`): `valid_from` / `valid_to` / `asserted_at` columns + `as_of` search filter.
+- Per-user relationship scoping — Alice can't see Bob's private memories; shared seeds + procedural harvest reach everyone.
 - Corpus growth: `harness voice capture` turns a corrected reply into a new voice sample; the loader picks it up on next start; retrieval surfaces it on similar future prompts.
-- **Tool use (Phase 3)**: `--tools` hands the model 17 built-in tools across filesystem read (`read_file`, `list_dir`, `grep`, `glob`), filesystem write (`edit_file`, `write_file`, `shell`), git read (`git_status`, `git_diff`, `git_log`), memory (`search_memory`, `search_facts`, `remember_fact`, `remember_event`, `scribe_session`, `consolidate_memory`), and web (`search_web`). Named profiles (`minimal` / `core` / `coding` / `memory` / `diagnostic` / `research`) group them by use case; escape hatches `--tools-add` / `--tools-drop`. The orchestrator runs the tool-call loop, confirms write-tier tools once per session, streams tokens, renders a context meter, auto-compacts older turns, short-circuits duplicate calls, catches fabricated tool-call successes / bare tool-intent / meta-confirm, and caps wrap-up rounds. Filesystem + git tools are sandboxed to `--workspace`.
+- **Tool use (Phase 3)**: `--tools` hands the model 20 built-in tools across filesystem read (`read_file`, `list_dir`, `grep`, `glob`), filesystem write (`edit_file`, `write_file`, `shell`), git read (`git_status`, `git_diff`, `git_log`), memory (`search_memory`, `search_facts`, `remember_fact`, `remember_event`, `scribe_session`, `consolidate_memory`), web (`search_web`, `fetch_url`), self-introspection (`introspect`), and meta (`spawn_subagent`). Named profiles (`minimal` / `core` / `coding` / `memory` / `diagnostic` / `research` / `ops` / `full`) group them; escape hatches `--tools-add` / `--tools-drop`. The orchestrator runs the tool-call loop; fabrication catchers live in a typed hook pipeline (`harness-9sr`). Filesystem + git tools are sandboxed to `--workspace`. Optional post-tool summarizer (`--summarize-tool-results`) compresses high-noise output before it hits context (`harness-zoz`).
 - **Intent router**: `--router` fronts the tool loop with a small model (default `mlx-community/Hermes-3-Llama-3.2-3B-4bit`). `--router-mode free` does tolerant JSON parsing; `--router-mode grammar` does JSON-schema-constrained decoding via `outlines`. Advisory: `null` / write-tier / unparseable router results fall through. `harness eval router` scores tool-selection accuracy against a YAML fixture.
-- **Textual TUI**: `--tui` launches a full chat app — persistent input, scrolling RichLog, live ctx + elapsed footer, inline tool-loop event rendering, token-delta streaming, write-tier confirmation modal, history replay on mount, `/exit` + `:q` slash commands. Behind the optional `tui` extra.
+- **Textual TUI**: `--tui` launches a full chat app — persistent input, scrolling RichLog, live ctx + elapsed footer, inline tool-loop event rendering, token-delta streaming, write-tier confirmation modal, history replay on mount, `/exit` + `:q` + `/clear` + `/retro` slash commands. Behind the optional `tui` extra.
 - **Voice-capture ergonomics**: in-chat `/edit` / `/capture` opens `$EDITOR` on the last reply; saving captures a new voice sample without leaving the session.
-- Robustness hardening: scribe `fcntl` session lock (no overlapping scribe runs corrupting the watermark); `PRAGMA busy_timeout = 5000` across all SQLite stores; HF/transformers/ST startup noise suppressed; Ollama adapter supports tool calls + token streaming; stream-level meta-confirm filter gated behind `--dev`.
+- **Self-introspection**: `introspect` read-tier tool reports active tools, model + window, memory stats, character surface, CLI commands, session start — so the agent stops hallucinating its own capabilities.
+- **Ab thought-graph on bd**: bd doubles as ab's working-memory substrate (`airton_b` assignee). Closed `thought:decision` / `thought:observation` beads auto-harvest to episodic-procedural at session start (`--harvest-skills`, default on).
+- **/clear is actually clear** (`harness-zpe`): transcript cutoff + retrieval mute, so a "my name is Mark" after `/clear` doesn't rehydrate last session's memories.
+- Robustness hardening: scribe `fcntl` session lock (no overlapping scribe runs corrupting the watermark); `PRAGMA busy_timeout = 5000` across all SQLite stores; HF/transformers/ST startup noise suppressed; Ollama adapter supports tool calls + token streaming; stream-level meta-confirm filter gated behind `--dev`; compaction auto-scribes unprocessed turns before folding so memory survives the summary (`harness-0kw`).
 - Validated end-to-end: the "junior asks for the fix" and "transceiver bug" validation turns both reproduced seed-memory specifics; the onboarding prompt demonstrated corpus growth fixing a previously-generic response.
-- ~470 tests green under ruff + mypy strict + pre-commit.
+- ~1,000 tests green under ruff + mypy strict + pre-commit.
 
 **What you can't do yet**: talk to Airton from anywhere but a terminal on the M4. No always-on daemon, no gateway, no multi-agent roles.
 
-**Captured voice corpus** (as of this refresh): 32 canonical + 1 captured. Most LoRA voice lift needs more capture — aim for ~50 captured before pulling the Tier-3 LoRA trigger.
+**Captured voice corpus** (as of this refresh): 32 canonical + small captured set. Most LoRA voice lift needs more capture — aim for ~50 captured before pulling the Tier-3 LoRA trigger.
+
+**Recent reference doc**: `docs/sota-comparison.md` (`harness-d91`, 2026-04-21) — SOTA landscape + upgrade plan that scoped Phase 3.7's punches. Worth rereading before picking the next thrust.
 
 ## Phases landed
 
@@ -41,6 +49,21 @@ Living document. Authoritative architecture + commands reference is `CLAUDE.md`;
 - **Phase 3.2 — Tool expansion + orchestrator hardening.** Grew from 5 to 17 tools: filesystem read trio (`list_dir`, `grep`, `glob`), partial-file `edit_file` (empty `old_string` = append), `write_file` now refuses overwrite by default (nudges toward `edit_file`), git read (`git_status`, `git_diff`, `git_log`), memory write (`remember_fact`, `remember_event`, `scribe_session`, `consolidate_memory`), web (`search_web` — DuckDuckGo HTML, stdlib only). Tool-set profiles (`minimal` / `core` / `coding` / `memory` / `diagnostic` / `research`) with `--tool-set`, `--tools-add`, `--tools-drop`. Orchestrator catches fabricated tool-call success, fabricated search results, bare tool-intent with no call, numbered-list quoted snippets, paired meta-confirm; caps wrap-up rounds (default 384 tokens) with widened cap on truncated recovery; short-circuits duplicate calls within a turn. `consolidate` partitions by user_id before clustering. Stream-level meta-confirm filter + pre-validated approve UX (dev markers gated behind `--dev`). Structured loading header shows every active flag. In-chat `/edit` slash command for voice capture.
 - **Phase 3.3 — Intent router.** `Router` protocol + `ModelRouter` (free-form JSON + tolerant parse, tool-name + arg validation, system prompt with null rubric + few-shots) + `GrammarRouter` (JSON-schema-constrained decoding via `outlines` and MLX, warn-once fallback on failure). `--router`, `--router-repo`, `--router-mode` flags; default repo `mlx-community/Hermes-3-Llama-3.2-3B-4bit`. `harness eval router` fixture-based accuracy scoring; `scripts/` router-on-vs-off benchmark with RAM tracking. `outlines` pinned `<1.0` with the `datasets` transitive pin. Grammar extra in `pyproject.toml`.
 - **Phase 3.4 — Textual TUI.** Seven-phase build: scaffold → adapter + persona + retrieval wiring → live metrics footer → tool loop + inline event rendering → token-delta streaming into RichLog → write-tier confirmation modal → history replay on mount + `/exit` / `:q` slash commands. Behind the optional `tui` extra and `--tui` flag; classic REPL untouched.
+- **Phase 3.5 — Self-introspection.** Single read-tier `introspect` tool with `scope ∈ {tools, model, memory, character, commands, session, all}`. Ships in `core` / `coding` / `diagnostic`. CLI commands enumerated from the Typer app with a pinning test so the output can't drift.
+- **Phase 3.6 — Ab thought-graph on bd.** bd as ab's working-memory substrate. `assignee=airton_b`, single-focus invariant, per-turn + in-flight caps, stall escalation on 3x defer, shorter drift horizon, `--include-internal` surfacing, `build_resume_summary` at start + post-compaction, `/retro` on demand + on session end. Fixture-backed `harness eval session-resume` pins the summary contract.
+- **Phase 3.7 — SOTA upgrade sweep** (April 2026). Punches landed as independent commits:
+  - *Hook pipeline refactor* (`harness-9sr`) — typed four-phase pipeline in `orchestrator/hooks.py`. No behavior change; sets the stage for the summarizer hook below.
+  - *Hybrid retrieval* (`harness-hda`) — FTS5 sidecars + RRF fusion on episodic + semantic. `mode="hybrid"` default.
+  - *Contextual chunking* (`harness-2am`) — tag-header prefix in episodic embed text.
+  - *Temporal-validity facts* (`harness-kr2`) — `valid_from` / `valid_to` / `asserted_at` + `as_of` search.
+  - *Tool-result summarizer hook* (`harness-zoz`) — `--summarize-tool-results` opts in.
+  - *MLX speculative decoding* (`harness-5zv`) — `--draft-repo` / `HARNESS_MLX_DRAFT_MODEL_REPO`.
+  - *`spawn_subagent`* (`harness-qxr`) — depth-1 read-only meta-tool over parent's adapter + hooks.
+  - *`fetch_url`* (`harness-3zs`) — stdlib HTTPS + boilerplate strip.
+  - *bd skill harvest* (`harness-vu3` + `harness-j5b`) — closed `thought:decision` / `thought:observation` → episodic `procedural`.
+  - *Compaction auto-scribe* (`harness-0kw`) — scribe before folding.
+  - */clear mutes retrieval* (`harness-zpe`) — transcript + memory cutoff aligned.
+- **Voice-capture ergonomics.** In-chat `/edit` / `/capture` opens `$EDITOR` on the last reply; saving captures a new sample.
 
 ## Voice durability — the permanent path
 

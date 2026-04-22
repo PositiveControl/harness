@@ -23,6 +23,15 @@ Other useful options:
 - `--speaker NAME` — who you are. Defaults to `mark`. Determines whose relationship memory this session belongs to.
 - `--chain-rewrites` — add a second concrete-substitution rewrite pass. More Airton, 1.5× latency.
 - `--memories-threshold 0.5` / `--facts-threshold 0.45` — tune the similarity floors. Lower = more permissive.
+- `--draft-repo mlx-community/Qwen2.5-0.5B-Instruct-4bit` — turn on MLX speculative decoding. ~1.5–2× tok/s, bit-identical output, +~350 MB RAM. Draft must share the target's tokenizer vocab; mismatched drafts fall back with a warning. Also via `HARNESS_MLX_DRAFT_MODEL_REPO`.
+- `--summarize-tool-results` — when tools are on, compress grep / list_dir / search_web / fetch_url output above ~1 KB before the main model reads it. Paths and identifiers are preserved verbatim. Big win on 7B-with-noisy-tool-output turns.
+- `--no-harvest-skills` — opt out of the session-start bd thought-graph harvest. By default, closed `thought:decision` / `thought:observation` beads are pulled into episodic-procedural memory so past decisions can surface on future turns.
+
+In-chat slash commands:
+
+- `/edit` (alias `/capture`) — reopen Airton's last reply in `$EDITOR` to capture a voice correction.
+- `/clear` — pin a cutoff for the current process: further turns don't see earlier transcript, voice retrieval, episodic memory, or semantic facts. Process-ephemeral — restart to re-enable retrieval. Stored data is untouched. Use this when you want a fresh conversation that doesn't bleed in from the last one.
+- `/retro` — run ab's retrospective tool on demand. Also fires automatically on `/exit`, `:q`, or Ctrl-C.
 
 ## What's happening behind each turn
 
@@ -78,13 +87,15 @@ To supersede an existing fact, run `fact-add` with the new version then let the 
 
 ## Memory that compounds through use
 
-Right now memory does NOT auto-update during chat. The transcript logs everything, but extraction is a deliberate step:
+Memory extraction is a deliberate step during normal chat — you run the scribe when you want the transcript turned into episodic / semantic rows:
 
 ```
 uv run harness memory scribe --session <session> --user mark --model mlx
 ```
 
 The scribe reads unprocessed transcript turns for that session, asks Qwen to extract episodic summaries and atomic facts, writes them to the working tier. Watermark-tracked — reruns are incremental.
+
+**One exception**: compaction now auto-scribes. When the context meter crosses `--compact-at` (default 80 %) and memory/semantic stores are wired, unprocessed turns are scribed *before* the summarizer folds them — so `search_memory` can still answer "what did we talk about" after the transcript compresses. Disable with `--no-auto-scribe`.
 
 After a few scribe runs, the working tier accumulates. To clean it up (merge near-duplicates, pick canonical versions):
 
@@ -176,9 +187,10 @@ Common failure modes:
 ## Known limits
 
 - Chat is interactive-only. No web, Slack, or Matrix yet.
-- Memory doesn't auto-scribe; you run `memory scribe` manually (or call `scribe_session` as a tool if `--tool-set memory`).
+- Memory scribe is still user-triggered during normal chat (`memory scribe`, or `scribe_session` as a tool with `--tool-set memory`). Compaction is the one path that auto-scribes — see above.
 - Voice only covers prompts near existing samples. Off-piste prompts regress to Qwen's default register until you capture them.
 - No backup destination set — local only, no off-box copies yet.
+- `fetch_url` / `search_web` cross the Tailscale trust boundary. They're in the `research` and `coding` profiles only, never in `core` — air-gapped sessions stay air-gapped by default.
 
 ## Suggested first session
 

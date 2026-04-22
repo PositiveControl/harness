@@ -26,6 +26,9 @@ Daily chat (see `docs/usage.md` for the intended workflow):
 - `uv run harness chat --model mlx --persona --tui` — launch the Textual chat app instead of the classic REPL: persistent input at the bottom, scrolling RichLog above, live context + elapsed metrics footer, write-tier confirmation modal, history replay on mount, `/exit` + `:q` slash commands. Requires `--extra tui`.
 - `uv run harness chat --model mlx --model-repo mlx-community/Qwen2.5-Coder-32B-Instruct-4bit --persona` — override the default model repo. Works for `chat`, `eval voice`, and `memory scribe`.
 - `uv run harness chat --model mlx --lora-path ./adapters/airton --persona` — apply a LoRA adapter (directory from `mlx_lm.lora`) on top of the base MLX model.
+- `uv run harness chat --model mlx --draft-repo mlx-community/Qwen2.5-0.5B-Instruct-4bit --persona` — enable MLX speculative decoding with a smaller draft model. Distribution-preserving (bit-identical output); typical 1.5–2× tok/s uplift on 7B/32B targets for ~+350 MB RAM. Draft must share the target's tokenizer vocab; mismatched drafts are dropped with a warning. Defaults to `HARNESS_MLX_DRAFT_MODEL_REPO`.
+- `uv run harness chat --model mlx --persona --tools --summarize-tool-results` — compress high-noise tool outputs (grep / list_dir / search_web / fetch_url) above ~1 KB before the main model sees them. Preserves identifiers, paths, and line numbers verbatim. Uses the router adapter when `--router` is on, otherwise builds a small MLX adapter from `--router-repo`.
+- `uv run harness chat --model mlx --persona --no-harvest-skills` — opt out of the session-start bd thought-graph harvest (on by default). Harvest pulls closed `thought:decision` / `thought:observation` beads from ab's bd store into episodic tier=`procedural`; idempotent so re-running is cheap.
 - `uv run harness chat --model ollama --model-repo qwen2.5-coder:32b-instruct --persona` — Ollama backend.
 - `uv run harness chat` — echo-adapter dry run (no model, just wiring).
 - `uv run harness describe` — dump Airton's resolved character sheet.
@@ -46,7 +49,8 @@ Memory operations:
 - `uv run harness memory fact-add SUBJECT PREDICATE OBJECT [--user NAME]` — manual fact insert (shared if `--user` unset).
 - `uv run harness memory scribe --session X --user NAME --model mlx` — batch-extract candidate memories from the session's unprocessed turns.
 - `uv run harness memory consolidate` — cluster near-duplicate episodes, merge fact groups by `(subject, predicate)`, supersede the losers.
-- `uv run harness memory rebuild-embeddings` — re-embed all active rows with the current embedder. Non-destructive; use after an embedder switch.
+- `uv run harness memory harvest-skills` — run the bd thought-graph → episodic `procedural` harvester on demand. Chat sessions do this at startup when `--harvest-skills` is on (the default); this command is for ad-hoc backfills or custom label sets.
+- `uv run harness memory rebuild-embeddings` — re-embed all active rows with the current embedder. Non-destructive; use after an embedder switch. Also the remediation for older rows embedded before contextual chunking (`harness-2am`) landed.
 - `uv run harness memory wipe --yes` — clear episodic + semantic + scribe-watermark data (transcripts preserved).
 
 Voice + persona evals:
@@ -74,7 +78,7 @@ Quality gates (all must stay green; pre-commit runs them on every commit):
 - `uv run ruff check .` — lint.
 - `uv run ruff format .` — format in place.
 - `uv run mypy src tests` — strict type-check (src + tests).
-- `uv run pytest` — full test suite (currently ~780 tests).
+- `uv run pytest` — full test suite (currently ~1,000 tests across 62 files).
 - `uv run pytest tests/test_character.py::test_load_airton_shape` — single test.
 - `uv run pre-commit run --all-files` — run all hooks against the working tree.
 
@@ -104,44 +108,48 @@ Load-bearing invariants — they shape almost every decision:
   - `model/` — adapter boundary. Anything model-specific lives here and nowhere else.
     - `adapter.py` — `ChatMessage` + `ModelAdapter` protocol (including `complete_with_tools` for tool-use).
     - `echo.py` — deterministic adapter for wiring tests.
-    - `mlx.py` — MLX-backed adapter (Qwen 2.5 7B Instruct 4-bit by default; 32B / Qwen2.5-Coder available via `--model-repo`). Streams tokens. Accepts `model_repo` and `lora_path` overrides. Lazy load.
+    - `mlx.py` — MLX-backed adapter (Qwen 2.5 7B Instruct 4-bit by default; 32B / Qwen2.5-Coder available via `--model-repo`). Streams tokens. Accepts `model_repo`, `lora_path`, and `draft_repo` overrides. Optional speculative decoding via a smaller draft model (`--draft-repo`) — vocab-compatibility checked at load time, silent fallback to non-speculative on mismatch. Lazy load.
     - `ollama.py` — Ollama-backed adapter with tool-call + token-streaming support. Model tag via `model_repo`.
-    - `factory.py` — `make_adapter("echo" | "mlx" | "ollama", model_repo=, lora_path=)`. Backends imported lazily.
+    - `factory.py` — `make_adapter("echo" | "mlx" | "ollama", model_repo=, lora_path=, draft_repo=)`. Backends imported lazily.
   - `persona/rewriter.py` — `PersonaAdapter` wraps a base adapter with a voice-rewrite post-pass. Optional chain-of-rewrite (`chain_rewrites=True`) adds a second concrete-substitution pass. Off by default when a turn used tools (`rewrite_on_tools=False`) — rewriter compresses, which is wrong for investigate/summarize replies.
   - `retrieval/` — embedding-backed similarity search.
     - `embed.py` — `Embedder` Protocol. Implementations return L2-normalized vectors so cosine similarity is a dot product.
     - `st_embedder.py` — `SentenceTransformersEmbedder`; default from `Settings.embedder_repo` (currently `BAAI/bge-small-en-v1.5`, 384 dim, ~130 MB, MPS on Mac). Override via `HARNESS_EMBEDDER_REPO` env or ctor arg. Previous heavier default `mixedbread-ai/mxbai-embed-large-v1` (1024 dim, ~1.3 GB) is one env export away. bge-small matched mxbai within noise on voice eval (0.9124 vs 0.9117) at 10 % of the RAM.
     - `voice_retriever.py` — embeds all voice samples once on construction; `top_k(query, k=, exclude_ids=)`.
-  - `store/` — persistent stores (SQLite + BLOB embeddings + cosine scan). Graduate to LanceDB when past ~10k rows.
+  - `store/` — persistent stores (SQLite + BLOB embeddings + cosine scan + FTS5 sidecar for BM25). Graduate to LanceDB when past ~10k rows.
     - `transcript.py` — append-only transcript (WAL + FTS5). `fetch_after(session, after_id=)` for scribe.
-    - `episodic.py` — `EpisodicStore`: title / body / principle / tags / tier / source / user_id / `superseded_by` + embedding BLOB. Tiers: `seed` · `consolidated` · `working`.
-    - `semantic.py` — `SemanticStore`: `(subject, predicate, object)` triples with confidence, provenance, tier, `supersedes`, `superseded_by`.
-    - Both stores carry `embedder_id` + `embedding_dim` per row; search filters mismatched dims so a new embedder doesn't crash. `rebuild_embeddings()` migrates in place.
+    - `episodic.py` — `EpisodicStore`: title / body / principle / tags / tier / source / user_id / `superseded_by` + embedding BLOB + FTS5 sidecar. Tiers: `seed` · `consolidated` · `working` · `procedural` (bd thought-graph harvest, `harness-vu3`). Embed text is contextually chunked (`harness-2am`): a `[tier: X; principle: Y; date: Z]` tag header is prepended so dense-cosine retrieval can match by lesson or timeframe, not just content words.
+    - `semantic.py` — `SemanticStore`: `(subject, predicate, object)` triples with confidence, provenance, tier, `supersedes`, `superseded_by`, plus temporal-validity columns `valid_from` / `valid_to` / `asserted_at` (`harness-kr2`). Search accepts `as_of=datetime` — rows where `valid_from > as_of` or `valid_to <= as_of` are filtered out so historical queries don't surface expired facts.
+    - `_hybrid.py` — reciprocal-rank fusion + FTS5 query sanitization. Both stores expose `search(..., mode="hybrid"|"dense"|"text")` with hybrid as the default (`harness-hda`); identifier-heavy queries (`BeadsAdapter.get_focus`, emails, error strings) that dense cosine smooths over get lexical lift from BM25.
+    - Both stores carry `embedder_id` + `embedding_dim` per row; search filters mismatched dims so a new embedder doesn't crash. `rebuild_embeddings()` migrates in place — run this after an embedder switch AND after the contextual-chunking refactor so old rows get the tag-header uplift.
     - All stores set `PRAGMA busy_timeout = 5000` so concurrent writes wait instead of erroring.
   - `scribe/` — batch extraction from transcript to memory stores.
     - `extractor.py` — `extract_candidates(adapter, character, turns)`; strict-JSON rubric, tolerates markdown fences + garbage.
     - `runner.py` — `run_scribe(..., user_id=)`; watermark-tracked per session; non-overlapping windows.
     - `locks.py` — `fcntl`-based per-session lock so concurrent scribe runs on the same session serialize instead of racing the watermark.
   - `consolidate/consolidator.py` — `run_consolidation(episodic, semantic)`. Episodic partitions by `user_id` then single-link clusters at cosine ≥ 0.80 within each partition, picking most-recent as representative. Semantic groups by `(user_id, subject, predicate)` with the subject/predicate case-folded, picking highest-confidence-then-recent. Shared rows (`user_id IS NULL`) form their own partition — never merged with private memory. Originals marked `superseded_by → new_id`; retrieval filters them out.
+  - `skills/harvester.py` — idempotent harvester from ab's bd thought-graph into episodic tier=`procedural`. `harvest_bd_skills()` scans closed `thought:decision` / `thought:observation` beads, uses `external_id = bead_id` so reruns are free on already-ingested rows. Prefixes bodies with `DECISION:` / `OBSERVATION:` and sets the `principle` column so retrieval can surface them by thought type. Shared (`user_id IS NULL`) — ab's thoughts reach every speaker. Invoked at session start via `_maybe_harvest_skills` in `cli.py` when `--harvest-skills` (default on); on-demand via `harness memory harvest-skills`.
   - `compaction/` — context-window management.
     - `store.py` — persists per-session compaction summaries so reruns don't re-summarize unchanged history.
     - `summarizer.py` — folds older turns into a single session summary using the same adapter.
     - `runner.py` — `maybe_compact(messages, tokens_used, window, compact_at, keep_recent)`; fires when the context meter crosses `--compact-at` (default 0.8 of the window) and leaves `--compact-keep-recent` turns verbatim. When `--auto-scribe` is on (default) and both memory/semantic stores are wired, it scribes unprocessed turns into episodic + semantic memory *before* the summarizer folds them — so `search_memory` can still answer "what did we talk about" after the transcript compresses (harness-0kw).
-  - `tools/` — built-in tools for the agent loop. Currently 18 tools across filesystem, shell, git, memory, web, and self-introspection domains.
-    - `base.py` — `Tool` protocol + `ToolResult`; tools declare schema, execute given a workspace-scoped context, return content + optional metadata. Write-tier tools are marked and trigger per-session user confirmation.
-    - `profiles.py` — named tool-set profiles (`minimal`, `core`, `coding`, `memory`, `diagnostic`, `research`) that group tools by use case. `resolve_tool_names(profile, add=, drop=)` returns the final set. Profiles may list forward-compatible names that don't exist yet; the CLI warns + skips. Each profile targets ≤ ~1,500 tokens of schema overhead.
+  - `tools/` — built-in tools for the agent loop. Currently 20 tools across filesystem, shell, git, memory, web, self-introspection, and meta domains.
+    - `base.py` — `Tool` protocol + `ToolResult`; tools declare schema (including the `high_noise` flag that opts a tool into the summarizer hook), execute given a workspace-scoped context, return content + optional metadata. Write-tier tools are marked and trigger per-session user confirmation.
+    - `profiles.py` — named tool-set profiles (`minimal`, `core`, `coding`, `memory`, `diagnostic`, `research`, `ops`, `full`) that group tools by use case. `resolve_tool_names(profile, add=, drop=)` returns the final set. Profile names in `add`/`drop` expand to the profile's members. Profiles may list forward-compatible names that don't exist yet; the CLI warns + skips. Each profile targets ≤ ~1,500 tokens of schema overhead (except `full`, which overshoots by design for power users who prefer to prune).
     - Filesystem read: `read_file.py`, `list_dir.py`, `grep.py`, `glob.py`.
     - Filesystem write: `edit_file.py` (partial edits; empty `old_string` = append), `write_file.py` (refuses overwrite by default; nudges toward `edit_file`), `shell.py`. All sandboxed to `--workspace`.
     - Git read: `git.py` — `git_status`, `git_diff`, `git_log`.
     - Memory read: `search_memory.py`, `search_facts.py` — scoped to the speaker.
     - Memory write: `remember.py` — `remember_fact`, `remember_event`. Ops: `ops.py` — `scribe_session`, `consolidate_memory`.
-    - Web read: `search_web.py` — stdlib DuckDuckGo HTML scrape.
+    - Web read: `search_web.py` — stdlib DuckDuckGo HTML scrape. `fetch_url.py` — HTTPS GET + boilerplate-stripped HTML → text (stdlib `html.parser`; skips script/style/nav/chrome; prefers `<article>`/`<main>`; 2 MB response cap, 10s/30s timeout, HTML-only). Ships in `research` and `coding` profiles only — it crosses the trust boundary (`harness-3zs`).
     - Self-introspection: `introspect.py` — single read-tier tool with `scope` enum (`tools`/`model`/`memory`/`character`/`commands`/`all`) that describes the agent's own loaded tools, active model + context window, memory stats, character surface, and CLI commands so the agent stops hallucinating its own capabilities. CLI commands enumerated at wiring time via `cli_introspect.list_cli_commands` (pinning test guards drift).
+    - Meta: `subagent.py` — `spawn_subagent` opens a fresh `run_tool_loop` pass over the parent's adapter + hooks with a caller-chosen read-tier subset of tools (`harness-qxr`). Max depth 1 (ContextVar-scoped + registry exclusion), read-only (write tools filtered out), shared hooks so fabrication catchers fire in the child, isolated context (parent history is never leaked). Returns the child's final reply verbatim; good for "investigate and summarize" without polluting the parent's context with 40 grep results.
   - `router/` — small-model intent router that fronts the tool loop.
     - `intent.py` — `Router` protocol + `RouterResult`. Advisory: `null` / write-tier / unparseable intents fall through to the main loop.
     - `model_router.py` — free-form JSON router (tolerant parse, tool-name + arg validation against the active tool set). System prompt has few-shots + a null rubric.
     - `grammar_router.py` — JSON-schema-constrained decoding via `outlines` and MLX. Guarantees valid output + valid tool name by construction; costs ~1 GB RAM for the FSM. Warns once and falls back to free mode if outlines is missing or the schema fails.
-  - `orchestrator/tool_loop.py` — runs the adapter's `complete_with_tools` loop: model → tool calls → execute → feed results back → repeat until no more tool calls. Handles display labels, token counting, streaming, retrieval degradation (skips retrieval when a tool run is clearly on rails), duplicate-call short-circuit, wrap-up cap (default 384 tokens) with a widened cap on truncated recovery, and hallucination catchers (fabricated tool-call success, fabricated search results, bare tool-intent with no call, quoted-snippet numbered lists, paired meta-confirm).
+  - `orchestrator/tool_loop.py` — runs the adapter's `complete_with_tools` loop: model → tool calls → execute → feed results back → repeat until no more tool calls. Handles display labels, token counting, streaming, retrieval degradation (skips retrieval when a tool run is clearly on rails), wrap-up cap (default 384 tokens) with a widened cap on truncated recovery. The actual fabrication defenses live in the hook pipeline (see next bullet); the loop just dispatches to it.
+  - `orchestrator/hooks.py` — typed hook pipeline for the orchestrator (`harness-9sr`). Four phases: `post_model` (runs on every reply; `PairedMetaConfirmStripHook` strips narrative when a reply also carries a valid tool call), `bail` (runs on zero-tool-calls replies; first-match-wins over `Truncated` · `Unparseable` · `Teaser` · `FalseSuccess` · `MetaConfirm` · `FabricatedSearch` · `FabricatedItemization` · `AbFabrication` · `ToolIntent`), `pre_tool` (`DuplicateCall` short-circuits repeat args, then `ArgumentGrounding` checks), `post_tool` (opt-in `ToolResultSummarizerHook` compresses high-noise tool output when `--summarize-tool-results` is on — `harness-zoz`), `finalize` (`FabricationFallbackHook` replaces lingering fabricated replies with a canned refusal instead of leaking hallucinated "answers"). Hooks are individually toggleable via the `disabled: frozenset[str]` argument threaded through the pipeline — used by `harness.evals.tool_loop` to measure per-catcher attribution.
   - `tui/` — Textual chat app (optional, behind the `tui` extra and `--tui` flag).
     - `chat_app.py` — scaffold → live adapter wiring → streaming RichLog → tool-loop inline event rendering → live ctx + elapsed footer → write-tier confirmation modal → history replay on mount + `/exit` / `:q` slash commands.
     - `confirm_screen.py` — modal screen that asks for write-tier confirmation.
@@ -150,9 +158,9 @@ Load-bearing invariants — they shape almost every decision:
     - `voice_score.py` — heuristic scorer: length / openers / bullet-discipline / bullet-density / filler. Aggregate is the mean.
     - `voice_judge.py` — LLM-as-judge; parses 1-10 from the adapter.
     - `router.py` — fixture-based router eval: loads `character/<name>/router_eval.yaml`, runs each prompt through the router, scores tool-name accuracy + arg-shape match.
-  - `cli.py` — Typer app: `chat` (with `--tools`, `--tool-set`, `--tools-add/drop`, `--workspace`, `--model-repo`, `--lora-path`, `--rewrite-on-tools`, `--compact-at`, `--compact-keep-recent`, `--auto-scribe`, `--router`, `--router-repo`, `--router-mode`, `--tui`, `--dev`, in-chat `/edit` + `/capture` for voice capture), `describe`, `eval {voice,router}`, `memory {list,search,scribe,consolidate,wipe,rebuild-embeddings,fact-*,ingest}`, `voice {capture,list-captured}`.
+  - `cli.py` — Typer app: `chat` (with `--tools`, `--tool-set`, `--tools-add/drop`, `--workspace`, `--model-repo`, `--lora-path`, `--draft-repo`, `--rewrite-on-tools`, `--compact-at`, `--compact-keep-recent`, `--auto-scribe`, `--summarize-tool-results`, `--harvest-skills`, `--router`, `--router-repo`, `--router-mode`, `--tui`, `--dev`, in-chat `/edit` + `/capture` for voice capture, `/clear` for process-local cutoff + retrieval mute, `/retro` for on-demand retro), `describe`, `eval {voice,router,session-resume}`, `memory {list,search,scribe,consolidate,harvest-skills,wipe,rebuild-embeddings,fact-*,ingest}`, `voice {capture,list-captured}`. The REPL and TUI share slash-command implementations via `cli_repl.py` / `tui/slash_ops.py`.
 
-- `tests/` — pytest. Tests hit real stores (SQLite in `tmp_path`) rather than mocks. ~510 tests across character, stores, retrieval, scribe, consolidator, persona, voice eval, dimension tracking, relationship memory, voice capture, tool loop, all 18 tools, compaction, Ollama adapter, CLI helpers, router (model + grammar), router eval, TUI chat app, CLI commands enumerator, tool grounding block.
+- `tests/` — pytest. Tests hit real stores (SQLite in `tmp_path`) rather than mocks. ~1,000 tests across character, stores (episodic / semantic / transcript / hybrid retrieval / temporal facts / contextual chunking), retrieval, scribe, consolidator, persona, voice eval, dimension tracking, relationship memory, voice capture, tool loop, hook pipeline, all 20 tools (including `fetch_url`, `spawn_subagent`, `tool_result_summarizer`), compaction, Ollama adapter, MLX adapter (incl. speculative decoding), CLI helpers, router (model + grammar), router eval, TUI chat app, CLI commands enumerator, tool grounding block, skill harvester, auto-harvest on session start.
 
 - `scripts/` — benchmarks and one-offs (model-speed benchmark, tool-use benchmark with `--measure-tokens` for per-tool schema + result cost, router-on-vs-off benchmark with RAM tracking).
 
@@ -162,21 +170,22 @@ Per-turn composition:
 
 1. **Retrieval** — `VoiceRetriever.top_k(user_message, k=6)` picks the 6 most similar voice samples by cosine.
 2. **System prompt** — `Character.system_prompt(include_samples=retrieved)` renders identity + values + taboos + style rules + retrieved examples.
-3. **Episodic memory** — `EpisodicStore.search(user_message, k=3, min_score=0.5, user_id=speaker)` appends a memory block when hits clear the floor.
-4. **Semantic facts** — `SemanticStore.search(user_message, k=5, min_score=0.45, user_id=speaker)` appends a facts block when hits clear the floor.
+3. **Episodic memory** — `EpisodicStore.search(user_message, k=3, min_score=0.5, user_id=speaker, mode="hybrid")` appends a memory block when hits clear the floor. Hybrid mode fuses BM25 (FTS5) and dense cosine via reciprocal-rank fusion so identifier-heavy and paraphrase-shaped queries both land. Harvested bd thought-graph rows (tier=`procedural`) ride the same path.
+4. **Semantic facts** — `SemanticStore.search(user_message, k=5, min_score=0.45, user_id=speaker, mode="hybrid", as_of=now)` appends a facts block when hits clear the floor. `as_of` filters out facts whose validity window doesn't cover the query time — expired or future-only facts stay in the store for audit but don't reach the prompt.
 5. **Pass 1 (substance)** — `base_adapter.complete([system, ...history])`.
 6. **Pass 2 (voice rewrite)** — `base_adapter.complete(build_rewriter_messages(character, draft))`. Preserves substance, fixes register.
 7. **Optional pass 3** — concrete-substitution rewrite (`chain_rewrites=True`). Opt-in; doubles persona latency.
 
 ### Memory stack
 
-Three layers of writes:
+Four layers of writes:
 
 - **Seeds** (`tier="seed"`, `user_id IS NULL`) — loaded from `character/<name>/seed_memories/` and `character/<name>/voice/canonical.yaml`. Shared across everyone.
 - **Working** (`tier="working"`, `user_id=<speaker>` or `NULL`) — scribe-written candidates from recent transcript. Not yet curated.
 - **Consolidated** (`tier="consolidated"`) — consolidator-promoted records that merge near-duplicate working-tier entries.
+- **Procedural** (`tier="procedural"`, `user_id IS NULL`) — bd thought-graph harvest (`harness-vu3`): closed `thought:decision` / `thought:observation` beads ingested by `skills/harvester.py`. Shared. `external_id=bead_id` makes the harvester idempotent.
 
-Retrieval filters: `superseded_by IS NULL AND embedding_dim = <current> AND (user_id IS NULL OR user_id = <speaker>)`.
+Retrieval filters: `superseded_by IS NULL AND embedding_dim = <current> AND (user_id IS NULL OR user_id = <speaker>)`. Semantic search also applies the temporal-validity filter against `as_of` (default = now).
 
 ### Tool-use stack
 
@@ -206,6 +215,18 @@ Done:
 - **Phase 3.4 — Textual TUI.** `--tui` flag launches a full Textual chat app: always-on input (stays enabled mid-turn; Enter while busy enqueues the next prompt and the metrics strip shows `queued N`), scrolling RichLog, live ctx + elapsed footer with persistent `last N.Ns` after each turn, Ctrl-X interrupt (seq-gated: drops the partial reply, preserves the queue, auto-runs the next queued prompt), tool-loop inline event rendering, token-delta streaming, write-tier confirmation modal, history replay on mount, `/exit` + `:q` slash commands. Behind the optional `tui` extra.
 - **Phase 3.5 — Self-introspection.** Single read-tier `introspect` tool with `scope ∈ {tools, model, memory, character, commands, session, all}` so the agent can answer 'what can you do', 'what tools do you have', 'how much do you remember', 'what can't you do this session', 'when did we start' without guessing. `scope=tools` also lists capability gaps (web/shell/git/memory-write absent) with `--tools-add` hints. `scope=model` reports persona + router state. `scope=memory` includes live retrieval health + last-scribe and last-consolidation watermarks. `scope=session` derives turn count + start/last activity from a single transcript aggregate query. Ships in `core`/`coding`/`diagnostic` profiles. System prompt gains a one-line nudge directing the model at `introspect` when the tool is loaded. CLI commands enumerated from the Typer app with a pinning test (`tests/test_cli_introspect.py`) so the output can't drift from the actual `@app.command` surface. Router eval fixtures added for self-introspection prompts.
 - **Phase 3.6 — ab thought-graph over beads.** Promotes bd from user-task tracker to ab's working-memory substrate. Ab-owned beads carry `assignee=airton_b` so they can be separated from user-captured items. `BeadsAdapter` enforces a hard single-focus invariant per assignee (`get_focus` lazy-reconciles, `set_focus` atomically demotes prior then promotes new), a per-turn create cap (default 3), an in-flight cap (default 10 open), and a shorter drift horizon (7d vs 14d) for ab-owned beads. `DeferTool` tracks defer count via `defer-count:N` labels and auto-spawns a `thought:question` child on the third defer (`stall-escalated` label prevents re-fire). `CaptureTool` exposes an `ab_owned` flag that routes the create through the budget. `PersistFocusNoteTool` lets ab append compaction breadcrumbs to the focus bead's notes. `--include-internal` CLI flag (implied by `--dev`) surfaces ab-internal beads in plan/list/drift views. `build_resume_summary` renders focus + in-progress ab-beads + recent bd memories + drift on chat start and post-compaction. `/retro` REPL slash command invokes `RetroTool` on demand; session-end (`/exit`, `:q`, Ctrl-C) auto-prints a retro. Budget knobs exposed as `HARNESS_AB_{TURN_CAP,INFLIGHT_CAP,STALL_DEFERS,DRIFT_DAYS}`. Fixture-backed `harness eval session-resume` pins the summary contract.
+- **Phase 3.7 — SOTA upgrade sweep** (April 2026). Punches from `docs/sota-comparison.md` (`harness-d91`) landed as independent, individually-testable commits:
+  - *Hook pipeline refactor* (`harness-9sr`) — extracted 11 orchestrator catchers into a typed four-phase pipeline in `orchestrator/hooks.py`. First-match bail, per-hook toggles for attribution evals, no behavior change.
+  - *Hybrid retrieval* (`harness-hda`) — FTS5 sidecars + reciprocal-rank fusion on episodic + semantic stores. `search(mode="hybrid"|"dense"|"text")`, hybrid is the default.
+  - *Contextual chunking* (`harness-2am`) — prepend `[tier: X; principle: Y; date: Z]` header to episodic embed text so dense-cosine can match by lesson/timeframe. Needs a `rebuild-embeddings` run for old rows.
+  - *Temporal validity on facts* (`harness-kr2`) — `valid_from` / `valid_to` / `asserted_at` columns + `as_of` filter on `SemanticStore.search`.
+  - *Tool-result summarizer hook* (`harness-zoz`) — `ToolResultSummarizerHook` compresses high-noise tool output (`high_noise=True` on grep/list_dir/search_web/fetch_url) above ~1 KB before the main model sees it. Opt-in via `--summarize-tool-results`.
+  - *MLX speculative decoding* (`harness-5zv`) — `--draft-repo` runs a smaller tokenizer-compatible draft alongside the target; distribution-preserving, 1.5–2× tok/s typical uplift.
+  - *`spawn_subagent` meta-tool* (`harness-qxr`) — read-only depth-1 subagent over parent adapter + hooks, isolated context, caller-chosen tool subset. Ships in `research` / `coding` / `diagnostic` profiles.
+  - *`fetch_url` tool* (`harness-3zs`) — stdlib HTTPS + boilerplate-stripped text extraction. 2 MB cap, 10 s timeout, HTTPS-only, HTML-only. Ships in `research` / `coding` only.
+  - *bd skill harvest* (`harness-vu3` + `harness-j5b`) — `skills/harvester.py` ingests closed `thought:decision` / `thought:observation` beads into episodic tier=`procedural`; idempotent via `external_id=bead_id`. Runs at session start (`--harvest-skills`, default on) and on demand (`harness memory harvest-skills`).
+  - *Compaction auto-scribe* (`harness-0kw`) — compaction scribes unprocessed turns into memory *before* folding them, so `search_memory` still answers "what did we talk about" after the transcript compresses.
+  - */clear mutes retrieval* (`harness-zpe`) — `/clear` used to cut the transcript but leave episodic + semantic hits bleeding in from prior sessions. Now flips a `muted` flag on `_RetrievalState` so voice + episodic + semantic retrieval short-circuit until process restart. Stored data is untouched; matches the existing process-ephemeral semantics of `/clear`.
 - **Voice-capture ergonomics.** In-chat `/edit` (and alias `/capture`) opens `$EDITOR` with Airton's last reply pre-loaded; saving captures a new voice sample without leaving the session.
 
 Available but not started (no priority implied — tracked as `bd` issues):
