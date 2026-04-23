@@ -43,6 +43,15 @@ tui = [
     # small. See harness-56b.
     "textual>=0.86",
 ]
+atc = [
+    # atc (airton_c) corpus-extraction pipeline only (harness-xbk.4 /
+    # harness-xbk.5). pymupdf4llm produces structured markdown from
+    # FAA PDFs — preserves headings, lists, tables, which the section-
+    # aware chunker needs to keep section anchors intact. Heavy (pulls
+    # PyMuPDF ~30 MB), so gated behind its own extra rather than added
+    # to the default runtime.
+    "pymupdf4llm>=0.0.17",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -141,4 +150,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["textual", "textual.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["pymupdf4llm", "pymupdf4llm.*"]
 ignore_missing_imports = true
