@@ -54,9 +54,9 @@ def test_load_fixture_accepts_top_level_list(tmp_path: Path) -> None:
     row = rows[0]
     assert row.id == "ppl_001"
     assert row.audience == "ppl"
-    assert row.expected_citations == ("91.155",)
-    # Scalar strings promote to single-alternate tuples — backward
-    # compatible with pre-lane-A fixtures (harness-099).
+    # Scalar strings in YAML promote to single-alternate tuples for
+    # both citations and keywords (harness-099 + harness-cco).
+    assert row.expected_citations == (("91.155",),)
     assert row.expected_keywords == (("1,000 feet below",), ("1,000 feet above",))
     assert row.min_keyword_hits == 1
 
@@ -158,7 +158,7 @@ def _row(**kw: object) -> AtcFixtureRow:
 
 def test_case_passes_when_citation_and_keywords_present() -> None:
     row = _row(
-        expected_citations=("91.155",),
+        expected_citations=(("91.155",),),
         expected_keywords=(("1,000 feet below",), ("1 statute mile",)),
         min_keyword_hits=2,
     )
@@ -174,7 +174,7 @@ def test_case_passes_when_citation_and_keywords_present() -> None:
 
 
 def test_case_fails_on_missing_citation() -> None:
-    row = _row(expected_citations=("91.155",))
+    row = _row(expected_citations=(("91.155",),))
     reply = "Cloud clearance rules are in the AIM."  # no section cited
     result = run_atc_eval([row], run_turn=lambda _q: reply)
     assert result.pass_rate == 0.0
@@ -185,7 +185,7 @@ def test_case_fails_on_missing_citation() -> None:
 
 def test_case_fails_when_keyword_hits_below_min() -> None:
     row = _row(
-        expected_citations=("91.155",),
+        expected_citations=(("91.155",),),
         expected_keywords=(
             ("1,000 feet below",),
             ("1 statute mile",),
@@ -212,7 +212,7 @@ def test_keyword_matching_is_case_insensitive() -> None:
 
 
 def test_citation_matching_is_case_insensitive() -> None:
-    row = _row(expected_citations=("91.155",))
+    row = _row(expected_citations=(("91.155",),))
     reply = "Per 14 cfr 91.155 the rule holds."
     result = run_atc_eval([row], run_turn=lambda _q: reply)
     assert result.cases[0].citations_pass
@@ -283,6 +283,38 @@ def test_keyword_alternates_still_fail_when_no_alternate_matches() -> None:
     assert not result.cases[0].keywords_pass
 
 
+def test_citation_alternates_accept_any_single_variant() -> None:
+    """harness-cco: citations gained the same alternate-list shape as
+    keywords. cancel-IFR-in-IMC can validly cite §91.155, §91.153, or
+    §91.173 depending on which angle the model takes; any one should
+    count as the citation hit."""
+    row = _row(
+        expected_citations=(("91.155", "91.153", "91.173"),),
+    )
+    replies = (
+        "Per 14 CFR §91.155, you can't cancel in IMC.",
+        "Per 14 CFR §91.153, you need a flight plan.",
+        "14 CFR §91.173 requires an ATC clearance for IFR.",
+    )
+    for reply in replies:
+        held = reply  # bind so the closure below captures per iteration
+
+        def _fixed(_q: str, _held: str = held) -> str:
+            return _held
+
+        result = run_atc_eval([row], run_turn=_fixed)
+        assert result.cases[0].citations_pass, reply
+
+
+def test_citation_alternates_missing_reports_canonical() -> None:
+    """When no alternate matches, missing_citations surfaces the
+    FIRST alternate of the entry — the canonical form for fixture
+    authors to see in error output."""
+    row = _row(expected_citations=(("91.155", "91.153", "91.173"),))
+    result = run_atc_eval([row], run_turn=lambda _q: "No CFR references anywhere.")
+    assert result.cases[0].missing_citations == ("91.155",)
+
+
 def test_load_fixture_accepts_list_of_alternates_in_yaml(tmp_path: Path) -> None:
     """YAML-side: a keyword entry can be either a scalar string (the
     common case) or a list of alternate phrasings."""
@@ -348,10 +380,10 @@ def test_load_fixture_rejects_non_string_non_list_keyword(tmp_path: Path) -> Non
 
 def test_pass_rate_by_audience_splits_ppl_ifr() -> None:
     rows = [
-        _row(id="p1", audience="ppl", expected_citations=("A",)),
-        _row(id="p2", audience="ppl", expected_citations=("B",)),
-        _row(id="i1", audience="ifr", expected_citations=("C",)),
-        _row(id="i2", audience="ifr", expected_citations=("D",)),
+        _row(id="p1", audience="ppl", expected_citations=(("A",),)),
+        _row(id="p2", audience="ppl", expected_citations=(("B",),)),
+        _row(id="i1", audience="ifr", expected_citations=(("C",),)),
+        _row(id="i2", audience="ifr", expected_citations=(("D",),)),
     ]
     # ppl replies cite A (pass) and nothing (fail); ifr replies both cite.
     replies = {
@@ -375,8 +407,8 @@ def test_pass_rate_by_audience_splits_ppl_ifr() -> None:
 
 def test_failures_returns_only_failing_cases() -> None:
     rows = [
-        _row(id="pass", expected_citations=("A",)),
-        _row(id="fail", expected_citations=("B",)),
+        _row(id="pass", expected_citations=(("A",),)),
+        _row(id="fail", expected_citations=(("B",),)),
     ]
     replies = iter(["see A", "nothing here"])
     result = run_atc_eval(rows, run_turn=lambda _q: next(replies))

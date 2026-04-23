@@ -1,9 +1,9 @@
 {
   "character": "airton_c",
   "adapter": "persona[mlx:Qwen2.5-7B-Instruct-4bit]",
-  "pass_rate": 0.7272727272727273,
+  "pass_rate": 0.6363636363636364,
   "pass_rate_by_audience": {
-    "ppl": 0.7272727272727273,
+    "ppl": 0.5454545454545454,
     "ifr": 0.7272727272727273
   },
   "cases": [
@@ -17,39 +17,37 @@
       "matched_keywords": [],
       "keyword_hits": 0,
       "min_keyword_hits": 2,
-      "reply": "Above 10,000 MSL in Class E airspace, the VFR cloud clearance is \"clear of clouds,\" but visibility must be at least 3 miles and no closer than 1,000 feet to clouds. The rule is in 14 CFR §91.155(a)."
+      "reply": "Above 10,000 MSL in Class E airspace, the VFR cloud clearance is \"clear of clouds.\" The rule is 14 CFR §91.155(a). No special adjustments apply."
     },
     {
       "id": "ppl_class_b_entry_requirements",
       "audience": "ppl",
-      "passed": true,
-      "citations_pass": true,
-      "keywords_pass": true,
-      "missing_citations": [],
-      "matched_keywords": [
-        "clearance",
-        "Mode C",
-        "two-way radio"
+      "passed": false,
+      "citations_pass": false,
+      "keywords_pass": false,
+      "missing_citations": [
+        "91.131"
       ],
-      "keyword_hits": 3,
+      "matched_keywords": [
+        "clearance"
+      ],
+      "keyword_hits": 1,
       "min_keyword_hits": 2,
-      "reply": "To enter Class B airspace as a VFR pilot, you need an explicit ATC clearance. The clearance must include the specific route and altitude. The phraseology is:\n\n**ATC Clearance:**\n\"Cleared through/to enter/through/out of Bravo airspace, via (route). Maintain (altitude) while in Bravo airspace.\"\n\n**Additional Requirements:**\n- Mode C transponder and ADS-B Out within the Mode C veil.\n- A private pilot certificate or the specific Class B endorsement for a student pilot.\n- Two-way radio capability.\n\nThe rule is in **14 CFR §91.131(a)**, and the pilot-facing explanation is in **AIM 3-1-4**."
+      "reply": "To enter Class B airspace as a VFR pilot, you need an explicit ATC clearance specifying the route and altitude. The typical phraseology is:\n\n- **Entering:** \"Cleared through/to enter Bravo airspace, via (route), maintain (altitude) while in Bravo airspace.\"\n- **Exiting:** \"Cleared out of Bravo airspace, via (route), maintain (altitude) while in Bravo airspace.\"\n\nAlways ensure you have a current clearance before entering. If you lose communication, hold at the clearance limit as directed.\n\nREFERENCE: \n- FAA Order JO 7110.65, Para 2-1-18, Operational Requests.\n- AIM 3-4-1, Class B Airspace."
     },
     {
       "id": "ppl_hemispheric_cruising_altitudes",
       "audience": "ppl",
-      "passed": true,
+      "passed": false,
       "citations_pass": true,
-      "keywords_pass": true,
+      "keywords_pass": false,
       "missing_citations": [],
       "matched_keywords": [
-        "odd",
-        "even",
         "3,000"
       ],
-      "keyword_hits": 3,
+      "keyword_hits": 1,
       "min_keyword_hits": 2,
-      "reply": "Above 3,000 feet AGL and up to 18,000 MSL, the VFR cruising altitude or flight level is as follows: \n- From 3,000 to 8,000 MSL, odd-numbered.\n- From 8,000 to 14,500 MSL, even-numbered.\n- From 14,500 to 18,000 MSL, odd-numbered.\n\nThe rule is 14 CFR §91.159. The text reads: \"Except while holding in a holding pattern of 2 minutes or less, or while turning, each person operating an aircraft under VFR in level cruising flight more than 3,000 feet above the surface shall maintain the appropriate altitude or flight level prescribed below, unless otherwise authorized by ATC:\n\n(a) When operating below 18,000 MSL and—\n\n(1) From 3,000 to 8,000 MSL, odd-numbered.\n\n(2) From 8,000 to 14,500 MSL, even-numbered.\n\n(3) From 14,500 to 18,000 MSL, odd-numbered.\"\n\nThis pattern helps in identifying aircraft by their altitude, useful for VFR operations."
+      "reply": "Above 3,000 feet AGL but below 18,000 feet MSL, aircraft must maintain an altitude that is 1,000 feet above the highest obstacle within a 5-nautical-mile radius. The rule is 14 CFR §91.159(a). The exact phrasing is: \"Except while holding in a holding pattern of 2 minutes or less, or while turning, each person operating an aircraft under VFR in level cruising flight more than 3,000 feet above the surface shall maintain the appropriate altitude or flight level prescribed below, unless otherwise authorized by ATC.\" For more, see AIM 3-1-4."
     },
     {
       "id": "ppl_right_of_way_rules",
@@ -64,21 +62,23 @@
       ],
       "keyword_hits": 2,
       "min_keyword_hits": 1,
-      "reply": "The aircraft to the right has the right-of-way when two aircraft of the same category are converging at approximately the same altitude. This is specified in 14 CFR §91.113(d). For more detail, refer to the AIM for a pilot-facing explanation."
+      "reply": "When two aircraft of the same category are converging at the same altitude, the one to the right has the right-of-way. This is specified in 14 CFR §91.113(d). For aircraft of different categories, the right-of-way rules are:\n\n- A balloon has the right-of-way over any other category.\n- A glider has the right-of-way over an airship, powered parachute, weight-shift-control aircraft, airplane, or rotorcraft.\n- An airship has the right-of-way over a powered parachute, weight-shift-control aircraft, airplane, or rotorcraft."
     },
     {
       "id": "ppl_preflight_action",
       "audience": "ppl",
       "passed": false,
-      "citations_pass": true,
+      "citations_pass": false,
       "keywords_pass": false,
-      "missing_citations": [],
+      "missing_citations": [
+        "91.103"
+      ],
       "matched_keywords": [
         "weather"
       ],
       "keyword_hits": 1,
       "min_keyword_hits": 2,
-      "reply": "Gather all necessary information, including weather, NOTAMs, and other pertinent data. Assess flight safety based on this information. File a flight plan with the appropriate authorities, especially for controlled airspace or night flights. Conduct a pre-flight briefing, reviewing weather, NOTAMs, and relevant aeronautical information. Familiarize yourself with the Pilot/Controller Glossary (PCG). Check aircraft systems and perform a thorough pre-flight inspection. Review the flight plan for accuracy. Brief all pilots on the flight plan, weather, and other pertinent information. Verify weather conditions at departure, destination, and along the route. The rule is 14 CFR §91.103, and the AIM provides detailed guidance in chapter 5."
+      "reply": "To ensure the safety of the flight, gather all necessary information, assess the flight's safety, and file a flight plan if required. File a flight plan for controlled airspace or night flights. Conduct a self-brief before contacting Flight Service. Review AC 90-66B for guidance. Access Flight Service through 1800wxbrief.com or 1-800-WX-BRIEF. Ensure the weather and aircraft condition are suitable. Don't know specific steps; review 14 CFR and AC 91-92 for more details."
     },
     {
       "id": "ppl_altimeter_setting",
@@ -93,7 +93,7 @@
       ],
       "keyword_hits": 2,
       "min_keyword_hits": 1,
-      "reply": "Below 18,000 MSL, set your altimeter to the current reported altimeter setting of a station along the route and within 100 nautical miles of the aircraft. If no station is available within 100 NM, set it to an appropriate available station. If the aircraft is not equipped with a radio, set it to the elevation of the departure airport or an appropriate altimeter setting before departure. The rule is 14 CFR §91.121(a)(1)."
+      "reply": "Below 18,000 MSL, set your altimeter to the current reported altimeter setting of a station along the route and within 100 nautical miles of the aircraft. If no such station is available, use the current reported setting of an appropriate station or the elevation of the departure airport if the aircraft is not equipped with a radio. The rule is 14 CFR §91.121(a)(1). The exact wording is:\n\n- Below 18,000 feet MSL: current reported setting of a station along the route and within 100 nautical miles.\n- If no station: current reported setting of an appropriate station.\n- If no radio: elevation of the departure airport."
     },
     {
       "id": "ppl_transponder_requirements",
@@ -108,7 +108,7 @@
       ],
       "keyword_hits": 2,
       "min_keyword_hits": 1,
-      "reply": "A Mode C transponder is required in Class E airspace at and above 10,000 MSL, as per 14 CFR §91.215. The rule states that all aircraft must have either Mode A 4096 code capability or Mode S capability, replying to Mode A interrogations with the code specified by ATC, and automatic pressure altitude reporting equipment with a Mode C capability, transmitting pressure altitude in 100-foot increments. This applies to Class A, B, and C airspace as well. Below 10,000 MSL, a Mode C transponder is not required."
+      "reply": "A Mode C transponder is required in Class E airspace at and above 10,000 MSL, as per 14 CFR §91.215. The rule states that an aircraft must have an operable coded radar beacon transponder with Mode C capability, which transmits pressure altitude in 100-foot increments. Below 10,000 MSL in Class E airspace, this requirement does not apply.\n\nFor more detail, see 14 CFR §91.215."
     },
     {
       "id": "ppl_pic_responsibility",
@@ -122,7 +122,7 @@
       ],
       "keyword_hits": 1,
       "min_keyword_hits": 1,
-      "reply": "The pilot-in-command has final authority over the aircraft operation. This is stated in both the AIM (§6-1-1) and 14 CFR 91.3(a). The rule is clear: the pilot-in-command is directly responsible and the final authority."
+      "reply": "The pilot-in-command has final authority over the aircraft. This is stated in AIM §6-1-1(a) and 14 CFR 91.3(a). In emergencies, the pilot may deviate from any rule in 14 CFR part 91 as needed."
     },
     {
       "id": "ppl_readback_basics",
@@ -139,7 +139,7 @@
       ],
       "keyword_hits": 2,
       "min_keyword_hits": 2,
-      "reply": "- Altitude assignments\n- Heading and vector assignments\n- Speed instructions\n- Hold-short instructions\n- Runway-crossing clearances\n\nThe full call sign goes first so the controller can match the readback to the flight. Partial or truncated readbacks invite misidentification — don't economise on the readback."
+      "reply": "- Altitude assignments\n- Heading and vector assignments\n- Speed instructions\n- Hold-short instructions\n- Runway-crossing clearances\n\nThe full call sign must be used in all readbacks to ensure the controller can match the readback to the correct flight. Partial or truncated readbacks can lead to misidentification."
     },
     {
       "id": "ppl_wake_turbulence_avoidance",
@@ -154,7 +154,7 @@
       ],
       "keyword_hits": 2,
       "min_keyword_hits": 1,
-      "reply": "To avoid wake turbulence behind a large jet, rotate before its rotation point, climb above its flight path, and stay upwind of its track. Follow AIM 7-4-6 for detailed procedures. Don't know specific wind speeds; refer to the AIM for more."
+      "reply": "To avoid wake turbulence behind a large jet, rotate before its rotation point, climb above its track, and stay upwind. Follow AIM 7-4-6 for more details. The rule is in AIM 7-4-6."
     },
     {
       "id": "ifr_alternate_airport_weather",
@@ -170,23 +170,21 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "A filed alternate airport is required for an IFR flight under 14 CFR §91.169 unless:\n\n- A standard instrument approach procedure (SID) is available at the first airport.\n- Weather forecasts show at least 2,000 feet ceiling and 3 statute miles visibility for at least 2 hours around the estimated arrival time.\n\nDon't know if the weather conditions are forecasted for your specific flight. Check the METAR, TAF, and PIREPs for your planned route."
+      "reply": "An IFR flight plan must include an alternate airport unless the weather forecast shows at least 2,000 feet of ceiling and 3 statute miles of visibility for at least 2 hours around the estimated time of arrival. The rule is 14 CFR §91.169.\n\n- The flight plan must include an alternate airport unless:\n  - ATC authorises otherwise.\n  - The first airport has a standard or special instrument approach.\n  - Weather forecasts show at least 2,000 feet ceiling and 3 statute miles visibility for at least 2 hours around the estimated time of arrival.\n\nREFERENCE: 14 CFR §91.169."
     },
     {
       "id": "ifr_takeoff_minimums_part_91",
       "audience": "ifr",
-      "passed": false,
-      "citations_pass": false,
+      "passed": true,
+      "citations_pass": true,
       "keywords_pass": true,
-      "missing_citations": [
-        "91.175"
-      ],
+      "missing_citations": [],
       "matched_keywords": [
         "Part 91"
       ],
       "keyword_hits": 1,
       "min_keyword_hits": 1,
-      "reply": "Takeoff minimums are not explicitly required for Part 91 operations, but pilots should adhere to the appropriate weather minimums and procedures.\n\n- **VFR Operations:** Follow 14 CFR §91.155, which includes visibility and altitude requirements based on altitude. Above 10,000 MSL, the minimums are 1,000 feet below, 1,000 feet above, and 1 statute mile horizontal visibility.\n\n- **IFR Operations:** Follow 14 CFR §91.173, which requires an IFR flight plan, an ATC clearance, and adherence to higher IFR weather minimums.\n\n- **Operating Procedures:** Have a takeoff minimum plan, including weather conditions and visibility. Check local procedures and restrictions at the airport or in the airspace.\n\n- **ATC Clearance:** May be required in controlled airspace. Always check local procedures.\n\nIn summary, adhere to the appropriate weather minimums and procedures for both VFR and IFR operations. Always refer to specific regulations and local procedures."
+      "reply": "Takeoff minimums are not explicitly required for Part 91 operations, but pilots must meet VFR weather and visibility requirements. Here’s the relevant information:\n\n- `14 CFR §91.153` requires a VFR flight plan but does not specify takeoff minimums. Ensure visibility and distance from clouds meet VFR conditions.\n\n- `14 CFR §91.155` provides basic VFR weather minimums. For takeoffs, meet these conditions.\n\n- `14 CFR §91.173` requires an ATC clearance and flight plan for IFR operations but not takeoff minimums for VFR.\n\n- `14 CFR §91.175` requires IFR takeoffs and landings to meet published minimums, which does not apply to VFR.\n\nIn summary, while there are no explicit takeoff minimums for VFR operations, ensure you meet VFR weather and visibility requirements. Always check specific conditions for safe takeoff."
     },
     {
       "id": "ifr_missed_approach",
@@ -196,13 +194,13 @@
       "keywords_pass": true,
       "missing_citations": [],
       "matched_keywords": [
-        "5-4-21",
+        "missed approach procedure",
         "missed approach",
         "climb"
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "On a missed approach, follow these steps:\n\n- Establish a safe climb to a safe altitude.\n- Request a specific clearance for the next action.\n- Follow the missed approach procedure specified for that approach.\n- Adhere to the missed approach course for clearance from obstacles.\n- Consider additional climb if the published altitude is insufficient.\n- Report to ATC once the procedure is completed.\n\nThe rule is detailed in AIM 5-4-21."
+      "reply": "On a missed approach, follow these steps:\n\n- Establish a safe climb to a safe altitude.\n- Request a specific clearance from ATC.\n- Follow the published missed approach procedure.\n- Make an initial climbing turn toward the landing runway.\n- Adhere to the procedure to remain within clearance areas.\n- Ensure vertical obstruction clearance if starting at a point other than the MAP.\n- Report your status to ATC.\n\nThese steps ensure compliance with regulations and maintain safety."
     },
     {
       "id": "ifr_minimum_en_route_altitude",
@@ -216,7 +214,7 @@
       ],
       "keyword_hits": 1,
       "min_keyword_hits": 1,
-      "reply": "The minimum en-route altitude (MEA) for IFR operations is defined in 14 CFR §91.177. It must be at least 1,200 feet above the highest obstacle within a 4-nautical-mile horizontal distance from the route centerline. This altitude is published on aeronautical charts. If no MEA is published, use the higher of the minimum IFR altitude or the minimum safe altitude. The rule is in 14 CFR §91.177. For more detail, see the **Minimum Enroute Altitude (MEA)** section in the **Aeronautical Information Manual (AIM)**, specifically **Chapter 5, Section 1, Paragraph 10**."
+      "reply": "The minimum en-route altitude (MEA) for IFR operations is defined in 14 CFR §91.177. It must be at least 1,200 feet above the highest obstacle within a 4 nautical mile horizontal distance from the route centerline. The exact wording is:\n\n14 CFR §91.177(a) — \"The minimum en-route altitude for an aircraft operating on an IFR flight plan must be at least 1,200 feet above the highest obstacle within a horizontal distance of 4 nautical miles from the centerline of the route.\"\n\nThe MEA may be lower if the route is flown at or above the minimum safe altitude, minimum crossing altitude, minimum obstacle clearance altitude, minimum vectoring altitude, or the minimum altitude assigned by ATC. The full list is in 14 CFR §91.177."
     },
     {
       "id": "ifr_ifr_clearance_limit",
@@ -228,11 +226,12 @@
         "5-3"
       ],
       "matched_keywords": [
-        "clearance limit"
+        "clearance limit",
+        "hold"
       ],
-      "keyword_hits": 1,
+      "keyword_hits": 2,
       "min_keyword_hits": 1,
-      "reply": "A clearance limit in your ATC clearance defines the specific point, fix, or location to which you are cleared to fly. This limit restricts your flight to the area specified by the clearance. You are only authorized to fly to and land at the airport or NAVAID mentioned in the clearance limit, unless you receive a new clearance. The clearance limit is defined as:\n- A specific airport name followed by \"airport.\"\n- A NAVAID, intersection, or waypoint.\n- A fix within the terminal area.\n\nAlways know your clearance limit and plan your flight accordingly. If unsure, ask ATC for clarification."
+      "reply": "The clearance limit is the specific fix, point, or location to which you are cleared. When you reach it, hold as published if there's a charted pattern, or as directed by ATC if holding instructions are included. ATC usually provides an EFC time, governed by 14 CFR §91.185."
     },
     {
       "id": "ifr_lost_comm_rules",
@@ -242,11 +241,11 @@
       "keywords_pass": true,
       "missing_citations": [],
       "matched_keywords": [
-        "last ATC clearance"
+        "last assigned"
       ],
       "keyword_hits": 1,
       "min_keyword_hits": 1,
-      "reply": "If you lose two-way radio communication in IMC on an IFR flight plan, follow these steps:\n\n- Continue the route assigned in the last ATC clearance.\n- If no route is assigned, follow the route in your flight plan.\n- Maintain the highest altitude or flight level for the route segment: the last ATC clearance, your flight plan, the published route, or Class B airspace requirements. The rule is 14 CFR §91.185(c)(2).\n\n- Reestablish radio contact by contacting the previous frequency, an FSS, New York Radio, or San Francisco Radio.\n\n- Use 121.5 MHz for emergency communications.\n\n- Land as soon as practicable if in VFR conditions.\n\nAlways follow the assigned route and altitude, and reestablish communication as soon as possible."
+      "reply": "If you lose two-way radio communication in IMC on an IFR flight plan, continue the flight according to 14 CFR §91.185:\n\n- Follow the route assigned in your last ATC clearance.\n- If radar vectored, continue on the direct route to the fix, route, or airway specified.\n- If no route, follow the route advised by ATC.\n- If no route or clearance, follow the route in your flight plan.\n\n- Maintain the highest altitude or flight level for the route segment.\n\n- Reestablish radio contact: try the last assigned frequency, then FSS, New York Center, or San Francisco Center.\n\n- Monitor the NAVAID voice feature for additional instructions.\n\n- Use 121.5 MHz if necessary.\n\nThe primary responsibility for safe flight operations remains with the pilot."
     },
     {
       "id": "ifr_approach_categories",
@@ -260,7 +259,7 @@
       ],
       "keyword_hits": 1,
       "min_keyword_hits": 1,
-      "reply": "Approach categories are based on an aircraft's stall speed in the landing configuration at its maximum gross landing weight. Categories are:\n\n- **Category A:** Speed less than 91 knots.\n- **Category B:** Speed 91 knots or more but less than 121 knots.\n- **Category C:** Speed 121 knots or more but less than 141 knots.\n- **Category D:** Speed 141 knots or more but less than 166 knots.\n- **Category E:** Speed 166 knots or more.\n\nThese categories determine approach minimums and ensure safe circling operations. If an aircraft is circling at a speed above its category limit, use the higher category's minimums. For example, an aircraft circling at 145 knots must use Category D minimums.\n\nThe rule is in 14 CFR Part 97."
+      "reply": "Approach categories are based on an aircraft's stall speed in the landing configuration at maximum gross weight. Categories are:\n\n- **Category A:** Speed < 91 knots.\n- **Category B:** 91-120 knots.\n- **Category C:** 121-140 knots.\n- **Category D:** 141-165 knots.\n- **Category E:** ≥ 166 knots.\n\nIf an aircraft circles at a speed above the category limit, use the higher category's minimums. For example, a Category B aircraft circling at 145 knots uses Category D minimums. This is defined in 14 CFR part 97, and the details are in the AIM and PCG."
     },
     {
       "id": "ifr_vfr_on_top",
@@ -274,36 +273,33 @@
       ],
       "keyword_hits": 1,
       "min_keyword_hits": 1,
-      "reply": "VFR-on-top allows you to operate under Visual Flight Rules at an altitude or flight level of your choice, provided you are in VFR weather conditions. You can request it under these conditions:\n\n- While on an IFR flight plan, request VFR conditions and climb to your desired altitude. The clearance must include a top report or a statement that no top report is available, and a request to report reaching VFR-on-top. It may also include a clearance limit, routing, and an alternative clearance if VFR-on-top is not reached by a specified altitude.\n\n- Climb through a cloud, haze, smoke, or other meteorological formation and then either cancel your IFR flight plan or operate VFR-on-top. The clearance must include a top report or a statement that no top report is available, and a request to report reaching VFR-on-top.\n\n- Climb or descend in VFR conditions if you are already in VFR conditions.\n\n- ATC may not authorize VFR-on-top unless you request it or a clearance to operate in VFR conditions results in noise abatement benefits.\n\nThe rule is in `AIM §4-4-8`. Always request VFR-on-top before entering VFR conditions."
+      "reply": "VFR-on-top allows operation under Visual Flight Rules at an altitude above clouds or meteorological conditions. You can request it under these conditions:\n\n- **IFR Flight Plan:** On an IFR flight plan in VFR conditions, request VFR-on-top. The clearance must include a top report or state no top report is available. It may also include a clearance limit, routing, and an alternative clearance if VFR-on-top isn't reached by a specified altitude.\n\n- **Climbing Through Conditions:** Flying in VFR conditions and need to climb through clouds, haze, smoke, or other formations? Request to climb to VFR-on-top and report when you reach it.\n\n- **Descending in VFR Conditions:** You can also request to descend in VFR conditions.\n\n- **Noise Abatement:** ATC may authorize VFR-on-top/VFR operations only if you request it or if it results in noise abatement. This typically applies when the IFR departure route doesn’t conform to an FAA-approved noise abatement route or altitude.\n\nAlways check the current ATC authorization and report when you reach VFR-on-top.\n\nThe rule is in **AIM §4-4-8** and **JO 7110.65 §12-1-3**."
     },
     {
       "id": "ifr_instrument_currency",
       "audience": "ifr",
-      "passed": true,
+      "passed": false,
       "citations_pass": true,
-      "keywords_pass": true,
+      "keywords_pass": false,
       "missing_citations": [],
       "matched_keywords": [
-        "six",
-        "approach procedure"
+        "six"
       ],
-      "keyword_hits": 2,
+      "keyword_hits": 1,
       "min_keyword_hits": 2,
-      "reply": "The instrument proficiency check for reestablishing IFR currency is outlined in 14 CFR §61.57. You must complete this check if you haven't met the required instrument experience in the past six months. Key points:\n\n- The check covers the areas of operation in the Airman Certification Standards, as listed in appendix A of this part.\n- It can be conducted in an appropriate aircraft, a full flight simulator, or a flight training device, or for a glider, in a single-engine airplane or a glider.\n\nThe check must be given by an examiner or an authorized U.S. Armed Forces officer. The specific areas covered are defined in the Airman Certification Standards, typically including navigation, approach procedures, and emergency operations."
+      "reply": "The instrument currency requirements for IFR operations are based on 14 CFR §61.57. Here's a summary:\n\n- If you've failed to meet the instrument experience requirements for more than six months, you must complete an IPC.\n- The IPC must cover the areas of operation listed in the applicable Airman Certification Standards (ACRs).\n- The IPC must be conducted in an aircraft appropriate to the category or, for other aircraft, in a full flight simulator or flight training device.\n- For gliders, the IPC must be in a single-engine airplane or glider.\n- The IPC must be given by an examiner or a U.S. Armed Forces authorized person for service members.\n\nThe specific areas of operation are detailed in the applicable ACRs, which are incorporated by reference in 14 CFR §61.14. These typically include performance maneuvers, performance airspeeds, navigation, slow flight, and stalls.\n\nFor more details, refer to the specific ACRs for your rating.\n\nFurther reading: `14 CFR §61.57`, `FAA Airman Certification Standards (ACRs)`."
     },
     {
       "id": "ifr_descent_below_mda",
       "audience": "ifr",
-      "passed": true,
+      "passed": false,
       "citations_pass": true,
-      "keywords_pass": true,
+      "keywords_pass": false,
       "missing_citations": [],
-      "matched_keywords": [
-        "normal rate of descent"
-      ],
-      "keyword_hits": 1,
+      "matched_keywords": [],
+      "keyword_hits": 0,
       "min_keyword_hits": 1,
-      "reply": "You can descend below the MDA or DA only if you are continuously in position to land at a normal rate, as stated in 14 CFR §91.175(c). The specific conditions are:\n\n- You must be able to make a normal descent to land on the intended runway.\n- You must maintain a position that allows for a safe landing at any point during the approach.\n\nThis rule applies to all aircraft except U.S. military aircraft, as specified in 14 CFR §91.175(a). The exact phrasing is:\n\n\"Except as provided in §91.176 of this chapter, no pilot may operate an aircraft, except a military aircraft of the United States, below the authorized MDA or continue an approach below the authorized DA/DH unless the aircraft is continuously in position to land at a normal rate of descent using normal maneuvers.\"\n\nFor more detail, see AIM §5-4-7."
+      "reply": "You can descend below the MDA or DA only if you can safely land on the intended runway using normal maneuvers. The rule is in 14 CFR §91.175(c). If you cannot meet this condition, execute a missed approach. For more details, see AIM §5-4-7."
     },
     {
       "id": "shared_notam_scope_self_aware",
@@ -318,23 +314,22 @@
       ],
       "keyword_hits": 2,
       "min_keyword_hits": 1,
-      "reply": "I don't know the current TFR status. Pull the latest from `aviationweather.gov` or call 1-800-WX-BRIEF. I can fetch it through my tools, but the briefer remains the authoritative source before flight."
+      "reply": "I don't answer that from memory — a TFR is time-bounded and can post or lift between my sources and your takeoff. Pull the current picture from `aviationweather.gov` or call 1-800-WX-BRIEF (1800wxbrief.com). I can fetch it through my tools, but the briefer remains the authoritative source before flight."
     },
     {
       "id": "shared_cancel_ifr_in_imc",
       "audience": "ifr",
-      "passed": false,
-      "citations_pass": false,
+      "passed": true,
+      "citations_pass": true,
       "keywords_pass": true,
-      "missing_citations": [
-        "91.155"
-      ],
+      "missing_citations": [],
       "matched_keywords": [
-        "VFR"
+        "VFR",
+        "IMC"
       ],
-      "keyword_hits": 1,
+      "keyword_hits": 2,
       "min_keyword_hits": 1,
-      "reply": "No — you cannot cancel an IFR clearance while in IMC. The rule is in 14 CFR §91.153. You must maintain the IFR clearance until you are in VFR conditions and can safely transition. The pilot's responsibility is clear in AIM chapter 5."
+      "reply": "No — you cannot cancel an IFR clearance while in IMC. The rule is in 14 CFR §91.155. In IMC, you must maintain the IFR clearance until you can safely transition to VFR or land. The correct procedure is to request a VFR departure from ATC and then cancel the IFR flight plan once you are in VFR conditions. The details are in AIM 5-1-15."
     }
   ]
 }

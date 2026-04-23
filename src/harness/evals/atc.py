@@ -39,12 +39,22 @@ class AtcEvalCase:
     id: str
     audience: str
     question: str
-    expected_citations: tuple[str, ...]
-    # Same shape as AtcFixtureRow.expected_keywords — each entry is a
-    # tuple of alternate phrasings. See AtcFixtureRow for rationale.
+    # Same alternate-tuple shape as expected_keywords — each entry is
+    # a tuple of acceptable citation substrings; the entry passes if
+    # ANY alternate is present in the reply. A scalar YAML string
+    # loads as a single-alternate tuple (backward compatible). The
+    # motivating case is cancel-IFR-in-IMC where §91.155, §91.153,
+    # §91.173 are all valid answers depending on angle.
+    expected_citations: tuple[tuple[str, ...], ...]
+    # Same shape as expected_citations — each entry is a tuple of
+    # alternate phrasings. See AtcFixtureRow for rationale.
     expected_keywords: tuple[tuple[str, ...], ...]
     min_keyword_hits: int
     actual_reply: str
+    # One entry per MISSING expected_citations element — each element
+    # is the first-alternate of an entry that matched no alternate in
+    # the reply. Citation entries that DID match are dropped from this
+    # tuple, so an empty tuple == all citations present.
     missing_citations: tuple[str, ...]
     # One element per matched entry in expected_keywords — the specific
     # alternate that hit (first-match-wins within the entry) so debug
@@ -98,7 +108,11 @@ class AtcFixtureRow:
     id: str
     audience: str
     question: str
-    expected_citations: tuple[str, ...]
+    # Same alternate-tuple shape as expected_keywords (harness-cco):
+    # each entry is a tuple of acceptable citation substrings. Entry
+    # matches if ANY alternate appears in the reply. Scalar YAML
+    # string loads as a single-alternate tuple — backward compatible.
+    expected_citations: tuple[tuple[str, ...], ...]
     # Each entry is a tuple of alternate phrasings — the keyword counts
     # as a hit if ANY alternate is present in the reply (case-
     # insensitive). A scalar string in YAML (the common case) loads as
@@ -139,8 +153,12 @@ def load_fixture(path: Path) -> tuple[AtcFixtureRow, ...]:
         case_id = _str_field(entry, "id", path, idx)
         audience = _str_field(entry, "audience", path, idx)
         question = _str_field(entry, "question", path, idx)
-        citations = tuple(str(c) for c in (entry.get("expected_citations") or []))
-        keywords = _load_keywords(entry.get("expected_keywords") or [], path, idx)
+        citations = _load_alternates(
+            entry.get("expected_citations") or [], path, idx, field="expected_citations"
+        )
+        keywords = _load_alternates(
+            entry.get("expected_keywords") or [], path, idx, field="expected_keywords"
+        )
         min_hits_raw = entry.get("min_keyword_hits", 0) or 0
         try:
             min_hits = int(min_hits_raw)
@@ -173,19 +191,25 @@ def _str_field(entry: dict[str, object], key: str, path: Path, idx: int) -> str:
     return value.strip()
 
 
-def _load_keywords(
+def _load_alternates(
     raw: object,
     path: Path,
     idx: int,
+    *,
+    field: str,
 ) -> tuple[tuple[str, ...], ...]:
-    """Normalise the YAML shape for `expected_keywords` into a
-    tuple-of-alternate-tuples. Each entry can be either a string
-    (single-alternate, backward-compatible) or a list of strings
-    (multiple alternates — any match counts as one keyword hit).
-    Empty alternate lists are rejected; they would always fail to
-    match and indicate a fixture bug."""
+    """Normalise the YAML shape for an alternate-list field (either
+    `expected_keywords` or `expected_citations`) into a tuple-of-
+    alternate-tuples. Each entry can be either a string (single-
+    alternate, backward-compatible) or a list of strings (multiple
+    alternates — any match counts as one hit). Empty alternate lists
+    are rejected; they would always fail to match and indicate a
+    fixture bug.
+
+    `field` names the YAML key in error messages so fixture authors
+    can find the offending entry quickly."""
     if not isinstance(raw, list):
-        raise ValueError(f"{path}[{idx}] 'expected_keywords' must be a list")
+        raise ValueError(f"{path}[{idx}] {field!r} must be a list")
     out: list[tuple[str, ...]] = []
     for kid, entry in enumerate(raw):
         if isinstance(entry, str):
@@ -194,12 +218,12 @@ def _load_keywords(
             alternates = tuple(str(a) for a in entry)
             if not alternates:
                 raise ValueError(
-                    f"{path}[{idx}].expected_keywords[{kid}] is an empty list — "
+                    f"{path}[{idx}].{field}[{kid}] is an empty list — "
                     "an empty alternate set can never match."
                 )
         else:
             raise ValueError(
-                f"{path}[{idx}].expected_keywords[{kid}] must be str or list[str], "
+                f"{path}[{idx}].{field}[{kid}] must be str or list[str], "
                 f"got {type(entry).__name__}"
             )
         out.append(alternates)
@@ -209,26 +233,34 @@ def _load_keywords(
 def _score_reply(
     reply: str,
     *,
-    expected_citations: Sequence[str],
+    expected_citations: Sequence[tuple[str, ...]],
     expected_keywords: Sequence[tuple[str, ...]],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Return `(missing_citations, matched_keywords)`. Matching is
     case-insensitive substring so fixture authors don't have to worry
     about exact casing in atc's reply.
 
-    `expected_keywords` is a tuple of alternate-tuples: each entry
-    matches if ANY of its alternates appears in the reply. Returns the
-    specific alternate that hit (first-match-wins) so debug output
-    shows which phrasing the model used."""
+    Both `expected_citations` and `expected_keywords` are tuples of
+    alternate-tuples: each entry matches if ANY of its alternates
+    appears in the reply. `missing_citations` returns the first-
+    alternate of each entry that matched no alternate (empty tuple =
+    all present). `matched_keywords` returns the specific alternate
+    that hit (first-match-wins) so debug output shows which phrasing
+    the model used."""
     lower = reply.lower()
-    missing = tuple(c for c in expected_citations if c.lower() not in lower)
+    missing: list[str] = []
+    for alternates in expected_citations:
+        if not any(alt.lower() in lower for alt in alternates):
+            # First alternate is the canonical form — surfaces it in
+            # error output for the fixture author.
+            missing.append(alternates[0])
     matched: list[str] = []
     for alternates in expected_keywords:
         for alt in alternates:
             if alt.lower() in lower:
                 matched.append(alt)
                 break
-    return missing, tuple(matched)
+    return tuple(missing), tuple(matched)
 
 
 def run_atc_eval(

@@ -17,7 +17,13 @@ You are the voice editor for {name}. Above you see how {name} talks.
 Below is a DRAFT reply someone wrote. Rewrite it in {name}'s voice.
 
 PRESERVE the substance: every piece of advice, option, refusal, or
-fact in the draft must remain in the rewrite. CHANGE only the style:
+fact in the draft must remain in the rewrite. Citations and section
+references are SUBSTANCE, not style — preserve them verbatim.
+Patterns like `AIM 4-4-7`, `14 CFR §91.155`, `§ 91.103`,
+`JO 7110.65 §2-6-4`, `AC 90-66B` are the anchor that lets the reader
+verify the rule; dropping them or paraphrasing them into "the AIM
+covers this" strips the value out of the reply. Keep the exact form,
+even if it reads as a parenthetical. CHANGE only the style:
 
   - Match the LENGTH of the examples above. If they're 1-4 sentences
     and the draft is eight paragraphs, cut the draft to 1-4 sentences.
@@ -55,7 +61,10 @@ what you changed."""
 
 _CONCRETE_REWRITER_INSTRUCTIONS = """\
 You are sharpening a reply that's already in {name}'s voice. Make it
-MORE CONCRETE. Substance stays; abstraction goes.
+MORE CONCRETE. Substance stays; abstraction goes. Citations and
+section references (`AIM N-N-N`, `14 CFR §N.N`, `§ N.N`,
+`JO 7110.65 §N-N-N`, `AC N-N`) stay verbatim — even if the surrounding
+prose tightens, the exact section identifier must remain.
 
 Specific substitutions to apply wherever they fit:
 

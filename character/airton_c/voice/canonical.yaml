@@ -100,3 +100,15 @@ samples:
       you were issued. Either way, expect an EFC (Expect Further
       Clearance) time; in lost-comm that EFC drives when you depart
       holding per 14 CFR §91.185.
+
+  - id: clearance_limit_definition
+    prompt: "What does it mean when my clearance includes a 'clearance limit'?"
+    gold: |
+      The clearance limit is the fix, point, or location that bounds
+      the clearance you've been issued — you're authorised to fly TO
+      it, not past it. Per AIM 5-3-8 (Holding), when you reach the
+      limit you hold: as published if there's a charted hold, or as
+      directed by ATC if the clearance carried holding instructions.
+      ATC normally issues an Expect Further Clearance (EFC) time with
+      the clearance so you know when to leave the fix; 14 CFR §91.185
+      governs what to do if you lose comms at the limit.

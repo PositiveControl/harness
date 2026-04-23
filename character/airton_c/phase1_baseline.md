@@ -366,3 +366,86 @@ Need 2 more passes (17.6/22). Cheapest candidates:
 Lane C's ceiling was ~+3 passes; we got +3. The remaining 2 pp gap
 to 80% is achievable through a focused lane D (rewriter +
 regression-guard alternates) without more corpus changes.
+
+---
+
+## Run 5 — after lane D (2026-04-23)
+
+Lane D shipped:
+
+- **Schema**: `expected_citations` now accepts alternate-lists (same
+  shape as `expected_keywords`). Scalar strings still load as
+  single-alternate tuples (backward compat).
+- **Rubric loosening**: `shared_cancel_ifr_in_imc` accepts any of
+  `["91.155", "91.153", "91.173", "5-1-15"]`; `ppl_preflight_action`
+  accepts `["runway", "NOTAM", "NOTAMs"]` as alternate for the
+  runway-category keyword (§91.103's preamble lists both).
+- **Voice sample**: `clearance_limit_definition` for definitional
+  queries (the `clearance_limit_hold` sample was procedural).
+- **Rewriter prompt**: both style and concrete passes now tell the
+  rewriter that citations are SUBSTANCE — `AIM N-N-N`, `§ N.N`, etc.
+  stay verbatim.
+
+**14/22 = 63.6%** — DOWN from run 4's 72.7%. Run-to-run sampling
+variance at `temperature=0.3` dominates the changes.
+
+| scope | run 3 | run 4 | run 5 |
+| ----- | ----- | ----- | ----- |
+| overall | 63.6% | 72.7% | 63.6% |
+| ppl | 63.6% | 72.7% | 54.5% |
+| ifr | 63.6% | 72.7% | 72.7% |
+
+### Per-case changes vs run 4
+
+**New passes (+2)**:
+- `shared_cancel_ifr_in_imc` — fixture alternate caught model's
+  `§91.155` + `AIM 5-1-15` citation.
+- `ifr_takeoff_minimums_part_91` — model produced a
+  list-all-four-sections reply that happened to include §91.175; not
+  obviously attributable to any lane D change.
+
+**Regressed (−4)**:
+- `ppl_class_b_entry_requirements` — reply went all-phraseology, no
+  Mode C / two-way radio / 91.131. Likely **retrieval leakage**: the
+  new `clearance_limit_definition` sample ranked into the top-K and
+  its "hold at the clearance limit" phrasing ended up in the Class-B
+  reply.
+- `ppl_hemispheric_cruising_altitudes` / `ifr_instrument_currency` /
+  `ifr_descent_below_mda` — kw hits dropped below the min;
+  non-deterministic MLX output.
+
+### Signal vs noise
+
+The variance at temp=0.3 is ~±4 cases. Lane D's changes individually
+do things (alternate schema is good, `shared_cancel` fixture caught
+its flip), but the per-run delta is inside the noise band.
+
+Rewriter citation preservation via prompt: didn't work. `ppl_readback
+_basics` still drops `AIM 4-4-7` in run 5 despite the explicit
+"citations are SUBSTANCE" rule. A prompt rule isn't enough; a
+post-rewrite fixup that re-injects lost citations is the right
+next step (new follow-up bead).
+
+### What to do next
+
+Three distinct moves, in priority order:
+
+1. **Lower eval temperature** to 0.0 or 0.1 to make the baseline
+   stable run-to-run. At temp=0.3, ±4-case variance masks any
+   +1-2-case win from a single change. Without stable measurement,
+   tuning is guessing. File as a new bead — trivial edit to the
+   `eval atc` default temperature.
+2. **Post-rewrite citation fixup** (harness-cco follow-up).
+   Tokenize citations in the pass-1 draft via regex; after the
+   rewrite, re-inject any that went missing. Deterministic,
+   byte-level fix that does what the prompt failed to do.
+3. **Roll back the `clearance_limit_definition` voice sample** if
+   the Class-B leakage reproduces on the stable baseline. Voice
+   retriever doesn't have content-based filtering; a sample whose
+   gold mentions "hold at the clearance limit" will surface on any
+   query with "limit" or "clearance" or "hold" semantically.
+
+Lane D's honest effect: +1 real flip (shared_cancel_ifr_in_imc), +1
+possible side-effect regression (ppl_class_b), and a lot of noise.
+Phase-1 target of 80% remains open; achievable but requires stable
+measurement first.
