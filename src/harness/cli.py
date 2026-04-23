@@ -346,6 +346,36 @@ def _maybe_harvest_skills(
         )
 
 
+def _maybe_harvest_bd_memories(
+    ab_adapter: BeadsAdapter | None,
+    episodic: EpisodicStore | None,
+    *,
+    enabled: bool = True,
+) -> None:
+    """Mirror bd's persistent memories into the episodic store at
+    session start so the main retrieval path can surface them on
+    identity / biographical questions (harness-9yd).
+
+    Same failure discipline as `_maybe_harvest_skills`: warn on
+    failure, never raise — a flaky bd subprocess must not block chat
+    startup. Idempotent on `external_id='bd-mem:<key>'`, so steady-
+    state cost is one `bd memories --json` call plus zero embeds."""
+    if not enabled or ab_adapter is None or episodic is None:
+        return
+    try:
+        from harness.skills import harvest_bd_memories
+
+        report = harvest_bd_memories(ab_adapter=ab_adapter, episodic=episodic)
+    except Exception as exc:
+        console.print(f"[yellow]⚠ bd memory harvest skipped: {exc}[/yellow]")
+        return
+    if report.newly_ingested > 0:
+        console.print(
+            f"[dim]harvested {report.newly_ingested} new bd memorie(s) "
+            f"({report.already_present} already present)[/dim]"
+        )
+
+
 # Names of the ops (bd-backed) tools. Used by the registry warning
 # path to distinguish "unknown tool" from "ops tool whose bd adapter
 # didn't bind" — the user-facing hint is very different.
@@ -1587,6 +1617,15 @@ def chat(
         "embedding work. Lets relevant past decisions surface on future "
         "user turns via the normal retrieval path (sota punch #7).",
     ),
+    harvest_memories: bool = typer.Option(
+        True,
+        "--harvest-memories/--no-harvest-memories",
+        help="At session start, mirror bd memories (bd remember / "
+        "retro record) into the episodic store as tier='procedural' "
+        "so identity / biographical questions land through the "
+        "normal retrieval path instead of hallucinating. Idempotent "
+        "on external_id='bd-mem:<key>' (harness-9yd).",
+    ),
     persona: bool = typer.Option(
         False,
         "--persona/--no-persona",
@@ -1763,6 +1802,7 @@ def chat(
             draft_repo=draft_repo,
             summarize_tool_results=summarize_tool_results,
             harvest_skills=harvest_skills,
+            harvest_memories=harvest_memories,
             persona=persona,
             chain_rewrites=chain_rewrites,
             top_k=top_k,
@@ -1798,6 +1838,7 @@ def chat(
         draft_repo=draft_repo,
         summarize_tool_results=summarize_tool_results,
         harvest_skills=harvest_skills,
+        harvest_memories=harvest_memories,
         persona=persona,
         chain_rewrites=chain_rewrites,
         top_k=top_k,
@@ -2751,6 +2792,40 @@ def memory_harvest_skills(
         )
         if report.ingested_ids:
             console.print(f"[dim]ingested: {', '.join(report.ingested_ids)}[/dim]")
+    finally:
+        store.close()
+
+
+@memory_app.command("harvest-memories")
+def memory_harvest_bd_memories() -> None:
+    """Mirror bd's persistent memories (bd remember / retro record)
+    into the episodic store as tier='procedural' records so the main
+    retrieval path surfaces them on identity / biographical questions.
+    Idempotent on external_id='bd-mem:<key>' — re-running after new
+    `bd remember` calls picks up only the new keys (harness-9yd)."""
+    from harness.skills import harvest_bd_memories
+
+    character = load_character(settings.character_path)
+    ab_adapter = _maybe_bd_adapter(character, include_internal=True)
+    if ab_adapter is None:
+        console.print(
+            "[red]no bd adapter available — set HARNESS_AB_BD_DIR to ab's "
+            "bd working directory first[/red]"
+        )
+        raise typer.Exit(code=1)
+    store = _open_episodic_store(character)
+    if store is None:
+        console.print("[red]episodic store not enabled[/red]")
+        raise typer.Exit(code=1)
+    try:
+        report = harvest_bd_memories(ab_adapter=ab_adapter, episodic=store)
+        console.print(
+            f"[bold]{report.newly_ingested}[/bold] new, "
+            f"[bold]{report.already_present}[/bold] already present, "
+            f"{report.scanned} total bd memorie(s) scanned."
+        )
+        if report.ingested_keys:
+            console.print(f"[dim]ingested: {', '.join(report.ingested_keys)}[/dim]")
     finally:
         store.close()
 

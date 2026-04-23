@@ -25,6 +25,7 @@ _EXPECTED_COMMANDS: tuple[str, ...] = (
     "memory fact-add",
     "memory fact-list",
     "memory fact-search",
+    "memory harvest-memories",
     "memory harvest-skills",
     "memory ingest",
     "memory list",

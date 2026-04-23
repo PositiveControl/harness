@@ -533,6 +533,7 @@ def run_classic_chat(
     draft_repo: str | None,
     summarize_tool_results: bool,
     harvest_skills: bool,
+    harvest_memories: bool,
     persona: bool,
     top_k: int,
     memories: int,
@@ -617,9 +618,12 @@ def run_classic_chat(
     # decisions/observations made since last session are searchable
     # this session. Idempotent; no-op when either substrate is
     # missing. See harness-j5b (sota punch #7 follow-up).
-    from harness.cli import _maybe_harvest_skills
+    from harness.cli import _maybe_harvest_bd_memories, _maybe_harvest_skills
 
     _maybe_harvest_skills(ab_adapter, memory_store, enabled=harvest_skills)
+    # Mirror bd memories onto the same episodic substrate so identity
+    # and biographical questions don't hallucinate (harness-9yd).
+    _maybe_harvest_bd_memories(ab_adapter, memory_store, enabled=harvest_memories)
 
     registry = build_classic_registry(
         tools=tools,

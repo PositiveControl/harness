@@ -35,6 +35,7 @@ def run_tui(
     draft_repo: str | None,
     summarize_tool_results: bool,
     harvest_skills: bool,
+    harvest_memories: bool,
     persona: bool,
     chain_rewrites: bool,
     top_k: int,
@@ -122,9 +123,11 @@ def run_tui(
 
     # Harvest newly-closed thought:* beads before the TUI opens. See
     # cli_classic for the same pattern + rationale.
-    from harness.cli import _maybe_harvest_skills
+    from harness.cli import _maybe_harvest_bd_memories, _maybe_harvest_skills
 
     _maybe_harvest_skills(ab_adapter, memory_store, enabled=harvest_skills)
+    # Mirror bd memories onto the same episodic substrate (harness-9yd).
+    _maybe_harvest_bd_memories(ab_adapter, memory_store, enabled=harvest_memories)
 
     registry: ToolRegistry | None = _build_tool_registry_for_tui(
         tools=tools,
