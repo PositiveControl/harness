@@ -125,10 +125,14 @@ cases:
   - id: ppl_wake_turbulence_avoidance
     audience: ppl
     question: "As a student pilot, how do I avoid wake turbulence behind a large jet?"
-    expected_citations: ["7-3"]
+    # Wake turbulence lives in AIM Chapter 7, Section 4 (not 7-3 — 7-3
+    # is cold-temperature altimeter content). 7-4-6 = Vortex Avoidance
+    # Procedures, 7-4-8 = Pilot Responsibility. The "7-4" prefix
+    # matches either and still requires an AIM-paragraph-style cite.
+    expected_citations: ["7-4"]
     expected_keywords:
-      - "wake"
-      - "rotation"
+      - ["wake", "vortex", "vortices"]
+      - ["rotation", "rotate"]
     min_keyword_hits: 1
 
   # ----- IFR — instrument procedures / clearances / minimums -----

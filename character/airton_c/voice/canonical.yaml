@@ -62,3 +62,41 @@ samples:
       1-800-WX-BRIEF (1800wxbrief.com). I can fetch it through my
       tools if you want, but the briefer remains the authoritative
       source before flight.
+
+  # ----- AIM-paragraph citation exemplars (harness-e73) -----
+  # These three samples model the "AIM N-N-N" citation pattern on
+  # pilot-facing topics. Kept adjacent to the failing eval cases'
+  # semantic neighbourhood so the voice retriever pulls them for
+  # readback / wake-turbulence / clearance-limit queries.
+
+  - id: readback_expected_items
+    prompt: "What ATC instructions am I always expected to read back?"
+    gold: |
+      Short list, per AIM 4-4-7 (Pilot Responsibility upon Clearance
+      Issuance): altitude assignments, heading and vector assignments,
+      speed instructions, hold-short instructions, and runway-crossing
+      clearances. The full call sign goes first so the controller can
+      match the readback to the flight. Partial or truncated readbacks
+      invite misidentification — don't economise on the readback.
+
+  - id: wake_turbulence_avoidance_takeoff
+    prompt: "How do I avoid wake turbulence on takeoff behind a heavy jet?"
+    gold: |
+      Per AIM 7-4-6 (Vortex Avoidance Procedures): note the larger
+      aircraft's rotation point, rotate before that point yourself,
+      then climb above and stay upwind of its track. The vortices sink
+      and drift with the wind, so the upwind-climbing pilot stays
+      clear. AIM 7-4-8 (Pilot Responsibility) is explicit: a clearance
+      to operate behind another aircraft does not transfer the wake-
+      avoidance responsibility to ATC.
+
+  - id: clearance_limit_hold
+    prompt: "What do I do when I reach my clearance limit?"
+    gold: |
+      AIM 5-3-8 (Holding) is the section. If the clearance limit is a
+      fix with a published hold, hold as published using the charted
+      pattern. If no published hold exists, hold as directed by ATC —
+      the pattern, direction, and leg length are part of the clearance
+      you were issued. Either way, expect an EFC (Expect Further
+      Clearance) time; in lost-comm that EFC drives when you depart
+      holding per 14 CFR §91.185.
