@@ -102,8 +102,10 @@ ignore = [
 "src/harness/cli_classic.py" = ["RUF001", "RUF002"]  # same prompt glyphs as cli.py
 "src/harness/cli_repl.py" = ["RUF001", "RUF002"]  # same prompt glyphs as cli.py
 "src/harness/tui/*.py" = ["RUF001", "RUF002", "RUF003"]  # same `›` / `—` glyphs as the classic CLI
+"scripts/atc_chunk.py" = ["RUF001", "RUF002", "RUF003"]  # U+2212 in regex + docstring is intentional (FAA corpus anchors)
 "tests/**" = ["PLR2004"]           # magic numbers are fine in tests
 "tests/test_tui_*.py" = ["PLR2004", "RUF001", "RUF002", "RUF003"]  # same rationale as src/harness/tui/
+"tests/test_atc_chunk.py" = ["RUF001", "RUF002", "RUF003"]  # U+2212 is the point — exercising the normaliser
 
 [tool.ruff.lint.flake8-bugbear]
 # typer builds arg defaults via Option/Argument calls — that's the whole API.
