@@ -16,6 +16,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Default to offline HF: the embedder + model are already cached, and a
+# flaky DNS / offline network makes sentence-transformers hang on HEAD
+# requests to huggingface.co. Override with `HF_HUB_OFFLINE=0` to refresh.
+: "${HF_HUB_OFFLINE:=1}"
+: "${TRANSFORMERS_OFFLINE:=1}"
+export HF_HUB_OFFLINE TRANSFORMERS_OFFLINE
+
 exec uv run harness chat \
     --model mlx \
     --persona \
