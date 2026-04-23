@@ -1,9 +1,9 @@
 {
   "character": "airton_c",
   "adapter": "persona[mlx:Qwen2.5-7B-Instruct-4bit]",
-  "pass_rate": 0.6363636363636364,
+  "pass_rate": 0.6818181818181818,
   "pass_rate_by_audience": {
-    "ppl": 0.6363636363636364,
+    "ppl": 0.7272727272727273,
     "ifr": 0.6363636363636364
   },
   "cases": [
@@ -81,7 +81,7 @@
       ],
       "keyword_hits": 2,
       "min_keyword_hits": 2,
-      "reply": "To ensure the safety of your flight, gather weather, NOTAMs, and other relevant information. Assess the weather and runway conditions. File a flight plan if in controlled airspace, using automated resources or Flight Service. Conduct a self-brief before contacting Flight Service. Review AC 90-66B for guidance. Use 1800wxbrief.com for weather and self-briefing. Contact 1-800-WX-BRIEF for a detailed briefing. Follow these steps to be well-prepared."
+      "reply": "To ensure the safety of your flight, gather weather, NOTAMs, and other relevant information. Assess the weather and runway conditions. File a flight plan if in controlled airspace, using automated resources or Flight Service. Conduct a self-brief before contacting Flight Service. Review AC 90-66B for guidance. Use 1800wxbrief.com for weather and self-briefing. Contact 1-800-WX-BRIEF for a detailed briefing. Follow these steps to be well-prepared.\n\n— AC 91-92"
     },
     {
       "id": "ppl_altimeter_setting",
@@ -133,19 +133,17 @@
     {
       "id": "ppl_readback_basics",
       "audience": "ppl",
-      "passed": false,
-      "citations_pass": false,
+      "passed": true,
+      "citations_pass": true,
       "keywords_pass": true,
-      "missing_citations": [
-        "4-4-7"
-      ],
+      "missing_citations": [],
       "matched_keywords": [
         "readback",
         "altitude"
       ],
       "keyword_hits": 2,
       "min_keyword_hits": 2,
-      "reply": "- Altitude assignments\n- Heading and vector assignments\n- Speed instructions\n- Hold-short instructions\n- Runway-crossing clearances\n\nThe full call sign goes first so the controller can match the readback to the flight. Partial readbacks invite misidentification — don't economise on the readback."
+      "reply": "- Altitude assignments\n- Heading and vector assignments\n- Speed instructions\n- Hold-short instructions\n- Runway-crossing clearances\n\nThe full call sign goes first so the controller can match the readback to the flight. Partial readbacks invite misidentification — don't economise on the readback.\n\n— AIM 4-4-7"
     },
     {
       "id": "ppl_wake_turbulence_avoidance",

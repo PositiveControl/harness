@@ -263,3 +263,132 @@ def test_persona_adapter_stream_falls_back_without_base_stream() -> None:
     chunks = list(adapter.stream([ChatMessage(role="user", content="hi")]))
     # Fallback emits the fully-composed reply as one chunk
     assert "".join(chunks) == "final"
+
+
+# ---------- citation preservation (harness-cco) ----------
+
+
+def test_extract_citations_catches_aim_paragraph() -> None:
+    from harness.persona.rewriter import extract_citations
+
+    assert "AIM 4-4-7" in extract_citations("per AIM 4-4-7, you must read back.")
+
+
+def test_extract_citations_catches_cfr_section() -> None:
+    from harness.persona.rewriter import extract_citations
+
+    assert "14 CFR §91.155" in extract_citations("See 14 CFR §91.155 for the table.")
+    # Bare-section form (CFR prefix optional) also matches.
+    assert "§ 91.103" in extract_citations("Per § 91.103, preflight…")
+
+
+def test_extract_citations_catches_jo_7110_65() -> None:
+    from harness.persona.rewriter import extract_citations
+
+    assert "JO 7110.65BB §2-6-4" in extract_citations(
+        "Controllers follow JO 7110.65BB §2-6-4 for chaff areas."
+    )
+
+
+def test_extract_citations_catches_advisory_circulars() -> None:
+    from harness.persona.rewriter import extract_citations
+
+    assert "AC 90-66B" in extract_citations("See AC 90-66B for the guidance.")
+
+
+def test_extract_citations_ignores_generic_numbers() -> None:
+    """Narrow regex: plain 'chapter 5' or bare digit pairs don't match
+    — only well-formed citation shapes."""
+    from harness.persona.rewriter import extract_citations
+
+    assert extract_citations("See chapter 5 of the AIM.") == []
+    assert extract_citations("The value is 4-7 depending on altitude.") == []
+    assert extract_citations("AIM 4") == []  # must have at least one -N segment
+
+
+def test_preserve_citations_noop_when_rewrite_kept_everything() -> None:
+    """If the rewriter did its job and preserved citations, the
+    fixup returns the rewrite unchanged — keeps styled output pristine."""
+    from harness.persona.rewriter import preserve_citations
+
+    draft = "Per AIM 4-4-7 and 14 CFR §91.155, the rule is…"
+    rewritten = "AIM 4-4-7 requires the readback; 14 CFR §91.155 governs weather."
+    assert preserve_citations(draft, rewritten) == rewritten
+
+
+def test_preserve_citations_appends_missing_single_cite() -> None:
+    """The ppl_readback_basics failure mode: pass-1 drafts 'per
+    AIM 4-4-7…', pass-2 compresses it out. Fixup re-injects."""
+    from harness.persona.rewriter import preserve_citations
+
+    draft = "Per AIM 4-4-7 (Pilot Responsibility), you must read back altitudes."
+    rewritten = "You must read back altitudes."
+    out = preserve_citations(draft, rewritten)
+    assert out.startswith("You must read back altitudes.")
+    assert "AIM 4-4-7" in out
+
+
+def test_preserve_citations_only_reinjects_what_was_dropped() -> None:
+    """When rewriter keeps SOME cites but drops others, only the
+    dropped ones append. Survivors stay where the rewriter put them
+    (no duplication)."""
+    from harness.persona.rewriter import preserve_citations
+
+    draft = "Per AIM 4-4-7 and 14 CFR §91.155, you must read back…"
+    rewritten = "Per 14 CFR §91.155, you must read back altitudes."
+    out = preserve_citations(draft, rewritten)
+    assert out.count("14 CFR §91.155") == 1  # not duplicated
+    assert "AIM 4-4-7" in out
+
+
+def test_preserve_citations_folds_ascii_hyphen_and_unicode_minus() -> None:
+    """The corpus uses U+2212 (unicode minus) in AIM anchors; the
+    rewriter may normalise to ASCII hyphen (or vice versa). They
+    should count as the same citation for dedup — no re-injection."""
+    from harness.persona.rewriter import preserve_citations
+
+    draft = "per AIM 4-4-7 (ASCII hyphen)"
+    rewritten = "per AIM 4−4−7 (unicode minus)"
+    assert preserve_citations(draft, rewritten) == rewritten
+
+
+def test_preserve_citations_noop_when_draft_had_no_cites() -> None:
+    """Most airton turns have no citations. Fixup is a no-op for
+    them — doesn't touch non-atc personas."""
+    from harness.persona.rewriter import preserve_citations
+
+    draft = "I'd check the log first. Then I'd run the test."
+    rewritten = "Check the log. Run the test."
+    assert preserve_citations(draft, rewritten) == rewritten
+
+
+def test_persona_adapter_reinjects_citation_dropped_by_rewriter() -> None:
+    """End-to-end: PersonaAdapter.complete wraps the fixup. When the
+    base adapter's 'rewriter' pass drops a citation the draft had,
+    the final reply still contains it."""
+    character = load_character(AIRTON)
+
+    @dataclass
+    class _Drafter:
+        id: str = "drafter"
+        context_window: int = 8192
+        call_idx: int = 0
+
+        def complete(
+            self,
+            messages: Iterable[ChatMessage],
+            *,
+            max_tokens: int = 512,
+            temperature: float = 0.7,
+        ) -> str:
+            # Pass 1 draft cites AIM 4-4-7; pass 2 (rewrite) drops it.
+            idx = self.call_idx
+            self.call_idx += 1
+            if idx == 0:
+                return "Per AIM 4-4-7 you must read back altitudes."
+            return "Read back altitudes."
+
+    adapter = PersonaAdapter(_Drafter(), character, chain_rewrites=False)
+    out = adapter.complete([ChatMessage(role="user", content="readback?")])
+    assert out.startswith("Read back altitudes.")
+    assert "AIM 4-4-7" in out

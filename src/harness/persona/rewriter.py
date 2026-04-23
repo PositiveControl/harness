@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING
 
@@ -9,6 +10,84 @@ from harness.model.adapter import count_tokens as _count_tokens
 if TYPE_CHECKING:
     from harness.character import Character, VoiceSample
     from harness.model.adapter import ModelAdapter
+
+
+# Citation patterns the post-rewrite fixup tracks (harness-cco). The
+# rewriter prompt tells the model to preserve these verbatim, but the
+# style pass still sometimes compresses them out — especially
+# parentheticals like "(Pilot Responsibility upon Clearance Issuance)"
+# trailing an `AIM N-N-N` reference. Regex match here is narrow so we
+# don't false-positive on generic numeric phrases: "chapter 5" doesn't
+# match; "AIM 5-3-8" does. Case-insensitive because the model
+# sometimes lowercases "aim" mid-sentence.
+#
+# Accept both ASCII hyphen (normalised chunker output) and U+2212
+# (unicode minus the corpus source used). `_normalise_cite` below
+# folds both to ASCII for equality checks, so "AIM 4-4-7" and
+# "AIM 4−4−7" count as the same citation in the deduplication step.
+_CITATION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # AIM paragraph: "AIM 4-4-7" / "AIM 3-2". Allow 1-2 trailing
+    # `-NNN` segments; require at least one so plain "AIM 4" doesn't
+    # match.
+    re.compile(r"AIM\s+\d+(?:[-−]\d+){1,2}", re.IGNORECASE),
+    # CFR: "14 CFR §91.155" / "§ 91.103" / "§91.103a". The `14 CFR`
+    # prefix is optional because the model drops it about half the
+    # time — the section number alone is the canonical anchor.
+    re.compile(r"(?:14\s+CFR\s+)?§\s*\d+\.\d+[a-z]*", re.IGNORECASE),
+    # JO 7110.65: "JO 7110.65BB §2-6-4" / "JO 7110.65 2-6-4".
+    re.compile(r"JO\s+7110\.65[A-Z]*\s+§?\s*\d+(?:[-−]\d+){1,2}", re.IGNORECASE),
+    # Advisory Circulars: "AC 90-66B".
+    re.compile(r"AC\s+\d+[-−]\d+[A-Z]*", re.IGNORECASE),
+)
+
+
+def _normalise_cite(cite: str) -> str:
+    """Fold case, whitespace, and unicode-minus so
+    'AIM 4-4-7' == 'aim 4−4−7' == 'AIM  4-4-7' for dedup purposes."""
+    return cite.lower().replace("−", "-").replace(" ", "")
+
+
+def extract_citations(text: str) -> list[str]:
+    """Return every citation-shaped substring in `text` in appearance
+    order, preserving surface form (model's actual casing, dash
+    variant). Duplicates preserved — callers dedup via `_normalise_cite`
+    as needed. Narrow patterns: won't match 'chapter 5' or '91' alone
+    or 'airman 4-7'."""
+    out: list[str] = []
+    for pattern in _CITATION_PATTERNS:
+        out.extend(match.group(0) for match in pattern.finditer(text))
+    return out
+
+
+def preserve_citations(draft: str, rewritten: str) -> str:
+    """Append citations that survived pass-1 but disappeared in the
+    rewrite, so `ppl_readback_basics`-style failures where the style
+    pass compresses away `AIM 4-4-7` stop happening.
+
+    Returns `rewritten` unchanged when every draft citation is already
+    present — keeps rewriter output pristine in the common case. When
+    citations went missing, appends them as a terminal em-dash line
+    so a reader can still find the anchor without the body being
+    restructured.
+
+    First occurrence's surface form from the draft wins — preserves
+    the model's actual phrasing rather than reconstructing it."""
+    draft_cites = extract_citations(draft)
+    if not draft_cites:
+        return rewritten
+    rewritten_lower = _normalise_cite(rewritten)
+    seen: set[str] = set()
+    missing: list[str] = []
+    for cite in draft_cites:
+        key = _normalise_cite(cite)
+        if key in seen:
+            continue
+        seen.add(key)
+        if key not in rewritten_lower:
+            missing.append(cite)
+    if not missing:
+        return rewritten
+    return f"{rewritten.rstrip()}\n\n— {', '.join(missing)}"
 
 
 _STYLE_REWRITER_INSTRUCTIONS = """\
@@ -196,14 +275,21 @@ class PersonaAdapter:
             temperature=self.rewriter_temperature,
         )
         if not self.chain_rewrites:
-            return styled
+            # Re-inject any citations the rewriter dropped (harness-cco).
+            # Pass-1 draft is the source of truth for what citations
+            # should be in the reply; the rewriter is only supposed to
+            # change style.
+            return preserve_citations(draft, styled)
 
         concrete_msgs = build_rewriter_messages(self.character, styled, focus="concrete")
-        return self.base.complete(
+        concrete = self.base.complete(
             concrete_msgs,
             max_tokens=rewrite_cap,
             temperature=self.rewriter_temperature,
         )
+        # Same fixup after pass-3 — measure against the original draft
+        # so a citation dropped in pass-2 AND pass-3 still gets back.
+        return preserve_citations(draft, concrete)
 
     def stream(
         self,

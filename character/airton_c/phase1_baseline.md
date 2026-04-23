@@ -516,3 +516,78 @@ Priority for the 4 remaining flips:
    existing voice sample has the correct answer but the model
    isn't imitating it. May need a constitutional rule or a
    stronger system-prompt line.
+
+---
+
+## Run 7 — citation fixup landed (harness-cco)
+
+`src/harness/persona/rewriter.py` gained two helpers + wired them
+into `PersonaAdapter.complete`:
+
+- `extract_citations(text)` — regex-bank for `AIM N-N-N`,
+  `14 CFR §N.N`, `§ N.N`, `JO 7110.65 §N-N-N`, `AC N-N`. Accepts
+  ASCII hyphen AND U+2212 (corpus-side minus).
+- `preserve_citations(draft, rewritten)` — when the rewriter dropped
+  any citation from the pass-1 draft, append them to the pass-2
+  output on an em-dash line. No-op when all survived.
+
+Pass-2 (and pass-3 if chain_rewrites is on) runs through the fixup
+before returning. The pass-1 draft is the source of truth for what
+citations should be in the final reply.
+
+**15/22 = 68.2%** — +1 flip vs run 6's 63.6% baseline.
+
+The flip, as predicted:
+- `ppl_readback_basics` — pass-1 drafted "Per AIM 4-4-7 (Pilot
+  Responsibility upon Clearance Issuance), you must read back…",
+  pass-2 (style rewrite) compressed to "You must read back altitudes…"
+  — losing the anchor. Fixup re-appended "— AIM 4-4-7" at the end.
+  The reply scores cite ✓ + kw 2/2 → pass.
+
+No regressions. The other 14 run-6 passes all still pass; every other
+run-6 failure is still failing at temp=0 (deterministic).
+
+| metric | run 6 | run 7 | Δ |
+| ------ | ----- | ----- | --- |
+| overall | 63.6% | 68.2% | +4.5 pp |
+| ppl | 63.6% | 72.7% | +9.1 pp |
+| ifr | 63.6% | 63.6% | 0.0 |
+
+### Cumulative vs original baseline
+
+| lane | stable pass | delta |
+| ---- | ----------- | ----- |
+| start (run 1 single sample) | 54.5% | — |
+| +lane A (alternates) | ? | small |
+| +lane B (voice samples) | ? | small |
+| +lane C (corpus scope) | 63.6% | +9.1 pp |
+| +lane D (fixture + schema) | 63.6% | 0 (within variance) |
+| +lane E (temp-0 baseline) | 63.6% | 0 (methodology, not score) |
+| +harness-cco (citation fixup) | **68.2%** | +4.5 pp |
+
+The honest read: two big moves drove the real lift —
+**lane C (corpus scope: +9 pp)** and **harness-cco (citation
+preservation: +4.5 pp)** — both deterministic fixes that target real
+bugs (retrieval noise, rewriter compression). Lanes A/B/D shipped
+useful infrastructure (alternate schema, voice samples, variance
+control) but their direct score impact at temp=0 is small.
+
+### Remaining 7 failures
+
+All at temp=0, deterministic:
+
+| case | mode | next step |
+| ---- | ---- | --------- |
+| `ppl_vfr_cloud_clearance_above_10k` | factual error | constitution / system prompt |
+| `ppl_preflight_action` | cite miss §91.103 | retrieval or voice sample |
+| `ppl_pic_responsibility` | cite miss §91.3 | voice sample or alternate |
+| `ifr_takeoff_minimums_part_91` | cite miss §91.175 | retrieval (not in top-K despite scope filter) |
+| `ifr_vfr_on_top` | cite miss AIM 4-4-8 | voice sample |
+| `ifr_instrument_currency` | kw hits 1/2 | keyword alternates |
+| `ifr_descent_below_mda` | kw hits 0/1 | reply content problem |
+
+Path to 80% (18/22) = +3 more flips. The cite misses are addressable
+via the same pattern harness-cco just used (voice sample → fixup
+catches what rewriter drops) or via retrieval boosts. The kw-hit
+misses need per-case inspection of the deterministic reply against
+the fixture alternates.
