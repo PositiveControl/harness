@@ -2274,6 +2274,174 @@ def eval_session_resume(
     )
 
 
+@eval_app.command("atc")
+def eval_atc(
+    fixture_path: Path | None = typer.Option(
+        None,
+        "--fixture",
+        help="Path to an atc eval YAML. Defaults to `character/<name>/atc_eval.yaml`.",
+    ),
+    model: str = typer.Option("mlx", help="Adapter: echo | mlx | ollama"),
+    model_repo: str | None = typer.Option(None, "--model-repo"),
+    lora_path: str | None = typer.Option(None, "--lora-path"),
+    draft_repo: str | None = typer.Option(None, "--draft-repo"),
+    temperature: float = typer.Option(0.3, help="Sampling temperature"),
+    memories: int = typer.Option(3, help="Top-K episodic memories per turn"),
+    facts: int = typer.Option(5, help="Top-K semantic facts per turn"),
+    top_k: int = typer.Option(6, help="Top-K voice samples per turn"),
+    audience: str | None = typer.Option(
+        None,
+        "--audience",
+        help="Filter fixture to one audience (ppl|ifr|…). Default: all.",
+    ),
+    persona: bool = typer.Option(
+        True,
+        "--persona/--no-persona",
+        help="Wrap the base adapter in PersonaAdapter (default on).",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+) -> None:
+    """Run atc's domain eval: replay PPL/IFR Q&A cases through the full
+    persona + retrieval stack and score citation presence + keyword
+    recall. Phase-1 target: ≥80% pass. Becomes the gate for Phase-2
+    voice changes and Phase-3 LoRA (harness-xbk.7)."""
+    from harness.evals.atc import (
+        default_fixture_path as _atc_default_fixture,
+    )
+    from harness.evals.atc import (
+        load_fixture as _atc_load_fixture,
+    )
+    from harness.evals.atc import (
+        run_atc_eval as _atc_run,
+    )
+
+    character = load_character(settings.character_path)
+    path = fixture_path or _atc_default_fixture(settings.character_path)
+    if not path.exists():
+        raise typer.BadParameter(f"atc eval fixture not found: {path}")
+    fixture = _atc_load_fixture(path)
+    if audience is not None:
+        fixture = tuple(row for row in fixture if row.audience == audience)
+    if not fixture:
+        console.print("[yellow](no cases in fixture after filter — nothing to score)[/yellow]")
+        raise typer.Exit(code=0)
+
+    adapter = _resolve_adapter(
+        model,
+        persona=persona,
+        character=character,
+        model_repo=model_repo,
+        lora_path=lora_path,
+        draft_repo=draft_repo,
+    )
+
+    # Retrieval stack. Off-the-shelf defaults match `harness chat`
+    # with --memories 3 --facts 5 — same numbers the eval target
+    # calibrates against.
+    retriever = _maybe_retriever(character, top_k=top_k)
+    memory_store = _open_episodic_store(character, ingest=False)
+    semantic_store = _open_semantic_store()
+    speaker = "eval"  # shared persona-wide content is user_id=None; a
+    # literal speaker keeps the retrieval API consistent while never
+    # matching a user-siloed row.
+
+    def run_turn(question: str) -> str:
+        examples: list[VoiceSample] = []
+        if retriever is not None and top_k > 0:
+            try:
+                examples = retriever.top_k(question, k=top_k)
+            except Exception:  # eval is read-only; surface score only
+                examples = []
+
+        recalled: list[EpisodicRecord] = []
+        if memory_store is not None and memories > 0:
+            try:
+                hits = memory_store.search(question, k=memories, user_id=speaker)
+                recalled = [rec for rec, _score in hits]
+            except Exception:
+                recalled = []
+
+        known_facts: list[SemanticFact] = []
+        if semantic_store is not None and facts > 0:
+            try:
+                fact_hits = semantic_store.search(question, k=facts, user_id=speaker)
+                known_facts = [f for f, _score in fact_hits]
+            except Exception:
+                known_facts = []
+
+        sys_prompt = character.system_prompt(include_samples=examples)
+        extra: list[str] = []
+        if recalled:
+            extra.append(_render_memory_block(recalled))
+        if known_facts:
+            extra.append(_render_fact_block(known_facts))
+        if extra:
+            sys_prompt = sys_prompt + "\n\n" + "\n\n".join(extra)
+
+        messages = [
+            ChatMessage(role="system", content=sys_prompt),
+            ChatMessage(role="user", content=question),
+        ]
+        return adapter.complete(messages, temperature=temperature).strip()
+
+    try:
+        result = _atc_run(fixture, run_turn)
+    finally:
+        if memory_store is not None:
+            memory_store.close()
+        if semantic_store is not None:
+            semantic_store.close()
+
+    if as_json:
+        payload = {
+            "character": character.name,
+            "adapter": adapter.id,
+            "pass_rate": result.pass_rate,
+            "pass_rate_by_audience": result.pass_rate_by_audience(),
+            "cases": [
+                {
+                    "id": c.id,
+                    "audience": c.audience,
+                    "passed": c.passed,
+                    "citations_pass": c.citations_pass,
+                    "keywords_pass": c.keywords_pass,
+                    "missing_citations": list(c.missing_citations),
+                    "matched_keywords": list(c.matched_keywords),
+                    "keyword_hits": c.keyword_hits,
+                    "min_keyword_hits": c.min_keyword_hits,
+                    "reply": c.actual_reply,
+                }
+                for c in result.cases
+            ],
+        }
+        console.print_json(json.dumps(payload))
+        return
+
+    table = Table(title=f"atc eval — {character.name} · {adapter.id}", show_lines=False)
+    table.add_column("✓", style="bold", width=2)
+    table.add_column("id")
+    table.add_column("aud.", width=4)
+    table.add_column("cite", style="cyan")
+    table.add_column("kw hits", style="cyan")
+    table.add_column("missing citations", style="yellow")
+    for c in result.cases:
+        mark = "[green]✓[/green]" if c.passed else "[red]✗[/red]"
+        cite = "[green]✓[/green]" if c.citations_pass else "[red]✗[/red]"
+        kw = f"{c.keyword_hits}/{c.min_keyword_hits}"
+        missing = ", ".join(c.missing_citations) if c.missing_citations else ""
+        table.add_row(mark, c.id, c.audience, cite, kw, missing)
+    console.print(table)
+    passed = sum(1 for c in result.cases if c.passed)
+    console.print(
+        f"[bold]{passed}/{len(result.cases)} passed · "
+        f"{result.pass_rate * 100:.1f}%[/bold]"
+    )
+    rates = result.pass_rate_by_audience()
+    if len(rates) > 1:
+        detail = " · ".join(f"{aud}: {r * 100:.1f}%" for aud, r in sorted(rates.items()))
+        console.print(f"[dim]by audience — {detail}[/dim]")
+
+
 @eval_app.command("tool-loop")
 def eval_tool_loop(
     fixture_path: Path | None = typer.Option(

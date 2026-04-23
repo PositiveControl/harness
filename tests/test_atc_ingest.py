@@ -125,7 +125,7 @@ def test_tags_skip_empty_metadata(ingest: object) -> None:
 def test_load_rows_for_slug_missing_file_returns_empty(
     ingest: object, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(ingest, "CORPUS_CHUNKS", tmp_path)  # type: ignore[attr-defined]
+    monkeypatch.setattr(ingest, "CORPUS_CHUNKS", tmp_path)
     assert ingest.load_rows_for_slug("does_not_exist") == []  # type: ignore[attr-defined]
 
 
@@ -135,7 +135,7 @@ def test_load_rows_for_slug_applies_filter_and_dedup(
     """Round-trip: write a jsonl fixture that mixes short-body noise,
     duplicate anchors, and good rows. load_rows_for_slug must drop the
     first and dedup the second."""
-    monkeypatch.setattr(ingest, "CORPUS_CHUNKS", tmp_path)  # type: ignore[attr-defined]
+    monkeypatch.setattr(ingest, "CORPUS_CHUNKS", tmp_path)
     path = tmp_path / "aim.jsonl"
     rows = [
         # Too-short body — dropped.
