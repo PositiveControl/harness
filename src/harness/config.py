@@ -116,37 +116,49 @@ class Settings(BaseSettings):
         return self.ab_bd_dir_resolved / "memory"
 
     def bd_dir_for(self, character_name: str) -> Path:
-        """Resolve the bd working directory for a character. Every
-        character shares the project's `.beads/` by default (=
-        `self.root`) — that's a healthy Dolt instance the project
-        already runs, and isolation between characters is enforced
-        by `assignee` attribution, not directory separation. airton_b
-        honours the legacy HARNESS_AB_BD_DIR override when the user
-        explicitly wants its thought-graph in an isolated dir.
+        """Resolve the bd working directory for a character.
 
-        Why shared-dir + assignee beats per-character dirs: a fresh
-        `bd init` outside a repo context requires a Dolt server that
-        bd doesn't always set up cleanly (55y session surfaced this
-        on airton's first init). Reusing the project's working store
-        avoids the bootstrap burden; every ops-tool write already
-        threads an assignee, so cross-contamination is a config bug
-        away regardless of filesystem layout."""
+        airton (default) and airton_b share the project's bd dir
+        (= `self.root`) — the project has one healthy Dolt instance
+        and reusing it avoids the fresh-init bootstrap pain from
+        harness-55y. Isolation between those two is enforced by
+        `assignee` attribution, not directory separation. airton_b
+        still honours HARNESS_AB_BD_DIR when explicitly set.
+
+        Third-plus personas (airton_c and beyond) auto-silo under
+        `character/<name>/bd/`. Their bead graphs are content-
+        disjoint from harness-dev tracking (a tutoring persona's
+        notes aren't relevant to project beads), so they should
+        live in their own graph even though assignee filtering
+        could keep them readable. The siloed dir needs a one-time
+        `bd init` during character scaffolding; after that every
+        bd op routes through the per-character adapter."""
         if character_name == "airton_b" and self.ab_bd_dir is not None:
             return self.ab_bd_dir
-        return self.root
+        if character_name in ("airton", "airton_b"):
+            return self.root
+        bd_dir = self.root / "character" / character_name / "bd"
+        bd_dir.mkdir(parents=True, exist_ok=True)
+        return bd_dir
 
     def db_path_for(self, character_name: str) -> Path:
-        """Resolve the memory DB path for a character. Airton (and any
-        other character without explicit isolation) uses the repo-
-        relative default; airton_b is siloed under its own memory dir
-        so personal turns + operating-style facts stay out of the dev
-        store. The parent directory is created eagerly for isolated
-        characters; the default path is managed by `data_path`."""
+        """Resolve the memory DB path for a character. airton uses
+        the repo-relative default; airton_b is siloed under its own
+        memory dir so personal turns + operating-style facts stay
+        out of the dev store. Third-plus personas auto-silo under
+        `character/<name>/data/` — keeps per-persona corpora (e.g.
+        atc's FAA docs) from polluting retrieval across personas.
+        Parent directories are created eagerly for isolated
+        characters; airton's default is managed by `data_path`."""
         if character_name == "airton_b":
             memory_dir = self.ab_memory_dir_resolved
             memory_dir.mkdir(parents=True, exist_ok=True)
             return memory_dir / "harness.sqlite"
-        return self.db_path
+        if character_name == "airton":
+            return self.db_path
+        mem_dir = self.root / "character" / character_name / "data"
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        return mem_dir / "harness.sqlite"
 
     @property
     def character_db_path(self) -> Path:

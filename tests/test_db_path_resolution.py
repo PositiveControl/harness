@@ -73,13 +73,20 @@ def test_ab_memory_dir_override_respected(tmp_path: Path) -> None:
     assert s.db_path_for("airton_b") == explicit / "harness.sqlite"
 
 
-def test_unknown_character_falls_back_to_default(tmp_path: Path) -> None:
-    s = Settings(root=tmp_path, character_name="some_other")
-    # Only airton_b is isolated in v1; any other character shares the
-    # default path. New isolation cohorts land deliberately, not by
-    # string-matching accident.
-    assert s.db_path_for("some_other") == s.db_path
-    assert s.db_path_for("random_char") == s.db_path
+def test_third_persona_auto_silos_memory(tmp_path: Path) -> None:
+    """Third-plus personas (anything other than airton / airton_b)
+    auto-silo under `character/<name>/data/harness.sqlite`. Keeps
+    per-persona corpora — e.g. atc's FAA docs — from polluting
+    airton's dev-context memory. Parent dir is created eagerly so
+    the store can open without mkdir'ing itself."""
+    s = Settings(root=tmp_path, character_name="airton_c")
+    resolved = s.db_path_for("airton_c")
+    assert resolved == tmp_path / "character" / "airton_c" / "data" / "harness.sqlite"
+    assert resolved != s.db_path
+    assert resolved.parent.exists()
+    # Shape holds for any other future persona name.
+    other = s.db_path_for("random_char")
+    assert other == tmp_path / "character" / "random_char" / "data" / "harness.sqlite"
 
 
 def test_character_db_path_tracks_character_name(tmp_path: Path) -> None:
@@ -139,23 +146,37 @@ def test_settings_monkeypatch_env_override(monkeypatch: pytest.MonkeyPatch, tmp_
     assert s.db_path_for("airton_b") == override / "harness.sqlite"
 
 
-# --- bd_dir_for: shared-project bd-dir resolution (harness-55y) ---
+# --- bd_dir_for: per-character resolution (harness-55y + harness-xbk.2) ---
 #
-# Every character defaults to the project's bd dir (= settings.root).
-# Isolation is by `assignee` attribution, not by filesystem layout —
-# the project's Dolt store is the one working instance we rely on.
-# airton_b keeps its legacy HARNESS_AB_BD_DIR override so users who
-# want its thought-graph in an isolated dir can still opt in.
+# airton (default) and airton_b share the project bd dir — one healthy
+# Dolt instance, isolation by assignee. airton_b keeps its legacy
+# HARNESS_AB_BD_DIR override. Third-plus personas (airton_c and beyond)
+# auto-silo under character/<name>/bd/ so their bead graphs don't mix
+# with harness-dev tracking.
 
 
-def test_bd_dir_for_all_characters_default_to_project_root(tmp_path: Path) -> None:
-    """Shared-dir invariant: airton, airton_b, and any other
-    character resolve to the same project-relative bd dir by
-    default. Isolation is by assignee, not directory separation."""
+def test_bd_dir_for_airton_and_airton_b_share_project_root(tmp_path: Path) -> None:
+    """airton and airton_b share the project bd dir by default —
+    one Dolt instance, isolation by assignee. Re-uses the project's
+    working store to avoid the fresh-init bootstrap pain."""
     s = Settings(root=tmp_path)
     assert s.bd_dir_for("airton") == tmp_path
     assert s.bd_dir_for("airton_b") == tmp_path
-    assert s.bd_dir_for("some_future_persona") == tmp_path
+
+
+def test_bd_dir_for_third_persona_auto_silos(tmp_path: Path) -> None:
+    """Third-plus personas get their own bd dir under
+    character/<name>/bd/. Keeps e.g. atc's tutoring-session bead
+    graph from mixing into airton's harness-dev graph. Parent dir
+    is created eagerly so `bd init` has somewhere to land."""
+    s = Settings(root=tmp_path)
+    resolved = s.bd_dir_for("airton_c")
+    assert resolved == tmp_path / "character" / "airton_c" / "bd"
+    assert resolved != tmp_path
+    assert resolved.exists()
+    # Shape holds for any future persona name.
+    other = s.bd_dir_for("future_persona")
+    assert other == tmp_path / "character" / "future_persona" / "bd"
 
 
 def test_bd_dir_for_airton_b_honours_legacy_env_override(tmp_path: Path) -> None:
