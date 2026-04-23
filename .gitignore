@@ -13,6 +13,19 @@ build/
 # user cd's into <repo>/airton_b/ first). Leading slash = repo-root
 # only; character/airton_b/ (persona data) stays tracked.
 /airton_b/
+
+# Third-plus-persona auto-silo dirs (harness-xbk.2). character/<name>/
+# is tracked source (core.yaml, constitution.md, voice/*, seed
+# memories, eval fixtures). The runtime subdirs below are per-install
+# state: the persona's bd graph, its memory DB, and user-generated
+# content under its sandboxed workspace. Regenerable or user-private,
+# not source. corpus/ holds extracted markdown + chunk output from
+# atc-4/atc-5 — bulky, regenerable from the source PDFs.
+character/*/bd/
+character/*/data/
+character/*/corpus/
+character/airton_c/workspace/*
+!character/airton_c/workspace/.gitkeep
 data/
 logs/
 *.sqlite

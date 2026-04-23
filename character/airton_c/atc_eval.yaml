@@ -1,0 +1,8 @@
+version: 1
+purpose: |
+  Domain-specific eval for atc — PPL and IFR Q&A pairs with
+  ground-truth citations and keyword-recall scoring. Pins the RAG +
+  persona contract before voice or LoRA changes. Populated by
+  harness-xbk.7; stub for now so the fixture path exists.
+
+cases: []

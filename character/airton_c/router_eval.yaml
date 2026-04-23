@@ -1,0 +1,8 @@
+version: 1
+purpose: |
+  Router eval fixture for atc — pins small-model intent routing
+  accuracy for the atc tool profile. Populated as atc's tool use
+  matures; stub for now so `eval router --character airton_c` has
+  a loadable fixture.
+
+cases: []
