@@ -84,6 +84,30 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "persist_focus_note",
         "introspect",
     ),
+    # atc (airton_c) — educational FAA-documentation expert. Read-tier
+    # filesystem + scoped write (sandboxed to character/airton_c/workspace/
+    # via --workspace), memory tools, search_web + fetch_url with an
+    # aviation-source allowlist wired in the CLI builder, and
+    # spawn_subagent for depth-1 read-only delegation (e.g. "go find
+    # every IFR approach-procedure requirement in §91.175"). Excludes
+    # shell and git_* — atc is a student-facing reference, not a
+    # general-purpose agent. harness-xbk.3.
+    "atc": (
+        "read_file",
+        "list_dir",
+        "grep",
+        "glob",
+        "edit_file",
+        "write_file",
+        "search_memory",
+        "search_facts",
+        "remember_fact",
+        "remember_event",
+        "search_web",
+        "fetch_url",
+        "introspect",
+        "spawn_subagent",
+    ),
     # Memory-curation sessions. supersede_fact will join once
     # implemented (see bd issue harness-5tz).
     "memory": (

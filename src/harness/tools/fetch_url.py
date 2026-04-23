@@ -210,6 +210,14 @@ class FetchUrlTool:
     max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES
     max_chars: int = _DEFAULT_MAX_CHARS
     user_agent: str = _USER_AGENT
+    # Optional host allowlist. None (default) = no restriction: fetch
+    # any HTTPS URL. A non-None frozenset restricts the tool to URLs
+    # whose netloc is an exact member. Caller-supplied per-character:
+    # atc (airton_c) ships with an aviation-source allowlist so
+    # fetch_url can't wander off into arbitrary web content. Kept as
+    # a tool-level knob rather than a hook so the refusal happens
+    # before the network call (atc-3 / harness-xbk.3).
+    allowed_hosts: frozenset[str] | None = None
     # Allow tests (or future callers) to supply their own opener —
     # the production path uses urllib.request.urlopen through the
     # module-level alias below. Keep the type wide (`object`) so the
@@ -277,6 +285,18 @@ class FetchUrlTool:
             )
         if not parsed.netloc:
             return f"fetch_url error: URL {url!r} has no host"
+        if self.allowed_hosts is not None:
+            # Strip user:pass@ and :port if present so the check matches
+            # the caller-supplied host set cleanly. netloc lower-cased
+            # because DNS is case-insensitive and the allowlist author
+            # shouldn't have to worry about that.
+            host = parsed.hostname or parsed.netloc
+            if host.lower() not in self.allowed_hosts:
+                return (
+                    f"fetch_url error: host {host!r} is not in this "
+                    "character's fetch allowlist. Allowed hosts: "
+                    f"{sorted(self.allowed_hosts)}"
+                )
 
         timeout_s = self.default_timeout_s if timeout_seconds is None else int(timeout_seconds)
         if timeout_s <= 0:

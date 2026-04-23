@@ -94,6 +94,96 @@ def test_rejects_nonpositive_timeout() -> None:
     assert "timeout_seconds must be > 0" in out
 
 
+# ---------- host allowlist (harness-xbk.3) ----------
+
+
+def test_allowed_hosts_none_means_unrestricted() -> None:
+    """Default (allowed_hosts=None): any https host reaches the opener.
+    Back-compat with every caller that existed before atc."""
+    opener = _FakeOpener(
+        response=_FakeResponse(
+            b"<html><body>ok</body></html>",
+            _headers(Content_Type="text/html"),
+            "https://example.com/",
+        )
+    )
+    tool = FetchUrlTool(request_opener=opener)
+    tool.call(url="https://example.com/")
+    assert opener.calls, "opener should have been invoked"
+
+
+def test_allowlist_rejects_non_matching_host_before_network() -> None:
+    """allowed_hosts restricts to exact netloc membership. Refusal
+    happens pre-network so no opener call is made — important so a
+    misdirected URL never exfiltrates query params to an off-list
+    server."""
+    opener = _FakeOpener()  # no response queued — would fail if called
+    tool = FetchUrlTool(
+        request_opener=opener,
+        allowed_hosts=frozenset({"aviationweather.gov"}),
+    )
+    out = tool.call(url="https://example.com/weather")
+    assert "not in this character's fetch allowlist" in out
+    assert "example.com" in out
+    assert opener.calls == []
+
+
+def test_allowlist_accepts_member_host() -> None:
+    opener = _FakeOpener(
+        response=_FakeResponse(
+            b"<html><body>METAR KPAO</body></html>",
+            _headers(Content_Type="text/html"),
+            "https://aviationweather.gov/metar",
+        )
+    )
+    tool = FetchUrlTool(
+        request_opener=opener,
+        allowed_hosts=frozenset({"aviationweather.gov"}),
+    )
+    out = tool.call(url="https://aviationweather.gov/metar")
+    assert "METAR KPAO" in out
+    assert opener.calls, "allowed host should reach the opener"
+
+
+def test_allowlist_is_case_insensitive_on_host() -> None:
+    """DNS is case-insensitive; a user typing AviationWeather.Gov should
+    not bypass or be rejected by the allowlist for casing reasons."""
+    opener = _FakeOpener(
+        response=_FakeResponse(
+            b"<html><body>ok</body></html>",
+            _headers(Content_Type="text/html"),
+            "https://AviationWeather.Gov/metar",
+        )
+    )
+    tool = FetchUrlTool(
+        request_opener=opener,
+        allowed_hosts=frozenset({"aviationweather.gov"}),
+    )
+    out = tool.call(url="https://AviationWeather.Gov/metar")
+    assert "not in" not in out
+    assert opener.calls
+
+
+def test_allowlist_ignores_port_and_userinfo() -> None:
+    """parsed.hostname strips user:pass@ and :port so the allowlist
+    check keys on the bare host — a user:password or :port injection
+    in the URL can't mask the netloc."""
+    opener = _FakeOpener(
+        response=_FakeResponse(
+            b"<html><body>ok</body></html>",
+            _headers(Content_Type="text/html"),
+            "https://user:pass@aviationweather.gov:443/metar",
+        )
+    )
+    tool = FetchUrlTool(
+        request_opener=opener,
+        allowed_hosts=frozenset({"aviationweather.gov"}),
+    )
+    out = tool.call(url="https://user:pass@aviationweather.gov:443/metar")
+    assert "not in" not in out
+    assert opener.calls
+
+
 def test_clamps_timeout_to_cap() -> None:
     opener = _FakeOpener(
         response=_FakeResponse(

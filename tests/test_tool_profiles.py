@@ -127,3 +127,40 @@ def test_introspect_not_in_minimal_or_research() -> None:
     carries introspect — opt in via --tools-add."""
     assert "introspect" not in resolve_tool_names("minimal")
     assert "introspect" not in resolve_tool_names("research")
+
+
+# ---------- atc (airton_c) profile — harness-xbk.3 ----------
+
+
+def test_atc_profile_registered() -> None:
+    assert "atc" in TOOL_PROFILES
+
+
+def test_atc_includes_read_search_and_memory_tools() -> None:
+    """atc's Phase-1 tool set: read-tier fs, scoped write, memory +
+    retrieval, web research, introspect. The profile encodes the
+    audience: PPL/IFR students asking rule questions against a RAG
+    corpus."""
+    names = set(resolve_tool_names("atc"))
+    for read_tool in ("read_file", "list_dir", "grep", "glob"):
+        assert read_tool in names, read_tool
+    for mem_tool in ("search_memory", "search_facts", "remember_fact", "remember_event"):
+        assert mem_tool in names, mem_tool
+    for web_tool in ("search_web", "fetch_url"):
+        assert web_tool in names, web_tool
+    assert "introspect" in names
+
+
+def test_atc_allows_scoped_write_subagent_but_excludes_shell_and_git() -> None:
+    """atc can write into its workspace (edit_file / write_file,
+    sandboxed to character/airton_c/workspace/ by --workspace) and
+    spawn read-only subagents for depth-1 research, but never invokes
+    shell or git_*. atc is a student-facing reference, not a general-
+    purpose agent."""
+    names = set(resolve_tool_names("atc"))
+    assert "edit_file" in names
+    assert "write_file" in names
+    assert "spawn_subagent" in names
+    assert "shell" not in names
+    for git_tool in ("git_status", "git_diff", "git_log"):
+        assert git_tool not in names, git_tool

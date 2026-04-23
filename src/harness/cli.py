@@ -106,6 +106,25 @@ _EXIT_COMMANDS = frozenset({"/exit", "/quit", "exit", "quit", ":q", ":quit"})
 _EDIT_COMMANDS = frozenset({"/edit", "/capture"})
 _RETRO_COMMANDS = frozenset({"/retro"})
 
+# atc's fetch_url host allowlist (harness-xbk.3). Applied only when the
+# active character is airton_c — keeps the tutoring persona's web
+# surface to authoritative aviation sources (current weather, NOTAMs,
+# the pilot-facing FAA portals). Other characters pass None and
+# fetch_url stays unrestricted. Hostnames are lowercased, netloc-only
+# (no scheme, no path). Grow this list as atc's research needs widen;
+# keep it conservative by default.
+_ATC_FETCH_URL_ALLOWED_HOSTS: frozenset[str] = frozenset(
+    {
+        "aviationweather.gov",
+        "www.aviationweather.gov",
+        "notams.aim.faa.gov",
+        "1800wxbrief.com",
+        "www.1800wxbrief.com",
+        "faa.gov",
+        "www.faa.gov",
+    }
+)
+
 # Sentinel used to encode structured tool_calls onto an assistant turn's
 # content when persisting to the transcript. Two-line format: human-readable
 # content, then the sentinel, then a single JSON line with the tool_calls.
@@ -1182,7 +1201,13 @@ def _build_tool_registry_for_tui(
             else None
         ),
         "search_web": lambda: SearchWebTool(),
-        "fetch_url": lambda: FetchUrlTool(),
+        "fetch_url": lambda: FetchUrlTool(
+            allowed_hosts=(
+                _ATC_FETCH_URL_ALLOWED_HOSTS
+                if character is not None and character.name == "airton_c"
+                else None
+            )
+        ),
         "remember_fact": lambda: (
             RememberFactTool(store=semantic_store, user_id=speaker, session_id=session)
             if semantic_store is not None
