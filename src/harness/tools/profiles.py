@@ -130,6 +130,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_web",
         "fetch_url",
         "introspect",
+        "spawn_subagent",
     ),
 }
 

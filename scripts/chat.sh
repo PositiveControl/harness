@@ -23,6 +23,7 @@ exec uv run harness chat \
     --tool-set full \
     --router \
     --tui \
+    --summarize-tool-results \
     --memories 3 \
     --facts 5 \
     "$@"
