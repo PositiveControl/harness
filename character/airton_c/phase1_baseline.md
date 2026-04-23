@@ -449,3 +449,70 @@ Lane D's honest effect: +1 real flip (shared_cancel_ifr_in_imc), +1
 possible side-effect regression (ppl_class_b), and a lot of noise.
 Phase-1 target of 80% remains open; achievable but requires stable
 measurement first.
+
+---
+
+## Run 6 — deterministic baseline (harness-ald)
+
+`eval atc` now defaults to `--temperature 0.0` and
+`--rewriter-temperature 0.0`. Run-to-run bit-identical output
+verified: two consecutive runs produced 22/22 replies with zero
+diff (hash-level equal).
+
+**Stable baseline: 14/22 = 63.6%** (PPL 63.6%, IFR 63.6%). This is
+the number future lanes measure against. A +1-case flip is now real
+signal, not noise.
+
+The temp-0.3 history should be read as noise:
+
+| run | temp | pass | what it actually measures |
+| --- | ---- | ---- | ------------------------- |
+| 1 | 0.3 | 54.5% | Baseline before any lanes |
+| 3 | 0.3 | 63.6% | Post-A-B, but one sample |
+| 4 | 0.3 | 72.7% | Post-C, variance outlier |
+| 5 | 0.3 | 63.6% | Post-D, another sample |
+| 6 | 0.0 | 63.6% | **Stable post-D baseline** |
+
+Lanes A/B/C/D's true cumulative effect: **+9.1 pp over the 54.5%
+starting point**, not the +18.2 pp I reported after run 4. Run 4 was
+the outlier.
+
+### Stable failures (6) and what's left
+
+Cases that consistently fail at temp=0:
+
+| case | failure mode |
+| ---- | ------------ |
+| `ppl_vfr_cloud_clearance_above_10k` | factual error — model says the rule is "not applicable" above 10,000 |
+| `ppl_preflight_action` | cite miss on §91.103 in this sample (was a pass in run 4) |
+| `ppl_pic_responsibility` | kw hit miss (was a pass in runs 1/3/5) |
+| `ppl_readback_basics` | rewriter drops `AIM 4-4-7` (harness-cco) |
+| `ifr_takeoff_minimums_part_91` | cite miss §91.175 |
+| `ifr_vfr_on_top` | kw hit miss (was a pass at temp=0.3) |
+| `ifr_instrument_currency` | kw hit miss |
+| `ifr_descent_below_mda` | kw hit miss |
+
+Four of these are keyword-hit-count misses that looked different in
+noisy runs — the stable set is 8 failures, not 6. The path to 80%
+(17.6/22 → 18 passes) needs +4 more flips.
+
+### What we can measure now
+
+Any single lane-E-prime change (one voice sample, one fixture
+loosening, one post-rewrite fixup) will flip individual cases
+deterministically. We'll see "+1 pass, −0 regression" or "+1 pass,
+−1 regression" cleanly, instead of ±4-case run-to-run drift.
+
+Priority for the 4 remaining flips:
+
+1. **harness-cco follow-up** — post-rewrite citation re-injection.
+   Deterministic fix for `ppl_readback_basics` (pass-1 already has
+   the cite). +1 certain.
+2. **Inspect the kw-hit failures** — four cases lose on keyword
+   hits. Some are rubric-fixable (alternate phrasings); some are
+   content gaps. Need per-case triage against the deterministic
+   replies now.
+3. **Factual error on `ppl_vfr_cloud_clearance_above_10k`** — the
+   existing voice sample has the correct answer but the model
+   isn't imitating it. May need a constitutional rule or a
+   stronger system-prompt line.

@@ -1529,6 +1529,7 @@ def _resolve_adapter(
     lora_path: str | None = None,
     draft_repo: str | None = None,
     chain_rewrites: bool = False,
+    rewriter_temperature: float | None = None,
 ) -> ModelAdapter:
     # Custom configs bypass the factory and instantiate the adapter
     # directly. --lora-path is MLX-only; --model-repo works for MLX
@@ -1583,7 +1584,10 @@ def _resolve_adapter(
                 rewrite_on_tools=settings.ab_rewrite_on_tools,
             )
         else:
-            adapter = PersonaAdapter(adapter, character, chain_rewrites=chain_rewrites)
+            persona_kwargs: dict[str, object] = {"chain_rewrites": chain_rewrites}
+            if rewriter_temperature is not None:
+                persona_kwargs["rewriter_temperature"] = rewriter_temperature
+            adapter = PersonaAdapter(adapter, character, **persona_kwargs)  # type: ignore[arg-type]
 
     # Honor an optional eager `.load()` method without making it part of
     # the ModelAdapter Protocol — only some adapters need it.
@@ -2285,7 +2289,22 @@ def eval_atc(
     model_repo: str | None = typer.Option(None, "--model-repo"),
     lora_path: str | None = typer.Option(None, "--lora-path"),
     draft_repo: str | None = typer.Option(None, "--draft-repo"),
-    temperature: float = typer.Option(0.3, help="Sampling temperature"),
+    temperature: float = typer.Option(
+        0.0,
+        help=(
+            "Sampling temperature. Defaults to 0 (greedy) so run-to-run "
+            "pass-rate is stable — see harness-ald. Raise only when you "
+            "want to sample variance explicitly."
+        ),
+    ),
+    rewriter_temperature: float = typer.Option(
+        0.0,
+        help=(
+            "Temperature for the PersonaAdapter's voice-rewrite pass. "
+            "Defaults to 0 for the same reason — pass-2 style variance "
+            "can swing whether a citation survives the rewrite."
+        ),
+    ),
     memories: int = typer.Option(3, help="Top-K episodic memories per turn"),
     facts: int = typer.Option(5, help="Top-K semantic facts per turn"),
     top_k: int = typer.Option(6, help="Top-K voice samples per turn"),
@@ -2333,6 +2352,7 @@ def eval_atc(
         model_repo=model_repo,
         lora_path=lora_path,
         draft_repo=draft_repo,
+        rewriter_temperature=rewriter_temperature,
     )
 
     # Retrieval stack. Off-the-shelf defaults match `harness chat`
