@@ -19,10 +19,18 @@ purpose: |
                         the plain section form the AIM/CFR prints
                         ('91.155', not '§ 91.155') so reply-side
                         paraphrasing doesn't fail the match.
-    expected_keywords:  substrings atc should surface if it's drawing
-                        from the right source. Case-insensitive.
-    min_keyword_hits:   how many of those must appear. 1 = lenient,
-                        ~half = strict.
+    expected_keywords:  each entry is either a scalar string (single
+                        acceptable phrasing) OR a list of alternate
+                        phrasings — any one of which counts as a hit
+                        (harness-099). Use alternates when the model
+                        tends to produce semantic variants ("last ATC
+                        clearance" vs "last assigned", numeric altitudes
+                        vs "odd/even"). Don't over-loosen: keep each
+                        alternate set specific enough that an off-topic
+                        reply still fails.
+    min_keyword_hits:   how many entries must match (each entry = one
+                        hit regardless of how many of its alternates
+                        appear). 1 = lenient, ~half = strict.
 
 cases:
   # ----- PPL — VFR weather / airspace / pilot ops -----
@@ -44,8 +52,8 @@ cases:
     expected_citations: ["91.131"]
     expected_keywords:
       - "clearance"
-      - "Mode C"
-      - "two-way radio"
+      - ["Mode C", "transponder", "ADS-B"]
+      - ["two-way radio", "two-way", "radio communication"]
     min_keyword_hits: 2
 
   - id: ppl_hemispheric_cruising_altitudes
@@ -53,9 +61,9 @@ cases:
     question: "What are the VFR cruising altitudes above 3,000 AGL?"
     expected_citations: ["91.159"]
     expected_keywords:
-      - "odd"
-      - "even"
-      - "3,000"
+      - ["odd", "odd thousands", "3,500", "5,500", "7,500", "9,500"]
+      - ["even", "even thousands", "4,500", "6,500", "8,500", "10,500"]
+      - ["3,000", "3000", "above 3,000 AGL"]
     min_keyword_hits: 2
 
   - id: ppl_right_of_way_rules
@@ -177,8 +185,8 @@ cases:
     question: "What do I do if I lose two-way radio communication in IMC on an IFR flight plan?"
     expected_citations: ["91.185"]
     expected_keywords:
-      - "lost communication"
-      - "last assigned"
+      - ["lost communication", "lost comm", "radio failure", "two-way radio communication failure"]
+      - ["last assigned", "last ATC clearance", "last cleared", "last route assigned"]
     min_keyword_hits: 1
 
   - id: ifr_approach_categories
@@ -204,9 +212,9 @@ cases:
     question: "What are the instrument currency requirements for IFR operations?"
     expected_citations: ["61.57"]
     expected_keywords:
-      - "six"
-      - "holding"
-      - "instrument approach"
+      - ["six", "6"]
+      - ["holding", "hold", "holding procedure"]
+      - ["instrument approach", "approach procedure", "IAP", "instrument approach procedure"]
     min_keyword_hits: 2
 
   - id: ifr_descent_below_mda

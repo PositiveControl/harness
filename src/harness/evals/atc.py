@@ -40,10 +40,15 @@ class AtcEvalCase:
     audience: str
     question: str
     expected_citations: tuple[str, ...]
-    expected_keywords: tuple[str, ...]
+    # Same shape as AtcFixtureRow.expected_keywords — each entry is a
+    # tuple of alternate phrasings. See AtcFixtureRow for rationale.
+    expected_keywords: tuple[tuple[str, ...], ...]
     min_keyword_hits: int
     actual_reply: str
     missing_citations: tuple[str, ...]
+    # One element per matched entry in expected_keywords — the specific
+    # alternate that hit (first-match-wins within the entry) so debug
+    # output shows which phrasing the model actually produced.
     matched_keywords: tuple[str, ...]
 
     @property
@@ -94,7 +99,14 @@ class AtcFixtureRow:
     audience: str
     question: str
     expected_citations: tuple[str, ...]
-    expected_keywords: tuple[str, ...]
+    # Each entry is a tuple of alternate phrasings — the keyword counts
+    # as a hit if ANY alternate is present in the reply (case-
+    # insensitive). A scalar string in YAML (the common case) loads as
+    # a single-element tuple, so pre-lane-A fixtures continue to work
+    # unchanged. Lists-of-strings in YAML let a fixture author accept
+    # "1,000 feet below" / "1000 feet below" / "1,000 ft below" as the
+    # same keyword without over-loosening the rubric to "1,000".
+    expected_keywords: tuple[tuple[str, ...], ...]
     min_keyword_hits: int
 
 
@@ -128,7 +140,7 @@ def load_fixture(path: Path) -> tuple[AtcFixtureRow, ...]:
         audience = _str_field(entry, "audience", path, idx)
         question = _str_field(entry, "question", path, idx)
         citations = tuple(str(c) for c in (entry.get("expected_citations") or []))
-        keywords = tuple(str(k) for k in (entry.get("expected_keywords") or []))
+        keywords = _load_keywords(entry.get("expected_keywords") or [], path, idx)
         min_hits_raw = entry.get("min_keyword_hits", 0) or 0
         try:
             min_hits = int(min_hits_raw)
@@ -161,19 +173,62 @@ def _str_field(entry: dict[str, object], key: str, path: Path, idx: int) -> str:
     return value.strip()
 
 
+def _load_keywords(
+    raw: object,
+    path: Path,
+    idx: int,
+) -> tuple[tuple[str, ...], ...]:
+    """Normalise the YAML shape for `expected_keywords` into a
+    tuple-of-alternate-tuples. Each entry can be either a string
+    (single-alternate, backward-compatible) or a list of strings
+    (multiple alternates — any match counts as one keyword hit).
+    Empty alternate lists are rejected; they would always fail to
+    match and indicate a fixture bug."""
+    if not isinstance(raw, list):
+        raise ValueError(f"{path}[{idx}] 'expected_keywords' must be a list")
+    out: list[tuple[str, ...]] = []
+    for kid, entry in enumerate(raw):
+        if isinstance(entry, str):
+            alternates: tuple[str, ...] = (entry,)
+        elif isinstance(entry, list):
+            alternates = tuple(str(a) for a in entry)
+            if not alternates:
+                raise ValueError(
+                    f"{path}[{idx}].expected_keywords[{kid}] is an empty list — "
+                    "an empty alternate set can never match."
+                )
+        else:
+            raise ValueError(
+                f"{path}[{idx}].expected_keywords[{kid}] must be str or list[str], "
+                f"got {type(entry).__name__}"
+            )
+        out.append(alternates)
+    return tuple(out)
+
+
 def _score_reply(
     reply: str,
     *,
     expected_citations: Sequence[str],
-    expected_keywords: Sequence[str],
+    expected_keywords: Sequence[tuple[str, ...]],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Return `(missing_citations, matched_keywords)`. Matching is
     case-insensitive substring so fixture authors don't have to worry
-    about exact casing in atc's reply."""
+    about exact casing in atc's reply.
+
+    `expected_keywords` is a tuple of alternate-tuples: each entry
+    matches if ANY of its alternates appears in the reply. Returns the
+    specific alternate that hit (first-match-wins) so debug output
+    shows which phrasing the model used."""
     lower = reply.lower()
     missing = tuple(c for c in expected_citations if c.lower() not in lower)
-    matched = tuple(k for k in expected_keywords if k.lower() in lower)
-    return missing, matched
+    matched: list[str] = []
+    for alternates in expected_keywords:
+        for alt in alternates:
+            if alt.lower() in lower:
+                matched.append(alt)
+                break
+    return missing, tuple(matched)
 
 
 def run_atc_eval(

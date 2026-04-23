@@ -131,3 +131,64 @@ Phase-1 artifact** — the eval is now the gate for:
 The `atc_baseline.json` file is the reference snapshot; rerunning and
 diffing the per-case pass set is the smallest unit of feedback when
 tuning any of the three lanes.
+
+---
+
+## Run 2 — after lane A (2026-04-23)
+
+**Rescore** of the original replies against the loosened rubric
+(`harness-099`): **13/22 = 59.1%** (+4.6 pp over the 54.5% baseline).
+Rescore is deterministic — same replies, new scorer. No new MLX
+generation.
+
+### Finding: Pattern 2 was overestimated
+
+I originally classified 3 failures as "brittle keyword matching":
+`ifr_lost_comm_rules`, `ppl_hemispheric_cruising_altitudes`,
+`ppl_class_b_entry_requirements`. After loosening their fixture
+keywords to accept multiple alternate phrasings, only ONE flipped to
+pass:
+
+- **`ifr_lost_comm_rules`** — legit Pattern 2 win. Model said "last
+  ATC clearance" where the fixture expected "last assigned". Alternate
+  `["last assigned", "last ATC clearance", ...]` caught it. Also
+  matched "radio failure" via the expanded "lost communication" set.
+
+The other two were actually content gaps, not phrasing gaps:
+
+- **`ppl_class_b_entry_requirements`** — model focused on ATC
+  clearance phraseology and skipped Mode C / two-way radio entirely.
+  Loosening to accept "transponder" / "ADS-B" / "two-way" didn't
+  matter — none appeared.
+- **`ppl_hemispheric_cruising_altitudes`** — model deflected with
+  "the exact values are in 14 CFR §91.159". Neither "odd/even" nor
+  any concrete altitude (3,500 / 4,500 / …) appeared.
+- **`ifr_instrument_currency`** — model cited the wrong CFR section
+  (`§91.171` Maintenance instead of `§61.57`) and talked about flight
+  reviews rather than instrument currency. Content is about the wrong
+  topic entirely.
+
+These three belong in **lane C** (retrieval / content quality) — not
+lane A. The baseline report's "Pattern 2: 3 cases" estimate was wrong;
+the real count is 1.
+
+### Takeaway for next runs
+
+Rubric loosening is cheap but has a small ceiling unless the model is
+actually phrasing-limited. Before adding alternates to a keyword,
+check the raw reply: is the *concept* present in any form, or is the
+model talking about something else entirely? If the latter, alternates
+won't help — it's a lane B (citation form) or lane C (retrieval)
+case.
+
+Schema change shipped alongside: `expected_keywords` entries can now
+be either a scalar string (single phrasing, backward-compatible) or a
+list of strings (any member matches). See
+`src/harness/evals/atc.py:_load_keywords` for the loader semantics,
+and the tests `test_keyword_alternates_*` for the contract.
+
+Next:
+- **Lane B (`harness-e73`)** — AIM-paragraph citation voice samples;
+  should move the 3–4 AIM-cite misses.
+- **Lane C (`harness-74n`)** — diagnose the 3 content-gap / wrong-
+  retrieval cases. Higher lift, more work.

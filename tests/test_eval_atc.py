@@ -55,7 +55,9 @@ def test_load_fixture_accepts_top_level_list(tmp_path: Path) -> None:
     assert row.id == "ppl_001"
     assert row.audience == "ppl"
     assert row.expected_citations == ("91.155",)
-    assert row.expected_keywords == ("1,000 feet below", "1,000 feet above")
+    # Scalar strings promote to single-alternate tuples — backward
+    # compatible with pre-lane-A fixtures (harness-099).
+    assert row.expected_keywords == (("1,000 feet below",), ("1,000 feet above",))
     assert row.min_keyword_hits == 1
 
 
@@ -157,7 +159,7 @@ def _row(**kw: object) -> AtcFixtureRow:
 def test_case_passes_when_citation_and_keywords_present() -> None:
     row = _row(
         expected_citations=("91.155",),
-        expected_keywords=("1,000 feet below", "1 statute mile"),
+        expected_keywords=(("1,000 feet below",), ("1 statute mile",)),
         min_keyword_hits=2,
     )
     reply = (
@@ -184,7 +186,11 @@ def test_case_fails_on_missing_citation() -> None:
 def test_case_fails_when_keyword_hits_below_min() -> None:
     row = _row(
         expected_citations=("91.155",),
-        expected_keywords=("1,000 feet below", "1 statute mile", "5 statute miles"),
+        expected_keywords=(
+            ("1,000 feet below",),
+            ("1 statute mile",),
+            ("5 statute miles",),
+        ),
         min_keyword_hits=2,
     )
     reply = "See 14 CFR 91.155 — the table sets visibility and clearance."
@@ -197,7 +203,7 @@ def test_case_fails_when_keyword_hits_below_min() -> None:
 
 def test_keyword_matching_is_case_insensitive() -> None:
     row = _row(
-        expected_keywords=("1,000 FEET BELOW",),
+        expected_keywords=(("1,000 FEET BELOW",),),
         min_keyword_hits=1,
     )
     reply = "You need 1,000 feet below any cloud."
@@ -217,12 +223,124 @@ def test_empty_expected_citations_auto_passes_that_half() -> None:
     happens if' question) just checks keywords. Citations pass by
     default — no 'missing' set."""
     row = _row(
-        expected_keywords=("climb", "maintain"),
+        expected_keywords=(("climb",), ("maintain",)),
         min_keyword_hits=1,
     )
     reply = "You climb and maintain 3,000."
     result = run_atc_eval([row], run_turn=lambda _q: reply)
     assert result.cases[0].passed
+
+
+# ---------- keyword alternates (harness-099, lane A) ----------
+
+
+def test_keyword_alternates_count_once_when_multiple_match() -> None:
+    """When an entry lists multiple alternate phrasings, a reply that
+    contains more than one alternate still counts as ONE hit — the
+    alternates share a concept. First-match-wins determines which
+    string lands in matched_keywords so debug output shows what the
+    model actually produced."""
+    row = _row(
+        expected_keywords=(("1,000 feet below", "1000 feet below", "1,000 ft below"),),
+        min_keyword_hits=1,
+    )
+    reply = "You need 1,000 feet below and 1000 feet below any cloud."
+    result = run_atc_eval([row], run_turn=lambda _q: reply)
+    case = result.cases[0]
+    assert case.keyword_hits == 1
+    # First alternate in the entry wins when multiple match.
+    assert case.matched_keywords == ("1,000 feet below",)
+
+
+def test_keyword_alternates_accept_any_phrasing() -> None:
+    """This is the lane-A lift: the rubric accepts semantically-
+    equivalent phrasings without needing a fixture edit for every
+    grammatical variant."""
+    row = _row(
+        expected_keywords=(
+            ("last assigned", "last ATC clearance", "last clearance"),
+        ),
+        min_keyword_hits=1,
+    )
+    reply = "Fly the last ATC clearance until two-way radio is restored."
+    result = run_atc_eval([row], run_turn=lambda _q: reply)
+    assert result.cases[0].keyword_hits == 1
+    assert result.cases[0].matched_keywords == ("last ATC clearance",)
+
+
+def test_keyword_alternates_still_fail_when_no_alternate_matches() -> None:
+    """Loose rubric must still fail a reply that misses the concept."""
+    row = _row(
+        expected_keywords=(
+            ("1,000 feet below", "1000 feet below"),
+            ("1 statute mile", "1 SM"),
+        ),
+        min_keyword_hits=2,
+    )
+    reply = "Cloud clearance rules are complicated."
+    result = run_atc_eval([row], run_turn=lambda _q: reply)
+    assert result.cases[0].keyword_hits == 0
+    assert not result.cases[0].keywords_pass
+
+
+def test_load_fixture_accepts_list_of_alternates_in_yaml(tmp_path: Path) -> None:
+    """YAML-side: a keyword entry can be either a scalar string (the
+    common case) or a list of alternate phrasings."""
+    path = _write_yaml(
+        tmp_path,
+        [
+            {
+                "id": "x",
+                "audience": "ppl",
+                "question": "q",
+                "expected_keywords": [
+                    "scalar keyword",
+                    ["alt one", "alt two", "alt three"],
+                ],
+                "min_keyword_hits": 2,
+            }
+        ],
+    )
+    rows = load_fixture(path)
+    assert rows[0].expected_keywords == (
+        ("scalar keyword",),
+        ("alt one", "alt two", "alt three"),
+    )
+
+
+def test_load_fixture_rejects_empty_alternate_list(tmp_path: Path) -> None:
+    """An empty list of alternates can never match — fixture bug."""
+    path = _write_yaml(
+        tmp_path,
+        [
+            {
+                "id": "x",
+                "audience": "ppl",
+                "question": "q",
+                "expected_keywords": [[]],
+                "min_keyword_hits": 1,
+            }
+        ],
+    )
+    with pytest.raises(ValueError, match="empty list"):
+        load_fixture(path)
+
+
+def test_load_fixture_rejects_non_string_non_list_keyword(tmp_path: Path) -> None:
+    path = _write_yaml(
+        tmp_path,
+        [
+            {
+                "id": "x",
+                "audience": "ppl",
+                "question": "q",
+                "expected_keywords": [42],
+                "min_keyword_hits": 1,
+            }
+        ],
+    )
+    with pytest.raises(ValueError, match="must be str or list"):
+        load_fixture(path)
 
 
 # ---------- aggregate reporting ----------
