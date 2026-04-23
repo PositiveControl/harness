@@ -28,7 +28,8 @@ logs/
 *.db
 
 # Local Claude Code per-clone settings and interaction state
-.claude/
+.claude/*
+!.claude/agents/
 scratch/**/*
 
 # Benchmark artifacts — regenerable via scripts/bench_*.py and `harness eval *`
