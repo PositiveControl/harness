@@ -75,11 +75,68 @@ def _body_of(row: dict[str, object]) -> str:
     return str(row.get("body", "")).strip()
 
 
+# Phase-1 CFR scope filter (harness-74n). atc's corpus spans CFR Title
+# 14 Vol 1 + Vol 2 — but most of Title 14 is out of PPL/IFR scope
+# (airworthiness standards, UAS, ultralights, parachuting, commercial
+# operations, fractional ownership). Baseline run 1 showed those
+# competing for retrieval slots against Part 91 on queries where
+# pilot-facing sections should win — e.g. §103.23 (ultralight "Flight
+# visibility and cloud clearance requirements") ranked higher than
+# §91.155 for "VFR cloud clearance" because its title was a closer
+# BM25 match. Scoping CFR at ingest prevents the dilution.
+_CFR_ALLOW_PARTS: frozenset[str] = frozenset(
+    {
+        "1",   # Definitions and abbreviations
+        "3",   # General requirements
+        "61",  # Airman certification
+        "67",  # Medical standards
+        "71",  # Airspace designations
+        "91",  # General operating and flight rules (filtered below)
+        "93",  # Special air traffic rules
+        "95",  # IFR altitudes
+        "97",  # Standard instrument approach procedures
+    }
+)
+
+
+def _cfr_in_scope(section: str) -> bool:
+    """Return True if `section` (e.g. '91.155', '103.23', '91.1031')
+    is in atc's Phase-1 pilot-facing scope. Parts outside the
+    allowlist drop. Part 91 is kept through Subpart J (§91.999);
+    Subpart K (fractional ownership, §§91.1001-91.1099) and Subpart L
+    (continued airworthiness, §91.1101+) are commercial/fractional-
+    specific and drop."""
+    if not section:
+        return False
+    part, _, suffix = section.partition(".")
+    if part not in _CFR_ALLOW_PARTS:
+        return False
+    if part == "91":
+        # Extract the leading numeric run of the suffix (handles things
+        # like "155", "1031", "1001a"). A suffix ≥ 1000 is Subpart K or
+        # later — out of scope.
+        digits = "".join(ch for ch in suffix if ch.isdigit())
+        try:
+            if digits and int(digits) >= 1000:
+                return False
+        except ValueError:
+            pass
+    return True
+
+
 def is_noise(row: dict[str, object]) -> bool:
     """Drop low-signal chunks so ingest doesn't swamp the store with
-    rows that won't help retrieval."""
+    rows that won't help retrieval. Two filters:
+
+    - body shorter than MIN_BODY_CHARS (PCG cross-ref stubs, TOC
+      leakage).
+    - CFR rows outside the Phase-1 scope (see `_cfr_in_scope`).
+    """
     body = _body_of(row)
-    return len(body) < MIN_BODY_CHARS
+    if len(body) < MIN_BODY_CHARS:
+        return True
+    source = str(row.get("source", ""))
+    return source.startswith("CFR_14_") and not _cfr_in_scope(str(row.get("section", "")))
 
 
 def dedup_by_anchor(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:

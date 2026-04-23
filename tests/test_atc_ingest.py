@@ -119,6 +119,75 @@ def test_tags_skip_empty_metadata(ingest: object) -> None:
     assert not any(t.startswith("chapter:") for t in out)
 
 
+# ---------- CFR scope filter (harness-74n) ----------
+
+
+def test_cfr_in_scope_accepts_part_91_standard_sections(ingest: object) -> None:
+    """Part 91 subparts A-J (§91.1-§91.999) are the pilot-facing rules
+    — must pass scope."""
+    for section in ("91.1", "91.103", "91.155", "91.175", "91.185", "91.215", "91.999"):
+        assert ingest._cfr_in_scope(section), section  # type: ignore[attr-defined]
+
+
+def test_cfr_in_scope_rejects_part_91_subpart_k(ingest: object) -> None:
+    """Part 91 Subpart K (fractional ownership, §§91.1001-91.1099) is
+    commercial-specific — must drop. The baseline run 1 showed
+    §91.1031 diluting 'preflight action' retrieval against the real
+    §91.103."""
+    for section in ("91.1001", "91.1031", "91.1039", "91.1099", "91.1101"):
+        assert not ingest._cfr_in_scope(section), section  # type: ignore[attr-defined]
+
+
+def test_cfr_in_scope_accepts_pilot_certification(ingest: object) -> None:
+    """Part 61 (airman cert) and Part 67 (medical) cover PPL/IFR
+    prerequisites — must pass scope."""
+    for section in ("61.3", "61.57", "61.95", "67.101", "67.305"):
+        assert ingest._cfr_in_scope(section), section  # type: ignore[attr-defined]
+
+
+def test_cfr_in_scope_rejects_out_of_scope_parts(ingest: object) -> None:
+    """Parts outside the Phase-1 PPL/IFR allowlist drop — airworthiness
+    standards (Parts 23/25/39), UAS (Part 107), ultralights (103),
+    parachuting (105), commercial ops (121/135)."""
+    for section in ("23.1", "25.101", "39.11", "103.23", "105.3", "107.1", "121.365", "135.1"):
+        assert not ingest._cfr_in_scope(section), section  # type: ignore[attr-defined]
+
+
+def test_cfr_in_scope_empty_section_rejects(ingest: object) -> None:
+    assert not ingest._cfr_in_scope("")  # type: ignore[attr-defined]
+
+
+def test_is_noise_drops_out_of_scope_cfr_rows(ingest: object) -> None:
+    """End-to-end: is_noise treats §103.23 as noise even when the body
+    is substantial, because ultralights aren't in atc's scope."""
+    row = {
+        "source": "CFR_14_vol2",
+        "section": "103.23",
+        "body": "x" * 400,  # plenty long — not a length-filter drop
+    }
+    assert ingest.is_noise(row) is True  # type: ignore[attr-defined]
+
+
+def test_is_noise_keeps_in_scope_cfr_rows(ingest: object) -> None:
+    row = {
+        "source": "CFR_14_vol2",
+        "section": "91.155",
+        "body": "x" * 400,
+    }
+    assert ingest.is_noise(row) is False  # type: ignore[attr-defined]
+
+
+def test_is_noise_keeps_non_cfr_rows_regardless(ingest: object) -> None:
+    """AIM / PCG / JO / PHAK rows don't hit the CFR filter — only
+    the body-length check."""
+    row = {
+        "source": "AIM",
+        "section": "4-4-7",
+        "body": "x" * 400,
+    }
+    assert ingest.is_noise(row) is False  # type: ignore[attr-defined]
+
+
 # ---------- load_rows_for_slug ----------
 
 
