@@ -93,6 +93,39 @@ def test_search_on_empty_store_returns_empty(store: SemanticStore) -> None:
     assert store.search("anything") == []
 
 
+@dataclass
+class _LazyFakeEmbedder:
+    id: str = "fake-lazy"
+    dimension: int = 0
+
+    def embed(self, texts: Iterable[str]) -> np.ndarray:
+        self.dimension = 4
+        vectors: list[np.ndarray] = []
+        for text in texts:
+            h = sum(ord(c) for c in text.lower())
+            v = np.array([h % 7, h % 11, h % 13, h % 17], dtype=np.float32)
+            norm = float(np.linalg.norm(v))
+            vectors.append(v / norm if norm > 0 else v)
+        return np.stack(vectors)
+
+
+def test_search_dense_warms_embedder_before_dim_filter(tmp_path: Path) -> None:
+    """Regression for harness-m35: mirrors the episodic-store fix. A
+    lazy embedder with dimension=0 until first embed() must still yield
+    dense results on first search — _search_dense embeds the query
+    before the SQL dim filter reads self.embedder.dimension."""
+    warm = _FakeEmbedder()
+    warm_store = SemanticStore(tmp_path / "harness.sqlite", embedder=warm)
+    warm_store.add(subject="a", predicate="b", object="c", source="u")
+
+    lazy = _LazyFakeEmbedder()
+    assert lazy.dimension == 0
+    fresh_store = SemanticStore(tmp_path / "harness.sqlite", embedder=lazy)
+    hits = fresh_store.search("anything", k=1, mode="dense")
+    assert len(hits) == 1, "dense search must surface rows on first call with a lazy embedder"
+    assert lazy.dimension == 4
+
+
 def test_count_matches_all_and_scopes_by_user(store: SemanticStore) -> None:
     """harness-qw4: count() is a cheap alternative to len(all()) for the
     introspect tool. Honours user_id scoping — a per-user count sees
@@ -134,3 +167,111 @@ def test_supersedes_is_nullable_and_stored(store: SemanticStore) -> None:
     assert second.supersedes == first.id
     refetched = store.get(first.id)
     assert refetched.supersedes is None
+
+
+# ---------------------------------------------------------------------------
+# Porter-stemming regression (harness-cpf)
+# ---------------------------------------------------------------------------
+
+
+def test_text_search_matches_stemmed_form(tmp_path: Path) -> None:
+    """FTS5 porter stemming: querying 'declare' must match a row whose object
+    contains 'declared'. Without porter tokenizer, unicode61 treats these as
+    distinct tokens and BM25 misses the row."""
+    store = SemanticStore(tmp_path / "harness.sqlite", embedder=_FakeEmbedder())
+    store.add(
+        subject="emergency",
+        predicate="declared by",
+        object="pilot, facility personnel, officials",
+        source="yaml",
+        tier="seed",
+    )
+    hits = store.search("declare", k=5, mode="text")
+    assert len(hits) >= 1, "porter stemming must match 'declared' predicate on query 'declare'"
+    assert hits[0][0].subject == "emergency"
+
+
+def test_fts_migration_from_old_tokenizer(tmp_path: Path) -> None:
+    """Migration regression (harness-cpf): a database created with the old
+    unicode61 tokenizer must be transparently migrated to porter on the next
+    open, and the stemmed search must work on the migrated data."""
+    import sqlite3
+    from datetime import UTC, datetime
+
+    import numpy as np
+
+    db = tmp_path / "harness.sqlite"
+
+    # --- Phase 1: create manually with OLD unicode61 DDL -------------------
+    conn = sqlite3.connect(db, isolation_level=None)
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS semantic (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject        TEXT    NOT NULL,
+            predicate      TEXT    NOT NULL,
+            object         TEXT    NOT NULL,
+            confidence     REAL    NOT NULL DEFAULT 0.8,
+            source         TEXT    NOT NULL,
+            attributed_to  TEXT,
+            session_id     TEXT,
+            user_id        TEXT,
+            supersedes     INTEGER REFERENCES semantic(id),
+            superseded_by  INTEGER REFERENCES semantic(id),
+            tier           TEXT    NOT NULL DEFAULT 'working',
+            created_at     TEXT    NOT NULL,
+            embedding      BLOB    NOT NULL,
+            embedder_id    TEXT,
+            embedding_dim  INTEGER,
+            valid_from     TEXT,
+            valid_to       TEXT,
+            asserted_at    TEXT
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS semantic_fts USING fts5(
+            subject, predicate, object,
+            content='semantic',
+            content_rowid='id',
+            tokenize='unicode61'
+        );
+        CREATE TRIGGER IF NOT EXISTS semantic_fts_ai
+        AFTER INSERT ON semantic BEGIN
+            INSERT INTO semantic_fts(rowid, subject, predicate, object)
+            VALUES (new.id, new.subject, new.predicate, new.object);
+        END;
+    """)
+    now = datetime.now(UTC).isoformat()
+    vec = np.zeros(4, dtype=np.float32)
+    conn.execute(
+        """INSERT INTO semantic
+               (subject, predicate, object, confidence, source, attributed_to,
+                session_id, user_id, supersedes, superseded_by, tier, created_at,
+                embedding, embedder_id, embedding_dim, valid_from, valid_to, asserted_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "emergency",
+            "declared by",
+            "pilot or officials",
+            0.9,
+            "yaml",
+            None,
+            None,
+            None,
+            None,
+            None,
+            "seed",
+            now,
+            vec.tobytes(),
+            "fake",
+            4,
+            None,
+            None,
+            now,
+        ),
+    )
+    conn.close()
+
+    # --- Phase 2: open via SemanticStore (triggers migration) ---------------
+    store = SemanticStore(db, embedder=_FakeEmbedder())
+    hits = store.search("declare", k=5, mode="text")
+    assert len(hits) >= 1, "after porter migration, query 'declare' must match stored 'declared by'"
+    assert hits[0][0].subject == "emergency"

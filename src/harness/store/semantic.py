@@ -48,12 +48,18 @@ CREATE INDEX IF NOT EXISTS semantic_superseded_by_idx ON semantic (superseded_by
 # (subject, predicate, object) so queries on identifier-heavy data
 # ("BeadsAdapter.get_focus", "mark@ucollect.com") don't lose to dense
 # cosine's semantic smoothing.
-_CREATE_FTS = """
+#
+# Porter stemming (harness-cpf): same rationale as episodic_fts —
+# tense/morphology mismatches between stored triples and natural-language
+# queries tank BM25 recall and drag down RRF-fused hybrid ranks.
+_FTS_TOKENIZE = "porter unicode61 remove_diacritics 1"
+
+_CREATE_FTS = f"""
 CREATE VIRTUAL TABLE IF NOT EXISTS semantic_fts USING fts5(
     subject, predicate, object,
     content='semantic',
     content_rowid='id',
-    tokenize='unicode61'
+    tokenize='{_FTS_TOKENIZE}'
 );
 
 CREATE TRIGGER IF NOT EXISTS semantic_fts_ai
@@ -61,7 +67,7 @@ AFTER INSERT ON semantic BEGIN
     INSERT INTO semantic_fts(rowid, subject, predicate, object)
     VALUES (new.id, new.subject, new.predicate, new.object);
 END;
-"""
+"""  # noqa: S608 — module-level constant; _FTS_TOKENIZE is never user-supplied
 
 
 @dataclass(frozen=True)
@@ -140,12 +146,22 @@ class SemanticStore:
         # rationale (COUNT(*) on external-content FTS mirrors the
         # main table count, so a row-count check can't see the empty-
         # index case).
-        fts_existed_before = (
-            self._conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='semantic_fts'"
-            ).fetchone()
-            is not None
+        #
+        # Porter-stemming migration (harness-cpf): same pattern as
+        # episodic.py — probe sqlite_master DDL for "porter"; if absent
+        # on an existing table, drop + recreate + rebuild.
+        fts_row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='semantic_fts'"
+        ).fetchone()
+        fts_existed_before = fts_row is not None
+        needs_tokenizer_migration = fts_existed_before and (
+            fts_row[0] is None or "porter" not in fts_row[0].lower()
         )
+        if needs_tokenizer_migration:
+            self._conn.executescript(
+                "DROP TABLE IF EXISTS semantic_fts;DROP TRIGGER IF EXISTS semantic_fts_ai;"
+            )
+            fts_existed_before = False
         self._conn.executescript(_CREATE_FTS)
         if not fts_existed_before:
             self._conn.execute("INSERT INTO semantic_fts(semantic_fts) VALUES('rebuild')")
@@ -334,6 +350,11 @@ class SemanticStore:
         user_id: str | None,
         as_of_iso: str,
     ) -> list[tuple[SemanticFact, float]]:
+        # Embed the query FIRST so a lazy embedder (dimension=0 until
+        # first embed() call) populates its real dimension before the
+        # SQL filter reads it (harness-m35). Mirrors the episodic-store
+        # fix.
+        q_vec = self.embedder.embed([query])[0].astype(np.float32)
         if user_id is None:
             rows = self._conn.execute(
                 """SELECT id, subject, predicate, object, confidence, source,
@@ -369,7 +390,6 @@ class SemanticStore:
             ).fetchall()
         if not rows:
             return []
-        q_vec = self.embedder.embed([query])[0].astype(np.float32)
         scored: list[tuple[SemanticFact, float]] = []
         for row in rows:
             # Embedding is at index 16 now that temporal fields precede it.

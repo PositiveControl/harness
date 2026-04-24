@@ -92,12 +92,21 @@ CREATE INDEX IF NOT EXISTS episodic_superseded_by_idx ON episodic (superseded_by
 # superseded_by / embedding / last_accessed change — so we don't need
 # UPDATE or DELETE triggers. Backfill on first init handles pre-
 # existing rows from the pre-FTS5 schema.
-_CREATE_FTS = """
+#
+# Porter stemming (harness-cpf): the porter tokenizer wraps unicode61 so
+# query "declare" matches stored "declared", "declaring", etc. This is
+# the primary retrieval quality fix for tense-mismatch failures in the
+# airton_c1 corpus — dense cosine finds the right section by semantic
+# similarity, but without stemming BM25 misses it and drags down the
+# RRF-fused hybrid rank.
+_FTS_TOKENIZE = "porter unicode61 remove_diacritics 1"
+
+_CREATE_FTS = f"""
 CREATE VIRTUAL TABLE IF NOT EXISTS episodic_fts USING fts5(
     title, body, principle,
     content='episodic',
     content_rowid='id',
-    tokenize='unicode61'
+    tokenize='{_FTS_TOKENIZE}'
 );
 
 CREATE TRIGGER IF NOT EXISTS episodic_fts_ai
@@ -105,7 +114,7 @@ AFTER INSERT ON episodic BEGIN
     INSERT INTO episodic_fts(rowid, title, body, principle)
     VALUES (new.id, new.title, new.body, COALESCE(new.principle, ''));
 END;
-"""
+"""  # noqa: S608 — module-level constant; _FTS_TOKENIZE is never user-supplied
 
 
 @dataclass(frozen=True)
@@ -174,12 +183,26 @@ class EpisodicStore:
         # external-content FTS mirrors the main table count even
         # when the index is empty, so counting can't detect the
         # migration case — check schema existence instead.
-        fts_existed_before = (
-            self._conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='episodic_fts'"
-            ).fetchone()
-            is not None
+        #
+        # Porter-stemming migration (harness-cpf): if the FTS table
+        # exists but was created with the old tokenizer (no "porter"),
+        # DROP it and recreate with the new DDL, then re-populate from
+        # the canonical table. Detection is a DDL-string probe against
+        # sqlite_master — cheapest approach, requires no version table.
+        fts_row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='episodic_fts'"
+        ).fetchone()
+        fts_existed_before = fts_row is not None
+        needs_tokenizer_migration = fts_existed_before and (
+            fts_row[0] is None or "porter" not in fts_row[0].lower()
         )
+        if needs_tokenizer_migration:
+            # Drop the stale FTS table (triggers referencing it are also
+            # dropped automatically by SQLite when the virtual table goes).
+            self._conn.executescript(
+                "DROP TABLE IF EXISTS episodic_fts;DROP TRIGGER IF EXISTS episodic_fts_ai;"
+            )
+            fts_existed_before = False  # force rebuild below
         self._conn.executescript(_CREATE_FTS)
         if not fts_existed_before:
             self._conn.execute("INSERT INTO episodic_fts(episodic_fts) VALUES('rebuild')")
@@ -346,6 +369,12 @@ class EpisodicStore:
         min_score: float,
         user_id: str | None,
     ) -> list[tuple[EpisodicRecord, float]]:
+        # Embed the query FIRST so a lazy embedder (dimension=0 until
+        # first embed() call) populates its real dimension before the
+        # SQL filter reads it. Otherwise `WHERE embedding_dim = 0`
+        # matches zero rows and dense silently returns [] on the very
+        # first call against a fresh embedder (harness-m35).
+        q_vec = self.embedder.embed([query])[0].astype(np.float32)
         if user_id is None:
             rows = self._conn.execute(
                 """SELECT id, external_id, title, body, principle, tags, tier,
@@ -368,7 +397,6 @@ class EpisodicStore:
         if not rows:
             return []
 
-        q_vec = self.embedder.embed([query])[0].astype(np.float32)
         scored: list[tuple[EpisodicRecord, float]] = []
         for row in rows:
             vec = np.frombuffer(row[12], dtype=np.float32)
