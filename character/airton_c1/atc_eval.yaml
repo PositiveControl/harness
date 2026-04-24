@@ -1,29 +1,161 @@
 version: 1
 purpose: |
-  Domain eval for airton_c1. Replays Q&A cases through the full
-  stack (episodic retrieval → persona adapter → reply) and scores
-  citation presence (all expected_citations substrings must appear in
-  the reply) plus keyword recall (≥ min_keyword_hits of
-  expected_keywords must appear). Phase-1 target: ≥80% pass.
+  Domain eval for airton_c1 (JO 7110.65-only specialist). Replays
+  controller-side Q&A through the full stack (episodic retrieval →
+  persona adapter → reply). Scores citation presence (each
+  expected_citations entry's alternate list must have ≥1 alternate
+  present in the reply) and keyword recall (≥ min_keyword_hits entries
+  must have ≥1 alternate present).
 
-  Ship a starter set. Each entry keys on a section the ingested corpus
-  demonstrably knows (verify via `harness memory search` after ingest).
-  Grow toward ~60 cases as real-use queries surface gaps; add one case
-  per "airton_c1 confidently misled me" moment so the regression
-  becomes the gate.
+  Phase-1 target: ≥80% pass (10/12).
 
-  Conventions:
+  Start set keys on sections verified present in the ingested JO
+  7110.65BB corpus (Basic w/ Chg 1 & 2, 2026-01-22) after harness-iyxs.
+  Each case's expected_citations was spot-checked against the seed
+  store via sqlite queries; each case's keywords come from the actual
+  section text, not invented content.
+
+  Conventions match character/airton_c/atc_eval.yaml:
     id:                 '<audience>_<topic_slug>' — stable across runs.
-    audience:           free-form tag (e.g. 'ppl', 'ifr', 'controller').
-    expected_citations: each entry is either a scalar string (single
-                        acceptable citation) OR a list of alternates —
-                        any one present in the reply counts as a hit.
-                        Use the plain section form the doc prints
-                        ('91.155', not '§ 91.155') so reply-side
-                        paraphrasing doesn't fail the match.
-    expected_keywords:  each entry is either a scalar string OR a list
-                        of alternate phrasings. Don't over-loosen.
-    min_keyword_hits:   how many entries must match. 1 = lenient,
-                        ~half = strict.
+    audience:           'controller' for this fixture.
+    expected_citations: scalar string OR list of alternates (any present
+                        in reply counts). Plain section form: '5-5-4',
+                        '2-4-3'. Reply-side paraphrase robust.
+    expected_keywords:  scalar string OR list of alternates per entry.
+                        Keep alternates specific enough that an
+                        off-topic reply still fails.
+    min_keyword_hits:   how many entries must match. Default 2.
 
-cases: []
+cases:
+  # ----- Chapter 2 — General Control -----
+
+  - id: controller_readback_requirement
+    audience: controller
+    question: "What do I need to verify when a pilot reads back an ATC clearance, per JO 7110.65?"
+    expected_citations: ["2-4-3"]
+    expected_keywords:
+      - ["read back", "readback", "acknowledge"]
+      - ["hold short", "hold-short"]
+      - ["call sign", "callsign"]
+    min_keyword_hits: 2
+
+  - id: controller_wake_turbulence_application
+    audience: controller
+    question: "When do wake turbulence procedures apply under JO 7110.65?"
+    expected_citations: ["2-1-19"]
+    expected_keywords:
+      - "wake turbulence"
+      - "behind"
+      - ["separation", "separation is required"]
+    min_keyword_hits: 2
+
+  # ----- Chapter 3 — Terminal -----
+
+  - id: controller_same_runway_departure
+    audience: controller
+    question: "When can I clear a departing aircraft for takeoff behind another departing aircraft on the same runway?"
+    expected_citations: ["3-9-6"]
+    expected_keywords:
+      - ["crossed the runway end", "runway end", "departure end"]
+      - ["takeoff roll", "departed", "takeoff"]
+      - ["turned", "avert", "conflict"]
+    min_keyword_hits: 2
+
+  - id: controller_same_runway_arrival
+    audience: controller
+    question: "When may an arriving aircraft cross the landing threshold behind another aircraft on the same runway?"
+    expected_citations: ["3-10-3"]
+    expected_keywords:
+      - "landed"
+      - ["clear of the runway", "clear of runway", "off the runway"]
+      - ["landing threshold", "threshold"]
+    min_keyword_hits: 2
+
+  # ----- Chapter 4 — IFR -----
+
+  - id: controller_ifr_clearance_items_order
+    audience: controller
+    question: "In what order do I issue IFR clearance items?"
+    expected_citations: ["4-2-1"]
+    expected_keywords:
+      - ["aircraft identification", "aircraft ID", "callsign"]
+      - "clearance limit"
+      - ["route", "route of flight"]
+    min_keyword_hits: 2
+
+  - id: controller_vertical_separation_rvsm
+    audience: controller
+    question: "What's the IFR vertical separation minimum up to FL 410, and what changes above it?"
+    expected_citations: ["4-5-1"]
+    expected_keywords:
+      - ["1,000 feet", "1000 feet", "1,000 ft"]
+      - ["FL 410", "FL410", "flight level 410"]
+      - ["2,000 feet", "2000 feet", "non-RVSM", "non−RVSM"]
+    min_keyword_hits: 2
+
+  # ----- Chapter 5 — Radar -----
+
+  - id: controller_radar_standard_separation
+    audience: controller
+    question: "What's the standard radar separation minimum in terminal airspace when using single-sensor ASR?"
+    expected_citations: ["5-5-4"]
+    expected_keywords:
+      - ["3 miles", "3 NM", "three miles"]
+      - ["40 miles", "40 NM"]
+      - ["5 miles", "5 NM", "five miles"]
+    min_keyword_hits: 2
+
+  - id: controller_handoff_responsibilities
+    audience: controller
+    question: "What must the transferring controller do before making a flight-path change during a radar handoff?"
+    expected_citations: ["5-4-5"]
+    expected_keywords:
+      - "receiving controller"
+      - ["verbally", "verbal", "coordinate", "coordination"]
+      - ["approval", "approve", "obtain"]
+    min_keyword_hits: 2
+
+  - id: controller_missed_approach_precoord
+    audience: controller
+    question: "When must I issue a specific missed approach procedure before the aircraft starts final descent?"
+    expected_citations: ["5-10-11"]
+    expected_keywords:
+      - "final approach"
+      - ["IFR conditions", "IMC", "instrument conditions"]
+      - "missed approach"
+    min_keyword_hits: 2
+
+  # ----- Chapter 7 — Visual -----
+
+  - id: controller_class_b_vfr_clearance
+    audience: controller
+    question: "What's the phraseology for clearing a VFR aircraft into Class B airspace?"
+    expected_citations: ["7-9-2"]
+    expected_keywords:
+      - "CLEARED"
+      - ["BRAVO", "Class B", "Bravo airspace"]
+      - ["ATC clearance", "clearance"]
+    min_keyword_hits: 2
+
+  - id: controller_vfr_on_top
+    audience: controller
+    question: "Under what condition may I clear an IFR aircraft to maintain 'VFR-on-top'?"
+    expected_citations: ["7-3-1"]
+    expected_keywords:
+      - ["IFR flight plan", "IFR"]
+      - ["pilot requests", "pilot of an aircraft", "request"]
+      - ["VFR-on-top", "VFR on top"]
+    min_keyword_hits: 2
+
+  # ----- Chapter 10 — Emergencies -----
+
+  - id: controller_emergency_distress_urgency
+    audience: controller
+    question: "What's the difference between a Distress and an Urgency emergency, and how does a pilot declare each?"
+    expected_citations: ["10-1-1"]
+    expected_keywords:
+      - "Mayday"
+      - ["Pan-Pan", "Pan Pan"]
+      - "distress"
+      - "urgency"
+    min_keyword_hits: 3
