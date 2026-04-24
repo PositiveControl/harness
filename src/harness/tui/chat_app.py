@@ -1243,9 +1243,13 @@ class ChatApp(App[None]):
             # catcher; orchestrator appended a nudge and is re-running.
             # Same drop-partial contract as truncated_retry so the
             # fabricated draft doesn't stack above the next retry
-            # (harness-24xj).
+            # (harness-24xj). `event.catcher` names the hook so the
+            # user can diagnose WHY the retry happened.
             self._stream.reset()
-            log.write(Text("⋯ discarding draft, retrying…", style="dim"))
+            suffix = f" ({event.catcher})" if event.catcher else ""
+            log.write(
+                Text(f"⋯ discarding draft, retrying{suffix}…", style="dim")
+            )
         # Other event kinds (round_start, model_call_start/end,
         # round_complete) are internal book-keeping — the metrics
         # footer already covers 'model is thinking'.

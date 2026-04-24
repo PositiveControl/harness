@@ -1032,7 +1032,8 @@ def _render_tool_event(
         # partial stream so the fabricated draft doesn't stay
         # stacked above the next retry (harness-24xj).
         stream_renderer.stop()
-        console.print("[dim]⋯ discarding draft, retrying…[/dim]")
+        suffix = f" ({event.catcher})" if event.catcher else ""
+        console.print(f"[dim]⋯ discarding draft, retrying{suffix}…[/dim]")
 
 
 def _stream_or_complete(

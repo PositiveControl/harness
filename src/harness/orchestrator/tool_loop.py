@@ -205,6 +205,13 @@ class ToolLoopEvent:
     result: ToolResult | None = None
     round_index: int = 0
     delta: str | None = None
+    # Name of the catcher that produced a `bail_retry` event. Empty
+    # string for every other event kind. Populated by the emit site
+    # from the BailOutcome's catcher field (Nudge.catcher, set by
+    # HookPipeline.run_bail). Lets the CLI / TUI annotate
+    # '⋯ discarding draft, retrying (catcher_name)…' so a mysterious
+    # retry is diagnosable without re-running with trace logging.
+    catcher: str = ""
 
 
 @dataclass
@@ -744,7 +751,13 @@ def run_tool_loop(
                     # Must fire BEFORE the nudge is queued so the CLI /
                     # TUI can drop the in-flight stream buffer — each
                     # retry re-streams from scratch (harness-24xj).
-                    emit(ToolLoopEvent(kind="bail_retry", round_index=round_idx))
+                    emit(
+                        ToolLoopEvent(
+                            kind="bail_retry",
+                            round_index=round_idx,
+                            catcher=bail_outcome.catcher,
+                        )
+                    )
                     working.append(ChatMessage(role="user", content=bail_outcome.text))
                 continue
             # Retries exhausted (or none needed). Let finalize hooks

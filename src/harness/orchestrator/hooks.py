@@ -365,9 +365,17 @@ class Continue:
 @dataclass(frozen=True)
 class Nudge:
     """0-tool-call reply tripped a catcher. Caller appends `text` as a
-    user-role message and re-runs the round."""
+    user-role message and re-runs the round.
+
+    `catcher` names the hook that produced this Nudge. Populated by
+    `HookPipeline.run_bail` at return time (individual hooks construct
+    Nudge with text only — the pipeline attaches the name). Surfaced
+    in `ToolLoopEvent(kind="bail_retry")` so the CLI / TUI can show
+    which rule triggered the retry ('⋯ discarding draft, retrying
+    (ambiguous_context)…')."""
 
     text: str
+    catcher: str = ""
 
 
 @dataclass(frozen=True)
@@ -2147,6 +2155,12 @@ class HookPipeline:
             if hook.name in disabled:
                 continue
             outcome = hook.check(ctx)
+            if isinstance(outcome, Nudge) and not outcome.catcher:
+                # Attach the hook's name so downstream observers (CLI
+                # retry marker, tool-loop events, attribution eval)
+                # can report WHICH rule fired without re-inspecting
+                # the nudge text.
+                return Nudge(text=outcome.text, catcher=hook.name)
             if not isinstance(outcome, Continue):
                 return outcome
         return Continue()
