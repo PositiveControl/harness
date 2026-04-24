@@ -467,6 +467,133 @@ def test_reserved_squawk_7500_gets_nudged() -> None:
     assert "one two zero zero" in result.final_content
 
 
+def test_roosters_out_of_scope_nudges_scope_redirect() -> None:
+    """Session 2026-04-24 repro: user asked 'do roosters lay eggs'
+    (zero aviation vocab). Model latched onto a prior-turn phraseology
+    topic and produced ATC content instead of scope-redirecting.
+
+    Fix: ScopeRedirectHook nudges when the user's message has no
+    aviation vocabulary (>= 15 chars so short follow-ups don't trip)
+    AND the reply contains aviation vocabulary but is not itself a
+    scope-redirect. Retry produces a proper 'outside scope' response.
+    """
+    result = _run_scenario(
+        {
+            "id": "_roosters_out_of_scope",
+            "registry": [
+                {
+                    "name": "search_memory",
+                    "output": (
+                        "[0.031] PIREP SOLICITATION AND DISSEMINATION\n"
+                        "  lesson: JO_7110.65 §2-6-1\n\n"
+                        "[0.016] BIRD ACTIVITY INFORMATION\n"
+                        "  lesson: JO_7110.65 §2-1-22\n"
+                    ),
+                }
+            ],
+            "messages": [{"role": "user", "content": "do roosters lay eggs"}],
+            "scripted_replies": [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "name": "search_memory",
+                            "arguments": {"query": "do roosters lay eggs"},
+                        }
+                    ],
+                },
+                # Observed context-bleed: prior phraseology topic
+                # pasted into the new unrelated turn.
+                {
+                    "content": (
+                        'The phraseology "Services stopped, squawk seventy '
+                        'five hundred" is incorrect. Per JO 7110.65 §7-6-11, '
+                        'the correct phraseology is "Radar service '
+                        'terminated, squawk 7700."'
+                    ),
+                },
+                # Retry after the scope-redirect nudge.
+                {
+                    "content": (
+                        "That question is outside JO 7110.65. I am a "
+                        "specialist for FAA Air Traffic Control procedures "
+                        "only and cannot answer biology questions."
+                    ),
+                },
+            ],
+        }
+    )
+    # Final content is the scope-redirect, not the bled phraseology.
+    assert "outside JO 7110.65" in result.final_content
+    assert "squawk 7700" not in result.final_content
+    assert "Radar service terminated" not in result.final_content
+
+
+def test_phraseology_retry_without_citation_gets_nudged() -> None:
+    """Session 2026-04-24 repro (retry pass): mixed-case narrative
+    phraseology ('the correct phraseology for terminating radar
+    service is "Radar service terminated, squawk VFR"...') went
+    through uncited because the prior MissingCitation regex only
+    matched ALL-CAPS phraseology blocks and the literal 'JO 7110.65'.
+
+    Fix: _JO_PHRASEOLOGY_MARKERS_RE is now case-insensitive and
+    includes meta-phraseology triggers ('correct phraseology',
+    'phraseology for terminating/...'). Retry produces a cited form.
+    """
+    result = _run_scenario(
+        {
+            "id": "_phraseology_mixed_case_no_cite",
+            "registry": [
+                {
+                    "name": "search_memory",
+                    "output": _TERMINATION_7_6_11_TOOL_OUTPUT,
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        'Correct the following radar phraseology: '
+                        '"Services stopped, squawk seventy five hundred"'
+                    ),
+                }
+            ],
+            "scripted_replies": [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "name": "search_memory",
+                            "arguments": {"query": "radar service termination"},
+                        }
+                    ],
+                },
+                # Mixed-case phraseology, no JO reference, no §-anchor.
+                {
+                    "content": (
+                        "The correct phraseology for terminating radar "
+                        'service to an aircraft is "Radar service '
+                        'terminated, squawk VFR" or "Radar service '
+                        'terminated, squawk one two zero zero."'
+                    ),
+                },
+                # Retry with citation.
+                {
+                    "content": (
+                        "Per JO 7110.65 §7-6-11 and §5-2-7, the correct "
+                        "phraseology for terminating radar service to a "
+                        'VFR aircraft is: "Radar service terminated, '
+                        'squawk VFR" or "Radar service terminated, '
+                        'squawk one two zero zero."'
+                    ),
+                },
+            ],
+        }
+    )
+    assert "§7-6-11" in result.final_content
+    assert "§5-2-7" in result.final_content
+
+
 def test_reserved_squawk_does_not_nudge_when_reply_echoes_user_input() -> None:
     """Session 2026-04-24 repro (retry pass). After the first
     ReservedSquawk fix landed, a new false-positive appeared: the

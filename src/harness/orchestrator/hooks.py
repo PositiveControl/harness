@@ -759,12 +759,16 @@ _ORDER_REFERENCE_RE = re.compile(
 
 # Secondary in-scope signal: JO-normative phraseology. The order
 # formats controller phraseology blocks in ALL CAPS (e.g.
-# 'RADAR SERVICE TERMINATED', 'SQUAWK VFR', 'CLEARED FOR TAKEOFF').
-# A reply that quotes these without naming the order is still making
-# JO claims — the student still needs a citation to verify. Kept
-# targeted (not a generic all-caps detector) so prose that happens
-# to contain a few caps tokens doesn't false-positive. Patterns
-# drawn from the most frequent JO 7110.65 PHRASEOLOGY blocks.
+# 'RADAR SERVICE TERMINATED', 'SQUAWK VFR'), but airton_c1's replies
+# routinely narrate these in mixed case ('the correct phraseology is
+# "Radar service terminated, squawk VFR"'). The regex is
+# case-insensitive so both forms trigger — the phrase tokens are
+# specific enough to ATC that a casual narrative use outside an
+# airton_c1 reply is vanishingly unlikely. Plus meta-phraseology
+# triggers ('correct phraseology', 'proper phraseology',
+# 'phraseology for terminating/clearing/...') so a reply that DOESN'T
+# quote the exact JO line but still teaches normative phraseology
+# trips the in-scope check.
 _JO_PHRASEOLOGY_MARKERS_RE = re.compile(
     r"\b(?:"
     r"SQUAWK\s+(?:VFR|IDENT|STANDBY|STOP|MAYDAY|\d{4}|"
@@ -783,7 +787,14 @@ _JO_PHRASEOLOGY_MARKERS_RE = re.compile(
     r"|PROCEED\s+DIRECT"
     r"|CROSS\s+[A-Z]+\s+AT"
     r"|TURN\s+(?:LEFT|RIGHT)\s+HEADING"
-    r")\b"
+    # Meta-phraseology signals (narrative references to normative
+    # phraseology, not direct quotes):
+    r"|correct\s+phraseology"
+    r"|proper\s+phraseology"
+    r"|phraseology\s+(?:for|is|should\s+be|would\s+be)"
+    r"|the\s+phrase(?:ology)?\s+\""
+    r")\b",
+    re.IGNORECASE,
 )
 
 
@@ -886,6 +897,153 @@ def _parse_count_word(token: str) -> int | None:
     if token.isdigit():
         return int(token)
     return _NUMBER_WORDS.get(token)
+
+
+# ATC-domain vocabulary markers. Presence in a reply signals the
+# content is ATC-focused — used by ScopeRedirectHook to confirm the
+# model is discussing JO 7110.65 topics. Not used to decide the
+# user's intent (too many legit in-scope lay questions lack explicit
+# aviation acronyms — 'What document is required...', 'What is the
+# purpose of the order?', etc.). Generic single words like 'flight'
+# / 'plane' are omitted so travel/hobby prose doesn't false-positive.
+_AVIATION_VOCAB_RE = re.compile(
+    r"\b(?:"
+    r"squawk|transponder|phraseology|radar|ATC|IFR|VFR|NAVAID|RNAV|"
+    r"clearance|runway|taxiway|approach|departure|altitude|heading|"
+    r"beacon|ADS[-\s]?B|pilot|controller|aircraft|airspace|vector|"
+    r"separation|hijack|emergency|NORDO|MVA|MEA|hold\s+short|"
+    r"flight\s+level|JO\s*7110|7110\.65|FAA\s+Order|"
+    r"Air\s+Traffic\s+Control|RBN|VOR(?:TAC)?|TACAN|DME|ILS"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+# Strong out-of-scope markers. Presence in a user message is the
+# positive trigger for ScopeRedirectHook — clearly non-aviation
+# vocabulary (biology, programming, cooking, chat/greeting) that no
+# in-scope JO 7110.65 question should contain. Narrow on purpose:
+# prefer false negatives (missing an out-of-scope case) over false
+# positives (nudging a valid in-scope lay query). Grow this list as
+# new false-negative cases surface — the rule of discipline is 'only
+# add terms that are almost never in a JO 7110.65 question.'
+_CLEARLY_NON_AVIATION_RE = re.compile(
+    r"\b(?:"
+    # Biology / animals
+    r"rooster|chicken|hen|egg|eggs|cow|pig|horse|goat|sheep|dog|cat|fish|"
+    r"bird|plant|tree|flower|fungus|bacteria|virus|cell|"
+    # Food & cooking
+    r"recipe|cook|bake|ingredient|breakfast|lunch|dinner|meal|"
+    # Programming & software (not ATC software)
+    r"python|javascript|typescript|ruby|rust|golang|react|vue|django|flask|"
+    r"sql|bash|shell\s+script|variable|compile|debug|commit|git(?:hub)?|"
+    # Math / science
+    r"equation|theorem|calculus|algebra|geometry|physics|chemistry|"
+    r"astronomy|biology|history|literature|philosophy|"
+    # Personal / chat / meta
+    r"how\s+are\s+you|tell\s+me\s+about\s+yourself|what(?:'s|\sis)\s+your\s+name|"
+    r"tell\s+me\s+a\s+joke|sing\s+(?:me\s+)?a\s+song|"
+    # Entertainment
+    r"football|basketball|baseball|soccer|movie|film|song|album|book|novel"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+# Phrases a reply uses when it IS correctly scope-redirecting.
+# A reply that matches this pattern is already doing the right thing
+# (declining, naming its own scope, pointing the user elsewhere) —
+# even if it happens to mention JO 7110.65 / ATC by name to say 'that
+# is NOT what I cover.' Exempting the reply from the scope mismatch
+# catcher prevents a successful refusal from being nudged into a
+# pointless retry loop.
+_SCOPE_REDIRECT_MARKER_RE = re.compile(
+    r"(?:"
+    r"outside\s+(?:of\s+)?(?:JO|FAA|the\s+order|scope)"
+    r"|not\s+(?:in|within|part\s+of)\s+(?:scope|JO|the\s+order|my\s+scope)"
+    r"|cannot\s+answer"
+    r"|can(?:not|'t|\snot)\s+answer"
+    r"|I\s+(?:am|'m)\s+(?:a\s+)?specialist"
+    r"|that\s+(?:question\s+)?is\s+outside"
+    r"|doesn(?:'t|\snot)\s+cover"
+    r"|out\s+of\s+scope"
+    r"|not\s+something\s+I\s+cover"
+    r")",
+    re.IGNORECASE,
+)
+
+
+_SCOPE_REDIRECT_NUDGE = (
+    "[scope mismatch — the user's message has no aviation or ATC "
+    "terminology, but your reply is discussing JO 7110.65 / ATC "
+    "content. airton_c1 is scoped to FAA JO 7110.65 (Air Traffic "
+    "Control) only. Respond with an explicit scope-redirect: 'That "
+    "question is outside JO 7110.65. I'm a JO 7110.65 specialist — "
+    "I can't answer it.' Do NOT answer from priors, do NOT continue "
+    "a prior turn's topic into this new unrelated question, and do "
+    "NOT fabricate an in-scope interpretation.]"
+)
+
+
+@dataclass(frozen=True)
+class ScopeRedirectHook:
+    """Nudge replies that continue JO 7110.65 / ATC content when the
+    user's question has no aviation vocabulary at all.
+
+    Failure mode this catches: user asks an out-of-scope question
+    ('do roosters lay eggs', 'help me write Python'). Retrieval scores
+    are uniformly weak — airton_c1's corpus is JO 7110.65 only, so
+    there's nothing relevant to surface. The model, seeing weak
+    retrieval + strong prior-turn context in its working history,
+    latches onto the previous turn's topic instead of scope-redirecting.
+    Session 2026-04-24 repro: 'do roosters lay eggs' got the previous
+    turn's phraseology-correction content emitted back.
+
+    Trigger conditions (ALL must hold):
+      1. `user_message` threaded through (not None / empty).
+      2. User message length >= 15 chars (filter out follow-ups like
+         'tell me more' / 'go on' that legitimately lack aviation
+         vocab but continue an in-scope thread).
+      3. User message contains clearly non-aviation vocabulary
+         (`_CLEARLY_NON_AVIATION_RE` — biology, cooking, programming,
+         chat meta, entertainment). Narrow-by-design: lay-phrased
+         in-scope questions like 'What document is required for
+         jointly applied procedures?' don't have these markers and
+         pass through untouched.
+      4. Reply has aviation vocabulary (`_AVIATION_VOCAB_RE` hit).
+      5. Reply is not already a correctly-shaped scope redirect
+         (`_SCOPE_REDIRECT_MARKER_RE` miss).
+
+    Action: Nudge. Retry-able — on the next round the model should
+    emit a scope-redirect sentence. Halt would be too brutal; a
+    nudge lets the model actually produce a useful 'not in scope'
+    message rather than a canned refusal.
+
+    Placed last in the bail list so domain-specific shape catchers
+    (fabrication / count / citation / reserved-code) run first on
+    in-scope replies."""
+
+    name: str = "scope_redirect"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        user = ctx.user_message
+        if user is None or len(user.strip()) < 15:
+            return Continue()
+        # Strong positive signal: user asked about something clearly
+        # not aviation. Without this marker we stay silent — too many
+        # in-scope lay queries lack explicit aviation acronyms for
+        # an absence-of-aviation test to be safe.
+        if not _CLEARLY_NON_AVIATION_RE.search(user):
+            return Continue()
+        content = ctx.reply.content
+        if not _AVIATION_VOCAB_RE.search(content):
+            return Continue()
+        # Reply mentions ATC terminology — but if it's naming JO
+        # 7110.65 / ATC to DECLINE ('that question is outside JO
+        # 7110.65'), it's already a scope redirect. Exempt.
+        if _SCOPE_REDIRECT_MARKER_RE.search(content):
+            return Continue()
+        return Nudge(_SCOPE_REDIRECT_NUDGE)
 
 
 # Reserved transponder codes are pilot-initiated emergency signals.
@@ -1157,6 +1315,13 @@ class MissingCitationHook:
         if not in_scope:
             return Continue()
         if _CITATION_PRESENT_RE.search(content):
+            return Continue()
+        # Scope-redirect replies name the order to explain what's
+        # NOT covered ('That question is outside JO 7110.65'). Those
+        # are declining to answer, not making a substantive claim —
+        # don't demand a citation. Shared marker regex with
+        # ScopeRedirectHook keeps the two exemptions aligned.
+        if _SCOPE_REDIRECT_MARKER_RE.search(content):
             return Continue()
         return Nudge(_MISSING_CITATION_NUDGE)
 
@@ -1880,6 +2045,13 @@ def default_hook_pipeline() -> HookPipeline:
             # nudge first; only a reply otherwise structurally fine
             # but proposing an unsafe code reaches this.
             ReservedSquawkCodeHook(),
+            # Scope check: user's question has no aviation vocabulary,
+            # but the reply is talking ATC. Catches context-bleed and
+            # out-of-scope fabrication ('do roosters lay eggs' getting
+            # answered with phraseology content). Placed last: every
+            # in-scope reply skips this naturally (user has aviation
+            # vocab OR reply doesn't).
+            ScopeRedirectHook(),
         ],
         post_model=[PairedMetaConfirmStripHook()],
         # Order matters inside pre_tool: duplicate_call fires first so
@@ -2076,6 +2248,7 @@ __all__ = [
     "Replace",
     "ReplaceResult",
     "ReservedSquawkCodeHook",
+    "ScopeRedirectHook",
     "Skip",
     "TableFabricationHook",
     "TeaserHook",

@@ -243,6 +243,20 @@ _CONTROL_CORPUS: tuple[
         False,
     ),
     (
+        # scope_redirect silent path: correctly-scoped refusal for an
+        # out-of-scope question. Reply mentions JO 7110.65 to name
+        # what it DOESN'T cover — must not trip any catcher.
+        "truthful_scope_redirect_reply",
+        (
+            "That question is outside JO 7110.65. I am a specialist for "
+            "FAA Air Traffic Control procedures only and cannot answer "
+            "biology or programming questions."
+        ),
+        (),
+        frozenset({"search_memory"}),
+        False,
+    ),
+    (
         # list_count_mismatch silent path: section numbers in prose
         # must not trip the count-claim regex.
         "truthful_section_number_in_prose",

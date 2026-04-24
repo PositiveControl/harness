@@ -33,6 +33,7 @@ from harness.orchestrator.hooks import (
     PreToolContext,
     Replace,
     ReservedSquawkCodeHook,
+    ScopeRedirectHook,
     Skip,
     TableFabricationHook,
     TeaserHook,
@@ -295,6 +296,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "missing_citation",
         "list_count_mismatch",
         "reserved_squawk_code",
+        "scope_redirect",
         "paired_meta_confirm_strip",
         "duplicate_call",
         "argument_grounding",
@@ -1612,6 +1614,126 @@ def test_reserved_squawk_respects_disabled_toggle() -> None:
         ctx,
         disabled=frozenset({"reserved_squawk_code"}),
     )
+    assert isinstance(disabled, Continue)
+
+
+# ---------- scope_redirect (harness-5uq follow-up #4) ----------
+
+
+def _scope_ctx(user: str, reply: str) -> BailContext:
+    return BailContext(
+        reply=_reply(reply),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_memory"}),
+        user_message=user,
+    )
+
+
+def test_scope_redirect_fires_on_roosters_with_atc_reply() -> None:
+    """Session 2026-04-24 repro: user asked 'do roosters lay eggs'
+    (zero aviation vocab), model replied with phraseology-correction
+    content from a prior turn (context bleed)."""
+    outcome = ScopeRedirectHook().check(
+        _scope_ctx(
+            "do roosters lay eggs",
+            'The phraseology "Services stopped, squawk seventy five hundred" '
+            'is incorrect. Per JO 7110.65 §7-6-11, the correct phrase is '
+            '"Radar service terminated."',
+        )
+    )
+    assert isinstance(outcome, Nudge)
+    assert "scope mismatch" in outcome.text.lower()
+
+
+def test_scope_redirect_passes_in_scope_question() -> None:
+    """User message HAS aviation vocab ('MH class RBN') → silent."""
+    outcome = ScopeRedirectHook().check(
+        _scope_ctx(
+            "What is the usable distance for an MH class RBN?",
+            "Per §4-1-1 TBL 4-1-2, MH class has a 25 mile usable distance.",
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_scope_redirect_passes_short_followup() -> None:
+    """Short follow-ups ('tell me more') legitimately lack aviation
+    vocab but continue an in-scope thread. Length guard disarms."""
+    outcome = ScopeRedirectHook().check(
+        _scope_ctx(
+            "tell me more",
+            "Per §4-1-1, the H class RBN has a 50 mile usable distance.",
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_scope_redirect_passes_correct_refusal_reply() -> None:
+    """A reply that IS already scope-redirecting (even if it names JO
+    7110.65 to decline) must pass — exempt via scope-redirect marker."""
+    outcome = ScopeRedirectHook().check(
+        _scope_ctx(
+            "can you help me write a Python function to sort a list",
+            "That question is outside JO 7110.65. I am a specialist for "
+            "FAA Air Traffic Control procedures only.",
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_scope_redirect_fires_when_python_answered_then_atc_bleed() -> None:
+    """User asks non-ATC (Python), model answers Python but ALSO adds
+    an unrelated ATC claim. The ATC claim is the bleed."""
+    outcome = ScopeRedirectHook().check(
+        _scope_ctx(
+            "can you write a Python function to sort a list",
+            "Here is the answer: sorted(my_list) returns a new list. "
+            "Per JO 7110.65, controllers must verify readback accuracy.",
+        )
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_scope_redirect_passes_non_aviation_reply_to_non_aviation() -> None:
+    """User asks something non-ATC, model replies without ATC vocab —
+    no mismatch. airton_c1 shouldn't answer biology, but the bail
+    catcher's job is to nudge when ATC content shows up where it
+    shouldn't — not to force a scope-redirect shape."""
+    outcome = ScopeRedirectHook().check(
+        _scope_ctx(
+            "do roosters lay eggs",
+            "No, roosters are male chickens and do not lay eggs. Only "
+            "hens lay eggs.",
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_scope_redirect_silent_without_user_message() -> None:
+    """No user_message threaded through (bootstrap path) → Continue."""
+    outcome = ScopeRedirectHook().check(
+        BailContext(
+            reply=_reply(
+                "Per JO 7110.65 §2-1-1, the ATC system prevents collisions."
+            ),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+            user_message=None,
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_scope_redirect_respects_disabled_toggle() -> None:
+    """Attribution eval disables catchers by name."""
+    pipe = default_hook_pipeline()
+    ctx = _scope_ctx(
+        "do roosters lay eggs",
+        "Per JO 7110.65 §7-6-11, radar service is terminated when...",
+    )
+    enabled = pipe.run_bail(ctx, disabled=frozenset())
+    assert isinstance(enabled, Nudge)
+    disabled = pipe.run_bail(ctx, disabled=frozenset({"scope_redirect"}))
     assert isinstance(disabled, Continue)
 
 

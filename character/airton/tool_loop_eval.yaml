@@ -325,6 +325,37 @@
   expected_contains: ["fabricated row"]
   expected_not_contains: ["| MH | Under 50 | 50 |"]
 
+- id: scope_redirect_roosters_repro
+  label: scope_redirect
+  description: Session 2026-04-24 repro. User asked 'do roosters lay
+    eggs' (clearly non-aviation). Model bled ATC content into the
+    reply instead of scope-redirecting. Reply shape is crafted to
+    avoid every other bail catcher (no reserved squawk code, no count
+    claim, has a citation, no fabrication shape) so scope_redirect
+    is the ONLY hook that saves this scenario — gives the attribution
+    eval a clean uniqueness signal.
+  registry:
+    - name: search_memory
+      # Noisy low-relevance output — mimics what SearchMemoryTool
+      # returns for out-of-scope queries (uniform ~0.016 scores).
+      output: "[0.031] PIREP SOLICITATION AND DISSEMINATION\n  lesson: JO_7110.65 §2-6-1\n\n[0.016] BIRD ACTIVITY INFORMATION\n  lesson: JO_7110.65 §2-1-22\n"
+  messages:
+    - role: user
+      content: "do roosters lay eggs in the morning"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_memory
+          arguments: {"query": "do roosters lay eggs"}
+    # Reply bleeds prior-turn content: cited, no reserved code, no
+    # count mismatch. Only scope_redirect catches the mismatch.
+    - content: "Per JO 7110.65 §4-1-1, the usable distance for an MH class RBN is 25 miles for all altitudes. Controllers reference this when assigning routes through radar coverage."
+    # Retry after scope_redirect nudge.
+    - content: "That question is outside JO 7110.65. I am a specialist for FAA Air Traffic Control procedures only and cannot answer biology questions."
+  expected_contains: ["outside JO 7110.65", "specialist"]
+  expected_not_contains: ["MH class RBN", "25 miles"]
+  expected_events_contain: [bail_retry]
+
 - id: reserved_squawk_code_7500_repro
   label: reserved_squawk_code
   description: Session 2026-04-24 repro. User asked to correct the
