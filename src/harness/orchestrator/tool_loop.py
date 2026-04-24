@@ -811,6 +811,21 @@ def run_tool_loop(
             turn_tool_outputs = tuple(
                 m.content for m in working if m.role == "tool" and m.content
             )
+            # Aggregate retrieval-side telemetry for the finalize phase
+            # (harness-ywp.3 consumer). Walks the event log — every
+            # tool dispatch site emits an event with the ToolResult, so
+            # this covers router prelude + forced search_memory +
+            # main-loop calls uniformly.
+            turn_tool_results = [e.result for e in events if e.result is not None]
+            turn_top_score: float | None = None
+            for _r in turn_tool_results:
+                if _r.hits:
+                    _local_top = max(h.score for h in _r.hits)
+                    if turn_top_score is None or _local_top > turn_top_score:
+                        turn_top_score = _local_top
+            turn_citations_grounded = frozenset().union(
+                *(_r.citations_grounded for _r in turn_tool_results)
+            )
             finalize_outcome = pipeline.run_finalize(
                 FinalizeContext(
                     reply=last_reply,
@@ -818,6 +833,8 @@ def run_tool_loop(
                     tools_ran=frozenset(succeeded_tools),
                     memory_block_attached=memory_block_attached,
                     tool_outputs=turn_tool_outputs,
+                    retrieval_top_score=turn_top_score,
+                    citations_grounded=turn_citations_grounded,
                 ),
                 disabled=_disabled_snapshot(),
             )

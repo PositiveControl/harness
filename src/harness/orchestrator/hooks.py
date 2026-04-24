@@ -511,6 +511,17 @@ class FinalizeContext:
     tools_ran: frozenset[str] = frozenset()
     memory_block_attached: bool = False
     tool_outputs: tuple[str, ...] = ()
+    # Max retrieval score across every tool call this turn, or None
+    # when no tool surfaced retrieval metadata. Populated by the
+    # tool loop from ToolResult.hits (harness-ywp.4). Consumed by
+    # LowConfidenceFallbackHook (harness-ywp.3) to refuse citations
+    # that ride on weak retrieval.
+    retrieval_top_score: float | None = None
+    # Union of citations_grounded across every tool call this turn —
+    # canonicalised (harness-ywp.5). Consumed by the low-confidence
+    # fallback to distinguish citations the tool actually grounded
+    # from ones the model made up.
+    citations_grounded: frozenset[str] = frozenset()
 
 
 class BailHook(Protocol):
@@ -987,6 +998,11 @@ _CLEARLY_NON_AVIATION_RE = re.compile(
     # Programming & software (not ATC software)
     r"python|javascript|typescript|ruby|rust|golang|react|vue|django|flask|"
     r"sql|bash|shell\s+script|variable|compile|debug|commit|git(?:hub)?|"
+    # Consumer tech brands / devices. Bare 'mac', 'pc', 'computer'
+    # are intentionally omitted — they collide with aviation
+    # acronyms (MAC = Military Airlift Command / mean aerodynamic
+    # chord; flight-data computer). These terms don't collide.
+    r"iphone|ipad|ipod|android\s+phone|smartphone|laptop|"
     # Math / science (unrelated to ATC domain)
     r"equation|theorem|calculus|algebra|geometry|physics|chemistry|"
     r"astronomy|biology|history|literature|philosophy|"
@@ -1020,6 +1036,15 @@ _JOKE_FRAME_RE = re.compile(
     # 'What do you call a X when ...' / 'What's the difference between X and Y'
     r"|\bwhat\s+do\s+you\s+(?:call|get)\s+(?:a|an|when)"
     r"|\bwhat(?:'s|\sis)\s+the\s+(?:difference|similarity)\s+between\s+\w+\s+and\s+\w+"
+    # 'X walks into a bar' / 'three men walk into a bar' — the
+    # evergreen bar-joke opener. Matches anything preceding 'walk(s)
+    # into a/the bar'.
+    r"|\bwalks?\s+(?:in)?to\s+(?:a|the)\s+bar\b"
+    # 'Who won?' / 'Who wins?' riddle ending. ATC questions ask
+    # procedural / definitional things ('who must issue X'); a
+    # 'who won / who wins' tag is characteristic of race / contest
+    # jokes ('Five Macs and PC join a computer race. Who won?').
+    r"|\bwho\s+(?:won|wins)\b"
     r")",
     re.IGNORECASE,
 )
@@ -1078,9 +1103,7 @@ _SCOPE_REDIRECT_NUDGE = (
 # variants of this term with materially different rules AND (b) users
 # plausibly ask the bare term without specifying the variant. Each
 # entry is session-regression-backed.
-_AMBIGUOUS_TERMS: tuple[
-    tuple[re.Pattern[str], tuple[tuple[re.Pattern[str], ...], ...]], ...
-] = (
+_AMBIGUOUS_TERMS: tuple[tuple[re.Pattern[str], tuple[tuple[re.Pattern[str], ...], ...]], ...] = (
     # Balloons — unmanned free balloons fall under §9-6 (distinct
     # controller procedures: traffic advisory, no vertical separation
     # without verified altitude, derelict-balloon handling). Manned
@@ -1177,10 +1200,7 @@ class AmbiguousContextHook:
             # Per-axis match counts. Reply offers a choice if ANY
             # axis has >= 2 alternatives mentioned; reply commits if
             # at least one axis has exactly 1.
-            axis_hits = [
-                sum(1 for q in axis if q.search(content))
-                for axis in axes
-            ]
+            axis_hits = [sum(1 for q in axis if q.search(content)) for axis in axes]
             if any(h >= 2 for h in axis_hits):
                 # At least one axis shows multi-alternative mention —
                 # reply is asking / comparing, not silently picking.
@@ -1205,8 +1225,7 @@ class ScopeRedirectHook:
     turn's phraseology-correction content emitted back.
 
     Trigger conditions — ANY of the three positive signals trips
-    the hook, provided the reply is ATC-shaped and not already a
-    scope redirect:
+    the hook, provided the reply is not already a scope redirect:
 
       Signal A (user vocab): User message contains clearly
         non-aviation vocabulary (`_CLEARLY_NON_AVIATION_RE` —
@@ -1214,14 +1233,23 @@ class ScopeRedirectHook:
         supernatural/household/joke-meta).
       Signal B (user shape): User message matches a joke-frame
         structural pattern (`_JOKE_FRAME_RE` — 'If a X, a Y, and a
-        Z...', 'Why did the X...', 'knock knock'). Catches absurd
-        setups even when the specific nouns aren't in vocab.
+        Z...', 'Why did the X...', 'knock knock', 'X walks into a
+        bar'). Catches absurd setups even when the specific nouns
+        aren't in vocab.
       Signal C (reply bleed): The REPLY contains BOTH aviation vocab
         AND clearly-non-aviation vocab. This is defense-in-depth for
         context-bleed (model pulled prior-turn non-aviation material
         into the current reply) — even if the user's latest message
         has no suspicious markers, a reply that mixes 'roosters don't
         lay eggs' with 'per §7-6-11' is confused.
+
+    Signals A and B fire regardless of whether the reply has ATC
+    vocabulary — a plain off-topic answer ('the bartender says hi')
+    is just as much a scope failure as a context-bleed answer.
+    airton_c1 must redirect off-topic prompts, not answer them in
+    kind. Signal C keeps its reply-bleed gate (needs both aviation
+    AND non-aviation vocab) because it exists to catch cases where
+    the user's message gave no signal at all.
 
     Gate on substantiveness (user message >= 15 chars) so short
     follow-ups don't trip; exempt replies already shaped as scope
@@ -1244,19 +1272,20 @@ class ScopeRedirectHook:
         if user is None or len(user.strip()) < 15:
             return Continue()
         content = ctx.reply.content
-        if not _AVIATION_VOCAB_RE.search(content):
-            return Continue()
         # Exempt replies already correctly scope-redirecting.
         if _SCOPE_REDIRECT_MARKER_RE.search(content):
             return Continue()
-        # Signal A / B: user-side triggers.
+        # Signal A / B: user-side triggers. Fire regardless of
+        # reply shape — an off-topic answer to an off-topic prompt
+        # is still a scope failure.
         signal_user_vocab = bool(_CLEARLY_NON_AVIATION_RE.search(user))
         signal_joke_frame = bool(_JOKE_FRAME_RE.search(user))
         # Signal C: reply mixes aviation AND clearly-non-aviation
-        # content. Strong indicator of context bleed or confused
-        # topic — fire even if the user's current message is
-        # vocabulary-silent.
-        signal_reply_bleed = bool(_CLEARLY_NON_AVIATION_RE.search(content))
+        # content. Only meaningful when BOTH appear — that's the
+        # context-bleed shape.
+        signal_reply_bleed = bool(
+            _AVIATION_VOCAB_RE.search(content) and _CLEARLY_NON_AVIATION_RE.search(content)
+        )
         if not (signal_user_vocab or signal_joke_frame or signal_reply_bleed):
             return Continue()
         return Nudge(_SCOPE_REDIRECT_NUDGE)
@@ -1715,6 +1744,82 @@ UNGROUNDED_CITATION_FALLBACK = (
 )
 
 
+LOW_CONFIDENCE_FALLBACK = (
+    "I don't have a solid source for this — the best retrieval match I "
+    "could find scored below my confidence threshold. Check the relevant "
+    "section directly rather than relying on what I said."
+)
+
+
+# Default retrieval-score threshold below which citations that weren't
+# explicitly grounded by a tool's structured return are treated as
+# low-confidence and refused. 0.5 matches the passive-retrieval floor
+# used in cli.py (`--memories-threshold`). Tunable per-hook at
+# construction; the threshold-calibration follow-up (harness-5c0) will
+# histogram the real distribution and move this to a character-config
+# override.
+_LOW_CONFIDENCE_THRESHOLD_DEFAULT = 0.5
+
+
+@dataclass(frozen=True)
+class LowConfidenceFallbackHook:
+    """Catch section-citation replies where a grounding tool DID run
+    but scored below the confidence threshold AND the cited section
+    isn't in the tool's declared `citations_grounded` (harness-ywp.3).
+
+    Complementary to UngroundedCitationHook:
+      * UngroundedCitationHook fires when NO grounding tool ran.
+      * LowConfidenceFallbackHook fires when a grounding tool ran but
+        weakly (top hit below threshold) and the reply cites a
+        section the tool didn't surface.
+
+    Trigger conditions (ALL must hold):
+      1. `ctx.retrieval_top_score` is set and < `threshold`.
+      2. Reply contains at least one JO-style `§N-N-N` / `§N-N` /
+         TBL/Table/FIG/Figure N-N-N citation (same extractor the
+         audit log + tool-declared grounding use — harness-ywp.5).
+      3. At least one of those citations is NOT in
+         `ctx.citations_grounded` — i.e. the model cited something
+         the tool didn't actually ground.
+
+    Action: replace the reply with a character-agnostic fallback that
+    tells the user the retrieval was weak and to check the source
+    directly. Same reasoning as UngroundedCitationHook's refusal —
+    a confident-looking answer riding on weak retrieval is worse than
+    an honest 'I'm not sure, go look'.
+
+    Runs BEFORE UngroundedCitationHook in the finalize phase. When
+    THIS hook halts, the later hook never runs (its preconditions
+    overlap but UngroundedCitationHook's tools_ran check will usually
+    Continue here anyway — a tool did run)."""
+
+    name: str = "low_confidence_fallback"
+    threshold: float = _LOW_CONFIDENCE_THRESHOLD_DEFAULT
+
+    def check(self, ctx: FinalizeContext) -> FinalizeOutcome:
+        if ctx.retrieval_top_score is None:
+            return Continue()
+        if ctx.retrieval_top_score >= self.threshold:
+            return Continue()
+        from harness.tools.citations import extract_citations
+
+        cited = extract_citations(ctx.reply.content)
+        if not cited:
+            return Continue()
+        ungrounded = cited - ctx.citations_grounded
+        if not ungrounded:
+            return Continue()
+        reply = ctx.reply
+        return Halt(
+            ModelReply(
+                content=LOW_CONFIDENCE_FALLBACK,
+                tool_calls=(),
+                was_truncated=reply.was_truncated,
+                had_unparseable_call=reply.had_unparseable_call,
+            )
+        )
+
+
 @dataclass(frozen=True)
 class UngroundedCitationHook:
     """Catch section-citation replies that never touched a grounding
@@ -1859,9 +1964,7 @@ class TableFabricationHook:
         # row with zero numeric tokens can't be a numeric-fabrication
         # target, so we skip it rather than halt on label-only rows.
         data_rows = [
-            r
-            for r in rows
-            if not _PIPE_SEPARATOR_RE.match(r) and _NUMERIC_TOKEN_RE.search(r)
+            r for r in rows if not _PIPE_SEPARATOR_RE.match(r) and _NUMERIC_TOKEN_RE.search(r)
         ]
         if not data_rows:
             return Continue()
@@ -2304,6 +2407,13 @@ def default_hook_pipeline() -> HookPipeline:
         # fabrication_fallback only fires when the bail loop itself left
         # a Nudge outcome on the table.
         finalize=[
+            # Runs first: when a grounding tool ran but scored weakly
+            # AND the reply cites a section the tool didn't ground,
+            # halt with a low-confidence fallback. Complementary to
+            # UngroundedCitationHook — this catches the 'tool ran but
+            # I made up the §' shape; that catches the 'no tool ran at
+            # all' shape.
+            LowConfidenceFallbackHook(),
             UngroundedCitationHook(),
             TableFabricationHook(),
             NumericFabricationHook(),

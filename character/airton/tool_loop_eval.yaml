@@ -474,6 +474,27 @@
   expected_contains: ["fabricating a citation"]
   expected_not_contains: ["§12-1-2", "1,200 ft AGL"]
 
+- id: low_confidence_fallback_weak_retrieval
+  label: low_confidence_fallback
+  description: search_memory ran and returned a hit but the top score
+    was below the confidence threshold AND the § the model cited
+    wasn't in the tool's declared grounded-citation set. Finalize
+    hook swaps in LOW_CONFIDENCE_FALLBACK — semantically tighter
+    than ungrounded_citation (which fires when NO tool ran at all).
+  registry:
+    - name: search_memory
+      output: "[0.310] tangential-match title\n  body text unrelated to the query"
+      hit_score: 0.31
+      grounded_citations: []
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_memory
+          arguments: { query: "class b IFR minimums" }
+    - content: "Standard IFR minimums in Class B are defined in §12-1-2 of JO 7110.65."
+  expected_contains: ["confidence threshold", "Check the relevant section"]
+  expected_not_contains: ["§12-1-2"]
+
 # ---------- controls (catchers must not fire) ----------
 
 - id: control_clean_reply

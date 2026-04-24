@@ -72,12 +72,20 @@ def disable_catchers(names: Iterable[str]) -> Iterator[None]:
 class _MockToolSpec:
     """Fixture-declared tool. `output` is the string the tool returns
     on every call; `success` lets scenarios exercise all-errored-turn
-    paths (harness-a0y) without needing a real failure shape."""
+    paths (harness-a0y) without needing a real failure shape.
+
+    `hit_score` + `grounded_citations` (harness-ywp.3 / ywp.4 /
+    ywp.5) let a fixture emit a structured ToolResult with retrieval
+    metadata, exercising the low-confidence fallback hook. When
+    `hit_score` is None (default) the tool returns plain text via
+    the legacy str path."""
 
     name: str
     output: str = "ok"
     success: bool = True
     tier: str = "read"
+    hit_score: float | None = None
+    grounded_citations: tuple[str, ...] = ()
 
 
 class _MockTool:
@@ -90,21 +98,43 @@ class _MockTool:
             tier=mock.tier,
         )
 
-    def call(self, **_: Any) -> str:
-        # ToolRegistry.call wraps the return in a ToolResult(success=True).
-        # For mock-failure scenarios we need success=False, so we
-        # register via a custom dispatch path below.
+    def call(self, **_: Any) -> str | ToolResult:
+        # ToolRegistry.call wraps plain-str returns in a
+        # ToolResult(success=True). When the mock declares a hit_score,
+        # we return a ToolResult directly so the structured-return path
+        # (harness-ywp.4) populates FinalizeContext.retrieval_top_score
+        # + citations_grounded for hooks that gate on them.
+        if self._mock.hit_score is not None:
+            from harness.tools.base import ToolHit
+
+            return ToolResult(
+                tool_name=self._mock.name,
+                output=self._mock.output,
+                hits=(
+                    ToolHit(
+                        source="episodic",
+                        external_id=f"{self._mock.name}:mock",
+                        title=f"mock hit for {self._mock.name}",
+                        score=self._mock.hit_score,
+                    ),
+                ),
+                citations_grounded=frozenset(self._mock.grounded_citations),
+            )
         return self._mock.output
 
 
 def _build_registry(tool_entries: list[dict[str, Any]]) -> ToolRegistry:
     registry = ToolRegistry()
     for raw in tool_entries:
+        hit_score_raw = raw.get("hit_score")
+        grounded_raw = raw.get("grounded_citations") or ()
         mock = _MockToolSpec(
             name=str(raw["name"]),
             output=str(raw.get("output", "ok")),
             success=bool(raw.get("success", True)),
             tier=str(raw.get("tier", "read")),
+            hit_score=None if hit_score_raw is None else float(hit_score_raw),
+            grounded_citations=tuple(str(c) for c in grounded_raw),
         )
         tool = _MockTool(mock)
         registry.register(tool)

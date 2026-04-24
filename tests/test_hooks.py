@@ -302,6 +302,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "paired_meta_confirm_strip",
         "duplicate_call",
         "argument_grounding",
+        "low_confidence_fallback",
         "ungrounded_citation",
         "table_fabrication",
         "numeric_fabrication",
@@ -794,10 +795,7 @@ def test_table_fabrication_silent_without_grounding_tool() -> None:
 def test_table_fabrication_skips_non_table_replies() -> None:
     """Prose reply with numbers but no pipe table — no pipe rows to
     check, Continue."""
-    reply = _reply(
-        "The MH class RBN has a usable distance of 25 miles, "
-        "per JO 7110.65 §4-1-1."
-    )
+    reply = _reply("The MH class RBN has a usable distance of 25 miles, per JO 7110.65 §4-1-1.")
     outcome = TableFabricationHook().check(
         FinalizeContext(
             reply=reply,
@@ -813,11 +811,7 @@ def test_table_fabrication_skips_non_table_replies() -> None:
 def test_table_fabrication_tolerates_whitespace_variation() -> None:
     """Reply uses `| MH | Under 50 | 25 |` (spaces); tool output uses
     `|MH|Under 50|25|` (no spaces). Normalization makes them match."""
-    reply = _reply(
-        "| Class | Power | Distance |\n"
-        "|---|---|---|\n"
-        "| MH | Under 50 | 25 |\n"
-    )
+    reply = _reply("| Class | Power | Distance |\n|---|---|---|\n| MH | Under 50 | 25 |\n")
     outcome = TableFabricationHook().check(
         FinalizeContext(
             reply=reply,
@@ -834,9 +828,7 @@ def test_table_fabrication_tolerates_comma_grouping() -> None:
     """`1,999` in the reply vs `1999` in a hypothetical tool output —
     commas are stripped at normalize time so the row still matches."""
     reply = _reply(
-        "| Class | Power | Distance |\n"
-        "|---|---|---|\n"
-        "| H | 50 − 1,999 | 50 |\n"  # noqa: RUF001 — unicode-minus
+        "| Class | Power | Distance |\n|---|---|---|\n| H | 50 − 1,999 | 50 |\n"  # noqa: RUF001 — unicode-minus
     )
     outcome = TableFabricationHook().check(
         FinalizeContext(
@@ -946,10 +938,7 @@ def test_numeric_fabrication_fires_on_cross_row_prose() -> None:
 def test_numeric_fabrication_passes_on_truthful_prose() -> None:
     """'MH class ... 25 miles' agrees with |MH|Under 50|25|. The value
     25 is present in the MH row's distance column → Continue."""
-    reply = _reply(
-        "The usable distance for an MH class RBN is 25 miles, per "
-        "JO 7110.65 §4-1-1."
-    )
+    reply = _reply("The usable distance for an MH class RBN is 25 miles, per JO 7110.65 §4-1-1.")
     outcome = NumericFabricationHook().check(
         FinalizeContext(
             reply=reply,
@@ -965,9 +954,7 @@ def test_numeric_fabrication_passes_on_truthful_prose() -> None:
 def test_numeric_fabrication_silent_without_grounding_tool() -> None:
     """No grounding tool ran → defer to ungrounded_citation, don't
     fire."""
-    reply = _reply(
-        "The usable distance for an MH class RBN is 50 miles."
-    )
+    reply = _reply("The usable distance for an MH class RBN is 50 miles.")
     outcome = NumericFabricationHook().check(
         FinalizeContext(
             reply=reply,
@@ -1003,9 +990,7 @@ def test_numeric_fabrication_silent_when_unit_column_absent() -> None:
     structurally verify. Continue."""
     reply = _reply("The MH class needs 50 miles per JO 7110.65 §4-1-1.")
     # Header lacks a 'miles' / 'ft' / 'watts' column, so row-map is empty.
-    tool_out = (
-        "  |**Class**|**Description**|\n|---|---|\n|MH|Medium power|\n"
-    )
+    tool_out = "  |**Class**|**Description**|\n|---|---|\n|MH|Medium power|\n"
     outcome = NumericFabricationHook().check(
         FinalizeContext(
             reply=reply,
@@ -1042,10 +1027,7 @@ def test_numeric_fabrication_respects_disabled_toggle() -> None:
     """Attribution eval disables catchers by name — pipeline must honor
     'numeric_fabrication' in the disabled frozenset."""
     pipe = default_hook_pipeline()
-    reply = _reply(
-        "The usable distance for an MH class RBN is 50 miles, per "
-        "JO 7110.65 §4-1-1."
-    )
+    reply = _reply("The usable distance for an MH class RBN is 50 miles, per JO 7110.65 §4-1-1.")
     ctx = FinalizeContext(
         reply=reply,
         last_outcome=Continue(),
@@ -1060,9 +1042,7 @@ def test_numeric_fabrication_respects_disabled_toggle() -> None:
     # Disabled: no other finalize hook fires (ungrounded_citation is
     # disarmed by tools_ran; table_fabrication doesn't see a pipe
     # table in the reply; last_outcome is Continue).
-    disabled = pipe.run_finalize(
-        ctx, disabled=frozenset({"numeric_fabrication"})
-    )
+    disabled = pipe.run_finalize(ctx, disabled=frozenset({"numeric_fabrication"}))
     assert isinstance(disabled, Continue)
 
 
@@ -1421,11 +1401,7 @@ def test_list_count_mismatch_ignores_multiple_count_claims() -> None:
 def test_list_count_mismatch_matches_bullet_lists() -> None:
     """Bulleted items count too (`- foo`, `* foo`, `• foo`). Nudge on
     claim=4 with a 2-bullet list."""
-    reply_text = (
-        "The four main reasons are:\n\n"
-        "- alpha\n"
-        "- beta\n"
-    )
+    reply_text = "The four main reasons are:\n\n- alpha\n- beta\n"
     outcome = ListCountMismatchHook().check(
         BailContext(
             reply=_reply(reply_text),
@@ -1505,18 +1481,14 @@ def test_reserved_squawk_fires_on_all_caps_phraseology() -> None:
 def test_reserved_squawk_fires_on_italic_phraseology() -> None:
     """Markdown italic `_squawk 7700_` — matches even though `_` is a
     word char (handled by the custom left/right lookarounds)."""
-    outcome = ReservedSquawkCodeHook().check(
-        _bail_ctx("Per §7-6-11 the line is _squawk 7700_.")
-    )
+    outcome = ReservedSquawkCodeHook().check(_bail_ctx("Per §7-6-11 the line is _squawk 7700_."))
     assert isinstance(outcome, Nudge)
 
 
 def test_reserved_squawk_fires_on_bold_phraseology() -> None:
     """Markdown bold **squawk 7500**."""
     outcome = ReservedSquawkCodeHook().check(
-        _bail_ctx(
-            "The reply should quote **squawk 7500** verbatim (as an error)."
-        )
+        _bail_ctx("The reply should quote **squawk 7500** verbatim (as an error).")
     )
     assert isinstance(outcome, Nudge)
 
@@ -1531,9 +1503,7 @@ def test_reserved_squawk_fires_on_lay_seventy_five_hundred_form() -> None:
 
 def test_reserved_squawk_fires_on_digit_by_digit_readback() -> None:
     """JO phraseology convention: digit-by-digit ('seven five zero zero')."""
-    outcome = ReservedSquawkCodeHook().check(
-        _bail_ctx('Quoted: "squawk seven five zero zero"')
-    )
+    outcome = ReservedSquawkCodeHook().check(_bail_ctx('Quoted: "squawk seven five zero zero"'))
     assert isinstance(outcome, Nudge)
 
 
@@ -1541,10 +1511,7 @@ def test_reserved_squawk_passes_on_prose_description() -> None:
     """Narrative 'when you observe Code 7500' — not an assignment.
     Must pass; this is §5-2-5 describing controller procedure."""
     outcome = ReservedSquawkCodeHook().check(
-        _bail_ctx(
-            "When you observe a Code 7500 display, apply the procedures "
-            "in §10-2-6."
-        )
+        _bail_ctx("When you observe a Code 7500 display, apply the procedures in §10-2-6.")
     )
     assert isinstance(outcome, Continue)
 
@@ -1553,9 +1520,7 @@ def test_reserved_squawk_passes_on_warning_phrasing() -> None:
     """'Remember that squawk 7500 is the hijack code' — warning, not
     assignment. No quote/italic/bold/caps wrapping. Pass."""
     outcome = ReservedSquawkCodeHook().check(
-        _bail_ctx(
-            "Remember that squawk 7500 is the hijack code — never assign it."
-        )
+        _bail_ctx("Remember that squawk 7500 is the hijack code — never assign it.")
     )
     assert isinstance(outcome, Continue)
 
@@ -1564,8 +1529,7 @@ def test_reserved_squawk_passes_on_correct_1200_assignment() -> None:
     """Correct VFR code in assignment context must pass."""
     outcome = ReservedSquawkCodeHook().check(
         _bail_ctx(
-            'The corrected phraseology: "Radar service terminated, '
-            'squawk one two zero zero."'
+            'The corrected phraseology: "Radar service terminated, squawk one two zero zero."'
         )
     )
     assert isinstance(outcome, Continue)
@@ -1583,7 +1547,7 @@ def test_reserved_squawk_does_not_match_resquawk_compound() -> None:
     """'resquawk' is one word — left-anchor must reject the prefix."""
     outcome = ReservedSquawkCodeHook().check(
         _bail_ctx(
-            'Please resquawk your code once identified. For hijack, the '
+            "Please resquawk your code once identified. For hijack, the "
             "aircraft will set 7500; controllers do not assign it."
         )
     )
@@ -1596,8 +1560,7 @@ def test_reserved_squawk_silent_when_match_echoes_user_message() -> None:
     exact bad phrase inline to flag it as wrong. The quoted echo is
     NOT a new assignment — ReservedSquawk must pass."""
     user_msg = (
-        'Correct the following radar phraseology: '
-        '"Services stopped, squawk seventy five hundred"'
+        'Correct the following radar phraseology: "Services stopped, squawk seventy five hundred"'
     )
     reply_text = (
         'The phrase "Services stopped, squawk seventy five hundred" is '
@@ -1622,15 +1585,11 @@ def test_reserved_squawk_still_fires_when_model_proposes_different_reserved_form
     an assignment context, that's still a new unsafe assignment, NOT
     an echo. Must still Nudge."""
     user_msg = (
-        'Correct the following radar phraseology: '
-        '"Services stopped, squawk seventy five hundred"'
+        'Correct the following radar phraseology: "Services stopped, squawk seventy five hundred"'
     )
     # Model modified the code form from the user's input — propagation,
     # not echo.
-    reply_text = (
-        'The corrected phraseology: "Radar service terminated, '
-        'squawk seven five hundred."'
-    )
+    reply_text = 'The corrected phraseology: "Radar service terminated, squawk seven five hundred."'
     outcome = ReservedSquawkCodeHook().check(
         BailContext(
             reply=_reply(reply_text),
@@ -1678,7 +1637,7 @@ def test_scope_redirect_fires_on_roosters_with_atc_reply() -> None:
         _scope_ctx(
             "do roosters lay eggs",
             'The phraseology "Services stopped, squawk seventy five hundred" '
-            'is incorrect. Per JO 7110.65 §7-6-11, the correct phrase is '
+            "is incorrect. Per JO 7110.65 §7-6-11, the correct phrase is "
             '"Radar service terminated."',
         )
     )
@@ -1735,28 +1694,87 @@ def test_scope_redirect_fires_when_python_answered_then_atc_bleed() -> None:
     assert isinstance(outcome, Nudge)
 
 
-def test_scope_redirect_passes_non_aviation_reply_to_non_aviation() -> None:
-    """User asks something non-ATC, model replies without ATC vocab —
-    no mismatch. airton_c1 shouldn't answer biology, but the bail
-    catcher's job is to nudge when ATC content shows up where it
-    shouldn't — not to force a scope-redirect shape."""
+def test_scope_redirect_fires_on_non_aviation_reply_to_non_aviation() -> None:
+    """User asks something non-ATC, model answers in kind without ATC
+    vocab. airton_c1 is scoped to JO 7110.65 only — answering an
+    off-topic prompt with an off-topic answer is still a scope
+    failure, even absent context-bleed. The catcher must nudge so
+    the retry produces a proper scope-redirect."""
     outcome = ScopeRedirectHook().check(
         _scope_ctx(
             "do roosters lay eggs",
-            "No, roosters are male chickens and do not lay eggs. Only "
-            "hens lay eggs.",
+            "No, roosters are male chickens and do not lay eggs. Only hens lay eggs.",
         )
     )
-    assert isinstance(outcome, Continue)
+    assert isinstance(outcome, Nudge)
+    assert "scope mismatch" in outcome.text.lower()
+
+
+def test_scope_redirect_fires_on_walks_into_bar_joke() -> None:
+    """Session 2026-04-24 repro: 'three men walk into a bar. One says
+    hi to the bartender. What does the bartender say in relpy?' — a
+    classic bar-joke opener with no aviation vocab and a non-ATC
+    reply. `_JOKE_FRAME_RE` must catch the 'walks into a bar' shape
+    so scope_redirect fires even when the reply stays off-topic."""
+    outcome = ScopeRedirectHook().check(
+        _scope_ctx(
+            "three men walk into a bar. One says hi to the bartender. "
+            "What does the bartender say in reply?",
+            'The bartender would likely respond with a greeting, such as "Hi, how can I help you?"',
+        )
+    )
+    assert isinstance(outcome, Nudge)
+    assert "scope mismatch" in outcome.text.lower()
+
+
+def test_scope_redirect_fires_on_computer_race_riddle() -> None:
+    """Session 2026-04-24 repro: 'Five Macs and PC join a computer
+    race. Who won?' — a consumer-tech riddle. 'Macs' / 'PC' / 'race'
+    aren't in the vocab list (bare 'Mac'/'PC' collide with aviation
+    acronyms like MAC=Military Airlift Command), but the 'Who won?'
+    tag is characteristic of race / contest jokes. Model produced
+    a context-bleed reply about VFR balloon right-of-way.
+    `_JOKE_FRAME_RE` must catch the 'who won' riddle ending so
+    scope_redirect fires before missing_citation has to clean up."""
+    outcome = ScopeRedirectHook().check(
+        _scope_ctx(
+            "Five Macs and PC join a computer race. Who won?",
+            "The right of way between a VFR single prop aircraft and a "
+            "manned balloon can be determined by the specific "
+            "circumstances and the principles of visual flight rules "
+            "(VFR) operations. Per JO 7110.65 the aircraft on the "
+            "right has the right of way.",
+        )
+    )
+    assert isinstance(outcome, Nudge)
+    assert "scope mismatch" in outcome.text.lower()
+
+
+def test_scope_redirect_fires_on_consumer_tech_vocab() -> None:
+    """Consumer-tech brand terms ('iphone', 'ipad', 'laptop',
+    'smartphone') are unambiguously non-aviation and do not collide
+    with any JO 7110.65 acronym — they trip Signal A even when the
+    prompt lacks any joke-frame structure."""
+    for user, term in (
+        ("does my iphone interfere with cockpit radios", "iphone"),
+        ("can I charge my laptop on the runway", "laptop"),
+        ("why is my ipad battery draining so fast", "ipad"),
+        ("smartphone apps for tracking flights", "smartphone"),
+    ):
+        outcome = ScopeRedirectHook().check(
+            _scope_ctx(
+                user,
+                "Per JO 7110.65 §2-1-1, controllers must provide ATC service.",
+            )
+        )
+        assert isinstance(outcome, Nudge), f"scope_redirect did not fire on {term!r} user message"
 
 
 def test_scope_redirect_silent_without_user_message() -> None:
     """No user_message threaded through (bootstrap path) → Continue."""
     outcome = ScopeRedirectHook().check(
         BailContext(
-            reply=_reply(
-                "Per JO 7110.65 §2-1-1, the ATC system prevents collisions."
-            ),
+            reply=_reply("Per JO 7110.65 §2-1-1, the ATC system prevents collisions."),
             tools_ran_this_turn=True,
             tools_ran=frozenset({"search_memory"}),
             user_message=None,
@@ -1773,10 +1791,8 @@ def test_scope_redirect_fires_on_joke_frame_structure() -> None:
     signal — fires even when specific nouns aren't in the vocab list."""
     outcome = ScopeRedirectHook().check(
         _scope_ctx(
-            "If a pilot, a controller, and a mechanic walk into a bar, "
-            "what do they order?",
-            "Per JO 7110.65 §4-1-1, the usable distance for an MH class "
-            "RBN is 25 miles.",
+            "If a pilot, a controller, and a mechanic walk into a bar, what do they order?",
+            "Per JO 7110.65 §4-1-1, the usable distance for an MH class RBN is 25 miles.",
         )
     )
     assert isinstance(outcome, Nudge)
@@ -1809,8 +1825,7 @@ def test_scope_redirect_expanded_vocab_catches_household_and_supernatural() -> N
         outcome = ScopeRedirectHook().check(
             _scope_ctx(
                 user,
-                "Per JO 7110.65 §5-2-7, VFR radar service termination "
-                "uses 'squawk 1200'.",
+                "Per JO 7110.65 §5-2-7, VFR radar service termination uses 'squawk 1200'.",
             )
         )
         assert isinstance(outcome, Nudge), (
@@ -1892,8 +1907,7 @@ def test_ambiguous_balloon_reply_free_vs_tethered_ask_passes() -> None:
     outcome = AmbiguousContextHook().check(
         _ambig_ctx(
             "an unmanned balloon near my flight path — how do I handle it?",
-            "Do you mean a free balloon or a tethered balloon? The JO "
-            "treats them differently.",
+            "Do you mean a free balloon or a tethered balloon? The JO treats them differently.",
         )
     )
     # User already said 'unmanned' so the hook short-circuits before
@@ -1945,9 +1959,7 @@ def test_ambiguous_no_match_on_non_balloon_term() -> None:
 def test_ambiguous_context_silent_without_user_message() -> None:
     outcome = AmbiguousContextHook().check(
         BailContext(
-            reply=_reply(
-                "Per §9-6-1, unmanned free balloons are handled by traffic advisory."
-            ),
+            reply=_reply("Per §9-6-1, unmanned free balloons are handled by traffic advisory."),
             tools_ran_this_turn=True,
             tools_ran=frozenset({"search_memory"}),
             user_message=None,
