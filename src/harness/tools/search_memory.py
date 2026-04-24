@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from harness.retrieval.query_expander import NullQueryExpander, QueryExpander
 from harness.tools.base import ToolHit, ToolResult, ToolSpec
+from harness.tools.citations import extract_citations
 
 if TYPE_CHECKING:
     from harness.store.episodic import EpisodicStore
@@ -110,8 +111,26 @@ class SearchMemoryTool:
             )
             for rec, score in hits
         )
+        # Declare the citations this tool actually grounded (harness-ywp.5).
+        # Extracted from title + body + principle of every hit — not from
+        # the model's reply. The audit log and low-confidence fallback
+        # use this to ask 'did any tool ground this §-reference?' as a
+        # structured check instead of string matching on the reply.
+        grounded = frozenset().union(
+            *(
+                extract_citations(
+                    " ".join(
+                        part
+                        for part in (rec.title, rec.body, rec.principle)
+                        if part
+                    )
+                )
+                for rec, _ in hits
+            )
+        )
         return ToolResult(
             tool_name=self.spec.name,
             output="\n".join(lines).strip(),
             hits=tool_hits,
+            citations_grounded=grounded,
         )

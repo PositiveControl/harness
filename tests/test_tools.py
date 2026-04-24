@@ -444,6 +444,33 @@ def test_search_memory_empty_store_returns_note(tmp_path: Path) -> None:
         assert "search_web" in result.output
         assert result.hits == ()
         assert result.top_score is None
+        assert result.citations_grounded == frozenset()
+    finally:
+        store.close()
+
+
+def test_search_memory_declares_grounded_citations(tmp_path: Path) -> None:
+    """harness-ywp.5: grounding-tier tools declare the §-citations
+    present in the chunks they returned, so the audit log + confidence
+    fallback don't have to regex-parse the output text to know what was
+    actually grounded."""
+    store = EpisodicStore(tmp_path / "e.sqlite", embedder=_FakeEmbedder())
+    try:
+        store.ingest(
+            external_id="jo-4-1-1",
+            title="§4-1-1 Air Traffic Clearances",
+            body="Controllers issue clearances per §4-1-1 and TBL 4-1-2.",
+            principle="See §4-1-1 for phraseology.",
+            tier="seed",
+            source="t",
+        )
+        tool = SearchMemoryTool(store=store)
+        result = tool.call(query="clearance")
+        # Citations are the CANONICAL set the search_memory chunk
+        # actually contains — not whatever regex the hook later runs
+        # on the model's reply.
+        assert "§4-1-1" in result.citations_grounded
+        assert "TBL 4-1-2" in result.citations_grounded
     finally:
         store.close()
 
