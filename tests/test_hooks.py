@@ -1214,6 +1214,45 @@ def test_missing_citation_phraseology_signal_passes_on_prose_without_markers() -
     assert isinstance(outcome, Continue)
 
 
+def test_missing_citation_silent_on_clarifying_question_reply() -> None:
+    """Session 2026-04-24 repro (retry after ambiguous_context): the
+    clarifying reply mentioned 'JO 7110.65' but had no §-anchor,
+    tripping missing_citation despite being a valid clarifying
+    question. Exempt via _CLARIFYING_QUESTION_RE."""
+    reply_text = (
+        'The term "balloon" can refer to both unmanned free balloons and '
+        "manned balloons, which are handled differently according to JO "
+        "7110.65. Could you please clarify whether you are referring to "
+        "an unmanned free balloon or a manned balloon? This will help me "
+        "provide the correct answer."
+    )
+    outcome = MissingCitationHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_missing_citation_silent_on_do_you_mean_clarifier() -> None:
+    """Variant clarifying shape — 'Do you mean X or Y?'"""
+    reply_text = (
+        "Your question about JO 7110.65 and balloons is ambiguous. Do you "
+        "mean an unmanned free balloon or a manned balloon? The rules "
+        "differ substantially, so the answer depends on which you intend."
+    )
+    outcome = MissingCitationHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
 def test_missing_citation_silent_on_short_reply() -> None:
     """Sub-80-char replies are usually refusals or scope-redirects
     that don't need a citation — Continue."""

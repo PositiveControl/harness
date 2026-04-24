@@ -243,6 +243,21 @@ _CONTROL_CORPUS: tuple[
         False,
     ),
     (
+        # Clarifying-question reply after ambiguous_context nudge —
+        # mentions JO 7110.65 without a §-anchor, but it's a QUESTION,
+        # not a substantive claim. Must not trip missing_citation.
+        "truthful_clarifying_question_reply",
+        (
+            'The term "balloon" can refer to both unmanned free balloons '
+            "and manned balloons, which are handled differently according "
+            "to JO 7110.65. Could you please clarify whether you are "
+            "referring to an unmanned free balloon or a manned balloon?"
+        ),
+        ("[0.032] §9-6-1\n",),
+        frozenset({"search_memory"}),
+        False,
+    ),
+    (
         # ambiguous_context silent path: user specifies 'unmanned' —
         # no ambiguity to challenge. Reply says 'unmanned free balloon'
         # legitimately.

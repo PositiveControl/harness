@@ -828,6 +828,30 @@ _CITATION_PRESENT_RE = re.compile(
 )
 
 
+# A reply that's asking the user to clarify between variants isn't
+# making a substantive claim — it's a question back, not an answer.
+# No citation expected. MissingCitationHook and (later) any other
+# 'you must cite' gate should exempt replies matching this shape so
+# a valid clarifying question doesn't get nudged into a pointless
+# retry loop (session 2026-04-24 repro: ambiguous_context fires;
+# model asks 'manned or unmanned?'; missing_citation then fires on
+# the clarifying question because it has 'JO 7110.65' but no §).
+_CLARIFYING_QUESTION_RE = re.compile(
+    r"(?:"
+    r"could\s+you\s+(?:please\s+)?(?:clarify|specify)"
+    r"|can\s+you\s+(?:please\s+)?(?:clarify|specify)"
+    r"|do\s+you\s+mean"
+    r"|are\s+you\s+(?:asking|referring)"
+    r"|which\s+(?:one|variant|type|kind)\s+(?:of\b|do\s+you|are\s+you)"
+    r"|which\s+type\s+of"
+    r"|please\s+(?:specify|clarify)"
+    r"|before\s+I\s+answer"
+    r"|to\s+clarify[,:]"
+    r")",
+    re.IGNORECASE,
+)
+
+
 _MISSING_CITATION_NUDGE = (
     "Your reply references JO 7110.65 but does not include a specific "
     "section citation (e.g. `§1-1-1`, `§13-1-2(a)`). The airton_c1 "
@@ -1511,9 +1535,15 @@ class MissingCitationHook:
         # Scope-redirect replies name the order to explain what's
         # NOT covered ('That question is outside JO 7110.65'). Those
         # are declining to answer, not making a substantive claim —
-        # don't demand a citation. Shared marker regex with
-        # ScopeRedirectHook keeps the two exemptions aligned.
+        # don't demand a citation.
         if _SCOPE_REDIRECT_MARKER_RE.search(content):
+            return Continue()
+        # Clarifying-question replies ('Could you clarify manned or
+        # unmanned?') are ASKING, not asserting. Exempt — a citation
+        # in a question would be weirdly presumptive and looping the
+        # retry would discard a perfectly good clarifying reply
+        # (harness-5uq follow-up).
+        if _CLARIFYING_QUESTION_RE.search(content):
             return Continue()
         return Nudge(_MISSING_CITATION_NUDGE)
 
