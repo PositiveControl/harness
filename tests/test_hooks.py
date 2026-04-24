@@ -1166,6 +1166,50 @@ def test_missing_citation_silent_without_grounding_tool() -> None:
     assert isinstance(outcome, Continue)
 
 
+def test_missing_citation_fires_on_jo_phraseology_without_citation() -> None:
+    """Session 2026-04-24 repro (retry round): reply contained the
+    JO-normative all-caps phraseology 'RADAR SERVICE TERMINATED,
+    SQUAWK VFR' without naming the order OR citing a section. The
+    phraseology-marker fallback in the in-scope check must catch this.
+
+    Fix landed this session: _JO_PHRASEOLOGY_MARKERS_RE as a secondary
+    signal alongside _ORDER_REFERENCE_RE.
+    """
+    reply_text = (
+        "The correct phraseology for terminating radar service to a VFR "
+        "aircraft is:\n\n"
+        "RADAR SERVICE TERMINATED, SQUAWK VFR,\n\nor\n\n"
+        "RADAR SERVICE TERMINATED, SQUAWK ONE TWO ZERO ZERO.\n\n"
+        "Do not assign the code as a routine phraseology."
+    )
+    outcome = MissingCitationHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_missing_citation_phraseology_signal_passes_on_prose_without_markers() -> None:
+    """Counter-check: a reply that uses no phraseology markers and no
+    order reference stays silent. Guards against the phraseology regex
+    being too loose (e.g. matching generic all-caps acronyms)."""
+    reply_text = (
+        "The ATC IFR VFR and FAA are common acronyms in aviation. "
+        "Their meanings cover a wide range of procedures and services."
+    )
+    outcome = MissingCitationHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
 def test_missing_citation_silent_on_short_reply() -> None:
     """Sub-80-char replies are usually refusals or scope-redirects
     that don't need a citation — Continue."""
@@ -1501,6 +1545,58 @@ def test_reserved_squawk_does_not_match_resquawk_compound() -> None:
         )
     )
     assert isinstance(outcome, Continue)
+
+
+def test_reserved_squawk_silent_when_match_echoes_user_message() -> None:
+    """Session 2026-04-24 repro (second pass): user asked to correct a
+    phraseology containing a reserved code; model quoted the user's
+    exact bad phrase inline to flag it as wrong. The quoted echo is
+    NOT a new assignment — ReservedSquawk must pass."""
+    user_msg = (
+        'Correct the following radar phraseology: '
+        '"Services stopped, squawk seventy five hundred"'
+    )
+    reply_text = (
+        'The phrase "Services stopped, squawk seventy five hundred" is '
+        "incorrect. The correct phraseology per §7-6-11 is: "
+        '"RADAR SERVICE TERMINATED, SQUAWK ONE TWO ZERO ZERO."'
+    )
+    outcome = ReservedSquawkCodeHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+            user_message=user_msg,
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_reserved_squawk_still_fires_when_model_proposes_different_reserved_form() -> None:
+    """Regression guard on the Fix-A echo check: if the model reformats
+    the user's reserved-code phrase into a different form (e.g.
+    'seventy five hundred' -> 'seven five hundred') and places it in
+    an assignment context, that's still a new unsafe assignment, NOT
+    an echo. Must still Nudge."""
+    user_msg = (
+        'Correct the following radar phraseology: '
+        '"Services stopped, squawk seventy five hundred"'
+    )
+    # Model modified the code form from the user's input — propagation,
+    # not echo.
+    reply_text = (
+        'The corrected phraseology: "Radar service terminated, '
+        'squawk seven five hundred."'
+    )
+    outcome = ReservedSquawkCodeHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+            user_message=user_msg,
+        )
+    )
+    assert isinstance(outcome, Nudge)
 
 
 def test_reserved_squawk_respects_disabled_toggle() -> None:

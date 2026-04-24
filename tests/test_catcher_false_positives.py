@@ -220,6 +220,29 @@ _CONTROL_CORPUS: tuple[
         False,
     ),
     (
+        # reserved_squawk_code silent path: reply that quotes the
+        # user's bad phraseology to flag it as wrong — the quoted
+        # match is a verbatim echo of user input, not a new
+        # assignment proposal. Fix-A test counterpart.
+        # NOTE: parametrize infrastructure doesn't thread user_message
+        # directly into BailContext here (the parametrize rows pass
+        # through the FinalizeContext test first). Covered
+        # independently by test_session_regressions.py's
+        # test_reserved_squawk_does_not_nudge_when_reply_echoes_user_input.
+        "truthful_uppercase_phraseology_with_cite",
+        (
+            'Per JO 7110.65 §7-6-11 and §5-2-7, the correct phraseology is: '
+            '"RADAR SERVICE TERMINATED, SQUAWK ONE TWO ZERO ZERO" or '
+            '"RADAR SERVICE TERMINATED, SQUAWK VFR".'
+        ),
+        (
+            "[0.029] TERMINATION OF SERVICE\n"
+            "  lesson: JO_7110.65 §7-6-11\n",
+        ),
+        frozenset({"search_memory"}),
+        False,
+    ),
+    (
         # list_count_mismatch silent path: section numbers in prose
         # must not trip the count-claim regex.
         "truthful_section_number_in_prose",

@@ -730,6 +730,7 @@ def run_tool_loop(
                     reply=last_reply,
                     tools_ran_this_turn=any_tool_succeeded,
                     tools_ran=frozenset(succeeded_tools),
+                    user_message=turn_user_message,
                 ),
                 disabled=_disabled_snapshot(),
             )

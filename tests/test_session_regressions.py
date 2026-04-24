@@ -467,6 +467,146 @@ def test_reserved_squawk_7500_gets_nudged() -> None:
     assert "one two zero zero" in result.final_content
 
 
+def test_reserved_squawk_does_not_nudge_when_reply_echoes_user_input() -> None:
+    """Session 2026-04-24 repro (retry pass). After the first
+    ReservedSquawk fix landed, a new false-positive appeared: the
+    model correctly flagged the user's bad phraseology by QUOTING it
+    verbatim ('"Services stopped, squawk seventy five hundred" is
+    incorrect'). The quoted echo matched the hook's reserved-code
+    regex in assignment context (inside double-quotes), triggering
+    an unnecessary retry.
+
+    Fix: BailContext grew a `user_message` field, and
+    ReservedSquawkCodeHook skips matches whose text is a verbatim
+    substring of the user's input — it's an echo, not an assignment.
+    Regression: the first round should reach run_tool_loop's final
+    content unchanged.
+    """
+    result = _run_scenario(
+        {
+            "id": "_reserved_squawk_user_echo",
+            "registry": [
+                {
+                    "name": "search_memory",
+                    "output": _TERMINATION_7_6_11_TOOL_OUTPUT,
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        'Correct the following radar phraseology: '
+                        '"Services stopped, squawk seventy five hundred"'
+                    ),
+                }
+            ],
+            "scripted_replies": [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "name": "search_memory",
+                            "arguments": {
+                                "query": "radar service termination phraseology"
+                            },
+                        }
+                    ],
+                },
+                # Reply echoes user's bad phrase (quoted) to flag it,
+                # then proposes the correct phrase. First pass should
+                # pass cleanly — no nudge.
+                {
+                    "content": (
+                        'The phrase "Services stopped, squawk seventy five '
+                        'hundred" is incorrect. Per JO 7110.65 §7-6-11, the '
+                        "correct phraseology is:\n\n"
+                        '"RADAR SERVICE TERMINATED, SQUAWK ONE TWO ZERO ZERO."'
+                    ),
+                },
+            ],
+        }
+    )
+    # Reply should pass through unchanged — no retry.
+    assert "RADAR SERVICE TERMINATED" in result.final_content
+    assert "one two zero zero" in result.final_content.lower()
+    # Two rounds = tool-call + wrap-up. A third round would mean a
+    # retry fired, which would indicate ReservedSquawk false-positived
+    # on the user-echo quote (the bug this test pins).
+    assert result.rounds == 2, (
+        f"expected 2 rounds (tool-call + wrap-up), saw {result.rounds} — "
+        "retry likely fired, suggesting ReservedSquawk false-positived on "
+        "the user-echo quote"
+    )
+
+
+def test_missing_citation_fires_on_uppercase_phraseology_without_order_name() -> None:
+    """Session 2026-04-24 repro (retry round): after ReservedSquawk
+    nudged a first pass, the retry round produced correct phraseology
+    but never named 'JO 7110.65' or cited a section — just JO-normative
+    all-caps ('RADAR SERVICE TERMINATED, SQUAWK VFR').
+
+    Fix: MissingCitationHook's in-scope signal now accepts JO-normative
+    phraseology markers in addition to literal order references.
+    Regression guards the retry's second-nudge path: first pass
+    nudges on reserved code, retry produces uppercase-only phraseology,
+    second pass nudges for missing citation, final retry cites properly.
+    """
+    result = _run_scenario(
+        {
+            "id": "_phraseology_without_citation",
+            "registry": [
+                {
+                    "name": "search_memory",
+                    "output": _TERMINATION_7_6_11_TOOL_OUTPUT,
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        'Correct the following radar phraseology: '
+                        '"Services stopped, squawk seventy five hundred"'
+                    ),
+                }
+            ],
+            "scripted_replies": [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "name": "search_memory",
+                            "arguments": {"query": "radar service termination"},
+                        }
+                    ],
+                },
+                # First retry: uppercase JO phraseology, no order name,
+                # no §-anchor. MissingCitation must fire.
+                {
+                    "content": (
+                        "The correct phraseology for terminating radar "
+                        "service to a VFR aircraft is:\n\n"
+                        "RADAR SERVICE TERMINATED, SQUAWK VFR,\n\nor\n\n"
+                        "RADAR SERVICE TERMINATED, SQUAWK ONE TWO ZERO ZERO.\n\n"
+                        "Do not assign the code as a routine phraseology."
+                    ),
+                },
+                # Final retry: cited form.
+                {
+                    "content": (
+                        "Per JO 7110.65 §7-6-11 and §5-2-7, the correct "
+                        "phraseology for terminating radar service to a "
+                        "VFR aircraft is:\n\n"
+                        '"RADAR SERVICE TERMINATED, SQUAWK VFR,"\n\nor\n\n'
+                        '"RADAR SERVICE TERMINATED, SQUAWK ONE TWO ZERO ZERO."'
+                    ),
+                },
+            ],
+        }
+    )
+    assert "§7-6-11" in result.final_content
+    assert "§5-2-7" in result.final_content
+
+
 def test_mh_rbn_truthful_prose_passes_pipeline() -> None:
     """Counterfactual: truthful prose reply ('25 miles, §4-1-1') with
     the same tool output must NOT trip any catcher. Guards against

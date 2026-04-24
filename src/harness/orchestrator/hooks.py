@@ -430,11 +430,20 @@ class BailContext:
     of tool names that succeeded this turn — so hooks can gate on
     specific tools (e.g. fabricated_search only cares whether a
     web-fetch tool ran; search_memory running doesn't legitimize
-    a fabricated web-search narration)."""
+    a fabricated web-search narration).
+
+    `user_message` is the verbatim content of the most recent
+    user-role turn (same value that feeds `PreToolContext.user_message`).
+    Hooks use it to tell 'model echoed the user's input' apart from
+    'model is making a new claim' — e.g. reserved_squawk_code
+    disarms when the reserved-code match in the reply is a verbatim
+    echo of the user's quoted question. Defaults to None so callers
+    that don't plumb it through fall through untouched."""
 
     reply: ModelReply
     tools_ran_this_turn: bool
     tools_ran: frozenset[str] = frozenset()
+    user_message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -748,6 +757,36 @@ _ORDER_REFERENCE_RE = re.compile(
 )
 
 
+# Secondary in-scope signal: JO-normative phraseology. The order
+# formats controller phraseology blocks in ALL CAPS (e.g.
+# 'RADAR SERVICE TERMINATED', 'SQUAWK VFR', 'CLEARED FOR TAKEOFF').
+# A reply that quotes these without naming the order is still making
+# JO claims — the student still needs a citation to verify. Kept
+# targeted (not a generic all-caps detector) so prose that happens
+# to contain a few caps tokens doesn't false-positive. Patterns
+# drawn from the most frequent JO 7110.65 PHRASEOLOGY blocks.
+_JO_PHRASEOLOGY_MARKERS_RE = re.compile(
+    r"\b(?:"
+    r"SQUAWK\s+(?:VFR|IDENT|STANDBY|STOP|MAYDAY|\d{4}|"
+    r"(?:ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|ZERO)"
+    r"(?:\s+(?:ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|ZERO))*)"
+    r"|RADAR\s+(?:SERVICE\s+TERMINATED|CONTACT(?:\s+LOST)?)"
+    r"|CLEARED\s+(?:TO|FOR)\s+[A-Z]"
+    r"|CLEARED\s+FOR\s+(?:TAKEOFF|LANDING|THE\s+APPROACH)"
+    r"|CONTACT\s+(?:TOWER|GROUND|DEPARTURE|APPROACH|CENTER|CLEARANCE)"
+    r"|FREQUENCY\s+CHANGE\s+APPROVED"
+    r"|CHANGE\s+TO\s+ADVISORY"
+    r"|MAINTAIN\s+(?:VFR|ALTITUDE|FL|FLIGHT\s+LEVEL)"
+    r"|HOLD\s+SHORT(?:\s+OF)?"
+    r"|(?:DESCEND|CLIMB)\s+(?:AND\s+MAINTAIN|TO)"
+    r"|TRAFFIC(?:\s+ALERT)?"
+    r"|PROCEED\s+DIRECT"
+    r"|CROSS\s+[A-Z]+\s+AT"
+    r"|TURN\s+(?:LEFT|RIGHT)\s+HEADING"
+    r")\b"
+)
+
+
 # Citation shapes we accept as 'the reply did cite a section':
 #   §N-N-N                (primary anchor — JO chapter-section-paragraph)
 #   TBL N-N-N / Table N-N-N (tables are always section-scoped; accept
@@ -978,9 +1017,22 @@ class ReservedSquawkCodeHook:
 
     def check(self, ctx: BailContext) -> BailOutcome:
         content = ctx.reply.content
+        # Lower-cased user_message for verbatim-echo detection. When
+        # the model quotes the user's question to flag it as wrong
+        # ('"Services stopped, squawk seventy five hundred" is
+        # incorrect — the right form is ...'), the reserved-code match
+        # lives inside an echo of the prompt, not a new assignment.
+        # Compare lowercase since match text may differ in case
+        # ('SQUAWK 7500' vs 'squawk 7500').
+        user_lower = (ctx.user_message or "").lower()
         for match in _RESERVED_SQUAWK_RE.finditer(content):
-            if _is_squawk_assignment_context(content, match.start(), match.end()):
-                return Nudge(_RESERVED_SQUAWK_NUDGE)
+            if not _is_squawk_assignment_context(content, match.start(), match.end()):
+                continue
+            if user_lower and match.group(0).lower() in user_lower:
+                # Model echoed the user's exact reserved-code phrase —
+                # not a new assignment proposal.
+                continue
+            return Nudge(_RESERVED_SQUAWK_NUDGE)
         return Continue()
 
 
@@ -1069,9 +1121,13 @@ class MissingCitationHook:
       1. A grounding tool ran this turn (`ctx.tools_ran` intersects
          `_GROUNDING_TOOLS`). Without one there's nothing to cite
          from — that's `ungrounded_citation`'s domain.
-      2. The reply contains a JO 7110.65 reference
-         (`_ORDER_REFERENCE_RE`). Non-airton_c1 characters never hit
-         this, so the hook is naturally character-scoped.
+      2. The reply contains EITHER a JO 7110.65 reference
+         (`_ORDER_REFERENCE_RE`) OR a JO-normative phraseology
+         marker (`_JO_PHRASEOLOGY_MARKERS_RE`) — all-caps
+         controller phraseology like 'RADAR SERVICE TERMINATED' or
+         'SQUAWK VFR' that makes the reply a JO claim even without
+         naming the order. Non-airton_c1 characters never hit
+         either signal, so the hook is naturally character-scoped.
       3. The reply is substantive (>= 80 chars). Short replies are
          usually refusals or scope-redirects that don't need a cite.
       4. The reply does NOT contain a `§N-N-N` / `TBL N-N-N` anchor.
@@ -1095,7 +1151,10 @@ class MissingCitationHook:
         content = ctx.reply.content
         if len(content) < 80:
             return Continue()
-        if not _ORDER_REFERENCE_RE.search(content):
+        in_scope = bool(_ORDER_REFERENCE_RE.search(content)) or bool(
+            _JO_PHRASEOLOGY_MARKERS_RE.search(content)
+        )
+        if not in_scope:
             return Continue()
         if _CITATION_PRESENT_RE.search(content):
             return Continue()
