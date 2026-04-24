@@ -1,0 +1,8 @@
+version: 1
+purpose: |
+  Router eval fixture for {{CHARACTER_NAME}} — pins small-model intent routing
+  accuracy for its tool profile. Populate as tool use matures; stub
+  for now so `eval router --character {{CHARACTER_NAME}}` has a loadable
+  fixture.
+
+cases: []
