@@ -13,9 +13,19 @@ if TYPE_CHECKING:
 # section — typical airton_c1 JO 7110.65 chunk is ~1,000 chars; the old
 # 400-char cap sliced TBL 4-1-2 in half, dropping the CL/MH rows and
 # letting the model fabricate them from priors (harness-5uq repro).
-# Budget: k=5 hits * 1,200 chars ~= 6k tokens of tool output, tolerable
+# Budget: k=8 hits * 1,200 chars ~= 9.6k tokens of tool output, tolerable
 # on 7B/32B Qwen and still well under compaction thresholds.
 _BODY_CAP_CHARS = 1200
+
+
+# Default number of hits returned. Bumped 5 -> 8 after harness-0tb to
+# give the sanitize_fts_query phrase-clause fix room to reach the
+# model: §13-1-2 landed at hybrid rank 6 on the 2026-04-24
+# aircraft-to-aircraft repro, which k=5 silently truncated. 8 clears
+# that horizon with some headroom for the next similar miss without
+# doubling the per-call token budget. The model can still override via
+# the `k` tool argument when it needs deeper recall.
+_DEFAULT_K = 8
 
 
 @dataclass
@@ -54,7 +64,7 @@ class SearchMemoryTool:
                     },
                     "k": {
                         "type": "integer",
-                        "description": "Max results (default 5)",
+                        "description": f"Max results (default {_DEFAULT_K})",
                     },
                 },
                 "required": ["query"],
@@ -63,7 +73,7 @@ class SearchMemoryTool:
             display_name="Recall memory",
         )
 
-    def call(self, *, query: str, k: int = 5) -> str:
+    def call(self, *, query: str, k: int = _DEFAULT_K) -> str:
         # Expand lay-term queries into the section's full synonym field
         # so dense cosine + BM25 both see the jargon-space version of
         # the user's question. NullQueryExpander (the default) is
