@@ -325,6 +325,33 @@
   expected_contains: ["fabricated row"]
   expected_not_contains: ["| MH | Under 50 | 50 |"]
 
+- id: reserved_squawk_code_7500_repro
+  label: reserved_squawk_code
+  description: Session 2026-04-24 repro. User asked to correct the
+    phraseology 'Services stopped, squawk seventy five hundred'. Model
+    fixed the shell ('Services stopped' -> 'Radar service terminated')
+    but propagated the reserved 7500 hijack code as 'squawk seven five
+    hundred', producing a 'correct' phraseology line that still assigns
+    an emergency transponder code. reserved_squawk_code nudges; retry
+    substitutes 'squawk one two zero zero' (or 'squawk VFR') per §5-2-7
+    and flags that 7500 is the hijack reserved code per §5-2-5.
+  registry:
+    - name: search_memory
+      output: "[0.029] TERMINATION OF SERVICE\n  lesson: JO_7110.65 §7-6-11 (Basic Radar Service to VFR Aircraft − Terminal — TERMINATION OF SERVICE)\n  Advise the aircraft that radar service is terminated. PHRASEOLOGY - RADAR SERVICE TERMINATED.\n\n[0.023] VFR CODE ASSIGNMENTS\n  lesson: JO_7110.65 §5-2-7 (Beacon/ADS-B Systems — VFR CODE ASSIGNMENTS)\n  Instruct a VFR aircraft for which radar advisory service is being terminated, to squawk VFR. PHRASEOLOGY - SQUAWK VFR. or SQUAWK 1200.\n"
+  messages:
+    - role: user
+      content: 'Correct the following radar phraseology: "Services stopped, squawk seventy five hundred"'
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_memory
+          arguments: {"query": "radar service termination phraseology"}
+    - content: "The correct phraseology is:\n\n\"Radar service terminated, squawk seven five hundred.\"\n\nPer JO 7110.65 §7-6-11."
+    - content: "Two corrections are needed here.\n\n1. \"Services stopped\" -> \"Radar service terminated\" (§7-6-11).\n2. 7500 is the reserved hijack / unlawful interference code (§5-2-5) — controllers never assign it. For VFR radar service termination, the correct code is 1200 (or \"squawk VFR\") per §5-2-7.\n\nCorrected: \"Radar service terminated, squawk one two zero zero.\""
+  expected_contains: ["hijack", "§5-2-5", "one two zero zero"]
+  expected_not_contains: ["squawk seven five hundred"]
+  expected_events_contain: [bail_retry]
+
 - id: list_count_mismatch_four_purposes
   label: list_count_mismatch
   description: Session 2026-04-24 repro. User asked for '4 specific Primary

@@ -849,6 +849,141 @@ def _parse_count_word(token: str) -> int | None:
     return _NUMBER_WORDS.get(token)
 
 
+# Reserved transponder codes are pilot-initiated emergency signals.
+# Controllers OBSERVE them via 5-2-5 / 5-2-8 procedures; they never
+# assign them as routine phraseology. Catcher guards against a model
+# that uncritically reformats a user-provided reserved code into
+# correct-looking ATC phraseology (session 2026-04-24 repro).
+#
+# 7400 (UAS lost link per §5-2-6) is intentionally excluded — it's
+# UAS-specific and airtime is rare in controller phraseology; adding
+# it would net-increase false-positive risk without matching the
+# observed failure mode.
+_RESERVED_SQUAWK_RE = re.compile(
+    # Left-anchor: forbid a leading letter or digit (so 'resquawk' or
+    # similar doesn't match). `\b` would block matches with leading
+    # underscore because `_` is a word char — intentionally permissive
+    # here to catch `_squawk ..._` markdown italic.
+    r"(?<![A-Za-z0-9])squawk\s+"
+    r"(?:"
+    r"7500|7600|7700"
+    # Digit-by-digit readback (JO phraseology convention):
+    # 'seven five zero zero', etc.
+    r"|seven\s+five\s+zero\s+zero"
+    r"|seven\s+six\s+zero\s+zero"
+    r"|seven\s+seven\s+zero\s+zero"
+    # Grouped-hundreds (lay / student paraphrase):
+    # 'seventy five hundred', 'seven five hundred', etc.
+    r"|seven(?:ty)?\s+five\s+hundred"
+    r"|seven(?:ty)?\s+six\s+hundred"
+    r"|seven(?:ty)?\s+seven\s+hundred"
+    r")"
+    # Right-anchor: forbid a trailing digit or letter (so '75002' / 'seven
+    # five hundredth' don't shadow the match). Underscore / punctuation /
+    # whitespace / end-of-string all qualify — this matters because the
+    # default `\b` treats `_` as a word char, which would have blocked
+    # matches inside markdown italic like `_squawk 7500_`.
+    r"(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+
+
+_RESERVED_SQUAWK_NUDGE = (
+    "[reserved-squawk-code — your reply proposes assigning a reserved "
+    "transponder code (7500 = hijack/unlawful interference per §5-2-5; "
+    "7600 = comm failure; 7700 = emergency per §5-2-8). These are "
+    "PILOT-INITIATED emergency signals — controllers observe them, "
+    "never assign them as routine phraseology. For VFR radar service "
+    "termination the correct code is 'squawk VFR' or 'squawk one two "
+    "zero zero' per §5-2-7. Re-answer with the correct code; if the "
+    "user's input contained a reserved code, call that out explicitly "
+    "rather than silently reformatting it.]"
+)
+
+
+def _is_squawk_assignment_context(content: str, start: int, end: int) -> bool:
+    """Decide whether a `squawk <reserved>` match is asserting an
+    assignment vs. explaining the code's meaning.
+
+    Assignment signals (any one is sufficient):
+      - Match text starts with all-caps 'SQUAWK' (JO phraseology
+        convention — actual phraseology lines in the order are
+        capitalized).
+      - Match is wrapped in paired double-quotes on the same line
+        (a quoted phraseology line like
+        `"Radar service terminated, squawk seven five hundred."`).
+      - Match is wrapped in `_..._` (markdown italic — used in the
+        corpus for PHRASEOLOGY-block emphasis).
+      - Match is wrapped in `**...**` (markdown bold — reply-side
+        formatting for proposed phraseology).
+
+    Explanation / description contexts (none of the above present)
+    pass through cleanly — so prose like
+    'When you observe Code 7500, apply §10-2-6' or a warning like
+    'squawk 7500 is the hijack code' doesn't trip the hook.
+    """
+    if content[start:end].startswith("SQUAWK"):
+        return True
+    line_start = content.rfind("\n", 0, start) + 1
+    line_end = content.find("\n", end)
+    if line_end == -1:
+        line_end = len(content)
+    prefix = content[line_start:start]
+    suffix = content[end:line_end]
+    # Paired quote/italic/bold anchors on the same line. We require
+    # BOTH sides to carry the anchor so an unpaired `*` (common in
+    # bullet lists) doesn't false-positive.
+    if '"' in prefix and '"' in suffix:
+        return True
+    if "_" in prefix and "_" in suffix:
+        return True
+    return "**" in prefix and "**" in suffix
+
+
+@dataclass(frozen=True)
+class ReservedSquawkCodeHook:
+    """Nudge a reply that assigns a reserved transponder code (7500 /
+    7600 / 7700) in routine controller phraseology.
+
+    Failure mode this catches: user transcribes incorrect phraseology
+    containing a reserved code ('squawk seventy five hundred'). Model
+    correctly fixes the phraseology shell ('Services stopped' ->
+    'Radar service terminated') but blindly reformats the code value
+    ('seventy five hundred' -> 'seven five hundred' i.e. 7500),
+    propagating a hijack-code assignment into a 'correct' reply.
+    Session 2026-04-24 repro — the corrected phraseology was still
+    unsafe because 7500 is pilot-set when the aircraft is being
+    hijacked; controllers do not assign it.
+
+    Corpus anchors:
+      §5-2-5 — HIJACK/UNLAWFUL INTERFERENCE (Code 7500 observation)
+      §5-2-7 — VFR CODE ASSIGNMENTS (correct VFR code = 1200 / 'VFR')
+      §5-2-8 — note on Code 7700 emergency activation
+
+    Trigger conditions (ALL must hold):
+      1. Reply contains `squawk <reserved code>` in any of its digit,
+         digit-by-digit-readback, or grouped-hundreds forms.
+      2. The match is in an ASSIGNMENT context — wrapped in quotes,
+         italic, bold, or all-caps SQUAWK (see
+         `_is_squawk_assignment_context`). Narrative descriptions
+         ('when you observe Code 7500') pass through.
+
+    Action: Nudge. Retry-able — model gets a round to swap in the
+    correct code ('squawk VFR' / '1200') and, ideally, to flag that
+    the user's input contained a reserved code. Do NOT Halt: the
+    model's phraseology shell is usually correct; we want to fix the
+    code, not lose the correction entirely."""
+
+    name: str = "reserved_squawk_code"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        content = ctx.reply.content
+        for match in _RESERVED_SQUAWK_RE.finditer(content):
+            if _is_squawk_assignment_context(content, match.start(), match.end()):
+                return Nudge(_RESERVED_SQUAWK_NUDGE)
+        return Continue()
+
+
 @dataclass(frozen=True)
 class ListCountMismatchHook:
     """Nudge replies whose stated count of items disagrees with the
@@ -1679,6 +1814,13 @@ def default_hook_pipeline() -> HookPipeline:
             # re-chained into a count-mismatch nudge from its original
             # pre-citation form.
             ListCountMismatchHook(),
+            # Domain-safety check: controllers must not assign the
+            # pilot-initiated reserved transponder codes (7500/7600/
+            # 7700) in routine phraseology. Runs last because a reply
+            # that fails any earlier gate should get the shape-specific
+            # nudge first; only a reply otherwise structurally fine
+            # but proposing an unsafe code reaches this.
+            ReservedSquawkCodeHook(),
         ],
         post_model=[PairedMetaConfirmStripHook()],
         # Order matters inside pre_tool: duplicate_call fires first so
@@ -1874,6 +2016,7 @@ __all__ = [
     "PreToolOutcome",
     "Replace",
     "ReplaceResult",
+    "ReservedSquawkCodeHook",
     "Skip",
     "TableFabricationHook",
     "TeaserHook",

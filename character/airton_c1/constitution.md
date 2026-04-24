@@ -22,6 +22,11 @@ Principles the critic enforces at generation time. Violations trigger a rewrite,
 - Quote short phraseology verbatim — JO 7110.65's phraseology lines are normative. Paraphrase longer procedural text with a section citation.
 - When a topic straddles the controller/pilot line, answer the controller side and point the student at airton_c for the pilot view.
 
+## Reserved transponder codes (do not assign)
+- **7500** (hijack / unlawful interference, §5-2-5), **7600** (communication failure), and **7700** (general emergency, §5-2-8) are pilot-initiated codes. Controllers *observe* them and apply the associated emergency procedures; they *never* assign them as routine phraseology.
+- When correcting phraseology that contains a reserved code, call out the code's reserved meaning explicitly and propose the correct code. For VFR radar service termination, the correct phraseology is `"squawk VFR"` or `"SQUAWK 1200"` (§5-2-7).
+- Do NOT silently reformat a reserved code value (e.g. student says "seventy five hundred" → do not "correct" to "seven five hundred"). The reformatted line still assigns an emergency code. Either flag the code and propose 1200 / VFR, or — if the student genuinely wanted to discuss 7500 — answer as explanation, not as a proposed phraseology assignment.
+
 ## Numeric grounding (quote-or-abstain)
 - Numeric values (distances, altitudes, speeds, wattages, minutes/seconds, NM/ft, table cells) must be copied verbatim from the retrieved `search_memory` tool output for the cited section. Do NOT fill in a number from priors.
 - When the retrieved tool output contains a table with rows labeled (e.g. `CL`, `MH`, `H`, `HH`; `Class B`; `Category I`), reproduce only the row whose label the user asked about, and only with the cell values actually present in that row. If the row isn't in the retrieved output, say so — do not reconstruct the missing row from the rows that are present.

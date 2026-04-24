@@ -32,6 +32,7 @@ from harness.orchestrator.hooks import (
     PostModelContext,
     PreToolContext,
     Replace,
+    ReservedSquawkCodeHook,
     Skip,
     TableFabricationHook,
     TeaserHook,
@@ -293,6 +294,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "tool_intent",
         "missing_citation",
         "list_count_mismatch",
+        "reserved_squawk_code",
         "paired_meta_confirm_strip",
         "duplicate_call",
         "argument_grounding",
@@ -1367,6 +1369,152 @@ def test_list_count_mismatch_respects_disabled_toggle() -> None:
     disabled = pipe.run_bail(
         ctx,
         disabled=frozenset({"list_count_mismatch"}),
+    )
+    assert isinstance(disabled, Continue)
+
+
+# ---------- reserved_squawk_code (harness-5uq follow-up #3) ----------
+
+
+def _bail_ctx(reply_text: str) -> BailContext:
+    return BailContext(
+        reply=_reply(reply_text),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_memory"}),
+    )
+
+
+def test_reserved_squawk_fires_on_quoted_phonetic_repro() -> None:
+    """Session 2026-04-24 repro: model proposed
+    '"Radar service terminated, squawk seven five hundred."' —
+    quoted phraseology assigning the 7500 hijack code. Must Nudge."""
+    outcome = ReservedSquawkCodeHook().check(
+        _bail_ctx(
+            'The correct phraseology is:\n\n"Radar service terminated, '
+            'squawk seven five hundred."\n\nPer JO 7110.65 §7-6-11.'
+        )
+    )
+    assert isinstance(outcome, Nudge)
+    assert "reserved-squawk-code" in outcome.text.lower()
+
+
+def test_reserved_squawk_fires_on_digit_form_in_quotes() -> None:
+    """Digit-form code inside a quoted phraseology line."""
+    outcome = ReservedSquawkCodeHook().check(
+        _bail_ctx('The corrected phraseology: "Radar service terminated, squawk 7500."')
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_reserved_squawk_fires_on_all_caps_phraseology() -> None:
+    """All-caps SQUAWK is the JO phraseology convention — fires even
+    without quotes around it."""
+    outcome = ReservedSquawkCodeHook().check(
+        _bail_ctx("PHRASEOLOGY:\n\nSQUAWK 7600\n\nPer §7-6-11.")
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_reserved_squawk_fires_on_italic_phraseology() -> None:
+    """Markdown italic `_squawk 7700_` — matches even though `_` is a
+    word char (handled by the custom left/right lookarounds)."""
+    outcome = ReservedSquawkCodeHook().check(
+        _bail_ctx("Per §7-6-11 the line is _squawk 7700_.")
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_reserved_squawk_fires_on_bold_phraseology() -> None:
+    """Markdown bold **squawk 7500**."""
+    outcome = ReservedSquawkCodeHook().check(
+        _bail_ctx(
+            "The reply should quote **squawk 7500** verbatim (as an error)."
+        )
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_reserved_squawk_fires_on_lay_seventy_five_hundred_form() -> None:
+    """Lay paraphrase 'seventy five hundred' (student phrasing)."""
+    outcome = ReservedSquawkCodeHook().check(
+        _bail_ctx('"Radar service terminated, squawk seventy five hundred."')
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_reserved_squawk_fires_on_digit_by_digit_readback() -> None:
+    """JO phraseology convention: digit-by-digit ('seven five zero zero')."""
+    outcome = ReservedSquawkCodeHook().check(
+        _bail_ctx('Quoted: "squawk seven five zero zero"')
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_reserved_squawk_passes_on_prose_description() -> None:
+    """Narrative 'when you observe Code 7500' — not an assignment.
+    Must pass; this is §5-2-5 describing controller procedure."""
+    outcome = ReservedSquawkCodeHook().check(
+        _bail_ctx(
+            "When you observe a Code 7500 display, apply the procedures "
+            "in §10-2-6."
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_reserved_squawk_passes_on_warning_phrasing() -> None:
+    """'Remember that squawk 7500 is the hijack code' — warning, not
+    assignment. No quote/italic/bold/caps wrapping. Pass."""
+    outcome = ReservedSquawkCodeHook().check(
+        _bail_ctx(
+            "Remember that squawk 7500 is the hijack code — never assign it."
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_reserved_squawk_passes_on_correct_1200_assignment() -> None:
+    """Correct VFR code in assignment context must pass."""
+    outcome = ReservedSquawkCodeHook().check(
+        _bail_ctx(
+            'The corrected phraseology: "Radar service terminated, '
+            'squawk one two zero zero."'
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_reserved_squawk_passes_on_squawk_vfr() -> None:
+    """'SQUAWK VFR' — correct per §5-2-7."""
+    outcome = ReservedSquawkCodeHook().check(
+        _bail_ctx('Per §5-2-7: "SQUAWK VFR" is the correct form.')
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_reserved_squawk_does_not_match_resquawk_compound() -> None:
+    """'resquawk' is one word — left-anchor must reject the prefix."""
+    outcome = ReservedSquawkCodeHook().check(
+        _bail_ctx(
+            'Please resquawk your code once identified. For hijack, the '
+            "aircraft will set 7500; controllers do not assign it."
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_reserved_squawk_respects_disabled_toggle() -> None:
+    """Attribution eval disables catchers by name."""
+    pipe = default_hook_pipeline()
+    ctx = _bail_ctx(
+        'The correct phraseology is: "Radar service terminated, '
+        'squawk seven five hundred." Per JO 7110.65 §7-6-11.'
+    )
+    enabled = pipe.run_bail(ctx, disabled=frozenset())
+    assert isinstance(enabled, Nudge)
+    disabled = pipe.run_bail(
+        ctx,
+        disabled=frozenset({"reserved_squawk_code"}),
     )
     assert isinstance(disabled, Continue)
 

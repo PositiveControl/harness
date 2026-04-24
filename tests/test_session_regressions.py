@@ -389,6 +389,84 @@ def test_four_primary_purposes_count_mismatch_gets_nudged() -> None:
     assert "§2-1-1" in result.final_content
 
 
+_TERMINATION_7_6_11_TOOL_OUTPUT = (
+    "[0.029] TERMINATION OF SERVICE\n"
+    "  lesson: JO_7110.65 §7-6-11 (Basic Radar Service to VFR Aircraft - "
+    "Terminal — TERMINATION OF SERVICE)\n"
+    "  Advise the aircraft that radar service is terminated. "
+    "PHRASEOLOGY - RADAR SERVICE TERMINATED.\n\n"
+    "[0.023] VFR CODE ASSIGNMENTS\n"
+    "  lesson: JO_7110.65 §5-2-7\n"
+    "  Instruct a VFR aircraft for which radar advisory service is being "
+    "terminated, to squawk VFR. PHRASEOLOGY - SQUAWK VFR. or SQUAWK 1200.\n"
+)
+
+
+def test_reserved_squawk_7500_gets_nudged() -> None:
+    """Session 2026-04-24 repro: user asked to correct
+    'Services stopped, squawk seventy five hundred'. Model fixed the
+    phraseology shell but propagated 7500 (hijack reserved code) as
+    'squawk seven five hundred' in a 'corrected' quoted phraseology.
+    ReservedSquawkCodeHook must nudge; retry substitutes the correct
+    code (1200 / VFR) and flags 7500's reserved meaning."""
+    result = _run_scenario(
+        {
+            "id": "_reserved_squawk_7500",
+            "registry": [
+                {
+                    "name": "search_memory",
+                    "output": _TERMINATION_7_6_11_TOOL_OUTPUT,
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        'Correct the following radar phraseology: '
+                        '"Services stopped, squawk seventy five hundred"'
+                    ),
+                }
+            ],
+            "scripted_replies": [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "name": "search_memory",
+                            "arguments": {
+                                "query": "radar service termination phraseology"
+                            },
+                        }
+                    ],
+                },
+                # The observed uncorrected-code reply.
+                {
+                    "content": (
+                        'The correct phraseology is:\n\n'
+                        '"Radar service terminated, squawk seven five hundred."\n\n'
+                        "Per JO 7110.65 §7-6-11."
+                    ),
+                },
+                # Retry after the nudge — correct code + flag on 7500.
+                {
+                    "content": (
+                        "Two corrections are needed.\n\n"
+                        '1. "Services stopped" -> "Radar service terminated" '
+                        "(§7-6-11).\n"
+                        "2. 7500 is the reserved hijack code (§5-2-5) — "
+                        "controllers never assign it. For VFR termination "
+                        "the correct code is 1200 (or 'squawk VFR') per §5-2-7.\n\n"
+                        'Corrected: "Radar service terminated, squawk one two zero zero."'
+                    ),
+                },
+            ],
+        }
+    )
+    assert "hijack" in result.final_content.lower()
+    assert "§5-2-5" in result.final_content
+    assert "one two zero zero" in result.final_content
+
+
 def test_mh_rbn_truthful_prose_passes_pipeline() -> None:
     """Counterfactual: truthful prose reply ('25 miles, §4-1-1') with
     the same tool output must NOT trip any catcher. Guards against

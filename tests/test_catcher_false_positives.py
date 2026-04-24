@@ -190,6 +190,36 @@ _CONTROL_CORPUS: tuple[
         False,
     ),
     (
+        # reserved_squawk_code silent path: prose explanation of a
+        # reserved code with no assignment-context wrapping.
+        "truthful_7500_explanation_in_prose",
+        (
+            "Per JO 7110.65 §5-2-5, when you observe a Code 7500 display, "
+            "apply the procedures in §10-2-6 (Hijacked Aircraft). "
+            "7500 is a pilot-initiated code; controllers do not assign it."
+        ),
+        (
+            "[0.031] HIJACK/UNLAWFUL INTERFERENCE\n"
+            "  lesson: JO_7110.65 §5-2-5\n",
+        ),
+        frozenset({"search_memory"}),
+        False,
+    ),
+    (
+        # reserved_squawk_code silent path: correct VFR code assignment.
+        "truthful_squawk_1200_vfr_termination",
+        (
+            'Per JO 7110.65 §7-6-11 and §5-2-7, the correct phraseology '
+            'is: "Radar service terminated, squawk one two zero zero."'
+        ),
+        (
+            "[0.029] TERMINATION OF SERVICE\n"
+            "  lesson: JO_7110.65 §7-6-11\n",
+        ),
+        frozenset({"search_memory"}),
+        False,
+    ),
+    (
         # list_count_mismatch silent path: section numbers in prose
         # must not trip the count-claim regex.
         "truthful_section_number_in_prose",
