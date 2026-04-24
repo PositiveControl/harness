@@ -1,8 +1,69 @@
-version: 1
-purpose: |
-  Router eval fixture for airton_c1 — pins small-model intent routing
-  accuracy for its tool profile. Populate as tool use matures; stub
-  for now so `eval router --character airton_c1` has a loadable
-  fixture.
+# Router eval fixture for airton_c1 — pins small-model intent routing
+# accuracy for the atc tool profile. Flat YAML list (matches the
+# loader in src/harness/evals/router.py). Each entry:
+#
+#   prompt: the user message
+#   expected_tool: tool name the router should pick, or `null` for
+#     'no tool needed' (rules-explanation answered from retrieved
+#     episodic context).
+#   expected_args (optional): arg names that MUST appear.
+#   expected_arg_values (optional): {arg: substring} — pins actual
+#     values for 'right tool, leaked domain' guards.
+#
+# Balanced mix: ~50% null so the small model's over-routing bias shows.
+# airton_c1's tool surface is the 'atc' profile — search_memory for
+# section lookups, fetch_url (aviation allowlist) for live NOTAMs/
+# weather, search_web for research, introspect for self-description.
 
-cases: []
+# ----- section lookup → search_memory -----
+
+- prompt: "what does JO 7110.65 §5-5-4 say"
+  expected_tool: search_memory
+  expected_args: [query]
+
+- prompt: "find every section that mentions Mode C"
+  expected_tool: search_memory
+  expected_args: [query]
+
+- prompt: "look up the wake turbulence separation minimums in the book"
+  expected_tool: search_memory
+  expected_args: [query]
+
+# ----- live data → fetch_url (aviation allowlist) -----
+
+- prompt: "check the current NOTAMs for KSFO"
+  expected_tool: fetch_url
+  expected_args: [url]
+
+- prompt: "get me the latest METAR for KPHX"
+  expected_tool: fetch_url
+  expected_args: [url]
+
+# ----- rules explanation from retrieval → null (no tool) -----
+
+- prompt: "explain how handoffs work under JO 7110.65"
+  expected_tool: null
+
+- prompt: "what's the phraseology for clearing a VFR aircraft into Class B"
+  expected_tool: null
+
+- prompt: "walk me through standard radar separation"
+  expected_tool: null
+
+# ----- self-description → introspect -----
+
+- prompt: "what tools do you have available"
+  expected_tool: introspect
+
+# ----- casual → null -----
+
+- prompt: "hey, ready to study"
+  expected_tool: null
+
+- prompt: "thanks, that makes sense"
+  expected_tool: null
+
+# ----- remember a study fact → remember_fact -----
+
+- prompt: "remember that I'm prepping for the CTO exam in six weeks"
+  expected_tool: remember_fact

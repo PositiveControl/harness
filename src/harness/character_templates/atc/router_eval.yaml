@@ -1,8 +1,18 @@
-version: 1
-purpose: |
-  Router eval fixture for {{CHARACTER_NAME}} — pins small-model intent routing
-  accuracy for its tool profile. Populate as tool use matures; stub
-  for now so `eval router --character {{CHARACTER_NAME}}` has a loadable
-  fixture.
+# Router eval fixture for {{CHARACTER_NAME}} — pins small-model intent
+# routing accuracy for its tool profile. Flat YAML list (matches the
+# loader in src/harness/evals/router.py). Each entry:
+#
+#   prompt: the user message
+#   expected_tool: tool name the router should pick, or `null` for
+#     'no tool needed' (rules-explanation answered from retrieved
+#     episodic context).
+#   expected_args (optional): arg names that MUST appear.
+#   expected_arg_values (optional): {arg: substring} — pins actual
+#     values for 'right tool, leaked domain' guards.
+#
+# Populate with 10-15 cases once tool use matures. Keep the mix
+# balanced: ~50% null so the small model's over-routing bias shows.
+# Reference: character/airton/router_eval.yaml (general) and
+# character/airton_c1/router_eval.yaml (atc-specific).
 
-cases: []
+[]
