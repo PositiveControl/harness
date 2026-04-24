@@ -2,10 +2,10 @@
   "character": "airton_c1",
   "fixture": "/Users/mevans/dev/ideas/harness/character/airton_c1/atc_eval.yaml",
   "k": 10,
-  "recall_at_1": 1.0,
-  "recall_at_3": 1.0,
-  "recall_at_5": 1.0,
-  "recall_at_k": 1.0,
+  "recall_at_1": 0.7647058823529411,
+  "recall_at_3": 0.8823529411764706,
+  "recall_at_5": 0.9411764705882353,
+  "recall_at_k": 0.9411764705882353,
   "median_rank": 0.0,
   "cases": [
     {
@@ -149,6 +149,50 @@
       ],
       "rank_of_first_expected": 0,
       "score_of_first_expected": 0.03278688524590164,
+      "found": true
+    },
+    {
+      "id": "controller_emergency_declaration_authority",
+      "audience": "controller",
+      "query": "Who may declare an emergency for an aircraft?",
+      "expected_anchors": [
+        "10-2-5"
+      ],
+      "rank_of_first_expected": 1,
+      "score_of_first_expected": 0.031099324975891997,
+      "found": true
+    },
+    {
+      "id": "controller_omit_holding_instructions",
+      "audience": "controller",
+      "query": "When may a controller leave out part of the holding instructions to an aircraft?",
+      "expected_anchors": [
+        "4-6-4"
+      ],
+      "rank_of_first_expected": 1,
+      "score_of_first_expected": 0.030679156908665108,
+      "found": true
+    },
+    {
+      "id": "controller_wake_turbulence_concern_lay",
+      "audience": "controller",
+      "query": "When does a controller need to worry about a small plane flying behind a big jet?",
+      "expected_anchors": [
+        "2-1-19"
+      ],
+      "rank_of_first_expected": null,
+      "score_of_first_expected": null,
+      "found": false
+    },
+    {
+      "id": "controller_same_runway_arrival_lay_time",
+      "audience": "controller",
+      "query": "How soon after a plane lands can the next one cross the runway threshold?",
+      "expected_anchors": [
+        "3-10-3"
+      ],
+      "rank_of_first_expected": 4,
+      "score_of_first_expected": 0.028125,
       "found": true
     }
   ]
