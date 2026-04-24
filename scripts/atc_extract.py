@@ -79,8 +79,8 @@ PHASE_1_CORPUS: tuple[CorpusDoc, ...] = (
     ),
     CorpusDoc(
         slug="jo_7110_65",
-        source_filename="7110.65BB_Basic_dtd_2-20-25.pdf",
-        title="JO 7110.65 — Air Traffic Control",
+        source_filename="7110.65BB_Bsc_w_Chg_1_and_2_dtd_1-22-26_Final.pdf",
+        title="JO 7110.65 — Air Traffic Control (Basic w/ Changes 1 & 2, 2026-01-22)",
     ),
     CorpusDoc(
         slug="phak",
