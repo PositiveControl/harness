@@ -71,6 +71,21 @@ cases:
       - ["landing threshold", "threshold"]
     min_keyword_hits: 2
 
+  # Regression fixture (epic harness-rhto, session 2026-04-24):
+  # lay-term phrasing of same-runway-arrival minima. Baseline retrieval
+  # missed §3-10-3 chunk 759 (dense ~0.016 below 0.5 floor; BM25 drowned
+  # by frequent tokens). Expected answer: Cat I behind Cat I/II = 3,000 ft;
+  # Cat II behind Cat I/II = 4,500 ft; Cat III involved = 6,000 ft.
+  - id: controller_same_runway_arrival_lay_phrasing
+    audience: controller
+    question: "What is the shortest distance an aircraft is allowed to be next to another aircraft on approach to the runway?"
+    expected_citations: ["3-10-3"]
+    expected_keywords:
+      - ["3,000 feet", "3000 feet"]
+      - ["4,500 feet", "4500 feet"]
+      - ["Category I", "Cat I", "category i"]
+    min_keyword_hits: 2
+
   # ----- Chapter 4 — IFR -----
 
   - id: controller_ifr_clearance_items_order

@@ -62,6 +62,9 @@ MIN_BODY_CHARS = 50
 os.environ.setdefault("HARNESS_CHARACTER_NAME", "airton_c")
 
 CORPUS_CHUNKS = REPO / "character" / os.environ["HARNESS_CHARACTER_NAME"] / "corpus" / "chunks"
+CORPUS_SYNONYMS = (
+    REPO / "character" / os.environ["HARNESS_CHARACTER_NAME"] / "corpus" / "synonyms.yaml"
+)
 
 from harness.character import load_character  # noqa: E402
 from harness.config import settings  # noqa: E402
@@ -182,6 +185,41 @@ def external_id_for(row: dict[str, object]) -> str:
     return f"atc-corpus:{row['source']}:{row['section']}:{row.get('chunk_index', 0)}"
 
 
+_SYNONYMS: dict[str, list[str]] | None = None
+
+
+def _load_synonyms() -> dict[str, list[str]]:
+    """Load lay-term synonyms keyed by section number from
+    `character/<name>/corpus/synonyms.yaml`. Returns {} when the file
+    is absent or malformed — retrieval without synonyms is still
+    correct, just lower recall on lay-phrased queries (epic harness-rhto)."""
+    if not CORPUS_SYNONYMS.exists():
+        return {}
+    try:
+        import yaml
+
+        with CORPUS_SYNONYMS.open(encoding="utf-8") as fp:
+            data = yaml.safe_load(fp) or {}
+    except Exception as exc:
+        print(f"  · synonyms: load failed ({exc}) — proceeding without", file=sys.stderr)
+        return {}
+    sections = data.get("sections") or {}
+    if not isinstance(sections, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for k, v in sections.items():
+        if isinstance(v, list):
+            out[str(k)] = [str(term).strip() for term in v if str(term).strip()]
+    return out
+
+
+def _synonyms_for_section(section: str) -> list[str]:
+    global _SYNONYMS
+    if _SYNONYMS is None:
+        _SYNONYMS = _load_synonyms()
+    return _SYNONYMS.get(section, [])
+
+
 def principle_for(row: dict[str, object]) -> str:
     """Compose the principle tag that lands in the embed-text header.
     Includes the parent-section title when available (harness-8zx6):
@@ -193,17 +231,27 @@ def principle_for(row: dict[str, object]) -> str:
     across parent-section groups (JO 7110.65's §3-9-6 and §3-10-3 are
     both titled 'SAME RUNWAY SEPARATION' — the enrichment pushes
     'Departure' vs 'Arrival' into the embedded text so BM25 and dense
-    cosine can tell them apart)."""
+    cosine can tell them apart).
+
+    When `corpus/synonyms.yaml` defines lay-term synonyms for the
+    section, a `[synonyms: t1; t2; ...]` tail is appended so FTS5 BM25
+    and dense-cosine both match lay-phrased queries that share no
+    lexical overlap with the formal doc text (epic harness-rhto)."""
     base = f"{row['source']} §{row['section']}"
     parent_title = str(row.get("parent_section_title") or "").strip()
     sec_title = str(row.get("title") or "").strip()
     if parent_title and sec_title:
-        return f"{base} ({parent_title} — {sec_title})"
-    if parent_title:
-        return f"{base} ({parent_title})"
-    if sec_title:
-        return f"{base} ({sec_title})"
-    return base
+        principle = f"{base} ({parent_title} — {sec_title})"
+    elif parent_title:
+        principle = f"{base} ({parent_title})"
+    elif sec_title:
+        principle = f"{base} ({sec_title})"
+    else:
+        principle = base
+    synonyms = _synonyms_for_section(str(row.get("section", "")))
+    if synonyms:
+        principle = f"{principle} [synonyms: {'; '.join(synonyms)}]"
+    return principle
 
 
 def tags_for(row: dict[str, object]) -> list[str]:

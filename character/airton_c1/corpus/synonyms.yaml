@@ -1,0 +1,47 @@
+version: 1
+
+# Lay-term synonyms keyed by JO 7110.65 section number. Applied at
+# ingest time by scripts/atc_ingest.py::principle_for — appended as
+# "[synonyms: term1, term2, ...]" after the base principle. The
+# augmented principle reaches (a) the [principle: X] tag in embed-text
+# header (dense cosine), (b) the standalone-line principle in embed-text
+# body (dense cosine), and (c) the FTS5 index via the episodic_fts_ai
+# trigger (BM25). So one enrichment lifts all three retrieval paths.
+#
+# Rule of discipline: only add entries with a demonstrated lay-query
+# failure. Blind enrichment risks cross-section bleed (a synonym on §X
+# attracts queries that should hit §Y). Each entry must be
+# section-specific enough that a neighbor section does not also match.
+#
+# Evidence trail:
+#   §3-10-3 — session 2026-04-24 regression (epic harness-rhto,
+#             bead harness-7ph5). User query "shortest distance next
+#             to another aircraft on approach to the runway" missed
+#             chunk 759 entirely (dense ~0.016 below 0.5 floor; BM25
+#             drowned by frequent "aircraft/runway/approach" tokens).
+#   §3-9-6  — paired mirror. Enriched with departure-specific lay
+#             terms so lay queries about takeoff spacing disambiguate
+#             from the §3-10-3 arrival enrichment.
+
+sections:
+  "3-10-3":
+    # Arrival same-runway separation. Lay terms must stay arrival-flavored
+    # so they don't bleed onto §3-9-6 (departure) or §3-12-3 (sea lane).
+    - shortest distance on approach
+    - minimum spacing on final
+    - in-trail spacing on approach
+    - approach separation minima
+    - landing behind another aircraft
+    - how close can aircraft be on approach
+    - aircraft spacing on final
+    - trailing aircraft on approach
+
+  "3-9-6":
+    # Departure same-runway separation. Mirror of §3-10-3 but for takeoff
+    # side; keeps lay queries about departure spacing off the arrival chunk.
+    - minimum spacing between departures
+    - shortest distance before takeoff
+    - takeoff spacing behind another aircraft
+    - trailing departure spacing
+    - how long before next takeoff
+    - departure separation minima

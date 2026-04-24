@@ -23,7 +23,11 @@ build/
 # atc-4/atc-5 — bulky, regenerable from the source PDFs.
 character/*/bd/
 character/*/data/
-character/*/corpus/
+# corpus/ mostly holds regenerable extract/chunk output (bulky, derivable
+# from source PDFs). Ignore those subtrees only — keep hand-curated source
+# files like synonyms.yaml tracked.
+character/*/corpus/chunks/
+character/*/corpus/markdown/
 character/airton_c/workspace/*
 !character/airton_c/workspace/.gitkeep
 data/
