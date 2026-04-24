@@ -75,6 +75,7 @@ from harness.tools import (
     ToolCall,
     ToolRegistry,
     ToolSpec,
+    TranscriptIngestTool,
     WriteFileTool,
     resolve_tool_names,
 )
@@ -581,6 +582,11 @@ def _describe_call(call: ToolCall, workspace: Path) -> str:
     if name in ("remember_event",):
         title = str(args.get("title", ""))[:60]
         return f'record event: "{title}"'
+    if name in ("transcript_ingest",):
+        turns = args.get("turns") or []
+        n = len(turns) if isinstance(turns, list) else 0
+        sid = str(args.get("session_id", "?"))
+        return f"ingest {n} turn(s) into session {sid!r}"
     if name in ("scribe_session", "consolidate_memory"):
         return " ".join(f"{k}={v}" for k, v in args.items()) or "(no args)"
     # Fallback: the raw args dict.
@@ -1239,6 +1245,9 @@ def _build_tool_registry_for_tui(
             RememberEventTool(store=memory_store, user_id=speaker, session_id=session)
             if memory_store is not None
             else None
+        ),
+        "transcript_ingest": lambda: (
+            TranscriptIngestTool(store=memory_store) if memory_store is not None else None
         ),
     }
     # Same ab-ops injection as the REPL builder. When an ab_adapter is
@@ -2110,6 +2119,23 @@ def _resolve_router_tool_specs(tool_names: Sequence[str], workspace: Path) -> li
                 "required": ["query"],
             },
             tier="read",
+        ),
+        "transcript_ingest": ToolSpec(
+            name="transcript_ingest",
+            description=(
+                "Ingest a recorded session transcript as JSON turns into episodic working memory."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "turns": {"type": "array", "items": {"type": "object"}},
+                    "session_id": {"type": "string"},
+                    "user_id": {"type": "string"},
+                    "source_tag": {"type": "string"},
+                },
+                "required": ["turns", "session_id", "user_id", "source_tag"],
+            },
+            tier="write",
         ),
     }
     specs: list[ToolSpec] = []

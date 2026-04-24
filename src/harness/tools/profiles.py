@@ -103,6 +103,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_facts",
         "remember_fact",
         "remember_event",
+        "transcript_ingest",
         "search_web",
         "fetch_url",
         "introspect",
