@@ -735,6 +735,101 @@ class ToolIntentHook:
         return Continue()
 
 
+# Reply-side regex for "this is in-scope for the cited document" signal.
+# airton_c1 scope is JO 7110.65 only; matches the most common ways the
+# model refers to it ('JO 7110.65', 'FAA Order JO 7110.65'). Narrow on
+# purpose — we don't want this hook to fire on generic prose that
+# happens to contain the word 'order'. Airton / airton_b / other
+# non-citation-scoped characters simply never produce replies that
+# match this pattern, so the hook is self-gating for them.
+_ORDER_REFERENCE_RE = re.compile(
+    r"\b(?:FAA\s+Order\s+)?JO\s*7110\.65\b",
+    re.IGNORECASE,
+)
+
+
+# Citation shapes we accept as 'the reply did cite a section':
+#   §N-N-N                (primary anchor — JO chapter-section-paragraph)
+#   TBL N-N-N / Table N-N-N (tables are always section-scoped; accept
+#                            as a standalone cite when no § is present)
+#   FIG N-N-N / Figure N-N-N (same rationale as tables)
+#   Chapter N §N-N-N      (constitution's preferred form — §-anchor is
+#                            what matches here, Chapter N is prose)
+# Tolerant of the hyphen / en-dash / unicode-minus variants in the
+# corpus. Reuses UNGROUNDED_SECTION_CITATION_RE's shape for the §-form
+# so the two hooks can't disagree about what counts as a citation.
+_CITATION_PRESENT_RE = re.compile(
+    r"§\s*\d+[-–−]\d+[-–−]\d+"  # noqa: RUF001 — dash variants load-bearing
+    r"|\b(?:TBL|Table|FIG|Figure)\s+\d+[-–−]\d+[-–−]\d+\b",  # noqa: RUF001
+    re.IGNORECASE,
+)
+
+
+_MISSING_CITATION_NUDGE = (
+    "Your reply references JO 7110.65 but does not include a specific "
+    "section citation (e.g. `§1-1-1`, `§13-1-2(a)`). The airton_c1 "
+    "constitution requires a citation on every substantive answer, "
+    "and the tool output you just read contains explicit section "
+    "anchors. Re-answer with the citation inline — 'per JO 7110.65 "
+    "§N-N-N' — or, if the question is out of scope for JO 7110.65, "
+    "say so plainly without the reference."
+)
+
+
+@dataclass(frozen=True)
+class MissingCitationHook:
+    """Nudge a reply that references JO 7110.65 substantively but
+    doesn't include a specific `§N-N-N` / `TBL N-N-N` citation. Mirror
+    image of `UngroundedCitationHook` — that one catches citation
+    without grounding; this one catches grounding without citation.
+
+    Failure mode this catches: airton_c1's constitution says 'Always
+    cite at least one JO 7110.65 section when answering.' A grounding
+    tool ran, the tool output surfaced a section, the reply paraphrases
+    from that section correctly, but the model omits the §-anchor.
+    Session 2026-04-24 reproducers: 'What is the purpose of 7110.65?'
+    -> correct summary of §1-1-1, no citation. 'What document is
+    required for jointly applied procedures?' -> correct summary of
+    §1-1-10, no citation. Both leave the student without a way to
+    verify or locate the source.
+
+    Trigger conditions (ALL must hold):
+      1. A grounding tool ran this turn (`ctx.tools_ran` intersects
+         `_GROUNDING_TOOLS`). Without one there's nothing to cite
+         from — that's `ungrounded_citation`'s domain.
+      2. The reply contains a JO 7110.65 reference
+         (`_ORDER_REFERENCE_RE`). Non-airton_c1 characters never hit
+         this, so the hook is naturally character-scoped.
+      3. The reply is substantive (>= 80 chars). Short replies are
+         usually refusals or scope-redirects that don't need a cite.
+      4. The reply does NOT contain a `§N-N-N` / `TBL N-N-N` anchor.
+
+    Action: Nudge the model to re-answer with the citation inline.
+    Retry-able — the model gets another round to add the citation.
+    Do NOT Halt: losing a correct substantive answer to a canned
+    refusal over a missing anchor is worse than the missing anchor
+    itself.
+
+    Placed AFTER `tool_intent` in the bail list: fabrication-shape
+    catchers (teaser/false_success/meta_confirm/fabricated_*) all run
+    first, so a fabricated-looking reply gets the fabrication-specific
+    nudge rather than this one. Compliance comes after correctness."""
+
+    name: str = "missing_citation"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if not (ctx.tools_ran & _GROUNDING_TOOLS):
+            return Continue()
+        content = ctx.reply.content
+        if len(content) < 80:
+            return Continue()
+        if not _ORDER_REFERENCE_RE.search(content):
+            return Continue()
+        if _CITATION_PRESENT_RE.search(content):
+            return Continue()
+        return Nudge(_MISSING_CITATION_NUDGE)
+
+
 # ---------- post-model hooks ----------
 
 
@@ -1436,6 +1531,11 @@ def default_hook_pipeline() -> HookPipeline:
             FabricatedItemizationHook(),
             AbFabricationHook(),
             ToolIntentHook(),
+            # Compliance check runs last — fabrication-shape catchers
+            # above all get first pass at a malformed reply. Only a
+            # reply that survived every fabrication gate gets asked
+            # the compliance question 'did you cite your source?'.
+            MissingCitationHook(),
         ],
         post_model=[PairedMetaConfirmStripHook()],
         # Order matters inside pre_tool: duplicate_call fires first so
@@ -1615,6 +1715,7 @@ __all__ = [
     "Halt",
     "HookPipeline",
     "MetaConfirmHook",
+    "MissingCitationHook",
     "Nudge",
     "NumericFabricationHook",
     "PairedMetaConfirmStripHook",

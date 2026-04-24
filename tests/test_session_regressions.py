@@ -167,6 +167,147 @@ def test_mh_rbn_table_fabrication_halts_via_table_fabrication() -> None:
     assert "| MH | Under 50 | 50 |" not in result.final_content
 
 
+_PURPOSE_1_1_1_TOOL_OUTPUT = (
+    "[0.033] PURPOSE OF THIS ORDER\n"
+    "  lesson: JO_7110.65 §1-1-1 (Introduction — PURPOSE OF THIS ORDER)\n"
+    "  This order prescribes air traffic control procedures and "
+    "phraseology for use by persons providing air traffic control "
+    "services. Controllers are required to be familiar with the "
+    "provisions of this order that pertain to their operational "
+    "responsibilities.\n"
+)
+
+
+_LOA_1_1_10_TOOL_OUTPUT = (
+    "[0.033] PROCEDURAL LETTERS OF AGREEMENT (LOA)\n"
+    "  lesson: JO_7110.65 §1-1-10 (Introduction — PROCEDURAL LETTERS OF AGREEMENT)\n"
+    "  When procedures or minima are applied jointly or otherwise "
+    "require the cooperation or concurrence of more than one facility "
+    "or organization, they must be documented in an LOA. LOAs only "
+    "supplement this order.\n"
+)
+
+
+def test_purpose_of_order_uncited_reply_gets_nudged() -> None:
+    """Session 2026-04-24 repro: user asked 'What is the purpose of
+    7110.65 as it pertains to ATC?', search_memory surfaced §1-1-1,
+    model paraphrased correctly but omitted the §-anchor. The
+    missing_citation bail hook must nudge; the retry round supplies
+    the cited version.
+
+    Fix landed in commit (TBD — this session): MissingCitationHook.
+    """
+    result = _run_scenario(
+        {
+            "id": "_purpose_of_order_uncited",
+            "registry": [
+                {"name": "search_memory", "output": _PURPOSE_1_1_1_TOOL_OUTPUT}
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "What is the purpose of 7110.65 as it pertains to "
+                        "Air Traffic Control?"
+                    ),
+                }
+            ],
+            "scripted_replies": [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "name": "search_memory",
+                            "arguments": {"query": "purpose of 7110.65 ATC"},
+                        }
+                    ],
+                },
+                # Uncited reply — what the model actually produced.
+                {
+                    "content": (
+                        "The purpose of FAA Order JO 7110.65 as it pertains "
+                        "to Air Traffic Control is to prescribe air traffic "
+                        "control procedures and phraseology for use by "
+                        "persons providing air traffic control services. "
+                        "The order is designed to ensure uniform ATC rules "
+                        "across the National Airspace System."
+                    ),
+                },
+                # Retry after the nudge — cited form.
+                {
+                    "content": (
+                        "Per JO 7110.65 §1-1-1, the purpose of the order is "
+                        "to prescribe air traffic control procedures and "
+                        "phraseology for use by persons providing air "
+                        "traffic control services."
+                    ),
+                },
+            ],
+        }
+    )
+    assert "§1-1-1" in result.final_content
+    assert "JO 7110.65" in result.final_content
+
+
+def test_loa_uncited_reply_gets_nudged() -> None:
+    """Session 2026-04-24 repro 2: user asked 'What document is
+    required concerning procedures that will be jointly applied
+    between facilities?', search_memory surfaced §1-1-10 (Procedural
+    Letters of Agreement), model answered 'According to JO 7110.65'
+    with no section anchor. Missing citation nudged; retry produces
+    the cited version."""
+    result = _run_scenario(
+        {
+            "id": "_loa_uncited",
+            "registry": [
+                {"name": "search_memory", "output": _LOA_1_1_10_TOOL_OUTPUT}
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "What document is required concerning procedures "
+                        "that will be jointly applied between facilities?"
+                    ),
+                }
+            ],
+            "scripted_replies": [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "name": "search_memory",
+                            "arguments": {
+                                "query": "procedures jointly applied between facilities"
+                            },
+                        }
+                    ],
+                },
+                # Uncited reply as observed.
+                {
+                    "content": (
+                        "According to JO 7110.65, when procedures or minima "
+                        "are applied jointly or otherwise require the "
+                        "cooperation or concurrence of more than one "
+                        "facility or organization, they must be documented "
+                        "in a Procedural Letter of Agreement (LOA)."
+                    ),
+                },
+                # Retry after the nudge — cited form.
+                {
+                    "content": (
+                        "Per JO 7110.65 §1-1-10, procedures applied jointly "
+                        "between facilities must be documented in a "
+                        "Procedural Letter of Agreement (LOA)."
+                    ),
+                },
+            ],
+        }
+    )
+    assert "§1-1-10" in result.final_content
+    assert "LOA" in result.final_content
+
+
 def test_mh_rbn_truthful_prose_passes_pipeline() -> None:
     """Counterfactual: truthful prose reply ('25 miles, §4-1-1') with
     the same tool output must NOT trip any catcher. Guards against

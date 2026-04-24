@@ -142,6 +142,38 @@ _CONTROL_CORPUS: tuple[
         False,
     ),
     (
+        # Targets missing_citation's silent path — reply mentions the
+        # order, includes a §-anchor, grounding tool ran. Must NOT
+        # nudge for a second citation.
+        "truthful_purpose_of_order_with_cite",
+        (
+            "Per JO 7110.65 §1-1-1, the purpose of the order is to prescribe "
+            "air traffic control procedures and phraseology for use by "
+            "persons providing air traffic control services. Controllers "
+            "are required to be familiar with the provisions that pertain "
+            "to their operational responsibilities."
+        ),
+        (
+            "[0.033] PURPOSE OF THIS ORDER\n"
+            "  lesson: JO_7110.65 §1-1-1\n"
+            "  This order prescribes air traffic control procedures...\n",
+        ),
+        frozenset({"search_memory"}),
+        False,
+    ),
+    (
+        # TBL/FIG anchors substitute for §-anchors — this control
+        # case proves missing_citation accepts them.
+        "truthful_tbl_anchor_as_citation",
+        (
+            "Per JO 7110.65 TBL 4-1-2, MH class radio beacons have a "
+            "usable distance of 25 miles. The table is given under §4-1-1."
+        ),
+        (_TBL_412,),
+        frozenset({"search_memory"}),
+        False,
+    ),
+    (
         "plain_non_citation_reply",
         "The answer is 42.",
         (),

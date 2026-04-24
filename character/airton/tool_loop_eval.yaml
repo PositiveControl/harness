@@ -325,6 +325,30 @@
   expected_contains: ["fabricated row"]
   expected_not_contains: ["| MH | Under 50 | 50 |"]
 
+- id: missing_citation_purpose_of_order
+  label: missing_citation
+  description: Session 2026-04-24 repro. User asked 'What is the purpose
+    of 7110.65 as it pertains to ATC?'. search_memory surfaced §1-1-1.
+    Model paraphrased the content correctly but omitted the §-anchor.
+    missing_citation nudges the model to add it; retry produces a cited
+    reply. Inverse of ungrounded_citation (which halts fabricated cites
+    without grounding) — this catches grounded-but-uncited replies.
+  registry:
+    - name: search_memory
+      output: "[0.033] PURPOSE OF THIS ORDER\n  lesson: JO_7110.65 §1-1-1 (Introduction — PURPOSE OF THIS ORDER)\n  This order prescribes air traffic control procedures and phraseology for use by persons providing air traffic control services. Controllers are required to be familiar with the provisions of this order that pertain to their operational responsibilities.\n"
+  messages:
+    - role: user
+      content: "What is the purpose of 7110.65 as it pertains to Air Traffic Control?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_memory
+          arguments: {"query": "purpose of 7110.65 ATC"}
+    - content: "The purpose of FAA Order JO 7110.65 as it pertains to Air Traffic Control is to prescribe air traffic control procedures and phraseology for use by persons providing air traffic control services. The order is designed to ensure that controllers operate with a uniform set of rules across the National Airspace System."
+    - content: "Per JO 7110.65 §1-1-1, the purpose of the order is to prescribe air traffic control procedures and phraseology for use by persons providing air traffic control services."
+  expected_contains: ["§1-1-1", "JO 7110.65"]
+  expected_events_contain: [bail_retry]
+
 - id: ungrounded_citation_no_grounding
   label: ungrounded_citation
   description: Out-of-scope question for a citation-scoped character

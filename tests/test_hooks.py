@@ -24,6 +24,7 @@ from harness.orchestrator.hooks import (
     Halt,
     HookPipeline,
     MetaConfirmHook,
+    MissingCitationHook,
     Nudge,
     NumericFabricationHook,
     PairedMetaConfirmStripHook,
@@ -289,6 +290,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "fabricated_itemization",
         "ab_fabrication",
         "tool_intent",
+        "missing_citation",
         "paired_meta_confirm_strip",
         "duplicate_call",
         "argument_grounding",
@@ -1053,6 +1055,161 @@ def test_numeric_fabrication_respects_disabled_toggle() -> None:
     disabled = pipe.run_finalize(
         ctx, disabled=frozenset({"numeric_fabrication"})
     )
+    assert isinstance(disabled, Continue)
+
+
+# ---------- missing_citation (harness-5uq follow-up) ----------
+
+
+def test_missing_citation_fires_on_jo_reference_without_section() -> None:
+    """Session 2026-04-24 repro 1: 'The purpose of FAA Order JO 7110.65
+    as it pertains to Air Traffic Control is to prescribe...' —
+    substantive, references the order, no §-anchor. Grounding tool
+    ran. Must Nudge."""
+    reply_text = (
+        "The purpose of FAA Order JO 7110.65 as it pertains to Air "
+        "Traffic Control is to prescribe air traffic control procedures "
+        "and phraseology for use by persons providing air traffic "
+        "control services. Specifically, it serves to prevent collisions, "
+        "provide a safe, orderly, and expeditious flow of air traffic, "
+        "and support national security and homeland defense missions."
+    )
+    outcome = MissingCitationHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Nudge)
+    assert "section citation" in outcome.text.lower()
+
+
+def test_missing_citation_fires_on_according_to_jo_without_section() -> None:
+    """Session 2026-04-24 repro 2: 'According to JO 7110.65, when
+    procedures or minima are applied jointly...' — substantive,
+    references the order, no §-anchor. Must Nudge."""
+    reply_text = (
+        "According to JO 7110.65, when procedures or minima are applied "
+        "jointly or otherwise require the cooperation or concurrence of "
+        "more than one facility or organization, they must be documented "
+        "in a Procedural Letter of Agreement (LOA). LOAs only supplement "
+        "this order and any minima they specify must not be less than "
+        "that specified in the order."
+    )
+    outcome = MissingCitationHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_missing_citation_passes_when_section_anchor_present() -> None:
+    """Truthful counterfactual: same reply with an inline §-anchor must
+    NOT fire. Guards against the catcher drifting into demanding a
+    specific citation FORM."""
+    outcome = MissingCitationHook().check(
+        BailContext(
+            reply=_reply(
+                "Per JO 7110.65 §1-1-1, the purpose of the order is to "
+                "prescribe air traffic control procedures and phraseology."
+            ),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_missing_citation_passes_when_table_anchor_present() -> None:
+    """TBL / Table / FIG anchors count as citations — they're always
+    section-scoped in the JO, so 'TBL 4-1-2' unambiguously points at
+    §4-1-1's second table."""
+    for anchor in ("TBL 4-1-2", "Table 4-1-2", "FIG 3-9-1", "Figure 3-9-1"):
+        outcome = MissingCitationHook().check(
+            BailContext(
+                reply=_reply(
+                    f"Per JO 7110.65 {anchor}, usable radius distances for "
+                    "L/MF Radio Beacons are given by class and power."
+                ),
+                tools_ran_this_turn=True,
+                tools_ran=frozenset({"search_memory"}),
+            )
+        )
+        assert isinstance(outcome, Continue), (
+            f"missing_citation false-positived on anchor form {anchor!r}"
+        )
+
+
+def test_missing_citation_silent_without_grounding_tool() -> None:
+    """No grounding tool ran → this isn't the hook's job. A reply
+    referencing JO 7110.65 with no §-anchor AND no grounding is
+    ungrounded-citation territory (if it also has a §) or just
+    a parametric answer (if it doesn't)."""
+    outcome = MissingCitationHook().check(
+        BailContext(
+            reply=_reply(
+                "FAA Order JO 7110.65 governs air traffic control operations "
+                "and covers every controller-facing procedure."
+            ),
+            tools_ran_this_turn=False,
+            tools_ran=frozenset(),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_missing_citation_silent_on_short_reply() -> None:
+    """Sub-80-char replies are usually refusals or scope-redirects
+    that don't need a citation — Continue."""
+    outcome = MissingCitationHook().check(
+        BailContext(
+            reply=_reply("I don't have that indexed from JO 7110.65."),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_missing_citation_silent_when_order_not_referenced() -> None:
+    """Reply doesn't mention JO 7110.65 — hook must not demand a
+    citation. Non-airton_c1 characters naturally fall into this path."""
+    outcome = MissingCitationHook().check(
+        BailContext(
+            reply=_reply(
+                "The user asked about Python dict merging. The answer: "
+                "in modern Python, `{**a, **b}` merges two dicts with "
+                "right-hand keys winning."
+            ),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_missing_citation_respects_disabled_toggle() -> None:
+    """Attribution eval disables catchers by name. Pipeline must honor
+    'missing_citation' in the disabled frozenset."""
+    pipe = default_hook_pipeline()
+    reply_text = (
+        "According to JO 7110.65, when procedures are applied jointly "
+        "they must be documented in a Procedural Letter of Agreement. "
+        "LOAs supplement the order and specify minima no less than "
+        "what the order itself requires."
+    )
+    ctx = BailContext(
+        reply=_reply(reply_text),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_memory"}),
+    )
+    enabled = pipe.run_bail(ctx, disabled=frozenset())
+    assert isinstance(enabled, Nudge)
+    disabled = pipe.run_bail(ctx, disabled=frozenset({"missing_citation"}))
     assert isinstance(disabled, Continue)
 
 
