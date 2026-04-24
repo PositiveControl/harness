@@ -174,6 +174,37 @@ _CONTROL_CORPUS: tuple[
         False,
     ),
     (
+        # list_count_mismatch silent path: claim and list agree.
+        "truthful_three_items_claim_matches_list",
+        (
+            "Per JO 7110.65 §2-1-1, the three items covered are:\n\n"
+            "1. Prevent a collision involving aircraft.\n"
+            "2. Provide a safe, orderly, and expeditious flow of traffic.\n"
+            "3. Support National Security and Homeland Defense missions."
+        ),
+        (
+            "[0.031] ATC SERVICE\n"
+            "  lesson: JO_7110.65 §2-1-1\n",
+        ),
+        frozenset({"search_memory"}),
+        False,
+    ),
+    (
+        # list_count_mismatch silent path: section numbers in prose
+        # must not trip the count-claim regex.
+        "truthful_section_number_in_prose",
+        (
+            "Per JO 7110.65 §2-1-1, controllers must provide ATC service in "
+            "accordance with the procedures and minima in the order. "
+            "Additional services are required when the work situation permits."
+        ),
+        (
+            "[0.031] ATC SERVICE\n  lesson: JO_7110.65 §2-1-1\n",
+        ),
+        frozenset({"search_memory"}),
+        False,
+    ),
+    (
         "plain_non_citation_reply",
         "The answer is 42.",
         (),

@@ -776,6 +776,143 @@ _MISSING_CITATION_NUDGE = (
 )
 
 
+# Number-word -> integer lookup for count-claim parsing. Only cover
+# 2..12 — higher numbers are rare in ATC prose and mostly appear as
+# digits when they do. 'one' is excluded on purpose: 'one of the ...'
+# is a different shape than a count claim and would false-positive
+# on phrases like 'only one reason'.
+_NUMBER_WORDS: dict[str, int] = {
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
+
+
+# Matches a count claim followed by a list intro. Intended to fire on
+# reply patterns like 'The four specific primary purposes of ATC are:',
+# 'There are three reasons:', 'four main options include'. The span
+# between the count word and the list-intro verb is permissive
+# (non-newline chars up to 120 chars) so adjective runs with
+# punctuation ('of Air Traffic Control (ATC)') match cleanly. Trailing
+# 'are' / 'include' / 'comprise' pins it to a list intro — avoids
+# matching narrative prose that happens to contain a number elsewhere.
+_COUNT_CLAIM_RE = re.compile(
+    r"\b(\d+|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b"
+    # Require whitespace then a letter after the count word. Excludes
+    # section numbers ('7110.65', '2-1-1'), list item markers ('1.'),
+    # dates, phone numbers — anything where the digit is immediately
+    # followed by punctuation or another digit.
+    r"\s+[A-Za-z]"
+    r"[^\n]{0,120}?"
+    r"\b(?:are|is|include|comprise|consist\s+of)\b(?:\s*(?::|as\s+follows))?",
+    re.IGNORECASE,
+)
+
+
+# Matches the start of a numbered or bulleted list item. Requires
+# punctuation after digits (`.`, `)`, or `]`) so stray numbers in
+# prose don't count. Bullet characters (`-`, `*`, `•`) are standard
+# markdown / CommonMark list markers. Multiline flag so we scan every
+# line of the reply.
+_LIST_ITEM_RE = re.compile(
+    r"^\s*(?:\d+[.\)\]]|[-*•])\s+\S",
+    re.MULTILINE,
+)
+
+
+_LIST_COUNT_MISMATCH_NUDGE = (
+    "[count mismatch — your reply stated a count of items (e.g. 'the "
+    "four ... are') but the enumerated list has a different number of "
+    "items. Re-answer with a matching count: either add the missing "
+    "items if the source supports them, or restate the count to match "
+    "what you actually listed. If the question asked for more items "
+    "than the source lists, say so plainly — 'The source lists N, not "
+    "what was asked for' — rather than padding or agreeing with the "
+    "wrong count.]"
+)
+
+
+def _parse_count_word(token: str) -> int | None:
+    """Turn '4' / 'four' into 4. Returns None on unparseable tokens
+    so the caller can treat them as 'no count claim'."""
+    token = token.strip().lower()
+    if token.isdigit():
+        return int(token)
+    return _NUMBER_WORDS.get(token)
+
+
+@dataclass(frozen=True)
+class ListCountMismatchHook:
+    """Nudge replies whose stated count of items disagrees with the
+    number of items the reply actually enumerates.
+
+    Failure mode this catches: the user asks for N items, the model
+    echoes 'The N ... are' and then emits an enumerated list of M != N
+    items. Session 2026-04-24 repro: user asked for 4 primary purposes
+    of ATC; model wrote 'The four specific primary purposes ... are as
+    follows:' and listed 3. Self-falsifying — the reply contradicts
+    itself within three sentences.
+
+    Trigger conditions (ALL must hold):
+      1. Exactly one count claim in the reply (matches
+         `_COUNT_CLAIM_RE` and the number word / digit resolves to a
+         known integer). Multiple claims are ambiguous — skip rather
+         than pick the wrong one to check against.
+      2. Reply contains an enumerated list of >= 2 items
+         (`_LIST_ITEM_RE` multiline count). A single-item 'list' is
+         prose, not an enumeration — skip.
+      3. The claim count != the list count.
+
+    Action: Nudge the model to re-answer with a consistent count.
+    Retry-able — typical failure is 'model over-agreed with user's
+    wrong premise'; retry lets the model push back on the premise
+    instead of fabricating a missing item.
+
+    Placed AFTER `missing_citation` in the bail list: once compliance
+    (citation) is satisfied, internal consistency (count) is the next
+    layer of quality.
+
+    Silent cases (by design):
+      - Zero count claims -> nothing to verify.
+      - Multiple count claims -> ambiguous which is 'the' claim.
+      - No enumerated list -> reply is narrative prose; count could
+        be correct or the list implied but not formalized, so don't
+        fire."""
+
+    name: str = "list_count_mismatch"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        content = ctx.reply.content
+        # Fast-path: no digits/number-words -> no possible claim.
+        if not re.search(
+            r"\b(?:\d+|two|three|four|five|six|seven|eight|"
+            r"nine|ten|eleven|twelve)\b",
+            content,
+            re.IGNORECASE,
+        ):
+            return Continue()
+        claim_matches = _COUNT_CLAIM_RE.findall(content)
+        if len(claim_matches) != 1:
+            return Continue()
+        claimed = _parse_count_word(claim_matches[0])
+        if claimed is None:
+            return Continue()
+        list_count = len(_LIST_ITEM_RE.findall(content))
+        if list_count < 2:
+            return Continue()
+        if claimed == list_count:
+            return Continue()
+        return Nudge(_LIST_COUNT_MISMATCH_NUDGE)
+
+
 @dataclass(frozen=True)
 class MissingCitationHook:
     """Nudge a reply that references JO 7110.65 substantively but
@@ -1536,6 +1673,12 @@ def default_hook_pipeline() -> HookPipeline:
             # reply that survived every fabrication gate gets asked
             # the compliance question 'did you cite your source?'.
             MissingCitationHook(),
+            # Internal-consistency check: the reply's own count claim
+            # vs. its enumerated list. Runs after missing_citation so
+            # a reply that ADDS a citation on retry doesn't get
+            # re-chained into a count-mismatch nudge from its original
+            # pre-citation form.
+            ListCountMismatchHook(),
         ],
         post_model=[PairedMetaConfirmStripHook()],
         # Order matters inside pre_tool: duplicate_call fires first so
@@ -1714,6 +1857,7 @@ __all__ = [
     "FinalizeOutcome",
     "Halt",
     "HookPipeline",
+    "ListCountMismatchHook",
     "MetaConfirmHook",
     "MissingCitationHook",
     "Nudge",

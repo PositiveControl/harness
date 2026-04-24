@@ -308,6 +308,87 @@ def test_loa_uncited_reply_gets_nudged() -> None:
     assert "LOA" in result.final_content
 
 
+_ATC_SERVICE_2_1_1_TOOL_OUTPUT = (
+    "[0.031] ATC SERVICE\n"
+    "  lesson: JO_7110.65 §2-1-1 (General — ATC SERVICE)\n"
+    "  **a.** The primary purpose of the ATC system is to prevent a "
+    "collision involving aircraft operating in the system.\n"
+    "  **b.** In addition to its primary purpose, the ATC system also:\n"
+    "    **1.** Provides a safe, orderly, and expeditious flow of air traffic.\n"
+    "    **2.** Supports National Security and Homeland Defense missions.\n"
+)
+
+
+def test_four_primary_purposes_count_mismatch_gets_nudged() -> None:
+    """Session 2026-04-24 repro: user asked for '4 specific Primary
+    Purposes'. Source §2-1-1 has 3 items (1 primary + 2 additional
+    roles). Model over-agreed with the wrong premise, wrote 'The four
+    specific primary purposes ... are as follows:' then listed 3 —
+    self-falsifying within one reply.
+
+    Fix landed in this session via ListCountMismatchHook. Retry round
+    must restate the count to match what the source actually lists,
+    and should flag that the question's premise was off.
+    """
+    result = _run_scenario(
+        {
+            "id": "_four_purposes_count_mismatch",
+            "registry": [
+                {"name": "search_memory", "output": _ATC_SERVICE_2_1_1_TOOL_OUTPUT}
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "List the 4 specific Primary Purposes of Air Traffic Control"
+                    ),
+                }
+            ],
+            "scripted_replies": [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "name": "search_memory",
+                            "arguments": {"query": "primary purposes of ATC"},
+                        }
+                    ],
+                },
+                # Over-agreeing reply (observed).
+                {
+                    "content": (
+                        "The four specific primary purposes of Air Traffic "
+                        "Control (ATC) are as follows:\n\n"
+                        "1. Prevent a collision involving aircraft operating "
+                        "in the system.\n"
+                        "2. Provide a safe, orderly, and expeditious flow of "
+                        "air traffic.\n"
+                        "3. Support National Security and Homeland Defense "
+                        "missions.\n\n"
+                        "These are outlined in JO 7110.65 §2-1-1."
+                    ),
+                },
+                # Retry after the count-mismatch nudge — restates count
+                # to match the source and calls out the premise gap.
+                {
+                    "content": (
+                        "Per JO 7110.65 §2-1-1, the source lists 3 items (1 "
+                        "primary purpose plus 2 additional roles), not 4:\n\n"
+                        "1. Prevent a collision involving aircraft (the primary "
+                        "purpose).\n"
+                        "2. Provide a safe, orderly, and expeditious flow of "
+                        "air traffic.\n"
+                        "3. Support National Security and Homeland Defense "
+                        "missions."
+                    ),
+                },
+            ],
+        }
+    )
+    assert "3 items" in result.final_content
+    assert "§2-1-1" in result.final_content
+
+
 def test_mh_rbn_truthful_prose_passes_pipeline() -> None:
     """Counterfactual: truthful prose reply ('25 miles, §4-1-1') with
     the same tool output must NOT trip any catcher. Guards against

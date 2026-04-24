@@ -325,6 +325,30 @@
   expected_contains: ["fabricated row"]
   expected_not_contains: ["| MH | Under 50 | 50 |"]
 
+- id: list_count_mismatch_four_purposes
+  label: list_count_mismatch
+  description: Session 2026-04-24 repro. User asked for '4 specific Primary
+    Purposes'; model over-agreed with the wrong premise, wrote 'The four
+    specific primary purposes ... are as follows:' and listed 3. Internal
+    inconsistency within one reply. list_count_mismatch nudges; retry
+    round restates the count to match what §2-1-1 actually lists and
+    flags that the source doesn't have 4 items.
+  registry:
+    - name: search_memory
+      output: "[0.031] ATC SERVICE\n  lesson: JO_7110.65 §2-1-1 (General — ATC SERVICE)\n  **a.** The primary purpose of the ATC system is to prevent a collision involving aircraft operating in the system.\n  **b.** In addition to its primary purpose, the ATC system also:\n    **1.** Provides a safe, orderly, and expeditious flow of air traffic.\n    **2.** Supports National Security and Homeland Defense missions.\n"
+  messages:
+    - role: user
+      content: "List the 4 specific Primary Purposes of Air Traffic Control"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_memory
+          arguments: {"query": "primary purposes of Air Traffic Control"}
+    - content: "The four specific primary purposes of Air Traffic Control (ATC) are as follows:\n\n1. Prevent a collision involving aircraft operating in the system.\n2. Provide a safe, orderly, and expeditious flow of air traffic.\n3. Support National Security and Homeland Defense missions.\n\nThese are outlined in JO 7110.65 §2-1-1."
+    - content: "Per JO 7110.65 §2-1-1, the source lists 3 items (1 primary purpose plus 2 additional roles), not 4:\n\n1. Prevent a collision involving aircraft (the primary purpose).\n2. Provide a safe, orderly, and expeditious flow of air traffic.\n3. Support National Security and Homeland Defense missions."
+  expected_contains: ["3 items", "§2-1-1"]
+  expected_events_contain: [bail_retry]
+
 - id: missing_citation_purpose_of_order
   label: missing_citation
   description: Session 2026-04-24 repro. User asked 'What is the purpose

@@ -23,6 +23,7 @@ from harness.orchestrator.hooks import (
     FinalizeContext,
     Halt,
     HookPipeline,
+    ListCountMismatchHook,
     MetaConfirmHook,
     MissingCitationHook,
     Nudge,
@@ -291,6 +292,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "ab_fabrication",
         "tool_intent",
         "missing_citation",
+        "list_count_mismatch",
         "paired_meta_confirm_strip",
         "duplicate_call",
         "argument_grounding",
@@ -1210,6 +1212,162 @@ def test_missing_citation_respects_disabled_toggle() -> None:
     enabled = pipe.run_bail(ctx, disabled=frozenset())
     assert isinstance(enabled, Nudge)
     disabled = pipe.run_bail(ctx, disabled=frozenset({"missing_citation"}))
+    assert isinstance(disabled, Continue)
+
+
+# ---------- list_count_mismatch (harness-5uq follow-up #2) ----------
+
+
+def test_list_count_mismatch_fires_on_4_purposes_repro() -> None:
+    """Session 2026-04-24 repro: 'The four specific primary purposes
+    of ATC are as follows:' followed by a 3-item list. Must Nudge."""
+    reply_text = (
+        "The four specific primary purposes of Air Traffic Control (ATC) "
+        "are as follows:\n\n"
+        "1. Prevent a collision involving aircraft operating in the system.\n"
+        "2. Provide a safe, orderly, and expeditious flow of air traffic.\n"
+        "3. Support National Security and Homeland Defense missions.\n"
+    )
+    outcome = ListCountMismatchHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Nudge)
+    assert "count mismatch" in outcome.text.lower()
+
+
+def test_list_count_mismatch_passes_when_claim_matches_list() -> None:
+    """Truthful counterfactual: claim=3, list=3 -> Continue."""
+    reply_text = (
+        "Per JO 7110.65 §2-1-1, the three items covered are:\n\n"
+        "1. Prevent a collision involving aircraft.\n"
+        "2. Provide a safe, orderly, and expeditious flow.\n"
+        "3. Support National Security and Homeland Defense missions.\n"
+    )
+    outcome = ListCountMismatchHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_list_count_mismatch_silent_when_no_enumerated_list() -> None:
+    """Narrative prose with count but no list-shaped enumeration
+    should NOT fire — the reply may be correctly counting an inline
+    enumeration that's prose-joined ('X, Y, and Z')."""
+    reply_text = (
+        "Per §2-1-1, the four main goals of ATC are collision prevention, "
+        "safe and orderly traffic flow, national security support, and "
+        "additional controller services."
+    )
+    outcome = ListCountMismatchHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_list_count_mismatch_silent_when_no_count_claim() -> None:
+    """Reply with a list but no count claim — Continue. The model is
+    enumerating without pre-committing to a specific count."""
+    reply_text = (
+        "Per §2-1-1, the ATC system's roles are:\n\n"
+        "1. Collision prevention.\n"
+        "2. Safe and orderly flow.\n"
+        "3. National security.\n"
+    )
+    outcome = ListCountMismatchHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_list_count_mismatch_ignores_section_number_digits() -> None:
+    """Digits embedded in section numbers ('JO 7110.65 §2-1-1') must
+    not trip the count claim — they're identifiers, not counts.
+    Guard on the `\\s+[A-Za-z]` suffix in the regex."""
+    reply_text = "Per JO 7110.65 §2-1-1, the requirements are strict and comprehensive."
+    outcome = ListCountMismatchHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_list_count_mismatch_ignores_multiple_count_claims() -> None:
+    """When a reply has >1 distinct count claim, the catcher can't
+    know which one is 'the' claim for the list — conservative Continue
+    rather than guess."""
+    reply_text = (
+        "The four purposes of ATC are broad; there are five reasons to study "
+        "them, and seven sections cover them. Here are the items:\n\n"
+        "1. one\n2. two\n3. three\n"
+    )
+    outcome = ListCountMismatchHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_list_count_mismatch_matches_bullet_lists() -> None:
+    """Bulleted items count too (`- foo`, `* foo`, `• foo`). Nudge on
+    claim=4 with a 2-bullet list."""
+    reply_text = (
+        "The four main reasons are:\n\n"
+        "- alpha\n"
+        "- beta\n"
+    )
+    outcome = ListCountMismatchHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_list_count_mismatch_respects_disabled_toggle() -> None:
+    """Attribution eval disables catchers by name."""
+    pipe = default_hook_pipeline()
+    reply_text = (
+        "The four specific primary purposes of ATC are as follows:\n\n"
+        "1. Prevent a collision.\n"
+        "2. Provide safe flow.\n"
+        "3. Support national security.\n\n"
+        "Per JO 7110.65 §2-1-1."
+    )
+    ctx = BailContext(
+        reply=_reply(reply_text),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_memory"}),
+    )
+    enabled = pipe.run_bail(ctx, disabled=frozenset())
+    assert isinstance(enabled, Nudge)
+    disabled = pipe.run_bail(
+        ctx,
+        disabled=frozenset({"list_count_mismatch"}),
+    )
     assert isinstance(disabled, Continue)
 
 
