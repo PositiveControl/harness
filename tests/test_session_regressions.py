@@ -467,6 +467,78 @@ def test_reserved_squawk_7500_gets_nudged() -> None:
     assert "one two zero zero" in result.final_content
 
 
+def test_mixed_rooster_and_faa_prompt_still_nudges_scope_redirect() -> None:
+    """Session 2026-04-24 repro (variant): user combined biology and
+    a light aviation mention ('how many eggs can a rooster lay each
+    month why flying to an FAA controlled airport?'). The biology
+    markers ('rooster', 'eggs') are strong non-aviation signals;
+    fuzzy 'FAA controlled airport' alone shouldn't override them.
+    Model produced a context-bleed reply starting with 'squawking 7700'
+    content — scope_redirect must catch it.
+
+    Pins the behavior that a MIXED prompt with any clearly non-aviation
+    marker triggers scope_redirect regardless of adjacent aviation
+    vocab the user also typed.
+    """
+    result = _run_scenario(
+        {
+            "id": "_mixed_rooster_and_faa",
+            "registry": [
+                {
+                    "name": "search_memory",
+                    "output": (
+                        "[0.029] LANDING AREA CONDITION\n"
+                        "  lesson: JO_7110.65 §3-3-1\n"
+                    ),
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "how many eggs can a rooster lay each month "
+                        "why flying to an FAA controlled airport?"
+                    ),
+                }
+            ],
+            "scripted_replies": [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "name": "search_memory",
+                            "arguments": {"query": "roosters eggs FAA airport"},
+                        }
+                    ],
+                },
+                # Observed context-bleed reply.
+                {
+                    "content": (
+                        "The query you provided did not directly relate "
+                        "to the topic of squawking 7700 or aircraft "
+                        "operations at an FAA-controlled airport. "
+                        "However, I can address your questions "
+                        "individually.\n\n"
+                        "1. What Does It Mean If an Aircraft Squawks 7700?"
+                    ),
+                },
+                # Retry after scope_redirect nudge.
+                {
+                    "content": (
+                        "That question is outside JO 7110.65. I am a "
+                        "specialist for FAA Air Traffic Control "
+                        "procedures only and cannot answer biology "
+                        "questions."
+                    ),
+                },
+            ],
+        }
+    )
+    assert "outside JO 7110.65" in result.final_content
+    assert "squawking 7700" not in result.final_content
+    assert "aircraft" not in result.final_content.lower() or "specialist" in result.final_content
+
+
 def test_roosters_out_of_scope_nudges_scope_redirect() -> None:
     """Session 2026-04-24 repro: user asked 'do roosters lay eggs'
     (zero aviation vocab). Model latched onto a prior-turn phraseology
