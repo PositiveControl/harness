@@ -41,6 +41,39 @@ def test_voice_sample_counts_sum_to_total(tmp_path: Path) -> None:
     assert character.canonical_voice_count >= 20
 
 
+def test_holdout_samples_loaded_separately(tmp_path: Path) -> None:
+    """Synthesize a character dir with a voice/holdout.yaml and assert
+    the held-out samples load into `holdout_voice_samples` and DO NOT
+    appear in `voice_samples` (the tuple the VoiceRetriever reads).
+    harness-w49p: carving samples out of canonical for generalization
+    eval must make them invisible to retrieval."""
+    import shutil
+
+    fake = tmp_path / "airton"
+    shutil.copytree(AIRTON, fake)
+    holdout_path = fake / "voice" / "holdout.yaml"
+    holdout_path.write_text(
+        "samples:\n"
+        "  - id: holdout-1\n"
+        "    prompt: held out prompt\n"
+        "    gold: held out gold\n"
+    )
+
+    character = load_character(fake)
+    assert len(character.holdout_voice_samples) == 1
+    assert character.holdout_voice_samples[0].id == "holdout-1"
+    # Invariant: holdout samples are NOT in voice_samples.
+    voice_ids = {s.id for s in character.voice_samples}
+    assert "holdout-1" not in voice_ids
+
+
+def test_no_holdout_file_empty_tuple(tmp_path: Path) -> None:
+    """Characters without voice/holdout.yaml have an empty holdout
+    tuple. Null-safe default for existing personas."""
+    character = load_character(AIRTON)
+    assert character.holdout_voice_samples == ()
+
+
 def test_captured_samples_counted_separately(tmp_path: Path) -> None:
     """Synthesize a mini character directory with both canonical and
     captured samples; assert the counts line up and the merged tuple
