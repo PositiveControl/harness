@@ -9,6 +9,14 @@ from harness.tools.base import ToolSpec
 if TYPE_CHECKING:
     from harness.store.episodic import EpisodicStore
 
+# Per-hit body cap. Sized to fit one post-chunker-fold (harness-1s4)
+# section — typical airton_c1 JO 7110.65 chunk is ~1,000 chars; the old
+# 400-char cap sliced TBL 4-1-2 in half, dropping the CL/MH rows and
+# letting the model fabricate them from priors (harness-5uq repro).
+# Budget: k=5 hits * 1,200 chars ~= 6k tokens of tool output, tolerable
+# on 7B/32B Qwen and still well under compaction thresholds.
+_BODY_CAP_CHARS = 1200
+
 
 @dataclass
 class SearchMemoryTool:
@@ -74,8 +82,8 @@ class SearchMemoryTool:
             lines.append(f"[{score:.3f}] {rec.title}")
             if rec.principle:
                 lines.append(f"  lesson: {rec.principle}")
-            snippet = rec.body[:400]
-            ellipsis = "…" if len(rec.body) > 400 else ""
+            snippet = rec.body[:_BODY_CAP_CHARS]
+            ellipsis = "…" if len(rec.body) > _BODY_CAP_CHARS else ""
             lines.append(f"  {snippet}{ellipsis}")
             lines.append("")
         return "\n".join(lines).strip()

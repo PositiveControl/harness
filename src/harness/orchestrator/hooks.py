@@ -480,14 +480,20 @@ class FinalizeContext:
     `memory_block_attached` reports whether the CLI (or equivalent
     call-site) attached a retrieval memory block to the system prompt
     for this turn — the other grounding signal the citation catcher
-    needs. Both default to safe falsy values so callers that don't
-    plumb them through fall through untouched (a citation catcher can
-    only fire when it's sure no grounding happened)."""
+    needs.
+
+    `tool_outputs` carries the concatenated text of every successful
+    tool-role message this turn, in execution order — the grounding
+    corpus against which `table_fabrication` verifies that every
+    pipe-table data row in the reply appears verbatim (harness-5uq).
+    Defaults to the empty tuple so callers that don't plumb tool
+    outputs through fall through untouched."""
 
     reply: ModelReply
     last_outcome: BailOutcome
     tools_ran: frozenset[str] = frozenset()
     memory_block_attached: bool = False
+    tool_outputs: tuple[str, ...] = ()
 
 
 class BailHook(Protocol):
@@ -947,6 +953,125 @@ class UngroundedCitationHook:
         )
 
 
+# Matches a markdown pipe-table row: whitespace + `|` + at least two
+# cells separated by more `|`s. Column count ≥3 pins it to "real table"
+# shape — a stray `a | b` in prose doesn't trigger. We strip the row
+# and its cells at check time, so tolerant of surrounding whitespace.
+_PIPE_ROW_RE = re.compile(r"^\s*\|[^|\n]+\|[^|\n]+\|[^\n]*\|\s*$", re.MULTILINE)
+
+
+# Markdown header separator row (e.g. `|---|---|---|`). These carry no
+# data; excluded before we check rows against tool outputs so a missing
+# separator never fires the catcher.
+_PIPE_SEPARATOR_RE = re.compile(r"^\s*\|[\s\-:|]+\|\s*$", re.MULTILINE)
+
+
+# Pull the digit-bearing tokens we care about. Two-or-more-digit runs
+# avoid coincidental single-digit matches ("3 miles" prose colliding
+# with "3,000" in tool output). Accepts commas and decimals as internal
+# separators so "1,000" / "1.25" survive as single tokens.
+_NUMERIC_TOKEN_RE = re.compile(r"\d[\d,.]{1,}")
+
+
+def _normalize_for_compare(s: str) -> str:
+    """Collapse whitespace + strip commas so "|MH|Under 50|25|" matches
+    "| MH | Under 50 | 25 |" and "1,000" matches "1000". We keep the
+    `|` delimiter intact — the catcher's signal is cell-pair adjacency,
+    and pipes are the row scaffolding we want to preserve."""
+    return re.sub(r"\s+", "", s).replace(",", "")
+
+
+# Canned refusal when the table-fabrication catcher fires. Stays
+# character-agnostic — same reasoning as UNGROUNDED_CITATION_FALLBACK:
+# by the time we're replacing the reply we don't have a hook into
+# per-character refusal templates, and first-person keeps it reading
+# as the character's own voice. Short-and-specific beats generic: the
+# user gets a clear signal that the table (not the whole answer) was
+# the suspect part.
+TABLE_FABRICATION_FALLBACK = (
+    "I can't reproduce that table from memory without risking a "
+    "fabricated row. The retrieved source didn't include the full "
+    "table, and I won't fill the gaps from priors. If you have the "
+    "section's table in front of you, paste it and I'll work from "
+    "there; otherwise ask me about a specific row and I'll try to "
+    "retrieve it."
+)
+
+
+@dataclass(frozen=True)
+class TableFabricationHook:
+    """Catch replies whose pipe-table data rows don't appear verbatim
+    in any tool output this turn (harness-5uq).
+
+    Failure mode this catches: retrieval surfaces a section whose full
+    numeric table was truncated by `SearchMemoryTool`'s body cap (or
+    split across chunk boundaries by the chunker). The model correctly
+    cites the section, sees the partial table fragment, and
+    reconstructs the missing rows from parametric priors — a
+    citation-real, table-fabricated reply. Reproducer (session
+    2026-04-24, airton_c1): MH class RBN, cited §4-1-1 correctly,
+    fabricated `|MH|50 - 1,999|50|` when the source row is
+    `|MH|Under 50|25|`.
+
+    Trigger conditions (ALL must hold):
+      1. A grounding tool ran this turn (`ctx.tools_ran` intersects
+         `_GROUNDING_TOOLS`). Without a grounding tool we defer to
+         `ungrounded_citation` — a fabricated table with no grounding
+         tool IS a fabricated citation, caught upstream.
+      2. Reply contains ≥2 pipe-table rows (header + ≥1 data row).
+         Non-separator, digit-bearing rows are the data rows.
+      3. At least one data row's normalized pipe-signature does NOT
+         appear in `ctx.tool_outputs` (also normalized).
+
+    Action: Halt with the canned refusal. Deliberately does NOT attempt
+    to strip just the offending row — leaving an explanation around a
+    partial table is a subtler form of the same problem.
+
+    Runs AFTER `ungrounded_citation` (which halts on the harder shape
+    of fully-fabricated citations) and BEFORE `fabrication_fallback`.
+    If no grounding tool ran but a table is still present, the earlier
+    hook handles it; this one covers the narrower "grounded citation,
+    fabricated row" case."""
+
+    name: str = "table_fabrication"
+
+    def check(self, ctx: FinalizeContext) -> FinalizeOutcome:
+        if not (ctx.tools_ran & _GROUNDING_TOOLS):
+            return Continue()
+        rows = _PIPE_ROW_RE.findall(ctx.reply.content)
+        if len(rows) < 2:
+            return Continue()
+        # Data rows: skip the markdown header separator (`|---|---|`)
+        # and the header row itself (first match with no digits). A
+        # row with zero numeric tokens can't be a numeric-fabrication
+        # target, so we skip it rather than halt on label-only rows.
+        data_rows = [
+            r
+            for r in rows
+            if not _PIPE_SEPARATOR_RE.match(r) and _NUMERIC_TOKEN_RE.search(r)
+        ]
+        if not data_rows:
+            return Continue()
+        joined_outputs = "\n".join(ctx.tool_outputs)
+        normalized_outputs = _normalize_for_compare(joined_outputs)
+        for row in data_rows:
+            if _normalize_for_compare(row) in normalized_outputs:
+                continue
+            # Row signature absent from tool outputs → fabricated.
+            # Halt immediately; one bad row is enough to poison the
+            # whole table from the user's perspective.
+            reply = ctx.reply
+            return Halt(
+                ModelReply(
+                    content=TABLE_FABRICATION_FALLBACK,
+                    tool_calls=(),
+                    was_truncated=reply.was_truncated,
+                    had_unparseable_call=reply.had_unparseable_call,
+                )
+            )
+        return Continue()
+
+
 @dataclass(frozen=True)
 class FabricationFallbackHook:
     """Substitute the canned refusal when bail retries are exhausted
@@ -1088,10 +1213,16 @@ def default_hook_pipeline() -> HookPipeline:
         # Order matters inside finalize: ungrounded_citation runs first so
         # it can Halt with a scope-aware refusal for fabricated-citation
         # replies whose bail outcome was Continue (legitimate-looking
-        # wrap-up that no bail hook caught). fabrication_fallback then
-        # only fires when the bail loop itself left a Nudge outcome on
-        # the table.
-        finalize=[UngroundedCitationHook(), FabricationFallbackHook()],
+        # wrap-up that no bail hook caught). table_fabrication then
+        # covers the narrower "grounded citation, fabricated row" shape
+        # that ungrounded_citation leaves alone (grounding tool DID run).
+        # fabrication_fallback only fires when the bail loop itself left
+        # a Nudge outcome on the table.
+        finalize=[
+            UngroundedCitationHook(),
+            TableFabricationHook(),
+            FabricationFallbackHook(),
+        ],
     )
 
 
@@ -1224,6 +1355,7 @@ __all__ = [
     "FABRICATED_SEARCH_RE",
     "FALSE_SUCCESS_RE",
     "META_CONFIRM_RE",
+    "TABLE_FABRICATION_FALLBACK",
     "TEASER_RE",
     "TOOL_INTENT_RE",
     "UNGROUNDED_CITATION_FALLBACK",
@@ -1259,6 +1391,7 @@ __all__ = [
     "Replace",
     "ReplaceResult",
     "Skip",
+    "TableFabricationHook",
     "TeaserHook",
     "ToolIntentHook",
     "ToolResultSummarizerHook",

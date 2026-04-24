@@ -9,6 +9,7 @@ attribution eval (`tests/test_tool_loop_eval.py`).
 from __future__ import annotations
 
 from harness.orchestrator.hooks import (
+    TABLE_FABRICATION_FALLBACK,
     UNGROUNDED_CITATION_FALLBACK,
     AbFabricationHook,
     ArgumentGroundingHook,
@@ -29,6 +30,7 @@ from harness.orchestrator.hooks import (
     PreToolContext,
     Replace,
     Skip,
+    TableFabricationHook,
     TeaserHook,
     ToolIntentHook,
     Truncated,
@@ -290,6 +292,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "duplicate_call",
         "argument_grounding",
         "ungrounded_citation",
+        "table_fabrication",
         "fabrication_fallback",
     )
 
@@ -675,6 +678,211 @@ def test_ungrounded_citation_runs_before_fabrication_fallback() -> None:
     )
     assert isinstance(outcome, Halt)
     assert outcome.reply.content == UNGROUNDED_CITATION_FALLBACK
+
+
+# ---------- table_fabrication (harness-5uq) ----------
+
+
+# The exact table fabrication from the session 2026-04-24 MH RBN repro:
+# cited §4-1-1 correctly, reconstructed the MH row from priors with
+# `Under 50` → `50` (collapsed MH's label with the H row's distance).
+# Keep this fixture identical to the live repro so any regression here
+# would show up the same way.
+_FABRICATED_MH_TABLE_REPLY = (
+    "The usable distance for an MH class RBN is 50 miles, per "
+    "JO 7110.65 §4-1-1 TBL 4-1-2:\n\n"
+    "| Class | Power (watts) | Distance (miles) |\n"
+    "|---|---|---|\n"
+    "| MH | Under 50 | 50 |\n"
+    "| H | 50 − 1,999 | 50 |\n"  # noqa: RUF001 — unicode-minus from the corpus
+)
+
+
+# Truthful table from the source — same shape, with the correct MH
+# distance (25 miles). The catcher must NOT fire on this.
+_TRUTHFUL_MH_TABLE_REPLY = (
+    "The usable distance for an MH class RBN is 25 miles, per "
+    "JO 7110.65 §4-1-1 TBL 4-1-2:\n\n"
+    "| Class | Power (watts) | Distance (miles) |\n"
+    "|---|---|---|\n"
+    "| MH | Under 50 | 25 |\n"
+    "| H | 50 − 1,999 | 50 |\n"  # noqa: RUF001 — unicode-minus from the corpus
+)
+
+
+# Tool output stand-in representing what SearchMemoryTool would return
+# post-cap-bump: both tables chunks' body with the full TBL 4-1-2.
+# Whitespace between the pipes varies from the model's emitted reply
+# (corpus has no interior spaces; replies typically add them), so the
+# catcher's normalized-compare is what makes the check pass.
+_TOOL_OUTPUT_WITH_FULL_TABLE = (
+    "[0.033] ALTITUDE AND DISTANCE LIMITATIONS\n"
+    "  lesson: JO_7110.65 §4-1-1 (NAVAID Use Limitations — ALTITUDE AND DISTANCE LIMITATIONS)\n"
+    "  |**Class**|**Power (watts)**|**Distance**<br>**(miles)**|\n"
+    "|---|---|---|\n"
+    "|CL|Under 25|15|\n"
+    "|MH|Under 50|25|\n"
+    "|H|50 − 1,999|50|\n"  # noqa: RUF001 — unicode-minus from the corpus
+    "|HH|2,000 or more|75|\n"
+)
+
+
+def test_table_fabrication_fires_on_repro_row() -> None:
+    """Session 2026-04-24 repro: `|MH|Under 50|50|` does not appear in
+    tool output (truth is `|MH|Under 50|25|`) → Halt with refusal."""
+    reply = _reply(_FABRICATED_MH_TABLE_REPLY)
+    outcome = TableFabricationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+            tool_outputs=(_TOOL_OUTPUT_WITH_FULL_TABLE,),
+        )
+    )
+    assert isinstance(outcome, Halt)
+    assert outcome.reply.content == TABLE_FABRICATION_FALLBACK
+    assert outcome.reply.tool_calls == ()
+
+
+def test_table_fabrication_passes_on_truthful_table() -> None:
+    """Every data row in the reply appears verbatim (whitespace-
+    normalized) in a tool output → Continue."""
+    reply = _reply(_TRUTHFUL_MH_TABLE_REPLY)
+    outcome = TableFabricationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+            tool_outputs=(_TOOL_OUTPUT_WITH_FULL_TABLE,),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_table_fabrication_silent_without_grounding_tool() -> None:
+    """No grounding tool ran → defer to ungrounded_citation, don't
+    fire. A reply with a fabricated table AND no grounding is the
+    'ungrounded citation' shape; this catcher only covers the narrower
+    grounded-but-fabricated-row case."""
+    reply = _reply(_FABRICATED_MH_TABLE_REPLY)
+    outcome = TableFabricationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset(),  # no grounding tool ran
+            memory_block_attached=False,
+            tool_outputs=(),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_table_fabrication_skips_non_table_replies() -> None:
+    """Prose reply with numbers but no pipe table — no pipe rows to
+    check, Continue."""
+    reply = _reply(
+        "The MH class RBN has a usable distance of 25 miles, "
+        "per JO 7110.65 §4-1-1."
+    )
+    outcome = TableFabricationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+            tool_outputs=(_TOOL_OUTPUT_WITH_FULL_TABLE,),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_table_fabrication_tolerates_whitespace_variation() -> None:
+    """Reply uses `| MH | Under 50 | 25 |` (spaces); tool output uses
+    `|MH|Under 50|25|` (no spaces). Normalization makes them match."""
+    reply = _reply(
+        "| Class | Power | Distance |\n"
+        "|---|---|---|\n"
+        "| MH | Under 50 | 25 |\n"
+    )
+    outcome = TableFabricationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+            tool_outputs=("|MH|Under 50|25|",),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_table_fabrication_tolerates_comma_grouping() -> None:
+    """`1,999` in the reply vs `1999` in a hypothetical tool output —
+    commas are stripped at normalize time so the row still matches."""
+    reply = _reply(
+        "| Class | Power | Distance |\n"
+        "|---|---|---|\n"
+        "| H | 50 − 1,999 | 50 |\n"  # noqa: RUF001 — unicode-minus
+    )
+    outcome = TableFabricationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+            tool_outputs=("|H|50 − 1999|50|",),  # noqa: RUF001 — unicode-minus
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_table_fabrication_respects_disabled_toggle() -> None:
+    """Attribution eval disables catchers by name — pipeline must honor
+    'table_fabrication' in the disabled frozenset."""
+    pipe = default_hook_pipeline()
+    reply = _reply(_FABRICATED_MH_TABLE_REPLY)
+    ctx = FinalizeContext(
+        reply=reply,
+        last_outcome=Continue(),
+        # A grounding tool ran, so ungrounded_citation won't fire and
+        # we can isolate table_fabrication's contribution.
+        tools_ran=frozenset({"search_memory"}),
+        memory_block_attached=False,
+        tool_outputs=(_TOOL_OUTPUT_WITH_FULL_TABLE,),
+    )
+    # Enabled: table_fabrication halts.
+    enabled = pipe.run_finalize(ctx, disabled=frozenset())
+    assert isinstance(enabled, Halt)
+    assert enabled.reply.content == TABLE_FABRICATION_FALLBACK
+    # Disabled: no other finalize hook fires (last_outcome is Continue),
+    # so the reply passes through.
+    disabled = pipe.run_finalize(ctx, disabled=frozenset({"table_fabrication"}))
+    assert isinstance(disabled, Continue)
+
+
+def test_table_fabrication_ignores_label_only_rows() -> None:
+    """A pipe row with no digits can't be a numeric-fabrication target.
+    The header row and any all-label row must not trip the catcher."""
+    reply = _reply(
+        "| Col A | Col B | Col C |\n"
+        "|---|---|---|\n"
+        "| alpha | beta | gamma |\n"
+        "| delta | epsilon | zeta |\n"
+    )
+    outcome = TableFabricationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+            # Empty tool output — but none of the rows have digits, so
+            # none are data rows by our definition, so Continue.
+            tool_outputs=(),
+        )
+    )
+    assert isinstance(outcome, Continue)
 
 
 # ---------- custom pipeline construction ----------

@@ -276,6 +276,29 @@
   expected_fallback: true
   expected_not_contains: ["search the web"]
 
+- id: table_fabrication_grounded_bad_row
+  label: table_fabrication
+  description: Citation-scoped character cites a real section after a
+    successful search_memory call, but reconstructs a table row the
+    tool output didn't contain. The grounding tool disarms
+    ungrounded_citation (citation IS grounded); table_fabrication
+    catches the fabricated row via verbatim-compare against the tool
+    output and swaps the canned refusal in (harness-5uq).
+  registry:
+    - name: search_memory
+      output: "[0.033] ALTITUDE AND DISTANCE LIMITATIONS\n  lesson: JO_7110.65 §4-1-1\n  |Class|Power (watts)|Distance (miles)|\n|---|---|---|\n|CL|Under 25|15|\n|MH|Under 50|25|\n|H|50 - 1,999|50|\n|HH|2,000 or more|75|\n"
+  messages:
+    - role: user
+      content: "What is the usable distance for an MH class RBN?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_memory
+          arguments: {"query": "MH class RBN usable distance"}
+    - content: "The usable distance for an MH class RBN is 50 miles per JO 7110.65 §4-1-1 TBL 4-1-2:\n\n| Class | Power (watts) | Distance (miles) |\n|---|---|---|\n| MH | Under 50 | 50 |\n| H | 50 - 1,999 | 50 |\n"
+  expected_contains: ["fabricated row"]
+  expected_not_contains: ["| MH | Under 50 | 50 |", "50 miles"]
+
 - id: ungrounded_citation_no_grounding
   label: ungrounded_citation
   description: Out-of-scope question for a citation-scoped character

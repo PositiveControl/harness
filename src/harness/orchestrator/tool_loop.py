@@ -752,12 +752,20 @@ def run_tool_loop(
             # still trips a fabrication-shaped Nudge. A Continue outcome
             # (legitimate final reply) disarms the fallback; a Truncated
             # outcome keeps the partial reply.
+            # Tool outputs for this turn, in execution order. Pulled
+            # from the working thread's role="tool" messages — every
+            # tool execution (and dedup-skip) appends one. Feeds
+            # table_fabrication's verbatim-row check (harness-5uq).
+            turn_tool_outputs = tuple(
+                m.content for m in working if m.role == "tool" and m.content
+            )
             finalize_outcome = pipeline.run_finalize(
                 FinalizeContext(
                     reply=last_reply,
                     last_outcome=bail_outcome,
                     tools_ran=frozenset(succeeded_tools),
                     memory_block_attached=memory_block_attached,
+                    tool_outputs=turn_tool_outputs,
                 ),
                 disabled=_disabled_snapshot(),
             )
