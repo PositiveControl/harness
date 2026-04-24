@@ -221,6 +221,44 @@ class ToolLoopResult:
     rounds: int
     events: list[ToolLoopEvent] = field(default_factory=list)
 
+    @property
+    def tool_results(self) -> list[ToolResult]:
+        """Every ToolResult produced this turn, in dispatch order.
+        Derived from `events` (every tool dispatch site emits a
+        *_end / *_failed / *_declined / *_deduped event carrying the
+        result). Consumed by the per-turn audit log (harness-ywp.2)
+        so cli.py can aggregate retrieval scores + grounded citations
+        across multiple tool calls without walking the event list
+        itself."""
+        return [e.result for e in self.events if e.result is not None]
+
+    @property
+    def retrieval_top_score(self) -> float | None:
+        """Max hit-score across every tool call this turn. None when
+        no tool call surfaced retrieval metadata. Used by the
+        low-confidence fallback hook (harness-ywp.3) and the audit
+        log to summarise 'how confident was any grounding tool'."""
+        scores: list[float] = []
+        for r in self.tool_results:
+            if r.hits:
+                scores.append(max(h.score for h in r.hits))
+        return max(scores) if scores else None
+
+    @property
+    def citations_grounded(self) -> frozenset[str]:
+        """Union of citations_grounded across every tool call this
+        turn. Used by the audit log + low-confidence fallback."""
+        return frozenset().union(
+            *(r.citations_grounded for r in self.tool_results)
+        )
+
+    @property
+    def tools_ran(self) -> frozenset[str]:
+        """Names of tools that produced a result this turn, including
+        failed / declined / deduped calls. Matches the semantics the
+        fabrication catchers already use via FinalizeContext.tools_ran."""
+        return frozenset(r.tool_name for r in self.tool_results)
+
 
 ConfirmFn = Callable[[ToolCall], bool]
 ObserverFn = Callable[[ToolLoopEvent], None]
