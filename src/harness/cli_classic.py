@@ -36,6 +36,7 @@ from harness.persona.rewriter import build_rewriter_messages
 from harness.retrieval import VoiceRetriever
 from harness.router import GrammarRouter, ModelRouter, Router
 from harness.store import EpisodicStore, SemanticStore
+from harness.store.audit import AuditStore, record_turn_audit
 from harness.store.bd_adapter import BeadsAdapter
 from harness.store.transcript import Transcript
 from harness.tools import (
@@ -337,6 +338,10 @@ class ClassicChatSession:
     # module-default pipeline; the CLI injects a custom pipeline when
     # --summarize-tool-results is set (adds a post_tool summarizer).
     hooks: HookPipeline | None = None
+    # Per-turn audit log (harness-ywp.2). None disables auditing (e.g.
+    # when the store can't open); otherwise one row lands per turn
+    # after the assistant reply is rendered and before return.
+    audit_store: AuditStore | None = None
     approved_tools: set[str] = field(default_factory=set)
 
     def tool_label(self, name: str) -> str:
@@ -451,6 +456,10 @@ class ClassicChatSession:
 
         self.console.print(f"[bold green]{self.character.name} ›[/bold green]")
         streamed = False
+        # Track the tool-loop result across both branches so the
+        # per-turn audit record (harness-ywp.2) can summarise the
+        # turn uniformly, whether tools ran or not.
+        loop_result: Any = None
         if self.registry is not None:
             initial_messages: list[ChatMessage] = [system, *history_messages]
             loop_result = run_tool_loop(
@@ -538,6 +547,15 @@ class ClassicChatSession:
             role="assistant",
             content=reply,
         )
+        record_turn_audit(
+            self.audit_store,
+            session=self.session,
+            character=self.character.name,
+            user_id=self.speaker,
+            user_message=user_input,
+            model_reply=reply,
+            loop_result=loop_result,
+        )
         if not streamed:
             self.console.print(Markdown(reply))
         self.console.print()
@@ -585,6 +603,7 @@ def run_classic_chat(
     from harness.cli import (
         _maybe_bd_adapter,
         _maybe_retriever,
+        _open_audit_store,
         _open_episodic_store,
         _open_semantic_store,
         _print_session_end_retro,
@@ -631,6 +650,7 @@ def run_classic_chat(
     memory_store = _open_episodic_store(character) if memories > 0 else None
     semantic_store = _open_semantic_store() if facts > 0 else None
     transcript = Transcript(settings.character_db_path)
+    audit_store = _open_audit_store()
     compaction_store = CompactionStore(settings.character_db_path) if compact_at > 0 else None
 
     retrieval_state = _RetrievalState()
@@ -752,6 +772,7 @@ def run_classic_chat(
         ab_adapter=ab_adapter,
         ctx_meter=ctx_meter,
         hooks=hooks,
+        audit_store=audit_store,
     )
 
     if ab_adapter is not None:
@@ -799,6 +820,7 @@ def run_classic_chat(
         if stream_renderer.active:
             stream_renderer.stop()
         transcript.close()
+        audit_store.close()
         if compaction_store is not None:
             compaction_store.close()
         if memory_store is not None:

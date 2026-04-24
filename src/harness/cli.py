@@ -49,6 +49,7 @@ from harness.store import (
     SemanticStore,
     ensure_seeds_ingested,
 )
+from harness.store.audit import AuditStore
 from harness.store.bd_adapter import BeadsAdapter, BeadsAdapterError
 from harness.store.transcript import Transcript, TranscriptMessage
 from harness.tools import (
@@ -273,6 +274,14 @@ def _open_semantic_store() -> SemanticStore | None:
     if embedder is None:
         return None
     return SemanticStore(settings.character_db_path, embedder=embedder)  # type: ignore[arg-type]
+
+
+def _open_audit_store() -> AuditStore:
+    """Open the per-turn audit log on the character's shared SQLite.
+    Always returns a live store — the audit log has no embedder
+    dependency and the feature is on for every chat session
+    (harness-ywp.2). Callers close() at session teardown."""
+    return AuditStore(settings.character_db_path)
 
 
 def _print_session_end_retro(ab_adapter: BeadsAdapter | None) -> None:

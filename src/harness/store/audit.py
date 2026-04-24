@@ -24,8 +24,10 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
-from harness.tools.base import ToolHit
+from harness.tools.base import ToolHit, ToolResult
+from harness.tools.citations import extract_citations
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit_turns (
@@ -272,3 +274,65 @@ class AuditStore:
             tools_ran=_deserialise_set(tools_json),
             created_at=datetime.fromisoformat(created_at),
         )
+
+
+@runtime_checkable
+class TurnSummary(Protocol):
+    """Shape that `record_turn_audit` consumes from a tool-loop run.
+    Matches `ToolLoopResult` by structural typing (it exposes
+    `tool_results`, `citations_grounded`, and `tools_ran` — see
+    harness-ywp.2 sub-commit B); duck-typed here to avoid an
+    orchestrator → store dependency."""
+
+    @property
+    def tool_results(self) -> list[ToolResult]: ...
+    @property
+    def citations_grounded(self) -> frozenset[str]: ...
+    @property
+    def tools_ran(self) -> frozenset[str]: ...
+
+
+def record_turn_audit(
+    audit_store: AuditStore | None,
+    *,
+    session: str,
+    character: str,
+    user_id: str | None,
+    user_message: str,
+    model_reply: str,
+    loop_result: TurnSummary | None = None,
+) -> AuditRecord | None:
+    """Write one audit row for the just-completed turn.
+
+    Pass `loop_result` on the tool-using path and None on the
+    plain-reply path. Returns the written AuditRecord, or None when
+    `audit_store` is None (feature-gated — the caller decides whether
+    to enable auditing for this session).
+
+    `citations_cited` is extracted from the final `model_reply` using
+    the canonical extractor (harness-ywp.5). Callers don't pre-compute
+    it.
+    """
+    if audit_store is None:
+        return None
+    if loop_result is not None:
+        hits = tuple(
+            hit for tr in loop_result.tool_results for hit in tr.hits
+        )
+        citations_grounded = loop_result.citations_grounded
+        tools_ran = loop_result.tools_ran
+    else:
+        hits = ()
+        citations_grounded = frozenset()
+        tools_ran = frozenset()
+    return audit_store.record(
+        session=session,
+        character=character,
+        user_id=user_id,
+        user_message=user_message,
+        model_reply=model_reply,
+        retrieval_hits=hits,
+        citations_grounded=citations_grounded,
+        citations_cited=extract_citations(model_reply),
+        tools_ran=tools_ran,
+    )
