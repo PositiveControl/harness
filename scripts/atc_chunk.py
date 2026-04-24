@@ -295,30 +295,69 @@ def _parse_numbered(blocks: Iterable[_Block], cfg: ParserConfig) -> Iterator[Chu
     a chapter, each `Section N` group may repeat across chapters (e.g.
     Chapter 3 and Chapter 7 both have a `Section 9`), so the lookup key
     is `(chapter, section_num)` — reset implicitly when the chapter
-    changes (new chapter starts a fresh section-title scope)."""
+    changes (new chapter starts a fresh section-title scope).
+
+    Sub-headings that aren't themselves N-N-N anchors (NOTE,
+    PHRASEOLOGY, REFERENCE, EXAMPLE, FIG, TBL, and phraseology-term
+    headings like 'MAINTAIN' or 'AFFIRMATIVE' which pymupdf4llm emits
+    as italic-bold `##` lines) are folded into the previous anchor's
+    body rather than dropped. The fold keeps the sub-heading text
+    preceding its body so the sub-block structure survives in the
+    embedded content. Without this, ~26% of §X-Y-Z sections lost their
+    NOTE / PHRASEOLOGY blocks — which is where the 'when' conditions
+    and exact phraseology live (harness-1s4)."""
     chapter = ""
-    # Map (chapter, section_num) → parent-section title. Accumulates as
-    # the parser walks the document linearly. Lookup is by the anchor's
-    # derived (chap, sec) pair, so chunks emitted before any Section
-    # header in the chapter (rare — usually the table of contents area)
-    # carry an empty string.
     section_titles: dict[tuple[str, str], str] = {}
+
+    # Buffered current anchor: we defer yielding until we've seen the
+    # next anchor, so non-anchor headings between them can be folded in.
+    pending_chunk: Chunk | None = None
+    pending_body_parts: list[str] = []
+
+    def finalize() -> Chunk | None:
+        nonlocal pending_chunk, pending_body_parts
+        if pending_chunk is None:
+            return None
+        body = _clean_body(pending_body_parts)
+        if not body:
+            pending_chunk = None
+            pending_body_parts = []
+            return None
+        out = Chunk(
+            source=pending_chunk.source,
+            chapter=pending_chunk.chapter,
+            section=pending_chunk.section,
+            parent_section=pending_chunk.parent_section,
+            parent_section_title=pending_chunk.parent_section_title,
+            title=pending_chunk.title,
+            body=body,
+            tags=pending_chunk.tags,
+        )
+        pending_chunk = None
+        pending_body_parts = []
+        return out
+
     for block in blocks:
         stripped = _CHANGE_PREFIX.sub("", block.heading)
 
-        # Chapter header (non-anchor). Reset section-title accumulator
-        # so chapter-5 Section 9 doesn't inherit chapter-3 Section 9's
-        # title.
+        # Chapter header (non-anchor). Flush any pending anchor first —
+        # sections don't span chapters.
         m_ch = _CHAPTER_HDR.match(block.heading)
         if m_ch is not None and not _NUMBERED_ANCHOR.match(stripped):
+            flushed = finalize()
+            if flushed is not None:
+                yield flushed
             chapter = m_ch.group(1)
             continue
 
         # Section header (e.g. "Section 9. Departure Procedures and
-        # Separation"). Remember the title so subsequent N-N-N anchors
-        # in this chapter + section can look it up.
+        # Separation"). Also a flush boundary — sub-blocks never span
+        # across Section N groups.
         m_sec = _SECTION_HDR.match(block.heading)
         if m_sec is not None and not _NUMBERED_ANCHOR.match(stripped):
+            flushed = finalize()
+            if flushed is not None:
+                yield flushed
             sec_num = m_sec.group(1)
             sec_title = m_sec.group(2).strip()
             if chapter:
@@ -327,27 +366,43 @@ def _parse_numbered(blocks: Iterable[_Block], cfg: ParserConfig) -> Iterator[Chu
 
         m = _NUMBERED_ANCHOR.match(stripped)
         if m is None:
+            # Non-anchor heading between two anchors. Fold it into the
+            # pending anchor's body so NOTE / PHRASEOLOGY / REFERENCE /
+            # phraseology-term content is preserved. If there's no
+            # pending anchor (frontmatter before the first real
+            # section), drop it as before.
+            if pending_chunk is not None:
+                pending_body_parts.append("")
+                pending_body_parts.append(block.heading)
+                pending_body_parts.extend(block.body_lines)
             continue
+
+        # New anchor — flush the previous one.
+        flushed = finalize()
+        if flushed is not None:
+            yield flushed
 
         chap, sec, sub, title = m.group(1), m.group(2), m.group(3), m.group(4)
         parts = [chap, sec] + ([sub] if sub else [])
         section = "-".join(parts)
         parent = "-".join(parts[:-1]) if len(parts) > 1 else ""
-        body = _clean_body(block.body_lines)
-        if not body:
-            continue
         effective_chapter = chap or chapter
         parent_title = section_titles.get((effective_chapter, sec), "")
-        yield Chunk(
+        pending_chunk = Chunk(
             source=cfg.source_key,
             chapter=effective_chapter,
             section=section,
             parent_section=parent,
             parent_section_title=parent_title,
             title=title.strip(),
-            body=body,
+            body="",  # filled in by finalize()
             tags=cfg.tags,
         )
+        pending_body_parts = list(block.body_lines)
+
+    flushed = finalize()
+    if flushed is not None:
+        yield flushed
 
 
 def _parse_cfr(blocks: Iterable[_Block], cfg: ParserConfig) -> Iterator[Chunk]:

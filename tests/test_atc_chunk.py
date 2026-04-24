@@ -159,6 +159,132 @@ def test_numbered_parser_skips_section_with_empty_body(chunker: object) -> None:
     assert chunks == []
 
 
+def test_numbered_parser_folds_note_subsection(chunker: object) -> None:
+    """NOTE sub-blocks are part of the parent §X-Y-Z section, not a new
+    section. pymupdf4llm emits them as italic-bold `##` headings so the
+    raw block walker sees them as siblings of the anchor heading. Parser
+    must fold them into the parent's body (harness-1s4)."""
+    md = (
+        "## **4-6-4. HOLDING INSTRUCTIONS**\n\n"
+        "When issuing holding instructions, specify:\n\n"
+        "- **a.** Direction of holding from the fix/waypoint.\n\n"
+        "- **b.** Holding fix or waypoint.\n\n"
+        "## _**NOTE−**_\n\n"
+        "_The holding fix may be omitted if included at the beginning of the transmission "
+        "as the clearance limit._\n\n"
+        "- **c.** Radial, course, bearing, track, azimuth, airway, or route.\n"
+    )
+    cfg = chunker.PARSERS["jo_7110_65"]  # type: ignore[attr-defined]
+    chunks = chunker.chunk_markdown(md, cfg)  # type: ignore[attr-defined]
+    assert len(chunks) == 1
+    body = chunks[0].body
+    assert "Direction of holding from the fix/waypoint" in body
+    assert "holding fix may be omitted" in body, "NOTE content must survive the fold"
+    assert "Radial, course, bearing" in body, "paragraph after the NOTE must also survive"
+
+
+def test_numbered_parser_folds_phraseology_and_reference(chunker: object) -> None:
+    """PHRASEOLOGY and REFERENCE sub-blocks fold the same way — FAA
+    uses them for exact-wording phraseology and cross-refs, both of
+    which are load-bearing content for controller-side retrieval."""
+    md = (
+        "## **3-1-4. EXAMPLE INSTRUCTION**\n\n"
+        "Body before the sub-blocks.\n\n"
+        "## _**PHRASEOLOGY−**_\n\n"
+        "_EXACT WORDS TO SAY._\n\n"
+        "## _**REFERENCE−**_\n\n"
+        "_JO 7110.65, Some Other Section._\n"
+    )
+    cfg = chunker.PARSERS["jo_7110_65"]  # type: ignore[attr-defined]
+    chunks = chunker.chunk_markdown(md, cfg)  # type: ignore[attr-defined]
+    assert len(chunks) == 1
+    body = chunks[0].body
+    assert "EXACT WORDS TO SAY" in body
+    assert "JO 7110.65, Some Other Section" in body
+
+
+def test_numbered_parser_folds_phraseology_term_headings(chunker: object) -> None:
+    """Inside a PHRASEOLOGY block, individual phraseology terms (e.g.
+    MAINTAIN, AFFIRMATIVE, HEAVY) are emitted by pymupdf4llm as
+    italic-bold `##` sub-headings. They must also fold into the parent
+    — not drop content between them."""
+    md = (
+        "## **2-1-18. OPERATIONAL REQUESTS**\n\n"
+        "Opening body text.\n\n"
+        "## _**MAINTAIN−**_\n\n"
+        "_Remain at the specified altitude._\n\n"
+        "## _**AFFIRMATIVE−**_\n\n"
+        "_Yes._\n"
+    )
+    cfg = chunker.PARSERS["jo_7110_65"]  # type: ignore[attr-defined]
+    chunks = chunker.chunk_markdown(md, cfg)  # type: ignore[attr-defined]
+    assert len(chunks) == 1
+    body = chunks[0].body
+    assert "Remain at the specified altitude" in body
+    assert "Yes" in body
+
+
+def test_numbered_parser_does_not_fold_across_anchors(chunker: object) -> None:
+    """The fold must stop at the next §X-Y-Z anchor — otherwise two
+    sections merge into one chunk."""
+    md = (
+        "## **4-6-4. FIRST SECTION**\n\n"
+        "First body.\n\n"
+        "## _**NOTE−**_\n\n"
+        "_First note._\n\n"
+        "## **4-6-5. SECOND SECTION**\n\n"
+        "Second body.\n"
+    )
+    cfg = chunker.PARSERS["jo_7110_65"]  # type: ignore[attr-defined]
+    chunks = chunker.chunk_markdown(md, cfg)  # type: ignore[attr-defined]
+    assert [c.section for c in chunks] == ["4-6-4", "4-6-5"]
+    assert "First note" in chunks[0].body
+    assert "First note" not in chunks[1].body
+    assert "Second body" in chunks[1].body
+    assert "Second body" not in chunks[0].body
+
+
+def test_numbered_parser_drops_frontmatter_before_first_anchor(chunker: object) -> None:
+    """Non-anchor headings BEFORE any §X-Y-Z anchor are frontmatter
+    (Table of Contents, RECORD OF CHANGES, etc.). They have no parent
+    to fold into — must be dropped, not fused into the first real
+    section."""
+    md = (
+        "## **Table of Contents**\n\n"
+        "irrelevant frontmatter body\n\n"
+        "## _**NOTE−**_\n\n"
+        "orphan note before any anchor\n\n"
+        "## **2-1-1. REAL FIRST SECTION**\n\n"
+        "Real body content.\n"
+    )
+    cfg = chunker.PARSERS["jo_7110_65"]  # type: ignore[attr-defined]
+    chunks = chunker.chunk_markdown(md, cfg)  # type: ignore[attr-defined]
+    assert len(chunks) == 1
+    assert chunks[0].section == "2-1-1"
+    assert "irrelevant frontmatter" not in chunks[0].body
+    assert "orphan note before any anchor" not in chunks[0].body
+    assert "Real body content" in chunks[0].body
+
+
+def test_numbered_parser_does_not_fold_across_section_groups(chunker: object) -> None:
+    """`Section N. Title` headers are a flush boundary — a NOTE between
+    Section-group headers doesn't fold backwards across the boundary."""
+    md = (
+        "## **Chapter 4. IFR**\n\n"
+        "## **Section 6. Holding**\n\n"
+        "## **4-6-4. HOLDING INSTRUCTIONS**\n\n"
+        "Body of 4-6-4.\n\n"
+        "## **Section 7. Arrival**\n\n"
+        "## **4-7-1. CLEARANCE INFORMATION**\n\n"
+        "Body of 4-7-1.\n"
+    )
+    cfg = chunker.PARSERS["jo_7110_65"]  # type: ignore[attr-defined]
+    chunks = chunker.chunk_markdown(md, cfg)  # type: ignore[attr-defined]
+    assert [c.section for c in chunks] == ["4-6-4", "4-7-1"]
+    assert chunks[0].parent_section_title == "Holding"
+    assert chunks[1].parent_section_title == "Arrival"
+
+
 # ---------- CFR parser ----------
 
 
