@@ -2335,6 +2335,16 @@ def eval_atc(
             "(harness-w49p)."
         ),
     ),
+    holdout_ids: str | None = typer.Option(
+        None,
+        "--holdout-ids",
+        help=(
+            "Comma-separated sample IDs to exclude at retrieval time for "
+            "this run. Overrides --holdout and the on-disk manifest — "
+            "useful for round-robin per-sample memorization probes "
+            "without mutating voice/holdout.yaml."
+        ),
+    ),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
 ) -> None:
     """Run atc's domain eval: replay PPL/IFR Q&A cases through the full
@@ -2386,9 +2396,17 @@ def eval_atc(
     # excluded from the retriever's returns when `--holdout` is on. The
     # set is empty when the flag is off or the character has no holdout
     # file, so the default retrieval path is unchanged.
-    _holdout_ids: frozenset[str] = (
-        frozenset(s.id for s in character.holdout_voice_samples) if holdout else frozenset()
-    )
+    #
+    # `--holdout-ids CSV` overrides both `--holdout` and the manifest
+    # for ad-hoc per-sample probes (round-robin memorization map).
+    if holdout_ids is not None:
+        _holdout_ids: frozenset[str] = frozenset(
+            part.strip() for part in holdout_ids.split(",") if part.strip()
+        )
+    elif holdout:
+        _holdout_ids = frozenset(s.id for s in character.holdout_voice_samples)
+    else:
+        _holdout_ids = frozenset()
 
     def run_turn(question: str) -> str:
         examples: list[VoiceSample] = []

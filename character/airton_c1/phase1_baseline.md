@@ -289,10 +289,8 @@ only appears when deliberately probed.
 
 ### Residual durability work
 
-1. Extend holdout manifest to test each sample individually —
-   currently we know 1/4 is memorization-driven but haven't tested
-   the other 3. Round-robin holdout (one sample excluded per
-   pass) gives a per-sample memorization map.
+1. ~~Extend holdout manifest to test each sample individually~~ →
+   done in Run 6 below.
 2. Strengthen the citation-first pattern across samples so holdout
    regressions shrink. E.g., make every canonical sample's opening
    sentence start with `JO 7110.65 §X-Y-Z —` (already the case) AND
@@ -301,3 +299,64 @@ only appears when deliberately probed.
 3. Ship holdout as a regular CI signal — every future change to
    canonical.yaml triggers `eval atc --holdout` as well as stock.
    Regressing the gap past 1-2 cases is a trip-wire.
+
+---
+
+## Run 6 — round-robin memorization map (2026-04-23)
+
+Added `--holdout-ids CSV` flag as an override for the manifest —
+lets a single run exclude an arbitrary set of sample IDs without
+mutating `voice/holdout.yaml`. Drove 4 sequential deterministic
+evals, one per canonical sample excluded:
+
+| excluded sample                          | pass  | Δ  | regressed cases                      | interpretation |
+| ---------------------------------------- | ----- | -- | ------------------------------------ | -------------- |
+| `same_runway_departure_separation`       | 12/12 | +0 | —                                    | pure generalization |
+| `same_runway_arrival_separation`         | 12/12 | +0 | —                                    | pure generalization |
+| `class_b_vfr_clearance_phraseology`      | 11/12 | −1 | `controller_class_b_vfr_clearance`   | **memorization** |
+| `emergency_distress_urgency_declaration` | 12/12 | +0 | —                                    | pure generalization |
+
+**3 of 4 samples are doing real pedagogical work beyond memorization.**
+When their sample is excluded, the model still retrieves the
+corresponding section's content from episodic and cites it correctly.
+The citation-first pattern IS transferring across sections for those
+cases.
+
+**class_b is the outlier**: the eval prompt ("What's the phraseology
+for clearing a VFR aircraft into Class B airspace?") is semantically
+near-identical to the voice sample's prompt ("What's the phraseology
+for clearing a VFR aircraft into Class B airspace?") — the model
+template-imitates the sample rather than generalizing the pattern.
+Without the sample, episodic retrieval of §7-9-2 still delivers the
+phraseology body, but the opening "JO 7110.65 §7-9-2 —" anchor is
+dropped.
+
+### What would close the class_b gap
+
+Option A — replace the sample with a less template-friendly variant:
+keep §7-9-2 anchor, change the gold's structure so the model can't
+echo a short formulaic reply. Risk: might break the fixture pass
+under stock (sample body no longer matches the fixture's CLEARED /
+BRAVO keywords verbatim).
+
+Option B — add a second §7-9-2 sample with a different prompt angle
+("When does a VFR pilot need an ATC clearance for Class B?") and a
+different gold structure. Two samples for the same section teach the
+pattern without one being an echo template.
+
+Option C — accept the known gap. Stock 12/12 is the user-facing
+score; `--holdout --holdout-ids class_b_vfr_clearance_phraseology`
+yields 11/12 as the documented memorization-cost. Runtime is
+preserved, the gap is visible on demand.
+
+My call: **C for now**. Option A/B is work for its own bead once the
+retrieval-fix (harness-8zx6) and the rest of Phase-1.5 are ahead of
+it. Track as a follow-up.
+
+### Memorization map as a regression trip-wire
+
+The map is a durable artifact. Every future change to canonical.yaml
+should re-run the round-robin at temp=0 and compare. If any sample
+that was previously "pure generalization" flips to memorization, the
+new canonical content made the persona more brittle — worth catching.
+If class_b flips to pure generalization (gap = 0), the fix landed.
