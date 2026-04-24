@@ -236,3 +236,68 @@ against. To harden the score:
    corpus; drop + nudge on any that don't.
 4. Tighten the same-runway-arrival fixture to require specific
    distance values (addresses the content-accuracy gap).
+
+---
+
+## Run 5 — durability: voice holdout generalization (2026-04-23)
+
+Carve one canonical sample (`class_b_vfr_clearance_phraseology`) into
+`voice/holdout.yaml` as an exclusion-manifest test. Runtime retrieval
+still sees it (canonical.yaml preserves the sample). New
+`eval atc --holdout` flag excludes it at retrieval time for a
+generalization measurement.
+
+| mode                            | pass  | rate  |
+| ------------------------------- | ----- | ----- |
+| stock (all samples retrievable) | 12/12 | 100%  |
+| `--holdout` (class_b excluded)  | 11/12 | 91.7% |
+| **gap**                         | **1** | **8.3 pp** |
+
+Stock run is bit-identical to run 2's output — runtime behavior
+unchanged by the holdout infrastructure. The gap IS the durability
+measurement.
+
+### What the gap means
+
+The class_b case regresses cleanly when its voice sample is held out.
+Reply content is still correct (phraseology verbatim from §7-9-2's
+episodic chunk) but the citation anchor is missing:
+
+> Stock (sample retrievable): `JO 7110.65 §7-9-2 — VFR aircraft must
+> obtain an ATC clearance to operate in Class B airspace...`
+>
+> Holdout (sample excluded): `Cleared through/to enter/out of Bravo
+> airspace, via (route) and maintain (altitude) while in Bravo
+> airspace...`
+
+The other 3 canonical samples did NOT teach the citation-first
+pattern strongly enough to transfer to a Class B query. The §7-9-2
+cite in stock-mode came from the specific class_b sample's opening
+line, not from a generalized pattern.
+
+**Memorization component**: 1 case = 8.3 pp of the 100% stock score.
+The other 11 cases pass under holdout (not tested individually for
+memorization — each would need its own holdout run to isolate).
+
+### Cost / preservation
+
+The exclusion-manifest pattern keeps runtime stable. `canonical.yaml`
+still lists class_b; `holdout.yaml` names its ID as a test-time
+exclusion. If you don't pass `--holdout`, the persona sees all 4
+samples. Mark's day-to-day chat never regresses — the 11/12 result
+only appears when deliberately probed.
+
+### Residual durability work
+
+1. Extend holdout manifest to test each sample individually —
+   currently we know 1/4 is memorization-driven but haven't tested
+   the other 3. Round-robin holdout (one sample excluded per
+   pass) gives a per-sample memorization map.
+2. Strengthen the citation-first pattern across samples so holdout
+   regressions shrink. E.g., make every canonical sample's opening
+   sentence start with `JO 7110.65 §X-Y-Z —` (already the case) AND
+   enforce via a post-rewrite rule that compression preserves the
+   section marker (lane F territory).
+3. Ship holdout as a regular CI signal — every future change to
+   canonical.yaml triggers `eval atc --holdout` as well as stock.
+   Regressing the gap past 1-2 cases is a trip-wire.

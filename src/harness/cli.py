@@ -2325,6 +2325,16 @@ def eval_atc(
         "--persona/--no-persona",
         help="Wrap the base adapter in PersonaAdapter (default on).",
     ),
+    holdout: bool = typer.Option(
+        False,
+        "--holdout",
+        help=(
+            "Exclude voice samples listed in character/<name>/voice/"
+            "holdout.yaml from retrieval for this eval run. Score delta "
+            "vs. the default (no flag) is the generalization signal "
+            "(harness-w49p)."
+        ),
+    ),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
 ) -> None:
     """Run atc's domain eval: replay PPL/IFR Q&A cases through the full
@@ -2372,11 +2382,24 @@ def eval_atc(
     # literal speaker keeps the retrieval API consistent while never
     # matching a user-siloed row.
 
+    # Holdout IDs (harness-w49p): samples listed in voice/holdout.yaml are
+    # excluded from the retriever's returns when `--holdout` is on. The
+    # set is empty when the flag is off or the character has no holdout
+    # file, so the default retrieval path is unchanged.
+    _holdout_ids: frozenset[str] = (
+        frozenset(s.id for s in character.holdout_voice_samples) if holdout else frozenset()
+    )
+
     def run_turn(question: str) -> str:
         examples: list[VoiceSample] = []
         if retriever is not None and top_k > 0:
             try:
-                examples = retriever.top_k(question, k=top_k)
+                # Ask for a wider slate when holdout is on so the post-
+                # filter doesn't shrink below top_k on characters with
+                # many canonical samples (airton has 20+).
+                request_k = top_k + len(_holdout_ids)
+                voice_hits = retriever.top_k(question, k=request_k)
+                examples = [s for s in voice_hits if s.id not in _holdout_ids][:top_k]
             except Exception:  # eval is read-only; surface score only
                 examples = []
 

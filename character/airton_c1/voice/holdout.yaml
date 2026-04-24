@@ -1,0 +1,37 @@
+version: 2
+purpose: |
+  Holdout-exclusion manifest for airton_c1 (harness-w49p).
+
+  This file is an EXCLUSION LIST, not a move-out. Each sample here
+  ALSO appears in voice/canonical.yaml — runtime retrieval still sees
+  it. When `eval atc --holdout` is invoked, the eval reads these IDs
+  from `Character.holdout_voice_samples` and excludes them from the
+  VoiceRetriever's pool AT EVAL TIME. The score delta between the
+  default run (all samples available) and `--holdout` (these excluded)
+  is the generalization signal.
+
+  Rationale for exclusion-manifest vs. move-out: a move-out would
+  permanently regress runtime. The goal is to MEASURE the memorization/
+  generalization split, not to bake the worse baseline into the
+  persona.
+
+  Sample selection rationale:
+    class_b_vfr_clearance_phraseology — the most verbatim of the 4
+    original canonical samples (run-2 reply was essentially the sample
+    text with the section header prepended). Holding it out is the
+    cleanest test of whether the pattern transferred. First measurement
+    (run 4): with this sample excluded, controller_class_b_vfr_clearance
+    regresses (citation dropped); other 11 cases stay pass. Gap = 1
+    case = 8.3 pp. That is the current memorization-component estimate
+    for the 12/12 stock score.
+
+samples:
+  - id: class_b_vfr_clearance_phraseology
+    prompt: "What's the phraseology for clearing a VFR aircraft into Class B airspace?"
+    gold: |
+      JO 7110.65 §7-9-2 — VFR aircraft must obtain an ATC clearance
+      to operate in Class B airspace. The prescribed phraseology is
+      "CLEARED THROUGH/TO ENTER/OUT OF BRAVO AIRSPACE," and as
+      appropriate, "VIA (route). MAINTAIN (altitude) WHILE IN BRAVO
+      AIRSPACE." The clearance is explicit — "radar contact" alone
+      doesn't authorize entry.

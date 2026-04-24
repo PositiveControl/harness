@@ -48,6 +48,11 @@ samples:
       AIRSPACE." The clearance is explicit — "radar contact" alone
       doesn't authorize entry.
 
+  # class_b is ALSO listed in voice/holdout.yaml — holdout is an
+  # exclusion manifest, not a move-out. Runtime retrieval sees the
+  # sample (kept here for 12/12 baseline); `eval atc --holdout`
+  # excludes it at retrieval time for a generalization test.
+
   - id: emergency_distress_urgency_declaration
     prompt: "How does a pilot declare an emergency, and what's the difference between Distress and Urgency?"
     gold: |
