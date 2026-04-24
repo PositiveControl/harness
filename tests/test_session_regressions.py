@@ -467,6 +467,75 @@ def test_reserved_squawk_7500_gets_nudged() -> None:
     assert "one two zero zero" in result.final_content
 
 
+def test_balloon_ambiguous_assumed_variant_gets_nudged() -> None:
+    """Session 2026-04-24 repro: user asked 'a single prop squawking
+    1200 and a balloon are intersecting, who has the right of way?'.
+    Model silently assumed 'unmanned free balloon' and answered under
+    §9-6 procedures. The JO handles manned vs. unmanned balloons with
+    different rules, so the model should have asked which variant.
+
+    Fix: AmbiguousContextHook nudges when the user's term is bare and
+    the reply commits to a specific qualifier without offering a
+    choice. Retry round asks the clarifying question.
+    """
+    result = _run_scenario(
+        {
+            "id": "_balloon_ambiguous",
+            "registry": [
+                {
+                    "name": "search_memory",
+                    "output": (
+                        "[0.032] DERELICT BALLOONS\n"
+                        "  lesson: JO_7110.65 §9-6-2\n\n"
+                        "[0.030] APPLICATION\n"
+                        "  lesson: JO_7110.65 §9-6-1\n"
+                    ),
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "a single prop squawking 1200 and a balloon are "
+                        "intersecting, who has the right of way?"
+                    ),
+                }
+            ],
+            "scripted_replies": [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "name": "search_memory",
+                            "arguments": {"query": "balloon right of way"},
+                        }
+                    ],
+                },
+                # Observed reply: assumed unmanned free balloon.
+                {
+                    "content": (
+                        "When a single-engine propeller aircraft and an "
+                        "unmanned free balloon are intersecting, per JO "
+                        "7110.65 §9-6-1 the aircraft typically has the "
+                        "right of way."
+                    ),
+                },
+                # Retry after ambiguous_context nudge.
+                {
+                    "content": (
+                        "Before I answer: are you asking about a manned "
+                        "balloon (handled under general aircraft rules) "
+                        "or an unmanned balloon (§9-6 procedures)? The JO "
+                        "treats them differently."
+                    ),
+                },
+            ],
+        }
+    )
+    assert "manned" in result.final_content.lower()
+    assert "unmanned" in result.final_content.lower()
+
+
 def test_mixed_rooster_and_faa_prompt_still_nudges_scope_redirect() -> None:
     """Session 2026-04-24 repro (variant): user combined biology and
     a light aviation mention ('how many eggs can a rooster lay each

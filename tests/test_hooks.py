@@ -12,6 +12,7 @@ from harness.orchestrator.hooks import (
     TABLE_FABRICATION_FALLBACK,
     UNGROUNDED_CITATION_FALLBACK,
     AbFabricationHook,
+    AmbiguousContextHook,
     ArgumentGroundingHook,
     BailContext,
     Continue,
@@ -297,6 +298,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "list_count_mismatch",
         "reserved_squawk_code",
         "scope_redirect",
+        "ambiguous_context",
         "paired_meta_confirm_strip",
         "duplicate_call",
         "argument_grounding",
@@ -1787,6 +1789,144 @@ def test_scope_redirect_respects_disabled_toggle() -> None:
     enabled = pipe.run_bail(ctx, disabled=frozenset())
     assert isinstance(enabled, Nudge)
     disabled = pipe.run_bail(ctx, disabled=frozenset({"scope_redirect"}))
+    assert isinstance(disabled, Continue)
+
+
+# ---------- ambiguous_context (harness-5uq follow-up #5) ----------
+
+
+def _ambig_ctx(user: str, reply: str) -> BailContext:
+    return BailContext(
+        reply=_reply(reply),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_memory"}),
+        user_message=user,
+    )
+
+
+def test_ambiguous_balloon_user_bare_reply_assumes_unmanned_free() -> None:
+    """Session 2026-04-24 repro: user asked 'a balloon are intersecting
+    ... right of way?'. Model silently assumed 'unmanned free balloon'
+    and answered for §9-6 procedures. Hook must nudge."""
+    outcome = AmbiguousContextHook().check(
+        _ambig_ctx(
+            "a single prop squawking 1200 and a balloon are intersecting, "
+            "who has the right of way?",
+            "When a single-engine propeller aircraft and an unmanned free "
+            "balloon are intersecting, per JO 7110.65 §9-6-1 the aircraft "
+            "typically has the right of way.",
+        )
+    )
+    assert isinstance(outcome, Nudge)
+    assert "ambiguous context" in outcome.text.lower()
+
+
+def test_ambiguous_balloon_user_specifies_passes() -> None:
+    """If the user already said 'unmanned', there's no ambiguity —
+    the reply's 'unmanned free balloon' is legitimate."""
+    outcome = AmbiguousContextHook().check(
+        _ambig_ctx(
+            "an unmanned balloon and an aircraft are intersecting, who has right of way?",
+            "Per JO 7110.65 §9-6-1, unmanned free balloons are handled by "
+            "traffic advisory; the aircraft has right of way.",
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_ambiguous_balloon_reply_asks_for_clarification_passes() -> None:
+    """Reply that asks 'manned or unmanned?' — both alternatives in
+    axis 1 — is the correct shape. Don't nudge; don't loop."""
+    outcome = AmbiguousContextHook().check(
+        _ambig_ctx(
+            "a balloon and an aircraft are intersecting — right of way?",
+            "Before I answer: are you asking about a manned balloon or an "
+            "unmanned balloon? JO 7110.65 handles them differently.",
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_ambiguous_balloon_reply_free_vs_tethered_ask_passes() -> None:
+    """Second axis: free vs. tethered — mentioning both offers
+    choice, not commitment."""
+    outcome = AmbiguousContextHook().check(
+        _ambig_ctx(
+            "an unmanned balloon near my flight path — how do I handle it?",
+            "Do you mean a free balloon or a tethered balloon? The JO "
+            "treats them differently.",
+        )
+    )
+    # User already said 'unmanned' so the hook short-circuits before
+    # even checking the reply — still Continue via the user-qualifier gate.
+    assert isinstance(outcome, Continue)
+
+
+def test_ambiguous_balloon_reply_no_qualifier_passes() -> None:
+    """Bare user term + bare reply — no qualifier picked, nothing to
+    challenge. Don't nudge (the model might be answering generally
+    or asking later in the reply)."""
+    outcome = AmbiguousContextHook().check(
+        _ambig_ctx(
+            "what rules apply when a balloon and an aircraft meet?",
+            "Per JO 7110.65 §9-6, balloons near aircraft require traffic "
+            "advisory procedures. The controller must coordinate separation.",
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_ambiguous_balloon_single_axis_commit_fires() -> None:
+    """Reply that commits to only one qualifier in a single axis
+    (e.g., 'unmanned' without 'free/tethered') still fires — the
+    commitment to 'unmanned' alone is already an assumption the
+    user didn't provide."""
+    outcome = AmbiguousContextHook().check(
+        _ambig_ctx(
+            "a balloon crosses the traffic pattern — what does ATC do?",
+            "Per §9-6-1, an unmanned balloon crossing the traffic pattern "
+            "triggers the controller's traffic advisory procedures.",
+        )
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_ambiguous_no_match_on_non_balloon_term() -> None:
+    """User doesn't mention balloon — hook stays silent regardless of
+    what the reply says. Prevents cross-term false positives."""
+    outcome = AmbiguousContextHook().check(
+        _ambig_ctx(
+            "how do I terminate radar service for a VFR aircraft?",
+            "Per §7-6-11: 'Radar service terminated, squawk VFR.'",
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_ambiguous_context_silent_without_user_message() -> None:
+    outcome = AmbiguousContextHook().check(
+        BailContext(
+            reply=_reply(
+                "Per §9-6-1, unmanned free balloons are handled by traffic advisory."
+            ),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+            user_message=None,
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_ambiguous_context_respects_disabled_toggle() -> None:
+    """Attribution eval disables catchers by name."""
+    pipe = default_hook_pipeline()
+    ctx = _ambig_ctx(
+        "a balloon intersects a VFR aircraft — who has right of way?",
+        "Per §9-6-1, unmanned free balloons are handled by traffic advisory.",
+    )
+    enabled = pipe.run_bail(ctx, disabled=frozenset())
+    assert isinstance(enabled, Nudge)
+    disabled = pipe.run_bail(ctx, disabled=frozenset({"ambiguous_context"}))
     assert isinstance(disabled, Continue)
 
 

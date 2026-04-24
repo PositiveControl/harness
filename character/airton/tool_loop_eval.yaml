@@ -325,6 +325,32 @@
   expected_contains: ["fabricated row"]
   expected_not_contains: ["| MH | Under 50 | 50 |"]
 
+- id: ambiguous_context_balloon_variant_repro
+  label: ambiguous_context
+  description: Session 2026-04-24 repro. User asked about 'a balloon'
+    without specifying variant; model assumed 'unmanned free balloon'
+    silently and answered §9-6 procedures. The JO handles unmanned
+    free balloons and manned balloons (aircraft rules) differently, so
+    the model should have asked first. ambiguous_context nudges; retry
+    produces a clarifying question.
+  registry:
+    - name: search_memory
+      output: "[0.032] DERELICT BALLOONS\n  lesson: JO_7110.65 §9-6-2\n\n[0.030] APPLICATION\n  lesson: JO_7110.65 §9-6-1\n"
+  messages:
+    - role: user
+      content: "a single prop squawking 1200 and a balloon are intersecting, who has the right of way?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_memory
+          arguments: {"query": "balloon right of way"}
+    # Observed reply: silently assumed unmanned free balloon.
+    - content: "When a single-engine propeller aircraft and an unmanned free balloon are intersecting, per JO 7110.65 §9-6-1 the aircraft typically has the right of way. Controllers issue traffic advisories to affected aircraft."
+    # Retry after ambiguous_context nudge — asks for clarification.
+    - content: "Before I answer: are you asking about a manned balloon (handled under general aircraft rules) or an unmanned balloon (§9-6 procedures)? The JO treats them differently, so the answer depends on which you mean."
+  expected_contains: ["manned", "unmanned"]
+  expected_events_contain: [bail_retry]
+
 - id: scope_redirect_roosters_repro
   label: scope_redirect
   description: Session 2026-04-24 repro. User asked 'do roosters lay

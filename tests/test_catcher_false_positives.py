@@ -243,6 +243,34 @@ _CONTROL_CORPUS: tuple[
         False,
     ),
     (
+        # ambiguous_context silent path: user specifies 'unmanned' —
+        # no ambiguity to challenge. Reply says 'unmanned free balloon'
+        # legitimately.
+        "truthful_ambig_balloon_user_specified",
+        (
+            "Per JO 7110.65 §9-6-1, when an unmanned free balloon is in "
+            "the traffic pattern, controllers issue traffic advisories to "
+            "all affected aircraft."
+        ),
+        ("[0.032] §9-6-1\n",),
+        frozenset({"search_memory"}),
+        False,
+    ),
+    (
+        # ambiguous_context silent path: reply asks for clarification
+        # (mentions both variants in axis 1) — offering choice.
+        "truthful_ambig_balloon_clarifying_question",
+        (
+            "Before I answer: are you asking about a manned balloon or "
+            "an unmanned balloon? JO 7110.65 handles them differently — "
+            "manned balloons fall under general aircraft rules and "
+            "unmanned balloons under §9-6."
+        ),
+        ("[0.032] §9-6-1\n",),
+        frozenset({"search_memory"}),
+        False,
+    ),
+    (
         # scope_redirect silent path: correctly-scoped refusal for an
         # out-of-scope question. Reply mentions JO 7110.65 to name
         # what it DOESN'T cover — must not trip any catcher.

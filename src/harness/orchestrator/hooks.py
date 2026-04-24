@@ -809,7 +809,12 @@ _JO_PHRASEOLOGY_MARKERS_RE = re.compile(
 # corpus. Reuses UNGROUNDED_SECTION_CITATION_RE's shape for the §-form
 # so the two hooks can't disagree about what counts as a citation.
 _CITATION_PRESENT_RE = re.compile(
-    r"§\s*\d+[-–−]\d+[-–−]\d+"  # noqa: RUF001 — dash variants load-bearing
+    # §N-N-N (primary — chapter-section-paragraph) or §N-N (broader
+    # chapter-section reference, e.g. '§9-6' for the entire Unmanned
+    # Free Balloons section). Both count as a citation for the
+    # missing_citation check even though UngroundedCitationHook
+    # stays strict at 3-segment to avoid matching prices / anchors.
+    r"§\s*\d+[-–−]\d+(?:[-–−]\d+)?"  # noqa: RUF001 — dash variants load-bearing
     r"|\b(?:TBL|Table|FIG|Figure)\s+\d+[-–−]\d+[-–−]\d+\b",  # noqa: RUF001
     re.IGNORECASE,
 )
@@ -1023,6 +1028,134 @@ _SCOPE_REDIRECT_NUDGE = (
     "a prior turn's topic into this new unrelated question, and do "
     "NOT fabricate an in-scope interpretation.]"
 )
+
+
+# Ambiguous-term dictionary: maps a user-side term regex to a tuple
+# of axes, where each axis is a tuple of mutually-exclusive qualifier
+# patterns. Axes structure is load-bearing — a reply with multiple
+# alternatives from THE SAME axis ('manned or unmanned') is offering
+# a choice / asking for clarification; a reply with exactly one match
+# per axis has committed to a specific variant.
+#
+# If the user's message contains the bare term without ANY qualifier
+# (across all axes), and the reply picks exactly one qualifier in at
+# least one axis without offering choice in any axis, the hook
+# nudges.
+#
+# Rule of discipline: only add an entry when BOTH (a) the JO treats
+# variants of this term with materially different rules AND (b) users
+# plausibly ask the bare term without specifying the variant. Each
+# entry is session-regression-backed.
+_AMBIGUOUS_TERMS: tuple[
+    tuple[re.Pattern[str], tuple[tuple[re.Pattern[str], ...], ...]], ...
+] = (
+    # Balloons — unmanned free balloons fall under §9-6 (distinct
+    # controller procedures: traffic advisory, no vertical separation
+    # without verified altitude, derelict-balloon handling). Manned
+    # balloons are handled as general aircraft. Session 2026-04-24
+    # repro: user asked about 'a balloon' without specifying; model
+    # answered for the unmanned-free variant silently.
+    (
+        re.compile(r"\bballoons?\b", re.IGNORECASE),
+        (
+            # Axis 1: crew
+            (
+                re.compile(r"\bmanned\b", re.IGNORECASE),
+                re.compile(r"\bunmanned\b", re.IGNORECASE),
+            ),
+            # Axis 2: tether
+            (
+                re.compile(r"\bfree\s+balloon", re.IGNORECASE),
+                re.compile(r"\btethered\b", re.IGNORECASE),
+                re.compile(r"\bmoored\b", re.IGNORECASE),
+            ),
+            # Axis 3: lift medium / use
+            (
+                re.compile(r"\bhot\s+air\s+balloon", re.IGNORECASE),
+                re.compile(r"\bgas\s+balloon", re.IGNORECASE),
+                re.compile(r"\bweather\s+balloon", re.IGNORECASE),
+            ),
+        ),
+    ),
+)
+
+
+_AMBIGUOUS_CONTEXT_NUDGE = (
+    "[ambiguous context — the user's message contains a term whose "
+    "correct handling depends on context they did not provide. For "
+    "example, 'balloon' covers unmanned free balloons (JO 7110.65 "
+    "§9-6, distinct controller procedures) AND manned balloons "
+    "(treated under general aircraft rules) — the answer differs. "
+    "Your reply assumed a specific variant instead of asking. "
+    "Re-answer by asking the user to clarify the variant FIRST, then "
+    "answer only after they provide it. Do not pick a variant and "
+    "proceed.]"
+)
+
+
+@dataclass(frozen=True)
+class AmbiguousContextHook:
+    """Nudge replies that silently assume a specific variant of an
+    ambiguous term instead of asking for clarification.
+
+    Failure mode this catches: user asks about 'a balloon'. JO 7110.65
+    treats unmanned free balloons (§9-6) with distinct rules from
+    manned balloons (general aircraft rules). Model silently fills in
+    'unmanned free balloon' and answers — robbing the student of the
+    chance to learn that variant matters. Session 2026-04-24 repro:
+    'a single prop squawking 1200 and a balloon are intersecting, who
+    has the right of way?' — model inserted 'unmanned free' without
+    asking.
+
+    Trigger conditions (ALL must hold, checked per ambiguous term):
+      1. `user_message` threaded through.
+      2. User message contains the ambiguous term (bare form).
+      3. User message does NOT contain any of the term's
+         disambiguating qualifiers.
+      4. Reply DOES contain at least one of the disambiguating
+         qualifiers.
+
+    Action: Nudge. Retry-able — the model's next round should ask a
+    clarifying question ('manned or unmanned?') and wait for the
+    answer instead of proceeding with an assumed variant.
+
+    The `_AMBIGUOUS_TERMS` dictionary is the maintenance surface.
+    Extend with new entries only when both (a) the JO treats variants
+    differently and (b) a real user-visible miss occurs.
+
+    Placed after ScopeRedirectHook in the bail list so scope
+    mismatches (out-of-scope prompts) take priority over ambiguity
+    nudges inside in-scope prompts."""
+
+    name: str = "ambiguous_context"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        user = ctx.user_message
+        if user is None or not user.strip():
+            return Continue()
+        content = ctx.reply.content
+        for term_re, axes in _AMBIGUOUS_TERMS:
+            if not term_re.search(user):
+                continue
+            # User already specified any qualifier across any axis —
+            # no ambiguity to challenge.
+            all_qualifiers = [q for axis in axes for q in axis]
+            if any(q.search(user) for q in all_qualifiers):
+                continue
+            # Per-axis match counts. Reply offers a choice if ANY
+            # axis has >= 2 alternatives mentioned; reply commits if
+            # at least one axis has exactly 1.
+            axis_hits = [
+                sum(1 for q in axis if q.search(content))
+                for axis in axes
+            ]
+            if any(h >= 2 for h in axis_hits):
+                # At least one axis shows multi-alternative mention —
+                # reply is asking / comparing, not silently picking.
+                continue
+            if any(h == 1 for h in axis_hits):
+                return Nudge(_AMBIGUOUS_CONTEXT_NUDGE)
+        return Continue()
 
 
 @dataclass(frozen=True)
@@ -2099,10 +2232,14 @@ def default_hook_pipeline() -> HookPipeline:
             # Scope check: user's question has no aviation vocabulary,
             # but the reply is talking ATC. Catches context-bleed and
             # out-of-scope fabrication ('do roosters lay eggs' getting
-            # answered with phraseology content). Placed last: every
-            # in-scope reply skips this naturally (user has aviation
-            # vocab OR reply doesn't).
+            # answered with phraseology content).
             ScopeRedirectHook(),
+            # Ambiguity check: user asked about a term whose JO handling
+            # depends on an unspecified variant ('balloon' = manned vs.
+            # unmanned free), and the reply silently picked a variant.
+            # Placed last — ambiguity is relevant only when the prompt
+            # is otherwise in-scope.
+            AmbiguousContextHook(),
         ],
         post_model=[PairedMetaConfirmStripHook()],
         # Order matters inside pre_tool: duplicate_call fires first so
@@ -2266,6 +2403,7 @@ __all__ = [
     "UNGROUNDED_CITATION_FALLBACK",
     "UNGROUNDED_SECTION_CITATION_RE",
     "AbFabricationHook",
+    "AmbiguousContextHook",
     "ArgumentGroundingHook",
     "BailContext",
     "BailHook",
