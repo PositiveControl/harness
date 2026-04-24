@@ -4,16 +4,21 @@
 #
 #   prompt: the user message
 #   expected_tool: tool name the router should pick, or `null` for
-#     'no tool needed' (rules-explanation answered from retrieved
-#     episodic context).
+#     'no tool needed'. For atc, `null` is reserved for CASUAL CHAT
+#     ("thanks", "ready to study") — rule questions, even bareword
+#     yes/no ones, must go through search_memory. Pre-retrieval on
+#     the JO 7110.65 corpus is not reliable enough to trust as the
+#     sole grounding path (observed cosine 0.016 on "ground controller
+#     takeoff clearance" vs. min_score=0.5 floor), so every rule-shaped
+#     question gets an explicit chunk fetch. search-first > guess.
 #   expected_args (optional): arg names that MUST appear.
 #   expected_arg_values (optional): {arg: substring} — pins actual
 #     values for 'right tool, leaked domain' guards.
 #
-# Balanced mix: ~50% null so the small model's over-routing bias shows.
 # airton_c1's tool surface is the 'atc' profile — search_memory for
-# section lookups, fetch_url (aviation allowlist) for live NOTAMs/
-# weather, search_web for research, introspect for self-description.
+# every rule lookup (anchored or bareword), fetch_url (aviation
+# allowlist) for live NOTAMs/weather, search_web for research,
+# introspect for self-description.
 
 # ----- section lookup → search_memory -----
 
@@ -39,16 +44,64 @@
   expected_tool: fetch_url
   expected_args: [url]
 
-# ----- rules explanation from retrieval → null (no tool) -----
+# ----- rule explanation → search_memory -----
+# Anchored "under JO 7110.65" phrasing still goes through search_memory.
+# The explicit fetch is cheap and keeps the answer grounded.
 
 - prompt: "explain how handoffs work under JO 7110.65"
-  expected_tool: null
+  expected_tool: search_memory
+  expected_args: [query]
 
 - prompt: "what's the phraseology for clearing a VFR aircraft into Class B"
-  expected_tool: null
+  expected_tool: search_memory
+  expected_args: [query]
 
 - prompt: "walk me through standard radar separation"
-  expected_tool: null
+  expected_tool: search_memory
+  expected_args: [query]
+
+# ----- bareword rule questions (no 'JO 7110.65' / 'book' / '§' anchor) → search_memory -----
+# Observed hallucination where "Can a ground controller clear takeoff?"
+# got routed to search_facts (empty store) and the model fabricated an
+# affirmative answer. Pre-retrieval also missed (cosine 0.016 vs 0.5
+# floor). Correct policy for atc: every rule-shaped question forces an
+# explicit search_memory fetch — search-first beats guess-and-nudge.
+
+- prompt: "can a ground controller clear an aircraft for takeoff"
+  expected_tool: search_memory
+  expected_args: [query]
+
+- prompt: "who issues the takeoff clearance"
+  expected_tool: search_memory
+  expected_args: [query]
+
+- prompt: "does ground handle the runway"
+  expected_tool: search_memory
+  expected_args: [query]
+
+- prompt: "is local control responsible for go-arounds"
+  expected_tool: search_memory
+  expected_args: [query]
+
+- prompt: "how much separation between a heavy and a small on departure"
+  expected_tool: search_memory
+  expected_args: [query]
+
+# ----- explicit search intent without JO anchor → search_memory -----
+
+- prompt: "look up what the rule is for land-and-hold-short"
+  expected_tool: search_memory
+  expected_args: [query]
+
+- prompt: "find the section on visual separation"
+  expected_tool: search_memory
+  expected_args: [query]
+
+# ----- user-memory lookup → search_facts (positive case to distinguish) -----
+
+- prompt: "what did I tell you about my exam timeline"
+  expected_tool: search_facts
+  expected_args: [query]
 
 # ----- self-description → introspect -----
 

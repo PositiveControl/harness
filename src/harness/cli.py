@@ -1300,7 +1300,13 @@ def _build_tool_registry_for_tui(
                 )
             )
 
-    return registry if registry.names() else None
+    if not registry.names():
+        return None
+
+    from harness.tools.profiles import apply_profile_descriptions
+
+    apply_profile_descriptions(registry, tool_set)
+    return registry
 
 
 def _make_introspect_tool(
@@ -2153,6 +2159,21 @@ def eval_router(
         raise typer.BadParameter(str(exc)) from exc
 
     tool_specs = _resolve_router_tool_specs(wanted_names, settings.root)
+
+    # Apply profile-scoped description overrides so the router sees the
+    # same reframed specs it would see in a live chat session (e.g. atc's
+    # search_memory → rulebook framing). Without this the eval scores
+    # the router against the wrong descriptions.
+    from dataclasses import replace as _replace
+
+    from harness.tools.profiles import TOOL_PROFILE_DESCRIPTIONS
+
+    _overrides = TOOL_PROFILE_DESCRIPTIONS.get(tool_set, {})
+    if _overrides:
+        tool_specs = [
+            _replace(spec, description=_overrides[spec.name]) if spec.name in _overrides else spec
+            for spec in tool_specs
+        ]
 
     if router_mode not in {"free", "grammar"}:
         raise typer.BadParameter(

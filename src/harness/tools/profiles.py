@@ -161,6 +161,65 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
 DEFAULT_PROFILE = "core"
 
 
+# Profile-scoped description overrides. Reframes a generic tool for a
+# character whose episodic / semantic substrate is domain-specific and
+# whose router-tier intent distribution differs from the default chat
+# use case. Applied via ToolRegistry.override_description() at build
+# time; missing tools are ignored so a profile can list overrides for
+# tools that may or may not make the final cut after --tools-drop.
+#
+# atc rationale: episodic seeds ARE the FAA JO 7110.65 rulebook chunks
+# (tier=seed, loaded from character/<name>/seed_memories/). Generic
+# description "past events and lessons" reads as autobiographical,
+# which pushes the small-model router toward search_facts on rule
+# questions (observed hallucination where "can a ground controller
+# clear takeoff" misrouted to search_facts → empty store → fabricated
+# affirmative). The rewording names the rulebook explicitly so the
+# router picks search_memory when it must go hunt a section, and —
+# more importantly — stops picking search_facts for rule-shaped
+# questions that should have been answered from pre-retrieved context.
+TOOL_PROFILE_DESCRIPTIONS: dict[str, dict[str, str]] = {
+    "atc": {
+        "search_memory": (
+            "Search the FAA JO 7110.65 air-traffic control rulebook for "
+            "sections, procedures, phraseology, separation minimums, and "
+            "controller responsibilities. Use for ANY rule-shaped "
+            "question — anchored ('what does §5-5-4 say') or bareword "
+            "('can ground clear takeoff', 'who issues go-arounds'). "
+            "Search-first beats guess-and-answer; pre-retrieved context "
+            "is not guaranteed to carry the needed chunk. NOT for "
+            "user-relationship facts — use search_facts for those."
+        ),
+        "search_facts": (
+            "Search atomic facts about the user (study plans, exam "
+            "timelines, stated preferences). Returns (subject, "
+            "predicate, object) triples. NOT for ATC rules or "
+            "procedures — use search_memory for those."
+        ),
+    },
+}
+
+
+def apply_profile_descriptions(registry: object, profile: str) -> None:
+    """Apply TOOL_PROFILE_DESCRIPTIONS[profile] to `registry` via its
+    override_description() method. No-op for profiles with no override
+    map; silently skips tools that aren't registered (a profile can
+    name overrides for optional tools). Typed as `object` to avoid an
+    import cycle — the only call is .override_description(name, desc),
+    enforced by duck-typing (and by tests)."""
+    overrides = TOOL_PROFILE_DESCRIPTIONS.get(profile)
+    if not overrides:
+        return
+    for name, desc in overrides.items():
+        try:
+            registry.override_description(name, desc)  # type: ignore[attr-defined]
+        except KeyError:
+            # Tool isn't in the final registry (e.g. dropped via
+            # --tools-drop, or store not enabled) — silent skip is
+            # correct; there's nothing to reframe.
+            continue
+
+
 def _expand(tokens: tuple[str, ...]) -> set[str]:
     """Expand a comma-split list of add/drop tokens. A token that names a
     profile contributes every tool in that profile; everything else

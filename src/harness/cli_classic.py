@@ -279,6 +279,10 @@ def build_classic_registry(
 
     if not registry.names():
         return None
+
+    from harness.tools.profiles import apply_profile_descriptions
+
+    apply_profile_descriptions(registry, tool_set)
     return registry
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -106,6 +106,14 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        # Per-registration description overrides. Applied at specs()
+        # emission so every downstream consumer (router, model schema,
+        # introspect) sees the override without wrapping Tool instances.
+        # Populated via override_description(), typically from a
+        # profile-level map like TOOL_PROFILE_DESCRIPTIONS (profiles.py)
+        # so a character-specific profile can reframe generic tools
+        # (e.g. atc's search_memory targets a rulebook, not "past events").
+        self._description_overrides: dict[str, str] = {}
 
     def register(self, tool: Tool) -> None:
         name = tool.spec.name
@@ -124,8 +132,21 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return list(self._tools)
 
+    def override_description(self, name: str, description: str) -> None:
+        """Replace the description surfaced in specs() for `name`. Raises
+        KeyError if the tool isn't registered — overrides are meant to
+        reframe real tools, not stub placeholders."""
+        if name not in self._tools:
+            raise KeyError(f"no tool named {name!r}")
+        self._description_overrides[name] = description
+
     def specs(self) -> list[ToolSpec]:
-        return [t.spec for t in self._tools.values()]
+        out: list[ToolSpec] = []
+        for tool in self._tools.values():
+            spec = tool.spec
+            override = self._description_overrides.get(spec.name)
+            out.append(replace(spec, description=override) if override else spec)
+        return out
 
     def call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         """Execute the named tool. Failures are returned as ToolResult,

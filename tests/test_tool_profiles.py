@@ -2,11 +2,33 @@ from __future__ import annotations
 
 import pytest
 
+from harness.tools.base import ToolRegistry, ToolSpec
 from harness.tools.profiles import (
     DEFAULT_PROFILE,
+    TOOL_PROFILE_DESCRIPTIONS,
     TOOL_PROFILES,
+    apply_profile_descriptions,
     resolve_tool_names,
 )
+
+
+class _StubTool:
+    """Minimal Tool-protocol implementation for registry tests."""
+
+    def __init__(self, name: str, description: str, tier: str = "read") -> None:
+        self._spec = ToolSpec(
+            name=name,
+            description=description,
+            parameters={"type": "object", "properties": {}, "required": []},
+            tier=tier,
+        )
+
+    @property
+    def spec(self) -> ToolSpec:
+        return self._spec
+
+    def call(self) -> str:
+        return ""
 
 
 def test_profiles_registered() -> None:
@@ -149,6 +171,88 @@ def test_atc_includes_read_search_and_memory_tools() -> None:
     for web_tool in ("search_web", "fetch_url"):
         assert web_tool in names, web_tool
     assert "introspect" in names
+
+
+# ---------- description overrides (harness-80h7) ----------
+
+
+def test_override_description_replaces_spec_description() -> None:
+    """override_description() updates what specs() emits without mutating
+    the underlying Tool instance. Downstream consumers (router, model
+    schema, introspect) all flow through specs(), so this is the only
+    choke point an override needs to touch."""
+    registry = ToolRegistry()
+    tool = _StubTool("search_memory", "original description")
+    registry.register(tool)
+    registry.override_description("search_memory", "rulebook-specific description")
+
+    [spec] = registry.specs()
+    assert spec.description == "rulebook-specific description"
+    # Underlying tool spec is unchanged — override is applied at render time.
+    assert tool.spec.description == "original description"
+
+
+def test_override_description_raises_for_unregistered_tool() -> None:
+    """Overrides target real tools only; typos surface immediately
+    rather than silently no-op'ing."""
+    registry = ToolRegistry()
+    with pytest.raises(KeyError):
+        registry.override_description("not_a_tool", "whatever")
+
+
+def test_specs_without_override_unchanged() -> None:
+    """Tools without an override round-trip through specs() untouched."""
+    registry = ToolRegistry()
+    registry.register(_StubTool("read_file", "read a file"))
+    [spec] = registry.specs()
+    assert spec.description == "read a file"
+
+
+def test_apply_profile_descriptions_atc_reframes_search_tools() -> None:
+    """atc profile maps search_memory → rulebook framing and search_facts
+    → user-facts-only framing. Regression guard for the hallucination
+    where 'can a ground controller clear takeoff' misrouted to
+    search_facts because the generic descriptions made it look
+    fact-shaped."""
+    registry = ToolRegistry()
+    registry.register(_StubTool("search_memory", "generic episodic search"))
+    registry.register(_StubTool("search_facts", "generic fact search"))
+    apply_profile_descriptions(registry, "atc")
+
+    specs = {s.name: s.description for s in registry.specs()}
+    assert "JO 7110.65" in specs["search_memory"]
+    assert "rule-shaped" in specs["search_memory"].lower() or "rule" in specs["search_memory"]
+    assert "user" in specs["search_facts"].lower()
+
+
+def test_apply_profile_descriptions_skips_unregistered_tools() -> None:
+    """A profile can list overrides for optional tools (--tools-drop may
+    have removed them). Missing tools are silently skipped — the
+    remaining overrides still apply."""
+    registry = ToolRegistry()
+    # Only search_memory is registered; search_facts is absent.
+    registry.register(_StubTool("search_memory", "generic"))
+    apply_profile_descriptions(registry, "atc")  # must not raise
+
+    [spec] = registry.specs()
+    assert "JO 7110.65" in spec.description
+
+
+def test_apply_profile_descriptions_noop_for_profile_without_overrides() -> None:
+    """Profiles not in TOOL_PROFILE_DESCRIPTIONS leave specs untouched."""
+    registry = ToolRegistry()
+    registry.register(_StubTool("read_file", "read a file"))
+    apply_profile_descriptions(registry, "core")  # no override map
+
+    [spec] = registry.specs()
+    assert spec.description == "read a file"
+
+
+def test_atc_description_overrides_declared() -> None:
+    """The atc map exists and covers both search tools the router confuses."""
+    assert "atc" in TOOL_PROFILE_DESCRIPTIONS
+    assert "search_memory" in TOOL_PROFILE_DESCRIPTIONS["atc"]
+    assert "search_facts" in TOOL_PROFILE_DESCRIPTIONS["atc"]
 
 
 def test_atc_allows_scoped_write_subagent_but_excludes_shell_and_git() -> None:
