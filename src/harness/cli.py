@@ -106,10 +106,11 @@ _EXIT_COMMANDS = frozenset({"/exit", "/quit", "exit", "quit", ":q", ":quit"})
 _EDIT_COMMANDS = frozenset({"/edit", "/capture"})
 _RETRO_COMMANDS = frozenset({"/retro"})
 
-# atc's fetch_url host allowlist (harness-xbk.3). Applied only when the
-# active character is airton_c — keeps the tutoring persona's web
+# atc-family fetch_url host allowlist (harness-xbk.3). Applied when the
+# active character is any atc-archetype persona (airton_c and its
+# narrower variants airton_c1, airton_c2, …). Keeps the tutoring
 # surface to authoritative aviation sources (current weather, NOTAMs,
-# the pilot-facing FAA portals). Other characters pass None and
+# the pilot-facing FAA portals). Non-atc characters pass None and
 # fetch_url stays unrestricted. Hostnames are lowercased, netloc-only
 # (no scheme, no path). Grow this list as atc's research needs widen;
 # keep it conservative by default.
@@ -124,6 +125,12 @@ _ATC_FETCH_URL_ALLOWED_HOSTS: frozenset[str] = frozenset(
         "www.faa.gov",
     }
 )
+
+# Characters that inherit the atc archetype (generalist + narrower
+# document-scoped variants) all get the aviation allowlist. Extend
+# here when you spin up a new airton_c* persona; scripts/character_
+# from_template.py handles the on-disk scaffold.
+_ATC_FAMILY_NAMES: frozenset[str] = frozenset({"airton_c", "airton_c1"})
 
 # Sentinel used to encode structured tool_calls onto an assistant turn's
 # content when persisting to the transcript. Two-line format: human-readable
@@ -1204,7 +1211,7 @@ def _build_tool_registry_for_tui(
         "fetch_url": lambda: FetchUrlTool(
             allowed_hosts=(
                 _ATC_FETCH_URL_ALLOWED_HOSTS
-                if character is not None and character.name == "airton_c"
+                if character is not None and character.name in _ATC_FAMILY_NAMES
                 else None
             )
         ),
@@ -2453,8 +2460,7 @@ def eval_atc(
     console.print(table)
     passed = sum(1 for c in result.cases if c.passed)
     console.print(
-        f"[bold]{passed}/{len(result.cases)} passed · "
-        f"{result.pass_rate * 100:.1f}%[/bold]"
+        f"[bold]{passed}/{len(result.cases)} passed · {result.pass_rate * 100:.1f}%[/bold]"
     )
     rates = result.pass_rate_by_audience()
     if len(rates) > 1:

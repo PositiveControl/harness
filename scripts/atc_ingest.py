@@ -51,13 +51,17 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-CORPUS_CHUNKS = REPO / "character" / "airton_c" / "corpus" / "chunks"
 
 MIN_BODY_CHARS = 50
 
 # Set default character BEFORE importing harness modules — pydantic
-# settings reads env at import time.
+# settings reads env at import time. Ingest targets the character's
+# own corpus/chunks dir and DB (config.py's character_db_path), so
+# HARNESS_CHARACTER_NAME is the single knob for ab, airton_c,
+# airton_c1, etc.
 os.environ.setdefault("HARNESS_CHARACTER_NAME", "airton_c")
+
+CORPUS_CHUNKS = REPO / "character" / os.environ["HARNESS_CHARACTER_NAME"] / "corpus" / "chunks"
 
 from harness.character import load_character  # noqa: E402
 from harness.config import settings  # noqa: E402
@@ -86,8 +90,8 @@ def _body_of(row: dict[str, object]) -> str:
 # BM25 match. Scoping CFR at ingest prevents the dilution.
 _CFR_ALLOW_PARTS: frozenset[str] = frozenset(
     {
-        "1",   # Definitions and abbreviations
-        "3",   # General requirements
+        "1",  # Definitions and abbreviations
+        "3",  # General requirements
         "61",  # Airman certification
         "67",  # Medical standards
         "71",  # Airspace designations

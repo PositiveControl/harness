@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import re
 import sys
@@ -50,8 +51,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-DEFAULT_INPUT = REPO / "character" / "airton_c" / "corpus" / "markdown"
-DEFAULT_OUTPUT = REPO / "character" / "airton_c" / "corpus" / "chunks"
+
+# Default character. HARNESS_CHARACTER_NAME overrides — the chunker
+# reads markdown from / writes chunks to that character's corpus dir.
+_CHARACTER = os.environ.get("HARNESS_CHARACTER_NAME", "airton_c")
+
+DEFAULT_INPUT = REPO / "character" / _CHARACTER / "corpus" / "markdown"
+DEFAULT_OUTPUT = REPO / "character" / _CHARACTER / "corpus" / "chunks"
 
 # Chunk-size knobs. Short bodies stay as-is (one row). Long bodies split
 # on paragraph boundaries with overlap for retrieval continuity.

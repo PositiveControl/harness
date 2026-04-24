@@ -29,6 +29,7 @@ idempotency; only new/changed sources are re-extracted.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -40,11 +41,16 @@ ToMarkdown = Callable[[str], str]
 
 REPO = Path(__file__).resolve().parents[1]
 
+# Default character. HARNESS_CHARACTER_NAME overrides — the extractor
+# writes markdown under that character's corpus dir so airton_c1,
+# airton_c2, etc. can share the pipeline.
+_CHARACTER = os.environ.get("HARNESS_CHARACTER_NAME", "airton_c")
+
 # Default source dir: Mark's syber_vision_llm training-data corpus of
 # FAA PDFs. Overridable via --source so a CI mirror or a stripped-down
 # test fixture can land elsewhere.
 DEFAULT_SOURCE = Path("/Users/mevans/dev/aishiteru/syber_vision_llm/training-data/0_pdfs")
-DEFAULT_OUTPUT = REPO / "character" / "airton_c" / "corpus" / "markdown"
+DEFAULT_OUTPUT = REPO / "character" / _CHARACTER / "corpus" / "markdown"
 
 
 @dataclass(frozen=True)
