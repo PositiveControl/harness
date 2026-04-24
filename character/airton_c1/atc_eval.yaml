@@ -245,3 +245,25 @@ cases:
       - ["clear of the runway", "clear of runway", "off the runway"]
       - ["threshold", "landing threshold"]
     min_keyword_hits: 2
+
+  # Regression — session 2026-04-24. airton_c1 correctly cited §4-1-1
+  # but hallucinated the MH row of TBL 4-1-2 (wrote "50 miles" — the
+  # value from the H row — instead of the true "25 miles"). Retrieval
+  # was NOT the bug: §4-1-1 chunk_0 ranked #0 (0.033). Root cause:
+  # SearchMemoryTool truncates hit.body to 400 chars, and chunk_0's
+  # prologue + REFERENCE block consumes that budget before TBL 4-1-2's
+  # CL/MH rows appear; chunk_1 begins at the H/HH tail so no chunk
+  # surfaces the MH row to the model. Keyword-side pins the correct
+  # value ("25"/"25 miles") so a fabrication that re-lands on 50 fails,
+  # and the citation pin prevents off-section drift. This is the kind
+  # of numeric-table hallucination the quote-or-abstain catcher would
+  # intercept — see bd harness-5uq.
+  - id: controller_rbn_mh_usable_distance
+    audience: controller
+    question: "What is the usable distance for an MH class RBN?"
+    expected_citations: ["4-1-1"]
+    expected_keywords:
+      - ["25 miles", "25 NM", "25 nautical"]
+      - ["MH", "MH class"]
+      - ["radio beacon", "RBN", "L/MF"]
+    min_keyword_hits: 2
