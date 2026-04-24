@@ -438,3 +438,68 @@ a follow-up under the voice-corpus-expansion bead (future Phase-1.5).
 2. Full fixture stock — must stay 12/12.
 3. Retrieval probes for §3-9-6 / §3-10-3 / §3-12-3 — enrichment still
    disambiguating?
+
+---
+
+## Run 8 — post-Fix-A round-robin (2026-04-23)
+
+| excluded sample                          | pre-Fix-A | post-Fix-A  | regression location shift |
+| ---------------------------------------- | --------- | ----------- | -------------------------- |
+| `same_runway_departure_separation`       | 12/12     | 12/12       | — (stable generalization)  |
+| `same_runway_arrival_separation`         | 12/12     | 12/12       | — (stable generalization)  |
+| `class_b_vfr_clearance_phraseology`      | 11/12     | 11/12       | `class_b` → `readback_requirement` |
+| `emergency_distress_urgency_declaration` | 12/12     | 12/12       | — (stable generalization)  |
+
+**Gap magnitude is stable: 1 case = 8.3 pp** across both maps. Three
+samples are pure generalization in both states. The one sensitive
+probe (class_b excluded) still causes exactly one regression — but
+the regressing CASE shifted.
+
+### What the shift means
+
+Pre-Fix-A: excluding class_b's voice sample regressed class_b's own
+eval case — the model couldn't cite §7-9-2 without the sample.
+
+Post-Fix-A: excluding class_b's voice sample regresses
+`readback_requirement` instead. class_b itself now generalizes —
+the enriched §7-9-2 embed (`Class B Service Area — Terminal — VFR
+AIRCRAFT IN CLASS B AIRSPACE`) gives retrieval enough signal to
+cite correctly from episodic alone.
+
+So Fix A eliminated the specific class_b memorization. But it also
+revealed a more subtle effect: **the 4-voice-sample context density
+itself** matters. With 4 samples the model sees citation-first
+scaffolding repeated 4× in the system prompt; with 3, it leans on
+its own reasoning and, for whichever case is most-on-the-bubble,
+drops the cite. The bubble case shifts based on which sample is
+excluded and what the retrieval landscape looks like — not a
+persona-level fact about any specific Q&A.
+
+### Shrinking the gap to 0
+
+Two lanes would address the voice-pool-density effect:
+
+1. **More canonical samples** — grow from 4 → 6-8 citation-first
+   samples. When excluding one still leaves 5+, the scaffolding
+   stays dense enough that the bubble case doesn't tip. File as a
+   voice-corpus-expansion bead; samples for topics NOT yet covered
+   by the fixture (handoff, wake-turb separation, IFR clearance
+   items) add breadth without crowding existing retrieval.
+
+2. **Rewrite-pass discipline** — make the persona rewriter enforce
+   the `JO 7110.65 §X-Y-Z —` opening sentence regardless of
+   retrieved voice samples. Moves the discipline from retrieval
+   context to post-generation. harness-cco (post-rewrite citation
+   fixup) already does the reverse — re-inject citations the
+   rewriter dropped. A forward version would check pass-1 drafts
+   for a section-prefix opening and nudge if missing.
+
+Neither is in scope tonight. Track as follow-ups.
+
+### Stability of the measurement
+
+Both maps are deterministic at temp=0. Re-running either pre- or
+post-Fix-A probes yields bit-identical replies. The 1-case gap is
+real signal, not noise. That makes every future canonical.yaml or
+retrieval change trivially measurable: if any probe's result
+changes by more than ±1 case, the change had a non-trivial effect.
