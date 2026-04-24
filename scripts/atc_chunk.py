@@ -80,6 +80,16 @@ class Chunk:
     parent_section: str
     title: str
     body: str
+    # Title of the parent-section group (e.g. "Departure Procedures and
+    # Separation" for §3-9-6). Captured from '## **Section N. Title**'
+    # markdown headers. Populated for JO 7110.65 + AIM (both use the
+    # numbered kind). Empty string for sources without a matching
+    # header or for headings the chunker sees before the first Section
+    # header in a chapter. Feeds into the ingest script's principle
+    # enrichment (harness-8zx6) so embeds disambiguate §3-9-6
+    # (Departure) from §3-10-3 (Arrival) — both titled "SAME RUNWAY
+    # SEPARATION" in the raw JO 7110.65 markdown.
+    parent_section_title: str = ""
     principle: str = ""
     tags: tuple[str, ...] = ()
     chunk_index: int = 0
@@ -158,6 +168,12 @@ _NUMBERED_ANCHOR = re.compile(
     r"\.?\s+(.+)$"
 )
 _CHAPTER_HDR = re.compile(r"^Chapter\s+(\d+)\.?\s*(.*)$", re.I)
+
+# JO 7110.65 + AIM: '## **Section N. Title**' headers group a family of
+# N-N-N anchors that share the same parent-section topic. Within a
+# chapter, Section N groups all §<chapter>-<N>-<sub> anchors. Feeds the
+# parent-section-title enrichment on emitted chunks (harness-8zx6).
+_SECTION_HDR = re.compile(r"^Section\s+(\d+)\.?\s+(.+?)\s*$", re.I)
 
 # CFR: "§ 1.1 General definitions." (may drop the trailing period).
 _CFR_SECTION = re.compile(r"^§\s*(\d+)\.(\d+[a-z]*)(?:\s+(.*))?$")
@@ -272,15 +288,43 @@ def _clean_body(lines: Iterable[str]) -> str:
 
 
 def _parse_numbered(blocks: Iterable[_Block], cfg: ParserConfig) -> Iterator[Chunk]:
-    """AIM and JO 7110.65 share the N-N-N anchor convention."""
+    """AIM and JO 7110.65 share the N-N-N anchor convention.
+
+    Tracks parent-section titles (from 'Section N. Title' headers) per
+    chapter, so emitted chunks carry the parent-section context. Within
+    a chapter, each `Section N` group may repeat across chapters (e.g.
+    Chapter 3 and Chapter 7 both have a `Section 9`), so the lookup key
+    is `(chapter, section_num)` — reset implicitly when the chapter
+    changes (new chapter starts a fresh section-title scope)."""
     chapter = ""
+    # Map (chapter, section_num) → parent-section title. Accumulates as
+    # the parser walks the document linearly. Lookup is by the anchor's
+    # derived (chap, sec) pair, so chunks emitted before any Section
+    # header in the chapter (rare — usually the table of contents area)
+    # carry an empty string.
+    section_titles: dict[tuple[str, str], str] = {}
     for block in blocks:
+        stripped = _CHANGE_PREFIX.sub("", block.heading)
+
+        # Chapter header (non-anchor). Reset section-title accumulator
+        # so chapter-5 Section 9 doesn't inherit chapter-3 Section 9's
+        # title.
         m_ch = _CHAPTER_HDR.match(block.heading)
-        if m_ch is not None and not _NUMBERED_ANCHOR.match(block.heading):
+        if m_ch is not None and not _NUMBERED_ANCHOR.match(stripped):
             chapter = m_ch.group(1)
             continue
 
-        stripped = _CHANGE_PREFIX.sub("", block.heading)
+        # Section header (e.g. "Section 9. Departure Procedures and
+        # Separation"). Remember the title so subsequent N-N-N anchors
+        # in this chapter + section can look it up.
+        m_sec = _SECTION_HDR.match(block.heading)
+        if m_sec is not None and not _NUMBERED_ANCHOR.match(stripped):
+            sec_num = m_sec.group(1)
+            sec_title = m_sec.group(2).strip()
+            if chapter:
+                section_titles[(chapter, sec_num)] = sec_title
+            continue
+
         m = _NUMBERED_ANCHOR.match(stripped)
         if m is None:
             continue
@@ -292,11 +336,14 @@ def _parse_numbered(blocks: Iterable[_Block], cfg: ParserConfig) -> Iterator[Chu
         body = _clean_body(block.body_lines)
         if not body:
             continue
+        effective_chapter = chap or chapter
+        parent_title = section_titles.get((effective_chapter, sec), "")
         yield Chunk(
             source=cfg.source_key,
-            chapter=chap or chapter,
+            chapter=effective_chapter,
             section=section,
             parent_section=parent,
+            parent_section_title=parent_title,
             title=title.strip(),
             body=body,
             tags=cfg.tags,
@@ -470,6 +517,7 @@ def _expand_by_size(chunks: Iterable[Chunk]) -> Iterator[Chunk]:
                 chapter=chunk.chapter,
                 section=chunk.section,
                 parent_section=chunk.parent_section,
+                parent_section_title=chunk.parent_section_title,
                 title=chunk.title,
                 body=piece,
                 principle=chunk.principle,

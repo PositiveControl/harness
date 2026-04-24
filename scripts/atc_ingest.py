@@ -144,11 +144,28 @@ def is_noise(row: dict[str, object]) -> bool:
 
 
 def dedup_by_anchor(rows: Iterable[dict[str, object]]) -> list[dict[str, object]]:
-    """Keep the longest body per (source, section, chunk_index). JO /
-    AIM both ship an explanation-of-changes block that re-states every
-    touched anchor; the real-content row is typically longer, so
-    'longest wins' biases toward content."""
+    """Keep the best-scoring row per (source, section, chunk_index).
+
+    Ranking (higher is better):
+      1. parent_section_title present (indicates the row came from the
+         real content section, not a TOC or change-block that emitted
+         the anchor before the parent Section header was seen).
+      2. Longer body (biases toward the real-content row when multiple
+         enriched — or multiple un-enriched — rows collide).
+
+    The `(enriched, body_len)` tuple is a compare-on-both key. JO 7110.65
+    in particular has 'Explanation of Changes' blocks near the top that
+    restate every touched anchor with a substantial body but no parent
+    Section header in scope — under the old longest-wins rule those
+    blocks won dedup for §3-9-6 / §3-10-3 and killed the retrieval
+    disambiguation fix (harness-8zx6). Tiebreaking on enrichment first
+    makes the content rows win deterministically."""
     by_key: dict[tuple[str, str, int], dict[str, object]] = {}
+
+    def score(row: dict[str, object]) -> tuple[int, int]:
+        enriched = 1 if str(row.get("parent_section_title") or "").strip() else 0
+        return (enriched, len(_body_of(row)))
+
     for row in rows:
         key = (
             str(row["source"]),
@@ -156,7 +173,7 @@ def dedup_by_anchor(rows: Iterable[dict[str, object]]) -> list[dict[str, object]
             int(row.get("chunk_index", 0) or 0),
         )
         existing = by_key.get(key)
-        if existing is None or len(_body_of(row)) > len(_body_of(existing)):
+        if existing is None or score(row) > score(existing):
             by_key[key] = row
     return list(by_key.values())
 
@@ -166,7 +183,27 @@ def external_id_for(row: dict[str, object]) -> str:
 
 
 def principle_for(row: dict[str, object]) -> str:
-    return f"{row['source']} §{row['section']}"
+    """Compose the principle tag that lands in the embed-text header.
+    Includes the parent-section title when available (harness-8zx6):
+
+        Bare:    "JO_7110.65 §3-9-6"
+        Enriched: "JO_7110.65 §3-9-6 (Departure Procedures and Separation — SAME RUNWAY SEPARATION)"
+
+    The enrichment disambiguates sections that share a subsection title
+    across parent-section groups (JO 7110.65's §3-9-6 and §3-10-3 are
+    both titled 'SAME RUNWAY SEPARATION' — the enrichment pushes
+    'Departure' vs 'Arrival' into the embedded text so BM25 and dense
+    cosine can tell them apart)."""
+    base = f"{row['source']} §{row['section']}"
+    parent_title = str(row.get("parent_section_title") or "").strip()
+    sec_title = str(row.get("title") or "").strip()
+    if parent_title and sec_title:
+        return f"{base} ({parent_title} — {sec_title})"
+    if parent_title:
+        return f"{base} ({parent_title})"
+    if sec_title:
+        return f"{base} ({sec_title})"
+    return base
 
 
 def tags_for(row: dict[str, object]) -> list[str]:

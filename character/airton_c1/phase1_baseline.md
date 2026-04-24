@@ -360,3 +360,81 @@ should re-run the round-robin at temp=0 and compare. If any sample
 that was previously "pure generalization" flips to memorization, the
 new canonical content made the persona more brittle — worth catching.
 If class_b flips to pure generalization (gap = 0), the fix landed.
+
+---
+
+## Run 7 — Fix A retrieval enrichment (harness-8zx6)
+
+Shipped Fix A from the lane-R diagnosis: chunker parses
+`## **Section N. Title**` headers into a new `parent_section_title`
+field on each chunk, ingest's `principle_for()` folds it into the
+embed-text principle tag:
+
+  Before: `JO_7110.65 §3-9-6`
+  After:  `JO_7110.65 §3-9-6 (Departure Procedures and Separation — SAME RUNWAY SEPARATION)`
+
+Two bugs found + fixed along the way:
+
+1. `_expand_by_size` didn't propagate `parent_section_title` to split
+   chunks (chunk_index > 0 lost the field).
+2. `dedup_by_anchor` kept the LONGEST body per `(section, chunk_index)`,
+   but for JO 7110.65 the longest body often came from an early
+   "Explanation of Changes" block that emitted the anchor BEFORE the
+   Section header was parsed — so the winning row had `pst=''`. Rewrote
+   dedup to prefer enriched rows regardless of body length; enrichment
+   is the stronger signal of "real content" vs. "changelog restatement."
+
+### Retrieval disambiguation verified
+
+Raw `harness memory search` probes post-Fix-A:
+
+  "same runway departure"                → §3-9-6 rank-1 (was rank-1 also pre-fix,
+                                            but §3-9-7 wake-turb noise dropped in rank)
+  "arriving aircraft same runway"        → §3-10-3 rank-1 (was #1, cleaner now)
+  "landing threshold behind another ..." → §3-12-3 rank-1 (sea lane) but now
+                                            the citation label clearly says
+                                            "Sea Lane Operations" — model can't
+                                            mistake it for runway arrival
+
+The principle tag now carries parent-section context ("Departure" vs
+"Arrival" vs "Sea Lane") so both BM25 and dense cosine have signal
+the old embed text lacked.
+
+### Accuracy gate
+
+| mode    | pre-Fix-A | post-Fix-A | Δ |
+| ------- | --------- | ---------- | - |
+| stock   | 12/12     | **12/12**  | 0 |
+| holdout | 11/12     | 11/12      | 0 (size) |
+
+Stock preserved. Gate passed.
+
+### Side finding — memorization case SHIFTED
+
+Before Fix A, `--holdout` regressed `controller_class_b_vfr_clearance`.
+After Fix A, `--holdout` regresses `controller_readback_requirement`
+instead. class_b is no longer memorization-driven — the enriched
+§7-9-2 embed (`Class B Service Area — Terminal — VFR AIRCRAFT IN CLASS
+B AIRSPACE`) gives retrieval enough signal to cite correctly without
+the voice sample. But now readback regresses when class_b is excluded
+from voice retrieval.
+
+Hypothesis: voice-sample composition of the system prompt has a
+context-density effect. With 4 voice samples, the model sees the
+citation-first pattern reinforced 4 times. With 3, it leans more on
+its own reasoning, and for `readback` that reasoning loses the cite.
+Not a new bug — it's the same memorization phenomenon relocated.
+
+The gap stays at 1 case either way. Pre-Fix-A the gap was on class_b
+because the retrieval was the bottleneck there; post-Fix-A the
+bottleneck moved to voice-sample density. Would need more voice
+samples (broader scaffolding) to eliminate the gap entirely. Track as
+a follow-up under the voice-corpus-expansion bead (future Phase-1.5).
+
+### What to re-measure on next canonical.yaml change
+
+1. Round-robin holdout (4 probes) — where does the memorization case
+   live now?
+2. Full fixture stock — must stay 12/12.
+3. Retrieval probes for §3-9-6 / §3-10-3 / §3-12-3 — enrichment still
+   disambiguating?

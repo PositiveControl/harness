@@ -20,7 +20,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §2-4-3 requires verifying the following when a pilot reads back an ATC clearance:\n\n- Ensure all items in the clearance are correctly read back.\n- Ensure hold short instructions, whether part of taxi instructions or a LAHSO clearance, are correctly read back.\n- Ensure the pilot uses the call sign or registration number in the read back, acknowledging the clearance or instruction.\n\nFor example, if the clearance is \"Cleared to land Runway 18, report touchdown,\" the pilot should read back \"Cleared to land Runway 18, report touchdown.\" If the clearance includes a hold short instruction, such as \"Hold short of Runway 18,\" the pilot should read back \"Hold short of Runway 18.\" Always confirm the call sign or registration number is included in the read back to ensure clear and accurate communication."
+      "reply": "When a pilot reads back an ATC clearance, verify that the read back is correct and complete. According to JO 7110.65 §2-4-3 (Radio and Interphone Communications — PILOT ACKNOWLEDGMENT/READ BACK):\n\n- Ensure that items read back are correct, including all specific instructions, frequencies, altitudes, headings, and any other details provided.\n- Confirm hold short instructions, including the specific runway and any associated limitations.\n- Verify that pilots use call signs and/or registration numbers in their read back acknowledging an Air Traffic Clearance or ATC Instruction."
     },
     {
       "id": "controller_wake_turbulence_application",
@@ -31,12 +31,11 @@
       "missing_citations": [],
       "matched_keywords": [
         "wake turbulence",
-        "behind",
         "separation"
       ],
-      "keyword_hits": 3,
+      "keyword_hits": 2,
       "min_keyword_hits": 2,
-      "reply": "Wake turbulence procedures apply under JO 7110.65 when an aircraft is operating behind another aircraft and requires wake turbulence separation. According to JO 7110.65 §2-1-19, these procedures must be applied. The specific conditions and procedures are detailed in:\n\n- JO 7110.65 §2-1-19 (Wake Turbulence)\n- JO 7110.65 §2-1-20 (Wake Turbulence Cautionary Advisories)"
+      "reply": "Wake turbulence procedures are required under JO 7110.65 §2-1-19 when an aircraft is following another on the same runway, taxiway, or flight path in the same direction. The procedures ensure safe separation to avoid the hazardous effects of wake turbulence. Don't know specific distances; refer to the section for details."
     },
     {
       "id": "controller_same_runway_departure",
@@ -47,12 +46,12 @@
       "missing_citations": [],
       "matched_keywords": [
         "crossed the runway end",
-        "departed",
+        "takeoff roll",
         "turned"
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §3-9-6 (Departure Procedures and Separation) is the relevant section. Don't clear a departing aircraft for takeoff behind another until the preceding aircraft has departed and crossed the runway end or turned to avert any conflict. The phraseology is: \"The preceding aircraft has departed and crossed the runway end or turned to avert any conflict. Cleared for takeoff.\" Refer to §3-9-6 for more details."
+      "reply": "JO 7110.65 §3-9-6 (Separation on the Same Runway) is the relevant section. Don't clear the takeoff roll of the following aircraft until the preceding aircraft has departed and crossed the runway end, or turned to avert any conflict. Visual separation may be used if the succeeding aircraft is a helicopter or powered-lift. The distance minima are:\n\n- Category I: 3,000 feet.\n- Category I preceded by Category II: 3,000 feet.\n- Category II or both: 4,500 feet.\n- Category III: 6,000 feet."
     },
     {
       "id": "controller_same_runway_arrival",
@@ -68,7 +67,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §3-10-3 governs this scenario. The arriving aircraft may cross the landing threshold behind another aircraft on the same runway if:\n\n- The preceding aircraft has landed and is clear of the runway.\n- Between sunrise and sunset, if you can determine distances by suitable landmarks, the minimum distances from the landing threshold must be maintained:\n\n  - 3,000 feet for a Category I aircraft behind a Category I or II.\n  - 4,500 feet for a Category II aircraft behind a Category I or II.\n  - 6,000 feet for either aircraft behind a Category III.\n\nThese conditions apply when visual separation is used. If the preceding aircraft has departed and crossed the runway end, the arriving aircraft may cross the threshold if the minimum distance is maintained."
+      "reply": "JO 7110.65 §3-10-3 (Same Runway Separation) is the relevant section. The arriving aircraft may cross the landing threshold behind another aircraft on the same runway only if:\n\n- The preceding aircraft has landed and is clear of the runway.\n- Between sunrise and sunset, if you can determine distances by suitable landmarks, the following minimum distances from the landing threshold must be maintained:\n\n  - 3,000 feet for a Category I behind a Category I or II.\n  - 4,500 feet for a Category II behind a Category I or II.\n  - 6,000 feet for either being a Category III.\n\nThe arriving aircraft must not cross the threshold until one of these conditions is met."
     },
     {
       "id": "controller_ifr_clearance_items_order",
@@ -83,7 +82,7 @@
       ],
       "keyword_hits": 2,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §4-2-1 specifies the order for IFR clearances. The order is:\n\n- Aircraft identification.\n- Clearance limit.\n\nIf the clearance limit is an airport, \"airport\" follows the airport name.\n\nFor example: \"Delta 123, cleared IFR to Chicago O'Hare Airport, expect radar vectors to the VOR, maintain 3000.\""
+      "reply": "JO 7110.65 §4-2-1 specifies the order for issuing an IFR clearance. The clearance items should be given as follows:\n\n- Aircraft identification.\n- Clearance limit. When the limit is an airport, the word \"airport\" follows the airport name.\n\nFor example, a typical IFR clearance is: \"Delta 123, cleared IFR to Chicago O'Hare airport, via the G1 departure, expect radar vectors to the G1, maintain 10,000 feet, contact approach on 128.7.\""
     },
     {
       "id": "controller_vertical_separation_rvsm",
@@ -99,7 +98,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §4-5-1 covers vertical separation. Up to and including FL 410, the minimum is 1,000 feet. Above FL 410, the minimum is 2,000 feet between non-RVSM aircraft and all other aircraft at or above FL 290. For aircraft above FL 600, the separation is 5,000 feet between military aircraft."
+      "reply": "JO 7110.65 §4-5-1 covers vertical separation. Up to and including FL 410, the minimum is 1,000 feet. Above FL 410, it changes to 2,000 feet between non-RVSM aircraft and all other aircraft at or above FL 290. In oceanic airspace, above FL 450, separate a supersonic aircraft from any other by 4,000 feet. Above FL 600, separate military aircraft by 5,000 feet. The key changes are:\n- Up to FL 410: 1,000 feet.\n- Above FL 410: 2,000 feet, unless in oceanic airspace above FL 450 for supersonic aircraft, or above FL 600 for military aircraft, where the separation is 4,000 feet and 5,000 feet, respectively."
     },
     {
       "id": "controller_radar_standard_separation",
@@ -115,7 +114,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "Chapter 5 §5-5-4 (Radar Separation Minimums) specifies the standard radar separation minimums in terminal airspace for single-sensor ASR. When less than 40 miles from the antenna, the minimum is 3 miles. When 40 miles or more from the antenna, the minimum is 5 miles. For single sensor monopulse secondary surveillance radar (MSSR), when less than 60 miles from the antenna, the minimum is 3 miles.\n\n— JO 7110.65 §5-5-4"
+      "reply": "Chapter 5 §5-5-4 (Radar Separation — MINIMA) states:\n\n- When less than 40 miles from the antenna, the minimum separation is 3 miles.\n- When 40 miles or more from the antenna, the minimum separation is 5 miles.\n- For single sensor monopulse secondary surveillance radar (MSSR), when less than 60 miles from the antenna, the minimum separation is 3 miles.\n\nThis applies to both single sensor ASR and single sensor MSSR in single sensor mode.\n\n— JO 7110.65 §5-5-4"
     },
     {
       "id": "controller_handoff_responsibilities",
@@ -131,7 +130,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "The transferring controller must verbally obtain the receiving controller’s approval before making any changes to an aircraft’s flight path, altitude, speed, or data block information during the handoff process. This is specified in JO 7110.65 §5-4-5(b)."
+      "reply": "The transferring controller must verbally obtain the receiving controller’s approval before making any changes to an aircraft’s flight path, altitude, speed, or data block information while the handoff is being initiated or after acceptance. This is specified in JO 7110.65 §5-4-5 (Transfer of Radar Identification — TRANSFERRING CONTROLLER HANDOFF)."
     },
     {
       "id": "controller_missed_approach_precoord",
@@ -147,7 +146,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "Chapter 5, §5-10-11 of JO 7110.65 states that before an aircraft starts final descent for a full stop landing and weather reports indicate that any portion of the final approach will be conducted in IFR conditions, you must issue the specific missed approach procedure approved for the radar approach being conducted. This ensures the pilot has clear instructions on what to do if the approach cannot be completed safely."
+      "reply": "JO 7110.65 §5-10-11 (Radar Approaches — Terminal — Missed Approach) requires that before starting final descent for a full stop landing, you must issue a specific missed approach procedure if the weather indicates any portion of the final approach will be conducted in IFR conditions. This ensures the pilot has clear instructions on what to do if a missed approach is needed."
     },
     {
       "id": "controller_class_b_vfr_clearance",
@@ -173,13 +172,13 @@
       "keywords_pass": true,
       "missing_citations": [],
       "matched_keywords": [
-        "IFR",
-        "pilot requests",
+        "IFR flight plan",
+        "request",
         "VFR-on-top"
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §7-3-1 says you may clear an IFR aircraft to maintain VFR-on-top if the pilot requests it. No other conditions are specified."
+      "reply": "JO 7110.65 §7-3-1 says you may clear an aircraft to maintain \"VFR-on-top\" if the pilot on an IFR flight plan requests it. The clearance is granted at the pilot's request and is subject to the conditions outlined in the section."
     },
     {
       "id": "controller_emergency_distress_urgency",
@@ -196,7 +195,7 @@
       ],
       "keyword_hits": 4,
       "min_keyword_hits": 3,
-      "reply": "JO 7110.65 §10-1-1 — an emergency is either a Distress or an Urgency condition, as defined in the Pilot/Controller Glossary. Distress means immediate assistance is required to save life or property, and a pilot declares it by saying \"Mayday,\" preferably repeated three times. Urgency is a safety concern not yet immediately life-threatening, and a pilot declares it by saying \"Pan-Pan,\" also preferably repeated three times. Both \"Mayday\" and \"Pan-Pan\" signal the nature of the emergency to the controller."
+      "reply": "JO 7110.65 §10-1-1 — an emergency can be either a Distress or an Urgency condition, as defined in the Pilot/Controller Glossary. A pilot declares Distress by beginning the transmission with \"Mayday,\" preferably repeated three times. For Urgency, the word is \"Pan-Pan,\" also repeated three times. Both declarations are critical and should be used only when the pilot believes their situation meets the criteria."
     }
   ]
 }
