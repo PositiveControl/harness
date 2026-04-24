@@ -1,0 +1,53 @@
+version: 1
+
+# Query-side-only lay-term synonyms (harness-ajn).
+#
+# Same YAML shape as synonyms.yaml but consumed ONLY by the query-side
+# expander (src/harness/retrieval/query_expander.py::load_query_expander),
+# NOT by the ingest script. Use this file for entries that should trigger
+# expansion on incoming user queries but would hurt retrieval precision
+# if baked into the stored row text at ingest time.
+#
+# Why split:
+#   synonyms.yaml lives on BOTH sides — ingest-time row augmentation
+#   (principle gets "[synonyms: ...]" appended) + query-time expansion.
+#   Ingest-side augmentation helps BM25 hit lay queries on the stored
+#   rows, but it dilutes precision for jargon queries: every extra
+#   synonym token in the stored principle lowers TF/IDF weight on
+#   the section's jargon identity. Concrete regression (harness-ajn
+#   measurement): adding "small plane behind big jet" to §2-1-19's
+#   ingest-side synonyms moved the jargon query "when do wake
+#   turbulence procedures apply" from rank 0 to rank 9, even though
+#   the lay query "small plane flying behind a big jet" moved from
+#   hard miss to rank 0. Net-neutral on aggregate recall but bad on
+#   precision.
+#
+# The split preserves ingest-side precision while still giving
+# query-side expansion a place to drop entries that target paraphrase
+# patterns the ingest side shouldn't adopt. Adding new lay-query
+# coverage post this split: put the entry here first, measure, promote
+# to synonyms.yaml only if ingest-side augmentation also helps.
+
+sections:
+  "3-10-3":
+    # Time-language paraphrases for same-runway arrival minima. These
+    # capture the temporal phrasing users reach for ("how soon after
+    # plane lands") rather than the spatial phrasing ("shortest
+    # distance on approach" — already in synonyms.yaml). Content tokens
+    # stay arrival-specific so they don't bleed onto §3-9-6 (departure)
+    # or §3-12-3 (sea lane).
+    - soon after plane lands cross threshold
+    - time before next aircraft lands
+    - next aircraft cross runway threshold
+
+  "2-1-19":
+    # Wake turbulence application. Controllers apply wake procedures
+    # when one aircraft flies behind another in a way that matters —
+    # the lay phrasing is about size asymmetry ("small plane behind
+    # big jet"), not the jargon "wake turbulence." Entries target that
+    # asymmetry wording.
+    - small plane behind big jet
+    - small aircraft behind large aircraft
+    - flying behind large aircraft
+    - smaller plane trailing larger plane
+    - controller worry wake behind jet

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from harness.retrieval.query_expander import NullQueryExpander, QueryExpander
 from harness.tools.base import ToolSpec
 
 if TYPE_CHECKING:
@@ -14,10 +15,17 @@ class SearchMemoryTool:
     """Let Airton query its own episodic memory on demand. Complements
     the automatic top-K retrieval at turn start — useful when Airton
     wants more context than was injected, or wants to look up something
-    specific by lesson/topic."""
+    specific by lesson/topic.
+
+    When a `QueryExpander` is supplied, the incoming query is augmented
+    with section-anchored lay-term synonyms before it hits the store
+    (harness-ajn). Identity-preserving on queries that don't trigger a
+    synonym match, so non-corpus characters (that ship a
+    `NullQueryExpander`) pay no cost."""
 
     store: EpisodicStore
     user_id: str | None = None
+    expander: QueryExpander = field(default_factory=NullQueryExpander)
 
     @property
     def spec(self) -> ToolSpec:
@@ -48,7 +56,12 @@ class SearchMemoryTool:
         )
 
     def call(self, *, query: str, k: int = 5) -> str:
-        hits = self.store.search(query, k=k, user_id=self.user_id)
+        # Expand lay-term queries into the section's full synonym field
+        # so dense cosine + BM25 both see the jargon-space version of
+        # the user's question. NullQueryExpander (the default) is
+        # identity, so this call stays free for non-corpus characters.
+        expanded = self.expander.expand(query)
+        hits = self.store.search(expanded, k=k, user_id=self.user_id)
         if not hits:
             return (
                 "(no memories matched — if this is about external facts, "

@@ -155,6 +155,22 @@ def build_classic_registry(
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
+    # Character-local synonym expansion for search_memory (harness-ajn).
+    # Loads the shared corpus/synonyms.yaml (also ingest-consumed) plus
+    # corpus/query_synonyms.yaml (expander-only, to prevent lay-paraphrase
+    # entries from diluting ingest-side precision on jargon queries).
+    # NullQueryExpander when both are absent.
+    from harness.retrieval.query_expander import (
+        default_query_only_synonyms_path,
+        default_synonyms_path,
+        load_query_expander,
+    )
+
+    query_expander = load_query_expander(
+        default_synonyms_path(settings.character_path),
+        query_only_path=default_query_only_synonyms_path(settings.character_path),
+    )
+
     builders: dict[str, Callable[[], Tool | None]] = {
         "read_file": lambda: ReadFileTool(root=workspace_path),
         "edit_file": lambda: EditFileTool(root=workspace_path),
@@ -168,7 +184,7 @@ def build_classic_registry(
         "git_log": lambda: GitLogTool(root=workspace_path),
         "search_memory": (
             lambda: (
-                SearchMemoryTool(store=memory_store, user_id=speaker)
+                SearchMemoryTool(store=memory_store, user_id=speaker, expander=query_expander)
                 if memory_store is not None
                 else None
             )

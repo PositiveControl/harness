@@ -1186,6 +1186,20 @@ def _build_tool_registry_for_tui(
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
+    # Character-local synonym expansion for search_memory (harness-ajn).
+    # Loads corpus/synonyms.yaml + corpus/query_synonyms.yaml (query-only
+    # additive entries). NullQueryExpander when both are absent.
+    from harness.retrieval.query_expander import (
+        default_query_only_synonyms_path,
+        default_synonyms_path,
+        load_query_expander,
+    )
+
+    query_expander = load_query_expander(
+        default_synonyms_path(settings.character_path),
+        query_only_path=default_query_only_synonyms_path(settings.character_path),
+    )
+
     builders: dict[str, Callable[[], Tool | None]] = {
         "read_file": lambda: ReadFileTool(root=workspace_path),
         "edit_file": lambda: EditFileTool(root=workspace_path),
@@ -1198,7 +1212,7 @@ def _build_tool_registry_for_tui(
         "git_diff": lambda: GitDiffTool(root=workspace_path),
         "git_log": lambda: GitLogTool(root=workspace_path),
         "search_memory": lambda: (
-            SearchMemoryTool(store=memory_store, user_id=speaker)
+            SearchMemoryTool(store=memory_store, user_id=speaker, expander=query_expander)
             if memory_store is not None
             else None
         ),
@@ -2543,6 +2557,16 @@ def eval_atc_retrieval(
         "--audience",
         help="Filter fixture to one audience. Default: all.",
     ),
+    expand_queries: bool = typer.Option(
+        True,
+        "--expand-queries/--no-expand-queries",
+        help=(
+            "Apply corpus/synonyms.yaml query-side expansion (harness-ajn) "
+            "before running each fixture case through the store. Default on "
+            "to match real-chat behaviour (SearchMemoryTool uses the same "
+            "expander). Disable for A/B baselines measuring expander lift."
+        ),
+    ),
     save_baseline: bool = typer.Option(
         False,
         "--save-baseline",
@@ -2589,8 +2613,27 @@ def eval_atc_retrieval(
             "retrieval eval needs the `retrieval` extra — re-run `uv sync --extra retrieval`."
         )
 
+    # Build the query expander the same way SearchMemoryTool does, so
+    # eval recall@k numbers reflect the retrieval path a real chat turn
+    # would take. --no-expand-queries gives the A/B baseline.
+    from harness.retrieval.query_expander import (
+        NullQueryExpander,
+        default_query_only_synonyms_path,
+        default_synonyms_path,
+        load_query_expander,
+    )
+
+    expander = (
+        load_query_expander(
+            default_synonyms_path(settings.character_path),
+            query_only_path=default_query_only_synonyms_path(settings.character_path),
+        )
+        if expand_queries
+        else NullQueryExpander()
+    )
+
     def _search(query: str, depth: int) -> list[RetrievalHit]:
-        raw = store.search(query, k=depth, mode="hybrid")
+        raw = store.search(expander.expand(query), k=depth, mode="hybrid")
         return [
             RetrievalHit(principle=rec.principle or "", score=float(score)) for rec, score in raw
         ]

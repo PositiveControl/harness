@@ -2,10 +2,10 @@
   "character": "airton_c1",
   "fixture": "/Users/mevans/dev/ideas/harness/character/airton_c1/atc_eval.yaml",
   "k": 10,
-  "recall_at_1": 0.7647058823529411,
-  "recall_at_3": 0.8823529411764706,
+  "recall_at_1": 0.8235294117647058,
+  "recall_at_3": 0.9411764705882353,
   "recall_at_5": 0.9411764705882353,
-  "recall_at_k": 0.9411764705882353,
+  "recall_at_k": 1.0,
   "median_rank": 0.0,
   "cases": [
     {
@@ -49,7 +49,7 @@
         "3-10-3"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.032018442622950824,
+      "score_of_first_expected": 0.03252247488101534,
       "found": true
     },
     {
@@ -60,7 +60,7 @@
         "3-10-3"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.0315136476426799,
+      "score_of_first_expected": 0.03252247488101534,
       "found": true
     },
     {
@@ -180,9 +180,9 @@
       "expected_anchors": [
         "2-1-19"
       ],
-      "rank_of_first_expected": null,
-      "score_of_first_expected": null,
-      "found": false
+      "rank_of_first_expected": 6,
+      "score_of_first_expected": 0.02571241401899771,
+      "found": true
     },
     {
       "id": "controller_same_runway_arrival_lay_time",
@@ -191,8 +191,8 @@
       "expected_anchors": [
         "3-10-3"
       ],
-      "rank_of_first_expected": 4,
-      "score_of_first_expected": 0.028125,
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03252247488101534,
       "found": true
     }
   ]
