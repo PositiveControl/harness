@@ -76,6 +76,17 @@ class Character:
     # canonical crutch. Empty for characters without a holdout file.
     holdout_voice_samples: tuple[VoiceSample, ...]
     seed_memories: tuple[SeedMemory, ...]
+    # airton_c1 opt-in (harness-3uh): when true, the orchestrator injects
+    # a forced `search_memory` tool call at the start of every user turn,
+    # so the model always sees a grounding-tool result before its first
+    # complete_with_tools call. Rationale: airton_c1's retrieval scores
+    # lay-language queries below the 0.5 passive-retrieval floor, so no
+    # memory block attaches and UngroundedCitationHook's grounding signal
+    # never lights up. The forced call fires regardless of cosine score
+    # and is mandatory character policy; passive retrieval (`--memories`
+    # / `--facts`) still runs in addition, not in place. Default False;
+    # every other character leaves behavior unchanged.
+    require_search_memory: bool = False
 
     def system_prompt(
         self,
@@ -253,4 +264,5 @@ def load_character(path: Path) -> Character:
         captured_voice_count=len(captured_samples),
         holdout_voice_samples=tuple(holdout_samples),
         seed_memories=tuple(seeds),
+        require_search_memory=bool(core.get("require_search_memory", False)),
     )

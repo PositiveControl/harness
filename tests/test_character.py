@@ -7,6 +7,7 @@ from harness.character import load_character
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AIRTON = REPO_ROOT / "character" / "airton"
 AIRTON_B = REPO_ROOT / "character" / "airton_b"
+AIRTON_C1 = REPO_ROOT / "character" / "airton_c1"
 
 
 def test_load_airton_shape() -> None:
@@ -177,6 +178,25 @@ def test_system_prompt_omits_date_when_not_supplied() -> None:
     character = load_character(AIRTON)
     prompt = character.system_prompt()
     assert "Today:" not in prompt
+
+
+def test_require_search_memory_defaults_to_false() -> None:
+    """harness-3uh: the forced-search-memory flag is opt-in. Every
+    character without it set in core.yaml should report False so
+    their orchestrator path is unchanged."""
+    airton = load_character(AIRTON)
+    assert airton.require_search_memory is False
+    airton_b = load_character(AIRTON_B)
+    assert airton_b.require_search_memory is False
+
+
+def test_require_search_memory_true_on_airton_c1() -> None:
+    """harness-3uh: airton_c1 opts in because lay-language JO 7110.65
+    queries score below the passive-retrieval floor. The flag drives
+    the tool-loop's forced-search-memory injection at CLI + TUI call
+    sites."""
+    airton_c1 = load_character(AIRTON_C1)
+    assert airton_c1.require_search_memory is True
 
 
 def test_system_prompt_excludes_named_voice_examples() -> None:

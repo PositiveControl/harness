@@ -326,6 +326,72 @@ def _router_prelude(
     return (True, result.success)
 
 
+_FORCED_SEARCH_MEMORY = "search_memory"
+
+
+def _forced_search_memory_prelude(
+    working: list[ChatMessage],
+    registry: ToolRegistry,
+    emit: Callable[[ToolLoopEvent], None],
+    seen_calls: set[tuple[str, str]],
+    user_message: str | None,
+    succeeded_tools: set[str],
+) -> bool:
+    """Inject a mandatory `search_memory` tool call at the start of the
+    turn (harness-3uh). Runs before the router prelude and before the
+    first model round; the synthesized assistant+tool messages are
+    appended to `working` so the model's first
+    `complete_with_tools` call sees the retrieval result as if the
+    model had asked for it.
+
+    Motivation (airton_c1): passive retrieval with a 0.5 cosine floor
+    misses all lay-language phrasings of JO 7110.65 queries, so no
+    memory block attaches and the model fabricates from parametric
+    weights. The forced call guarantees grounding regardless of score
+    and lights up UngroundedCitationHook's `tools_ran` signal so the
+    finalize phase can refuse fabricated citations.
+
+    Graceful degradation: if `search_memory` isn't in the active
+    registry (e.g. `--tool-set minimal`), we log nothing and skip
+    injection — the character flag is advisory, not load-bearing, and a
+    tool-set without memory tools should still answer. Empty
+    user_message also skips (rare: system-only bootstrap).
+
+    `succeeded_tools` is mutated unconditionally with
+    `'search_memory'` so the downstream grounding signal
+    (UngroundedCitationHook) sees this call even if the tool returned a
+    no-matches sentinel. The registry call-path still reports success
+    accurately for telemetry via the `tool_call_end` /
+    `tool_call_failed` event kind.
+
+    Returns True if the forced call actually ran, False otherwise.
+    The return value isn't load-bearing today (the main loop gates on
+    `succeeded_tools` / working-history tool messages), but callers
+    may want it for debugging."""
+    from harness.orchestrator.hooks import _call_key
+
+    if user_message is None or not user_message.strip():
+        return False
+    if _FORCED_SEARCH_MEMORY not in registry:
+        return False
+    call = ToolCall(name=_FORCED_SEARCH_MEMORY, arguments={"query": user_message})
+    emit(ToolLoopEvent(kind="tool_call_start", call=call, round_index=0))
+    result = registry.call(call.name, call.arguments)
+    kind = "tool_call_end" if result.success else "tool_call_failed"
+    emit(ToolLoopEvent(kind=kind, call=call, result=result, round_index=0))
+    seen_calls.add(_call_key(call))
+    working.append(ChatMessage(role="assistant", content="", tool_calls=(call,)))
+    working.append(ChatMessage(role="tool", content=result.output, name=call.name))
+    # Always register the forced call as a grounding signal, even if the
+    # tool returned a no-matches sentinel (success=True with empty
+    # body) or an error. Rationale: UngroundedCitationHook gates on
+    # "did a grounding tool run this turn" — we ran one, and refusing
+    # this signal because the store was empty would defeat the point
+    # of forcing it in the first place.
+    succeeded_tools.add(_FORCED_SEARCH_MEMORY)
+    return True
+
+
 class _BailController:
     """Owns the retry budget + current token caps for a tool-loop
     turn. Pulled out of run_tool_loop (harness-z4ev) so the main
@@ -531,6 +597,7 @@ def run_tool_loop(
     router: Router | None = None,
     hooks: HookPipeline | None = None,
     memory_block_attached: bool = False,
+    force_search_memory: bool = False,
 ) -> ToolLoopResult:
     """Drive a model + tool registry until the model emits a text-only
     reply or `max_rounds` rounds are spent.
@@ -566,7 +633,15 @@ def run_tool_loop(
     call is a fabricated citation, so the hook replaces the reply with
     a scope-aware refusal. Defaults to False — callers that don't
     plumb the signal leave the hook permissive (only the other two
-    signals can disarm it)."""
+    signals can disarm it).
+
+    `force_search_memory`, when True, injects a mandatory
+    `search_memory` tool call (query = latest user message) before the
+    router prelude and before the first model round. Used by
+    characters with `require_search_memory: true` in core.yaml (e.g.
+    airton_c1, harness-3uh) where passive retrieval routinely misses
+    lay-language paraphrases of in-scope queries. Degrades gracefully
+    to a no-op if `search_memory` isn't in the registry."""
     pipeline = hooks if hooks is not None else _DEFAULT_PIPELINE
     working: list[ChatMessage] = list(messages)
     initial_count = len(working)
@@ -601,6 +676,22 @@ def run_tool_loop(
     # the orchestrator appends its own user-role nudges during
     # bail-retries (those aren't the real user question).
     turn_user_message = _last_user_message(working[:initial_count])
+
+    # Forced search_memory injection (harness-3uh). Runs BEFORE the
+    # router prelude so the grounding result is already in-thread when
+    # the router (if any) classifies the turn. Mutates working /
+    # seen_calls / succeeded_tools like any other tool call; the rest
+    # of the loop can't tell the difference.
+    if force_search_memory:
+        forced_ran = _forced_search_memory_prelude(
+            working,
+            registry,
+            emit,
+            seen_calls,
+            turn_user_message,
+            succeeded_tools,
+        )
+        any_tool_succeeded = any_tool_succeeded or forced_ran
 
     if router is not None:
         _, router_success = _router_prelude(

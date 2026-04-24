@@ -2216,6 +2216,184 @@ def test_grounded_main_model_call_runs_normally() -> None:
     assert tool_msgs[0].content == "SO result"
 
 
+# ---------- forced search_memory (harness-3uh) ----------
+
+
+@dataclass
+class _StubSearchMemoryTool:
+    """Minimal search_memory stand-in. Avoids wiring a real EpisodicStore
+    in these tests — we only care about the orchestrator calling the
+    tool with the user message as `query` and threading the result into
+    working history."""
+
+    output: str = "(no memories matched)"
+    calls: list[dict[str, object]] = field(default_factory=list)
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="search_memory",
+            description="stub search_memory",
+            parameters={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+            tier="read",
+        )
+
+    def call(self, *, query: str, k: int = 5) -> str:
+        self.calls.append({"query": query, "k": k})
+        return self.output
+
+
+def test_force_search_memory_injects_call_before_model_round() -> None:
+    """When force_search_memory=True, the orchestrator fires a
+    search_memory tool call with the latest user message as `query`
+    BEFORE the first complete_with_tools invocation. The tool result
+    message must be in the thread the adapter sees on its first
+    call, and the assistant-message carrying the forced tool call
+    must precede it."""
+    stub = _StubSearchMemoryTool(output="recalled: Class B airspace rules")
+    registry = ToolRegistry()
+    registry.register(stub)
+
+    # The model replies with no tool calls — the forced call must
+    # happen regardless of what the model would have done on its own.
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="here is an answer")])
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="minimums in class B")],
+        registry,
+        force_search_memory=True,
+    )
+
+    # The forced call ran with the user message as `query`.
+    assert len(stub.calls) == 1
+    assert stub.calls[0]["query"] == "minimums in class B"
+
+    # The adapter saw the forced tool-result in its first call.
+    assert len(adapter.calls_seen) == 1
+    seen = adapter.calls_seen[0]
+    tool_msgs = [m for m in seen if m.role == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].name == "search_memory"
+    assert tool_msgs[0].content == "recalled: Class B airspace rules"
+
+    # Working history ordering: assistant(tool_call) → tool(result) before the
+    # model's final reply gets recorded.
+    roles = [(m.role, m.name) for m in result.messages]
+    assert ("assistant", None) in roles
+    assert ("tool", "search_memory") in roles
+    # Forced-call events fired at round_index=0, before round_start.
+    kinds = [(e.kind, e.round_index) for e in result.events]
+    forced_start = next(i for i, k in enumerate(kinds) if k == ("tool_call_start", 0))
+    forced_end = next(i for i, k in enumerate(kinds) if k == ("tool_call_end", 0))
+    round_start = next(i for i, k in enumerate(kinds) if k == ("round_start", 0))
+    assert forced_start < forced_end < round_start
+
+
+def test_force_search_memory_off_by_default_skips_injection() -> None:
+    """Default (force_search_memory=False) preserves pre-harness-3uh
+    behavior: no forced call, the adapter sees only system + user
+    messages on its first complete_with_tools call."""
+    stub = _StubSearchMemoryTool()
+    registry = ToolRegistry()
+    registry.register(stub)
+
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="plain answer")])
+
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="anything")],
+        registry,
+    )
+
+    # No forced call ran.
+    assert stub.calls == []
+    # Adapter saw no tool messages before its first reply.
+    assert len(adapter.calls_seen) == 1
+    tool_msgs = [m for m in adapter.calls_seen[0] if m.role == "tool"]
+    assert tool_msgs == []
+
+
+def test_force_search_memory_degrades_when_tool_absent() -> None:
+    """If `search_memory` isn't registered (e.g. tool-set minimal),
+    the forced call is a no-op and the turn still completes normally.
+    Graceful degradation is load-bearing: the character flag is
+    advisory, not a hard requirement."""
+    registry = ToolRegistry()  # empty — no search_memory
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="answered anyway")])
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="question")],
+        registry,
+        force_search_memory=True,
+    )
+
+    assert result.content == "answered anyway"
+    # No forced events.
+    forced_events = [e for e in result.events if e.kind == "tool_call_start"]
+    assert forced_events == []
+    # Adapter saw no tool-role messages.
+    assert len(adapter.calls_seen) == 1
+    assert [m for m in adapter.calls_seen[0] if m.role == "tool"] == []
+
+
+def test_force_search_memory_lights_up_tools_ran_for_finalize_hook() -> None:
+    """Integration: with the forced call in place, a reply that
+    contains a JO-style §X-Y-Z citation and no memory block should NOT
+    be caught by UngroundedCitationHook — because tools_ran now
+    includes `search_memory` from the forced injection. This is the
+    load-bearing interaction with harness-oc8's finalize hook."""
+    stub = _StubSearchMemoryTool(output="recalled: wake turbulence separation")
+    registry = ToolRegistry()
+    registry.register(stub)
+
+    fake_reply = (
+        "Standard separation is 3 miles. See JO 7110.65 §5-5-4 for the full wake turbulence rule."
+    )
+    adapter = _ScriptedAdapter(replies=[ModelReply(content=fake_reply)])
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="how close can I put a heavy behind a small")],
+        registry,
+        force_search_memory=True,
+        memory_block_attached=False,  # deliberately: the failure case
+    )
+
+    # UngroundedCitationHook would have replaced the reply with the
+    # character-agnostic refusal. Assert it didn't — the forced call
+    # legitimized the grounding signal.
+    from harness.orchestrator.hooks import UNGROUNDED_CITATION_FALLBACK
+
+    assert result.content == fake_reply
+    assert UNGROUNDED_CITATION_FALLBACK not in result.content
+
+
+def test_force_search_memory_skips_when_user_message_empty() -> None:
+    """Empty / whitespace-only user message => no forced call. Rare
+    (system-only bootstrap), but the prelude must not crash or emit an
+    empty-query search."""
+    stub = _StubSearchMemoryTool()
+    registry = ToolRegistry()
+    registry.register(stub)
+
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="ok")])
+
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="system", content="system only")],
+        registry,
+        force_search_memory=True,
+    )
+
+    assert stub.calls == []
+
+
 # Explicit import to confirm we can pass pytest from the tests folder
 def test_tools_module_importable() -> None:
     import harness.tools  # noqa: F401 — import-for-side-effect check

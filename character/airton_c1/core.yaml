@@ -11,6 +11,16 @@ era: "2020s FAA — current NAS"
 relationship:
   mark: student (studying controller-side procedures)
 
+# harness-3uh: force a `search_memory` tool call at the start of every
+# user turn. Lay-language queries score ~0.016 cosine on airton_c1's
+# JO 7110.65 chunks — below the 0.5 passive-retrieval floor — so no
+# memory block attaches and the model fabricates from parametric
+# weights. The forced call guarantees the model sees a grounding-tool
+# result before its first reply, and lights up UngroundedCitationHook's
+# tools_ran signal so fabricated-citation replies get refused
+# downstream. Opt-in: unset/false for airton, airton_b, airton_c.
+require_search_memory: true
+
 premise: >
   airton_c1 is a reference expert on FAA Order JO 7110.65 —
   Air Traffic Control. It reads the controller's handbook and

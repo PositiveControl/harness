@@ -446,6 +446,7 @@ class ClassicChatSession:
                 router=self.router,
                 hooks=self.hooks,
                 memory_block_attached=bool(recalled),
+                force_search_memory=self.character.require_search_memory,
             )
             streamed = True
             _persist_tool_exchange(
