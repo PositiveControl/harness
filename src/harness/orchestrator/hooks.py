@@ -1072,6 +1072,241 @@ class TableFabricationHook:
         return Continue()
 
 
+# Unit keywords we know how to recognize in a table header cell and in
+# a prose claim. Kept narrow — only the ATC-corpus units that surface
+# in JO 7110.65 tables (distances, altitudes, powers, bearings/speeds,
+# times). `nm` and `mile` without trailing s are normalized by
+# rstrip("s") at compare time so "miles" and "mile" canonicalize the
+# same key.
+_KNOWN_UNITS: frozenset[str] = frozenset(
+    {
+        "miles",
+        "mile",
+        "nm",
+        "ft",
+        "feet",
+        "foot",
+        "watts",
+        "watt",
+        "knots",
+        "knot",
+        "kt",
+        "minutes",
+        "minute",
+        "min",
+        "seconds",
+        "second",
+        "sec",
+    }
+)
+
+
+# Pulls "<label> class ... <value> <unit>" claims out of prose. Label
+# is 1-4 uppercase letters (matches atc class codes CL/MH/H/HH, airspace
+# letters A/B/C/D/E/G, category codes CAT/III). `class` anchor word is
+# required on one side so generic numbers like "50 miles apart" don't
+# get picked up as labeled claims. Number allows commas + decimals.
+# `DOTALL` + non-greedy `[^.|]*?` so we can span across a line without
+# picking up pipe tables or sentence boundaries.
+_LABELED_CLAIM_RE = re.compile(
+    r"\b(?:([A-Z]{1,4})\s+class|class\s+([A-Z]{1,4}))\b"
+    r"[^.|]*?"
+    r"\b(\d+(?:,\d{3})*(?:\.\d+)?)\s*"
+    r"(miles?|NM|nm|ft|feet|foot|watts?|knots?|kt|minutes?|min|seconds?|sec)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _canon_unit(unit: str) -> str:
+    """Lowercase + strip trailing s so 'Miles' / 'miles' / 'mile' all
+    canonicalize to the same lookup key. `nm` stays as-is (not a plural
+    form) — the rstrip is safe because `nm` has no trailing s to
+    strip."""
+    return unit.lower().rstrip("s")
+
+
+def _extract_labeled_claims(reply: str) -> list[tuple[str, str, str]]:
+    """Return (label, numeric_value, canonical_unit) triples from the
+    reply's prose. Value is comma-stripped so '1,999' canonicalizes to
+    '1999' for comparison against tool-output cells."""
+    claims: list[tuple[str, str, str]] = []
+    for match in _LABELED_CLAIM_RE.finditer(reply):
+        label = (match.group(1) or match.group(2) or "").upper()
+        value = match.group(3).replace(",", "")
+        unit = _canon_unit(match.group(4))
+        if label and unit in _KNOWN_UNITS:
+            claims.append((label, value, unit))
+    return claims
+
+
+# Table-row shape after pipe-split: non-empty cell list. We strip
+# surrounding whitespace + any emphasis markdown (`**bold**` / `*italic*`)
+# from each cell so the header lookup finds "Distance" whether the source
+# wrote `**Distance**` or just `Distance`.
+def _strip_cell(cell: str) -> str:
+    return cell.strip().strip("*").strip()
+
+
+def _parse_pipe_tables(text: str) -> list[list[list[str]]]:
+    """Extract pipe tables from `text`. Returns a list of tables;
+    each table is a list of rows; each row is a list of stripped cells.
+    A table ends when a non-pipe line breaks the run (blank line,
+    prose, etc.) — same heuristic a markdown renderer uses."""
+    tables: list[list[list[str]]] = []
+    current: list[list[str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("|") and line.count("|") >= 2:
+            if _PIPE_SEPARATOR_RE.match(line):
+                continue
+            cells = [_strip_cell(c) for c in line.strip("|").split("|")]
+            current.append(cells)
+        else:
+            if current:
+                tables.append(current)
+                current = []
+    if current:
+        tables.append(current)
+    return tables
+
+
+def _unit_of_column(header_cell: str) -> str | None:
+    """Best-effort unit-of-column parser. Looks for any known unit
+    keyword as a substring of the header cell (case-insensitive),
+    e.g. 'Distance (miles)' → 'mile'. None if the column isn't
+    unit-tagged — we don't try to guess; unlabeled columns get skipped."""
+    lower = header_cell.lower()
+    for unit in _KNOWN_UNITS:
+        if unit in lower:
+            return _canon_unit(unit)
+    return None
+
+
+def _build_table_row_map(table: list[list[str]]) -> dict[str, dict[str, frozenset[str]]]:
+    """Map {row_label: {unit: {acceptable_values}}} for a single pipe
+    table. Label is the first cell of each row after the header.
+    Acceptable_values is the set of numeric tokens found in that row's
+    cell under the unit-tagged column — a single cell like 'Under 50'
+    yields {'50'}; '14,500 - 17,999' yields {'14500', '17999'} so either
+    endpoint matches (the model is free to cite the range's top or
+    bottom as long as it doesn't invent a value)."""
+    if len(table) < 2:
+        return {}
+    header = table[0]
+    unit_columns: list[tuple[int, str]] = []
+    for idx, cell in enumerate(header):
+        unit = _unit_of_column(cell)
+        if unit is not None:
+            unit_columns.append((idx, unit))
+    if not unit_columns:
+        return {}
+    out: dict[str, dict[str, frozenset[str]]] = {}
+    for row in table[1:]:
+        if not row:
+            continue
+        label = row[0].upper()
+        if not label:
+            continue
+        for col_idx, unit in unit_columns:
+            if col_idx >= len(row):
+                continue
+            cell = row[col_idx]
+            nums = {
+                _NUMERIC_TOKEN_RE.match(tok).group(0).replace(",", "")  # type: ignore[union-attr]
+                for tok in _NUMERIC_TOKEN_RE.findall(cell)
+            }
+            if nums:
+                existing = out.setdefault(label, {}).get(unit, frozenset())
+                out[label][unit] = existing | nums
+    return out
+
+
+@dataclass(frozen=True)
+class NumericFabricationHook:
+    """Catch prose-form labeled numeric claims that disagree with the
+    source table in the retrieved tool output (harness-5uq).
+
+    Failure mode this catches: model retrieves a pipe table, reads the
+    row labels, but swaps a different row's value onto the label the
+    user asked about. Reproducer (session 2026-04-24 post-restart):
+    tool output contained `|MH|Under 50|25|`, reply wrote
+    'MH class RBN is 50 miles' — label MH pointed at 25 miles in the
+    retrieved table, but the model chose 50 (the H row's value) from
+    priors.
+
+    Why this runs after `table_fabrication`: that hook only fires when
+    the reply contains a literal pipe table; this one covers the
+    structurally identical failure when the reply is prose ('MH is
+    50 miles' instead of `| MH | … | 50 |`).
+
+    Trigger conditions (ALL must hold):
+      1. A grounding tool ran this turn (`ctx.tools_ran` intersects
+         `_GROUNDING_TOOLS`). A prose numeric claim with no grounding
+         is ungrounded-citation territory, handled upstream.
+      2. Reply contains ≥1 labeled claim extracted by
+         `_LABELED_CLAIM_RE` (e.g., 'MH class ... 50 miles').
+      3. Some tool output contains a pipe table whose header has a
+         column matching the claim's unit, AND whose first column has
+         a row matching the claim's label.
+      4. That row's unit-column value does NOT contain the claim's
+         numeric value.
+
+    Action: Halt with a canned refusal that names the fabrication
+    shape (class label vs. cited value). Deliberately does not try to
+    repair the reply by swapping in the true value — the model that
+    fabricated once may re-ground wrong again next round; a refusal
+    preserves trust.
+
+    Silent cases (by design): reply has a labeled claim but no table
+    in tool output matching the label → Continue. A claim the catcher
+    can't verify against a structural source is out of scope."""
+
+    name: str = "numeric_fabrication"
+
+    def check(self, ctx: FinalizeContext) -> FinalizeOutcome:
+        if not (ctx.tools_ran & _GROUNDING_TOOLS):
+            return Continue()
+        claims = _extract_labeled_claims(ctx.reply.content)
+        if not claims:
+            return Continue()
+        tool_text = "\n".join(ctx.tool_outputs)
+        tables = _parse_pipe_tables(tool_text)
+        if not tables:
+            return Continue()
+        # Merge every table's row-map into one lookup. Overlap between
+        # tables on the same label is rare in practice (one table per
+        # topic) but we union values so a label appearing in two tables
+        # passes if EITHER matches.
+        merged: dict[str, dict[str, frozenset[str]]] = {}
+        for table in tables:
+            for label, units in _build_table_row_map(table).items():
+                for unit, values in units.items():
+                    existing = merged.setdefault(label, {}).get(unit, frozenset())
+                    merged[label][unit] = existing | values
+        for label, value, unit in claims:
+            row_units = merged.get(label)
+            if row_units is None:
+                continue  # label unknown to any tool-output table
+            allowed = row_units.get(unit)
+            if allowed is None:
+                continue  # unit-tagged column not present for this label
+            if value in allowed:
+                continue  # claim agrees with a known row value
+            # Claim's label is in the table, unit-column exists for it,
+            # but the value isn't one of the known cell values for that
+            # (label, unit). Structural cross-row fabrication.
+            reply = ctx.reply
+            return Halt(
+                ModelReply(
+                    content=TABLE_FABRICATION_FALLBACK,
+                    tool_calls=(),
+                    was_truncated=reply.was_truncated,
+                    had_unparseable_call=reply.had_unparseable_call,
+                )
+            )
+        return Continue()
+
+
 @dataclass(frozen=True)
 class FabricationFallbackHook:
     """Substitute the canned refusal when bail retries are exhausted
@@ -1215,12 +1450,15 @@ def default_hook_pipeline() -> HookPipeline:
         # replies whose bail outcome was Continue (legitimate-looking
         # wrap-up that no bail hook caught). table_fabrication then
         # covers the narrower "grounded citation, fabricated row" shape
-        # that ungrounded_citation leaves alone (grounding tool DID run).
+        # when the reply is itself a pipe table. numeric_fabrication
+        # covers the same failure mode when the reply is prose
+        # ('MH class is 50 miles' vs. the retrieved `|MH|…|25|`).
         # fabrication_fallback only fires when the bail loop itself left
         # a Nudge outcome on the table.
         finalize=[
             UngroundedCitationHook(),
             TableFabricationHook(),
+            NumericFabricationHook(),
             FabricationFallbackHook(),
         ],
     )
@@ -1378,6 +1616,7 @@ __all__ = [
     "HookPipeline",
     "MetaConfirmHook",
     "Nudge",
+    "NumericFabricationHook",
     "PairedMetaConfirmStripHook",
     "PostModelContext",
     "PostModelHook",

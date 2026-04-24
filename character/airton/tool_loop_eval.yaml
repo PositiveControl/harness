@@ -276,14 +276,14 @@
   expected_fallback: true
   expected_not_contains: ["search the web"]
 
-- id: table_fabrication_grounded_bad_row
-  label: table_fabrication
-  description: Citation-scoped character cites a real section after a
-    successful search_memory call, but reconstructs a table row the
-    tool output didn't contain. The grounding tool disarms
-    ungrounded_citation (citation IS grounded); table_fabrication
-    catches the fabricated row via verbatim-compare against the tool
-    output and swaps the canned refusal in (harness-5uq).
+- id: numeric_fabrication_cross_row_prose
+  label: numeric_fabrication
+  description: After a successful search_memory call that returned a pipe
+    table, the model writes a prose claim that swaps a neighbor row's
+    value onto the asked-about label ('MH class is 50 miles' vs. the
+    retrieved `|MH|Under 50|25|`). No pipe table in the reply, so
+    table_fabrication doesn't fire; numeric_fabrication catches it via
+    header+label structural lookup (harness-5uq).
   registry:
     - name: search_memory
       output: "[0.033] ALTITUDE AND DISTANCE LIMITATIONS\n  lesson: JO_7110.65 §4-1-1\n  |Class|Power (watts)|Distance (miles)|\n|---|---|---|\n|CL|Under 25|15|\n|MH|Under 50|25|\n|H|50 - 1,999|50|\n|HH|2,000 or more|75|\n"
@@ -295,9 +295,35 @@
       tool_calls:
         - name: search_memory
           arguments: {"query": "MH class RBN usable distance"}
-    - content: "The usable distance for an MH class RBN is 50 miles per JO 7110.65 §4-1-1 TBL 4-1-2:\n\n| Class | Power (watts) | Distance (miles) |\n|---|---|---|\n| MH | Under 50 | 50 |\n| H | 50 - 1,999 | 50 |\n"
+    - content: "The usable distance for an MH class RBN is 50 miles, per JO 7110.65 §4-1-1."
   expected_contains: ["fabricated row"]
-  expected_not_contains: ["| MH | Under 50 | 50 |", "50 miles"]
+  expected_not_contains: ["50 miles"]
+
+- id: table_fabrication_grounded_bad_row
+  label: table_fabrication
+  description: Citation-scoped character cites a real section after a
+    successful search_memory call, but reconstructs a table row the
+    tool output didn't contain. The grounding tool disarms
+    ungrounded_citation (citation IS grounded); table_fabrication
+    catches the fabricated row via verbatim-compare against the tool
+    output. Prose uses generic wording ('the values for the MH band')
+    so numeric_fabrication's labeled-claim regex doesn't also fire —
+    attribution eval needs ONLY table_fabrication to save this case
+    (harness-5uq).
+  registry:
+    - name: search_memory
+      output: "[0.033] ALTITUDE AND DISTANCE LIMITATIONS\n  lesson: JO_7110.65 §4-1-1\n  |Type|Power (watts)|Distance (miles)|\n|---|---|---|\n|CL|Under 25|15|\n|MH|Under 50|25|\n|H|50 - 1,999|50|\n|HH|2,000 or more|75|\n"
+  messages:
+    - role: user
+      content: "Show me TBL 4-1-2."
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_memory
+          arguments: {"query": "TBL 4-1-2 L/MF Radio Beacon"}
+    - content: "Here is TBL 4-1-2 from JO 7110.65 §4-1-1:\n\n| Type | Power (watts) | Distance (miles) |\n|---|---|---|\n| MH | Under 50 | 50 |\n| H | 50 - 1,999 | 50 |\n"
+  expected_contains: ["fabricated row"]
+  expected_not_contains: ["| MH | Under 50 | 50 |"]
 
 - id: ungrounded_citation_no_grounding
   label: ungrounded_citation

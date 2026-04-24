@@ -25,6 +25,7 @@ from harness.orchestrator.hooks import (
     HookPipeline,
     MetaConfirmHook,
     Nudge,
+    NumericFabricationHook,
     PairedMetaConfirmStripHook,
     PostModelContext,
     PreToolContext,
@@ -293,6 +294,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "argument_grounding",
         "ungrounded_citation",
         "table_fabrication",
+        "numeric_fabrication",
         "fabrication_fallback",
     )
 
@@ -856,9 +858,14 @@ def test_table_fabrication_respects_disabled_toggle() -> None:
     enabled = pipe.run_finalize(ctx, disabled=frozenset())
     assert isinstance(enabled, Halt)
     assert enabled.reply.content == TABLE_FABRICATION_FALLBACK
-    # Disabled: no other finalize hook fires (last_outcome is Continue),
-    # so the reply passes through.
-    disabled = pipe.run_finalize(ctx, disabled=frozenset({"table_fabrication"}))
+    # Disabled: table_fabrication's contribution is isolated by also
+    # disabling numeric_fabrication (which independently catches the
+    # prose "MH class ... 50 miles" lead-in of the same reply). With
+    # both disabled, last_outcome=Continue leaves no hook firing.
+    disabled = pipe.run_finalize(
+        ctx,
+        disabled=frozenset({"table_fabrication", "numeric_fabrication"}),
+    )
     assert isinstance(disabled, Continue)
 
 
@@ -883,6 +890,170 @@ def test_table_fabrication_ignores_label_only_rows() -> None:
         )
     )
     assert isinstance(outcome, Continue)
+
+
+# ---------- numeric_fabrication (harness-5uq prose-shape) ----------
+
+
+# Tool output containing the full TBL 4-1-2 pipe table. Header tags
+# the third column as "Distance (miles)" so the hook can associate
+# the numeric values with the 'mile' unit. Corpus uses **bold**
+# markdown in headers; the cell stripper handles it.
+_TOOL_OUTPUT_RBN_TABLE = (
+    "[0.033] ALTITUDE AND DISTANCE LIMITATIONS\n"
+    "  lesson: JO_7110.65 §4-1-1\n"
+    "  |**Class**|**Power (watts)**|**Distance (miles)**|\n"
+    "|---|---|---|\n"
+    "|CL|Under 25|15|\n"
+    "|MH|Under 50|25|\n"
+    "|H|50 - 1,999|50|\n"
+    "|HH|2,000 or more|75|\n"
+)
+
+
+def test_numeric_fabrication_fires_on_cross_row_prose() -> None:
+    """Reply says 'MH class ... 50 miles' but tool output has
+    |MH|Under 50|25|. Distance-column unit matches ('miles'), label
+    MH has a row, but 50 isn't the MH row's distance value — it's
+    the H row's. Halt with canned refusal."""
+    reply = _reply(
+        "The usable distance for an MH class RBN is 50 miles for all "
+        "altitudes, per JO 7110.65 §4-1-1."
+    )
+    outcome = NumericFabricationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+            tool_outputs=(_TOOL_OUTPUT_RBN_TABLE,),
+        )
+    )
+    assert isinstance(outcome, Halt)
+    assert outcome.reply.content == TABLE_FABRICATION_FALLBACK
+
+
+def test_numeric_fabrication_passes_on_truthful_prose() -> None:
+    """'MH class ... 25 miles' agrees with |MH|Under 50|25|. The value
+    25 is present in the MH row's distance column → Continue."""
+    reply = _reply(
+        "The usable distance for an MH class RBN is 25 miles, per "
+        "JO 7110.65 §4-1-1."
+    )
+    outcome = NumericFabricationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+            tool_outputs=(_TOOL_OUTPUT_RBN_TABLE,),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_numeric_fabrication_silent_without_grounding_tool() -> None:
+    """No grounding tool ran → defer to ungrounded_citation, don't
+    fire."""
+    reply = _reply(
+        "The usable distance for an MH class RBN is 50 miles."
+    )
+    outcome = NumericFabricationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset(),
+            memory_block_attached=False,
+            tool_outputs=(),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_numeric_fabrication_silent_when_label_not_in_tool_table() -> None:
+    """Claim references a label the tool-output tables don't have —
+    the catcher can't structurally verify, so it lets the reply
+    through. Out-of-scope, not a fabrication the catcher can claim."""
+    reply = _reply("The XX class device is 99 miles per JO 7110.65 §4-1-1.")
+    outcome = NumericFabricationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+            tool_outputs=(_TOOL_OUTPUT_RBN_TABLE,),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_numeric_fabrication_silent_when_unit_column_absent() -> None:
+    """Tool output's table has no distance column but reply claims a
+    'miles' value — without a unit-tagged column, the catcher can't
+    structurally verify. Continue."""
+    reply = _reply("The MH class needs 50 miles per JO 7110.65 §4-1-1.")
+    # Header lacks a 'miles' / 'ft' / 'watts' column, so row-map is empty.
+    tool_out = (
+        "  |**Class**|**Description**|\n|---|---|\n|MH|Medium power|\n"
+    )
+    outcome = NumericFabricationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+            tool_outputs=(tool_out,),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_numeric_fabrication_handles_comma_grouping() -> None:
+    """'1,999' in reply should canonicalize to '1999' for lookup
+    against the tool row's '1,999'. The catcher should accept a
+    legitimate claim about the H row (`50 - 1,999 watts`, 50 miles)."""
+    reply = _reply(
+        "An H class RBN operates between 50 and 1,999 watts and has a "
+        "usable distance of 50 miles, per JO 7110.65 §4-1-1."
+    )
+    outcome = NumericFabricationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+            tool_outputs=(_TOOL_OUTPUT_RBN_TABLE,),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_numeric_fabrication_respects_disabled_toggle() -> None:
+    """Attribution eval disables catchers by name — pipeline must honor
+    'numeric_fabrication' in the disabled frozenset."""
+    pipe = default_hook_pipeline()
+    reply = _reply(
+        "The usable distance for an MH class RBN is 50 miles, per "
+        "JO 7110.65 §4-1-1."
+    )
+    ctx = FinalizeContext(
+        reply=reply,
+        last_outcome=Continue(),
+        tools_ran=frozenset({"search_memory"}),
+        memory_block_attached=False,
+        tool_outputs=(_TOOL_OUTPUT_RBN_TABLE,),
+    )
+    # Enabled: numeric_fabrication halts.
+    enabled = pipe.run_finalize(ctx, disabled=frozenset())
+    assert isinstance(enabled, Halt)
+    assert enabled.reply.content == TABLE_FABRICATION_FALLBACK
+    # Disabled: no other finalize hook fires (ungrounded_citation is
+    # disarmed by tools_ran; table_fabrication doesn't see a pipe
+    # table in the reply; last_outcome is Continue).
+    disabled = pipe.run_finalize(
+        ctx, disabled=frozenset({"numeric_fabrication"})
+    )
+    assert isinstance(disabled, Continue)
 
 
 # ---------- custom pipeline construction ----------
