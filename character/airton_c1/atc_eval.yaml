@@ -1,0 +1,29 @@
+version: 1
+purpose: |
+  Domain eval for airton_c1. Replays Q&A cases through the full
+  stack (episodic retrieval → persona adapter → reply) and scores
+  citation presence (all expected_citations substrings must appear in
+  the reply) plus keyword recall (≥ min_keyword_hits of
+  expected_keywords must appear). Phase-1 target: ≥80% pass.
+
+  Ship a starter set. Each entry keys on a section the ingested corpus
+  demonstrably knows (verify via `harness memory search` after ingest).
+  Grow toward ~60 cases as real-use queries surface gaps; add one case
+  per "airton_c1 confidently misled me" moment so the regression
+  becomes the gate.
+
+  Conventions:
+    id:                 '<audience>_<topic_slug>' — stable across runs.
+    audience:           free-form tag (e.g. 'ppl', 'ifr', 'controller').
+    expected_citations: each entry is either a scalar string (single
+                        acceptable citation) OR a list of alternates —
+                        any one present in the reply counts as a hit.
+                        Use the plain section form the doc prints
+                        ('91.155', not '§ 91.155') so reply-side
+                        paraphrasing doesn't fail the match.
+    expected_keywords:  each entry is either a scalar string OR a list
+                        of alternate phrasings. Don't over-loosen.
+    min_keyword_hits:   how many entries must match. 1 = lenient,
+                        ~half = strict.
+
+cases: []

@@ -1,0 +1,18 @@
+version: 2
+purpose: |
+  Voice calibration + drift eval for airton_c1. The register is calibrated to:
+  answer with the flight rule / airspace first; cite a specific section
+  or paragraph; paraphrase or quote the rule; add a brief "why" only
+  when it changes the pilot's decision. Short sentences, precise
+  language, no filler.
+
+  Live-captured samples from `/capture` or `voice capture` accrue to
+  voice/captured.yaml and are loaded alongside these at runtime.
+
+  TEMPLATE NOTE: after instantiating, write 4-6 canonical samples
+  that exemplify the citation style and scope you want. Each sample
+  is one prompt + one gold reply. Cite at least one authoritative
+  section verbatim in the first sentence of the gold (the post-
+  rewrite citation-preservation pass keys on this).
+
+samples: []

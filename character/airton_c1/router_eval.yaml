@@ -1,0 +1,8 @@
+version: 1
+purpose: |
+  Router eval fixture for airton_c1 — pins small-model intent routing
+  accuracy for its tool profile. Populate as tool use matures; stub
+  for now so `eval router --character airton_c1` has a loadable
+  fixture.
+
+cases: []
