@@ -15,7 +15,9 @@ from harness.tools import (
     SearchMemoryTool,
     ShellTool,
     Tool,
+    ToolHit,
     ToolRegistry,
+    ToolResult,
     ToolSpec,
     WriteFileTool,
 )
@@ -97,6 +99,94 @@ def test_registry_unknown_kwarg_returns_actionable_error(tmp_path: Path) -> None
     assert "Accepts:" in result.output
     assert "path" in result.output
     assert (result.error or "").startswith("unknown_kwarg:")
+
+
+@dataclass
+class _StructuredReturnStub:
+    """Tool that returns ToolResult directly with structured metadata.
+    Exercises the harness-ywp.4 Registry dispatch path."""
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="_stub_structured",
+            description="stub",
+            parameters={"type": "object", "properties": {}},
+            tier="read",
+        )
+
+    def call(self) -> ToolResult:
+        return ToolResult(
+            tool_name="_stub_structured",
+            output="hello",
+            hits=(
+                ToolHit(source="episodic", external_id="x1", title="T1", score=0.91),
+                ToolHit(source="episodic", external_id="x2", title="T2", score=0.33),
+            ),
+        )
+
+
+def test_registry_passes_through_structured_tool_result() -> None:
+    """harness-ywp.4: tools may return ToolResult directly to carry
+    retrieval hits / grounded citations. The Registry trusts that
+    result and propagates it to the caller."""
+    registry = ToolRegistry()
+    registry.register(_StructuredReturnStub())
+    result = registry.call("_stub_structured", {})
+    assert result.success
+    assert result.output == "hello"
+    assert len(result.hits) == 2
+    assert result.hits[0].external_id == "x1"
+    assert result.top_score == 0.91
+
+
+@dataclass
+class _MismatchedToolNameStub:
+    """Tool that returns a ToolResult whose tool_name disagrees with
+    the registered name — Registry must re-stamp to the registry name
+    so audit attribution stays honest."""
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="_stub_mismatched",
+            description="stub",
+            parameters={"type": "object", "properties": {}},
+            tier="read",
+        )
+
+    def call(self) -> ToolResult:
+        return ToolResult(tool_name="wrong_name", output="ok")
+
+
+def test_registry_restamps_tool_name_on_mismatch() -> None:
+    registry = ToolRegistry()
+    registry.register(_MismatchedToolNameStub())
+    result = registry.call("_stub_mismatched", {})
+    assert result.tool_name == "_stub_mismatched"
+    assert result.output == "ok"
+
+
+def test_tool_result_text_factory_has_empty_metadata() -> None:
+    r = ToolResult.text("x", "some output")
+    assert r.tool_name == "x"
+    assert r.output == "some output"
+    assert r.hits == ()
+    assert r.citations_grounded == frozenset()
+    assert r.top_score is None
+
+
+def test_tool_result_top_score_returns_max_hit_score() -> None:
+    r = ToolResult(
+        tool_name="x",
+        output="",
+        hits=(
+            ToolHit(source="episodic", external_id=None, title="a", score=0.2),
+            ToolHit(source="episodic", external_id=None, title="b", score=0.8),
+            ToolHit(source="episodic", external_id=None, title="c", score=0.5),
+        ),
+    )
+    assert r.top_score == 0.8
 
 
 def test_registry_typeerror_without_unknown_kwarg_falls_through(tmp_path: Path) -> None:
@@ -331,8 +421,16 @@ def test_search_memory_returns_formatted_hits(tmp_path: Path) -> None:
         )
         tool = SearchMemoryTool(store=store)
         result = tool.call(query="bug")
-        assert "Debug session" in result
-        assert "Root cause or nothing." in result
+        assert "Debug session" in result.output
+        assert "Root cause or nothing." in result.output
+        # Structured return (harness-ywp.4): hit surfaces retrieval
+        # metadata so the audit log and confidence-fallback hook can
+        # read scores without parsing the tool output string.
+        assert len(result.hits) == 1
+        assert result.hits[0].source == "episodic"
+        assert result.hits[0].title == "Debug session"
+        assert result.hits[0].external_id == "m1"
+        assert result.top_score == result.hits[0].score
     finally:
         store.close()
 
@@ -342,8 +440,10 @@ def test_search_memory_empty_store_returns_note(tmp_path: Path) -> None:
     try:
         tool = SearchMemoryTool(store=store)
         result = tool.call(query="anything")
-        assert result.startswith("(no memories matched")
-        assert "search_web" in result
+        assert result.output.startswith("(no memories matched")
+        assert "search_web" in result.output
+        assert result.hits == ()
+        assert result.top_score is None
     finally:
         store.close()
 

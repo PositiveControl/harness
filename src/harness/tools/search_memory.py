@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from harness.retrieval.query_expander import NullQueryExpander, QueryExpander
-from harness.tools.base import ToolSpec
+from harness.tools.base import ToolHit, ToolResult, ToolSpec
 
 if TYPE_CHECKING:
     from harness.store.episodic import EpisodicStore
@@ -73,7 +73,7 @@ class SearchMemoryTool:
             display_name="Recall memory",
         )
 
-    def call(self, *, query: str, k: int = _DEFAULT_K) -> str:
+    def call(self, *, query: str, k: int = _DEFAULT_K) -> ToolResult:
         # Expand lay-term queries into the section's full synonym field
         # so dense cosine + BM25 both see the jargon-space version of
         # the user's question. NullQueryExpander (the default) is
@@ -81,11 +81,12 @@ class SearchMemoryTool:
         expanded = self.expander.expand(query)
         hits = self.store.search(expanded, k=k, user_id=self.user_id)
         if not hits:
-            return (
+            return ToolResult.text(
+                self.spec.name,
                 "(no memories matched — if this is about external facts, "
                 "people, places, or live information, try search_web next; "
                 "otherwise answer from general knowledge or ask a clarifying "
-                "question)"
+                "question)",
             )
         lines: list[str] = []
         for rec, score in hits:
@@ -96,4 +97,21 @@ class SearchMemoryTool:
             ellipsis = "…" if len(rec.body) > _BODY_CAP_CHARS else ""
             lines.append(f"  {snippet}{ellipsis}")
             lines.append("")
-        return "\n".join(lines).strip()
+        # Surface structured hits so the per-turn audit log (harness-ywp.2)
+        # and the low-confidence fallback hook (harness-ywp.3) can read
+        # retrieval scores without regex-parsing the tool output text.
+        tool_hits = tuple(
+            ToolHit(
+                source="episodic",
+                external_id=rec.external_id,
+                title=rec.title,
+                score=score,
+                principle=rec.principle,
+            )
+            for rec, score in hits
+        )
+        return ToolResult(
+            tool_name=self.spec.name,
+            output="\n".join(lines).strip(),
+            hits=tool_hits,
+        )

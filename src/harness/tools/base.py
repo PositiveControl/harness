@@ -49,11 +49,52 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
+class ToolHit:
+    """A single retrieval hit surfaced by a grounding-tier tool. Decoupled
+    from store types (EpisodicRecord, SemanticFact, WebHit) so hooks and
+    audit consumers can reason about retrieval without importing the
+    store layer.
+
+    Introduced with the Tool.call() structured return type (harness-ywp.4).
+    Populated today by search_memory; future tools (search_facts,
+    fetch_url) will follow the same shape when their audit consumers
+    land."""
+
+    source: str  # "episodic" | "semantic" | "web" | etc.
+    external_id: str | None
+    title: str
+    score: float
+    principle: str | None = None
+
+
+@dataclass(frozen=True)
 class ToolResult:
     tool_name: str
     output: str
     success: bool = True
     error: str | None = None
+    # Structured metadata from grounding-tier tools — consumed by the
+    # per-turn audit log (harness-ywp.2) and the low-confidence fallback
+    # hook (harness-ywp.3). Empty tuple / frozenset when the tool
+    # doesn't expose retrieval signal (most tools). Plain-text tools
+    # build these via `ToolResult.text(name, output)`.
+    hits: tuple[ToolHit, ...] = ()
+    citations_grounded: frozenset[str] = frozenset()
+
+    @classmethod
+    def text(cls, tool_name: str, output: str) -> ToolResult:
+        """Factory for plain-text tool output. Equivalent to
+        `ToolResult(tool_name, output)` — a call-site marker that the
+        tool has no structured metadata to expose."""
+        return cls(tool_name=tool_name, output=output)
+
+    @property
+    def top_score(self) -> float | None:
+        """Highest score across `hits`, or None when no hits. Convenience
+        for the confidence-fallback hook (harness-ywp.3)."""
+        if not self.hits:
+            return None
+        return max(h.score for h in self.hits)
 
 
 @dataclass(frozen=True)
@@ -169,7 +210,10 @@ class ToolRegistry:
         try:
             # Tool's `call` is not on the Protocol (see Tool docstring); each
             # concrete implementation supplies it with typed kwargs.
-            out: str = tool.call(**arguments)  # type: ignore[attr-defined]
+            # Tools may return `str` (legacy) or `ToolResult` directly
+            # (structured return, harness-ywp.4). The Registry normalises
+            # both to a ToolResult below.
+            out: str | ToolResult = tool.call(**arguments)  # type: ignore[attr-defined]
         except TypeError as exc:
             unknown = _unknown_kwarg_from(exc)
             if unknown is not None:
@@ -198,6 +242,11 @@ class ToolRegistry:
                 success=False,
                 error=f"{type(exc).__name__}: {exc}",
             )
+        if isinstance(out, ToolResult):
+            # Structured return — trust the tool's `tool_name`, success flag,
+            # and metadata, but re-stamp tool_name from the registry in case
+            # of mismatch (defensive — keeps audit attribution honest).
+            return out if out.tool_name == name else replace(out, tool_name=name)
         return ToolResult(tool_name=name, output=out, success=True)
 
 

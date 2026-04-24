@@ -935,11 +935,12 @@ def test_aircraft_to_aircraft_retrieval_lands_13_1_2() -> None:
     store = EpisodicStore(_AIRTON_C1_DB, embedder=embedder)
     tool = SearchMemoryTool(store=store)
     try:
-        out = tool.call(
+        result = tool.call(
             query="Where can a controller find information for aircraft-to-aircraft alerts?"
         )
     finally:
         store.close()
+    out = result.output
     # §13-1-2 must appear in the default tool output so the model sees
     # it. Exact string match on the principle anchor.
     assert "§13-1-2" in out, (
@@ -965,9 +966,10 @@ def test_mh_rbn_tool_output_contains_full_tbl_412() -> None:
     store = EpisodicStore(_AIRTON_C1_DB, embedder=embedder)
     tool = SearchMemoryTool(store=store)
     try:
-        out = tool.call(query="What is the usable distance for an MH class RBN?")
+        result = tool.call(query="What is the usable distance for an MH class RBN?")
     finally:
         store.close()
+    out = result.output
     # Normalize for the comparison the way NumericFabricationHook does
     # — whitespace + commas stripped — so trivial formatting variance
     # in the stored body doesn't false-positive this test.
