@@ -1724,6 +1724,59 @@ def test_scope_redirect_silent_without_user_message() -> None:
     assert isinstance(outcome, Continue)
 
 
+def test_scope_redirect_fires_on_joke_frame_structure() -> None:
+    """Session 2026-04-24 repro: 'If a ghost, a turtle, and a
+    refrigerator buy plane tickets, where do they go?' is a joke
+    frame. `_CLEARLY_NON_AVIATION_RE` covers ghost/turtle/refrigerator
+    individually, but the structural `_JOKE_FRAME_RE` is the durable
+    signal — fires even when specific nouns aren't in the vocab list."""
+    outcome = ScopeRedirectHook().check(
+        _scope_ctx(
+            "If a pilot, a controller, and a mechanic walk into a bar, "
+            "what do they order?",
+            "Per JO 7110.65 §4-1-1, the usable distance for an MH class "
+            "RBN is 25 miles.",
+        )
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_scope_redirect_fires_on_reply_content_bleed() -> None:
+    """Defense in depth: if the reply mixes aviation vocab AND clearly
+    non-aviation vocab (e.g. 'Per §4-1-1 ... Also roosters don't lay
+    eggs'), that's confusion/context-bleed regardless of the user's
+    message shape. Signal C catches this even when A (user vocab)
+    and B (joke frame) both miss."""
+    outcome = ScopeRedirectHook().check(
+        _scope_ctx(
+            "please summarize what that section says about beacons",
+            "Per JO 7110.65 §4-1-1, the usable distance for an MH class "
+            "RBN is 25 miles. Also, roosters do not lay eggs.",
+        )
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_scope_redirect_expanded_vocab_catches_household_and_supernatural() -> None:
+    """Expanded `_CLEARLY_NON_AVIATION_RE` covers household and
+    supernatural terms that show up in comedy / riddle prompts."""
+    for user, nonaviation_term in (
+        ("what does a refrigerator need to fly an IFR approach", "refrigerator"),
+        ("can a ghost squawk IDENT on a radar display", "ghost"),
+        ("tell me what a turtle sees when approaching the runway", "turtle"),
+    ):
+        outcome = ScopeRedirectHook().check(
+            _scope_ctx(
+                user,
+                "Per JO 7110.65 §5-2-7, VFR radar service termination "
+                "uses 'squawk 1200'.",
+            )
+        )
+        assert isinstance(outcome, Nudge), (
+            f"scope_redirect did not fire on {nonaviation_term!r} user message"
+        )
+
+
 def test_scope_redirect_respects_disabled_toggle() -> None:
     """Attribution eval disables catchers by name."""
     pipe = default_hook_pipeline()

@@ -921,31 +921,69 @@ _AVIATION_VOCAB_RE = re.compile(
 
 # Strong out-of-scope markers. Presence in a user message is the
 # positive trigger for ScopeRedirectHook — clearly non-aviation
-# vocabulary (biology, programming, cooking, chat/greeting) that no
-# in-scope JO 7110.65 question should contain. Narrow on purpose:
-# prefer false negatives (missing an out-of-scope case) over false
-# positives (nudging a valid in-scope lay query). Grow this list as
-# new false-negative cases surface — the rule of discipline is 'only
-# add terms that are almost never in a JO 7110.65 question.'
+# vocabulary (biology, programming, cooking, chat/greeting,
+# supernatural, household, joke-meta) that no in-scope JO 7110.65
+# question should contain. Narrow on purpose: prefer false negatives
+# (missing an out-of-scope case) over false positives (nudging a
+# valid in-scope lay query). Grow this list as new false-negative
+# cases surface — the rule of discipline is 'only add terms that are
+# almost never in a JO 7110.65 question.'
 _CLEARLY_NON_AVIATION_RE = re.compile(
     r"\b(?:"
-    # Biology / animals
+    # Biology / animals (farm + common pets)
     r"rooster|chicken|hen|egg|eggs|cow|pig|horse|goat|sheep|dog|cat|fish|"
     r"bird|plant|tree|flower|fungus|bacteria|virus|cell|"
+    # More animals — wildlife / exotic, common in jokes & riddles
+    r"turtle|tortoise|rabbit|bunny|mouse|rat|snake|lizard|frog|toad|"
+    r"elephant|monkey|giraffe|lion|tiger|bear|wolf|fox|deer|moose|"
+    r"raccoon|squirrel|hamster|kangaroo|penguin|whale|dolphin|shark|"
+    r"octopus|spider|ant|bee|butterfly|"
+    # Supernatural / fantasy — clear non-aviation joke vocabulary
+    r"ghost|zombie|vampire|werewolf|dragon|unicorn|fairy|demon|angel|"
+    r"elf|wizard|witch|troll|goblin|mermaid|santa|"
+    # Household items / furniture / appliances
+    r"refrigerator|fridge|microwave|oven|toaster|washing\s+machine|"
+    r"dishwasher|couch|sofa|mattress|pillow|blanket|lamp|"
     # Food & cooking
     r"recipe|cook|bake|ingredient|breakfast|lunch|dinner|meal|"
+    r"pizza|burger|sandwich|pasta|salad|soup|cake|cookie|"
     # Programming & software (not ATC software)
     r"python|javascript|typescript|ruby|rust|golang|react|vue|django|flask|"
     r"sql|bash|shell\s+script|variable|compile|debug|commit|git(?:hub)?|"
-    # Math / science
+    # Math / science (unrelated to ATC domain)
     r"equation|theorem|calculus|algebra|geometry|physics|chemistry|"
     r"astronomy|biology|history|literature|philosophy|"
     # Personal / chat / meta
     r"how\s+are\s+you|tell\s+me\s+about\s+yourself|what(?:'s|\sis)\s+your\s+name|"
     r"tell\s+me\s+a\s+joke|sing\s+(?:me\s+)?a\s+song|"
+    # Joke-meta vocabulary
+    r"joke|riddle|punchline|funny|hilarious|haha"
     # Entertainment
-    r"football|basketball|baseball|soccer|movie|film|song|album|book|novel"
+    r"|football|basketball|baseball|soccer|movie|film|song|album|book|novel"
     r")\b",
+    re.IGNORECASE,
+)
+
+
+# Joke-frame structural regex. Common joke setups almost never ask
+# real in-scope questions even when their specific nouns aren't in
+# the non-aviation vocab list. Targeted patterns; add more as new
+# shapes surface. 'If a X, a Y, and a Z...' is the lead-in from the
+# observed 'ghost/turtle/refrigerator' repro. 'Why did the X...' and
+# 'knock knock' are the other evergreen shapes.
+_JOKE_FRAME_RE = re.compile(
+    r"(?:"
+    # 'If a X, a Y, and a Z ...' — multi-noun absurd setup, tolerant
+    # of optional commas and 'and' connectors between items.
+    r"\bif\s+a\s+\w+(?:\s*,\s*(?:and\s+)?(?:a|an)\s+\w+){2,}"
+    # 'Why did the X cross/go/do ...' — classic joke opener
+    r"|\bwhy\s+did\s+the\s+\w+\s+(?:cross|go|do|say|want|need)"
+    # 'Knock knock' literal
+    r"|\bknock[\s,-]+knock\b"
+    # 'What do you call a X when ...' / 'What's the difference between X and Y'
+    r"|\bwhat\s+do\s+you\s+(?:call|get)\s+(?:a|an|when)"
+    r"|\bwhat(?:'s|\sis)\s+the\s+(?:difference|similarity)\s+between\s+\w+\s+and\s+\w+"
+    r")",
     re.IGNORECASE,
 )
 
@@ -959,7 +997,8 @@ _CLEARLY_NON_AVIATION_RE = re.compile(
 # pointless retry loop.
 _SCOPE_REDIRECT_MARKER_RE = re.compile(
     r"(?:"
-    r"outside\s+(?:of\s+)?(?:JO|FAA|the\s+order|scope)"
+    r"outside\s+(?:of\s+|the\s+)?(?:JO|FAA|the\s+order|scope|my\s+scope)"
+    r"|outside\s+the\s+scope"
     r"|not\s+(?:in|within|part\s+of)\s+(?:scope|JO|the\s+order|my\s+scope)"
     r"|cannot\s+answer"
     r"|can(?:not|'t|\snot)\s+answer"
@@ -968,6 +1007,7 @@ _SCOPE_REDIRECT_MARKER_RE = re.compile(
     r"|doesn(?:'t|\snot)\s+cover"
     r"|out\s+of\s+scope"
     r"|not\s+something\s+I\s+cover"
+    r"|biological\s+query"
     r")",
     re.IGNORECASE,
 )
@@ -999,20 +1039,29 @@ class ScopeRedirectHook:
     Session 2026-04-24 repro: 'do roosters lay eggs' got the previous
     turn's phraseology-correction content emitted back.
 
-    Trigger conditions (ALL must hold):
-      1. `user_message` threaded through (not None / empty).
-      2. User message length >= 15 chars (filter out follow-ups like
-         'tell me more' / 'go on' that legitimately lack aviation
-         vocab but continue an in-scope thread).
-      3. User message contains clearly non-aviation vocabulary
-         (`_CLEARLY_NON_AVIATION_RE` — biology, cooking, programming,
-         chat meta, entertainment). Narrow-by-design: lay-phrased
-         in-scope questions like 'What document is required for
-         jointly applied procedures?' don't have these markers and
-         pass through untouched.
-      4. Reply has aviation vocabulary (`_AVIATION_VOCAB_RE` hit).
-      5. Reply is not already a correctly-shaped scope redirect
-         (`_SCOPE_REDIRECT_MARKER_RE` miss).
+    Trigger conditions — ANY of the three positive signals trips
+    the hook, provided the reply is ATC-shaped and not already a
+    scope redirect:
+
+      Signal A (user vocab): User message contains clearly
+        non-aviation vocabulary (`_CLEARLY_NON_AVIATION_RE` —
+        biology/cooking/programming/chat meta/entertainment/
+        supernatural/household/joke-meta).
+      Signal B (user shape): User message matches a joke-frame
+        structural pattern (`_JOKE_FRAME_RE` — 'If a X, a Y, and a
+        Z...', 'Why did the X...', 'knock knock'). Catches absurd
+        setups even when the specific nouns aren't in vocab.
+      Signal C (reply bleed): The REPLY contains BOTH aviation vocab
+        AND clearly-non-aviation vocab. This is defense-in-depth for
+        context-bleed (model pulled prior-turn non-aviation material
+        into the current reply) — even if the user's latest message
+        has no suspicious markers, a reply that mixes 'roosters don't
+        lay eggs' with 'per §7-6-11' is confused.
+
+    Gate on substantiveness (user message >= 15 chars) so short
+    follow-ups don't trip; exempt replies already shaped as scope
+    redirects (`_SCOPE_REDIRECT_MARKER_RE`) so a correct refusal
+    doesn't loop.
 
     Action: Nudge. Retry-able — on the next round the model should
     emit a scope-redirect sentence. Halt would be too brutal; a
@@ -1029,19 +1078,21 @@ class ScopeRedirectHook:
         user = ctx.user_message
         if user is None or len(user.strip()) < 15:
             return Continue()
-        # Strong positive signal: user asked about something clearly
-        # not aviation. Without this marker we stay silent — too many
-        # in-scope lay queries lack explicit aviation acronyms for
-        # an absence-of-aviation test to be safe.
-        if not _CLEARLY_NON_AVIATION_RE.search(user):
-            return Continue()
         content = ctx.reply.content
         if not _AVIATION_VOCAB_RE.search(content):
             return Continue()
-        # Reply mentions ATC terminology — but if it's naming JO
-        # 7110.65 / ATC to DECLINE ('that question is outside JO
-        # 7110.65'), it's already a scope redirect. Exempt.
+        # Exempt replies already correctly scope-redirecting.
         if _SCOPE_REDIRECT_MARKER_RE.search(content):
+            return Continue()
+        # Signal A / B: user-side triggers.
+        signal_user_vocab = bool(_CLEARLY_NON_AVIATION_RE.search(user))
+        signal_joke_frame = bool(_JOKE_FRAME_RE.search(user))
+        # Signal C: reply mixes aviation AND clearly-non-aviation
+        # content. Strong indicator of context bleed or confused
+        # topic — fire even if the user's current message is
+        # vocabulary-silent.
+        signal_reply_bleed = bool(_CLEARLY_NON_AVIATION_RE.search(content))
+        if not (signal_user_vocab or signal_joke_frame or signal_reply_bleed):
             return Continue()
         return Nudge(_SCOPE_REDIRECT_NUDGE)
 
