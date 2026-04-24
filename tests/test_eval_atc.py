@@ -257,9 +257,7 @@ def test_keyword_alternates_accept_any_phrasing() -> None:
     equivalent phrasings without needing a fixture edit for every
     grammatical variant."""
     row = _row(
-        expected_keywords=(
-            ("last assigned", "last ATC clearance", "last clearance"),
-        ),
+        expected_keywords=(("last assigned", "last ATC clearance", "last clearance"),),
         min_keyword_hits=1,
     )
     reply = "Fly the last ATC clearance until two-way radio is restored."

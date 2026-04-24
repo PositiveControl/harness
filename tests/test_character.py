@@ -53,10 +53,7 @@ def test_holdout_samples_loaded_separately(tmp_path: Path) -> None:
     shutil.copytree(AIRTON, fake)
     holdout_path = fake / "voice" / "holdout.yaml"
     holdout_path.write_text(
-        "samples:\n"
-        "  - id: holdout-1\n"
-        "    prompt: held out prompt\n"
-        "    gold: held out gold\n"
+        "samples:\n  - id: holdout-1\n    prompt: held out prompt\n    gold: held out gold\n"
     )
 
     character = load_character(fake)

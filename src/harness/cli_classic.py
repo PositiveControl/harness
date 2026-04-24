@@ -445,6 +445,7 @@ class ClassicChatSession:
                 observe=self.render_tool_event,
                 router=self.router,
                 hooks=self.hooks,
+                memory_block_attached=bool(recalled),
             )
             streamed = True
             _persist_tool_exchange(

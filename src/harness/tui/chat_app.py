@@ -964,6 +964,7 @@ class ChatApp(App[None]):
                     observe=observe,
                     router=self._router,
                     hooks=self._hooks,  # type: ignore[arg-type]  # typed `object` to skip import
+                    memory_block_attached=bool(recalled),
                 )
                 if self._state.turn_seq != seq:
                     return  # interrupted; drop partial reply + skip persistence

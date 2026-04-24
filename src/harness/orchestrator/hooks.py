@@ -472,10 +472,22 @@ class FinalizeContext:
     """Inputs to a finalize hook. `last_outcome` is the last non-Continue
     bail outcome the pipeline produced this turn, so `fabrication_fallback`
     can fire only when a fabrication-shaped bail outcome survived
-    retries (truncated outcomes are exempt)."""
+    retries (truncated outcomes are exempt).
+
+    `tools_ran` carries the set of tool names that succeeded this turn —
+    used by `ungrounded_citation` to check whether any grounding tool
+    (search_memory / fact_search) ran before a section-citation reply.
+    `memory_block_attached` reports whether the CLI (or equivalent
+    call-site) attached a retrieval memory block to the system prompt
+    for this turn — the other grounding signal the citation catcher
+    needs. Both default to safe falsy values so callers that don't
+    plumb them through fall through untouched (a citation catcher can
+    only fire when it's sure no grounding happened)."""
 
     reply: ModelReply
     last_outcome: BailOutcome
+    tools_ran: frozenset[str] = frozenset()
+    memory_block_attached: bool = False
 
 
 class BailHook(Protocol):
@@ -851,6 +863,90 @@ class ArgumentGroundingHook:
 # ---------- finalize hooks ----------
 
 
+# JO-style section citation: `§ 12-1-2`, `§12-1-2`, tolerant of hyphen /
+# en-dash / unicode-minus. Three numeric segments separated by dashes
+# pins it to the JO 7110.65 shape (chapter-section-paragraph) without
+# false-positiving on prices (`$19.99`), simple anchors (`§2`), or
+# two-segment numbering (`§3-1`). Conservative by design — false
+# positives here would replace good replies with a canned refusal.
+UNGROUNDED_SECTION_CITATION_RE = re.compile(
+    r"§\s*\d+[-–−]\d+[-–−]\d+",  # noqa: RUF001 — en-dash + minus are load-bearing variants seen in corpus
+)
+
+
+# The set of tools whose execution constitutes "grounding" for a
+# section-citation reply. Intentionally narrow: only memory-backed
+# retrieval counts. `fetch_url`, `search_web`, `read_file`, etc. do
+# NOT count — a web-fetch result is not a substitute for having pulled
+# the citation from character-owned memory.
+_GROUNDING_TOOLS: frozenset[str] = frozenset({"search_memory", "fact_search"})
+
+
+# Canned refusal shown when the hook fires. Character-agnostic — the
+# character's `cite_or_silent` / scope text lives in its constitution
+# and drives the system prompt, but this hook runs after the reply is
+# already generated and doesn't have a hook into per-character refusal
+# templates. Keep the wording in the first person + short so it reads
+# as the character's own voice regardless of who's speaking.
+UNGROUNDED_CITATION_FALLBACK = (
+    "I can't answer that from memory without fabricating a citation. "
+    "Either that topic is outside what I cover, or I don't have the "
+    "source material for it indexed. If you have the reference handy, "
+    "paste it and I'll work from there."
+)
+
+
+@dataclass(frozen=True)
+class UngroundedCitationHook:
+    """Catch section-citation replies that never touched a grounding
+    tool and had no memory block attached to the prompt (harness-oc8).
+
+    Failure mode this catches: character is scoped to a specific source
+    document (e.g. airton_c1 / JO 7110.65). User asks an out-of-scope
+    or poorly-retrieved question. Retrieval scores all memory hits
+    below the floor, so no memory block is attached. The main loop
+    never fires a grounding tool. The model then fabricates a
+    parametric-knowledge answer and closes with a real-looking section
+    number — real `§N-N-N` string, fabricated attribution. Classic
+    ungrounded citation.
+
+    Trigger conditions (ALL must hold):
+      1. Reply contains at least one JO-style `§N-N-N` citation.
+      2. No memory block was attached for this turn
+         (`ctx.memory_block_attached is False`).
+      3. No grounding tool (`search_memory` / `fact_search`) ran this
+         turn (`ctx.tools_ran` disjoint from `_GROUNDING_TOOLS`).
+
+    Action: replace the reply with a character-agnostic refusal. We
+    deliberately do NOT try to repair the reply by stripping just the
+    citation — a confident fabricated body minus its source line is
+    worse than a refusal.
+
+    Runs BEFORE `fabrication_fallback` in the finalize phase: if this
+    hook Halts, the fallback never runs (which is correct — our
+    replacement is the terminal answer). If the reply has no section
+    citation, we Continue and the fallback (if any) fires normally."""
+
+    name: str = "ungrounded_citation"
+
+    def check(self, ctx: FinalizeContext) -> FinalizeOutcome:
+        if ctx.memory_block_attached:
+            return Continue()
+        if ctx.tools_ran & _GROUNDING_TOOLS:
+            return Continue()
+        if not UNGROUNDED_SECTION_CITATION_RE.search(ctx.reply.content):
+            return Continue()
+        reply = ctx.reply
+        return Halt(
+            ModelReply(
+                content=UNGROUNDED_CITATION_FALLBACK,
+                tool_calls=(),
+                was_truncated=reply.was_truncated,
+                had_unparseable_call=reply.had_unparseable_call,
+            )
+        )
+
+
 @dataclass(frozen=True)
 class FabricationFallbackHook:
     """Substitute the canned refusal when bail retries are exhausted
@@ -989,7 +1085,13 @@ def default_hook_pipeline() -> HookPipeline:
         # when both would fire).
         pre_tool=[DuplicateCallHook(), ArgumentGroundingHook()],
         post_tool=[],
-        finalize=[FabricationFallbackHook()],
+        # Order matters inside finalize: ungrounded_citation runs first so
+        # it can Halt with a scope-aware refusal for fabricated-citation
+        # replies whose bail outcome was Continue (legitimate-looking
+        # wrap-up that no bail hook caught). fabrication_fallback then
+        # only fires when the bail loop itself left a Nudge outcome on
+        # the table.
+        finalize=[UngroundedCitationHook(), FabricationFallbackHook()],
     )
 
 
@@ -1124,6 +1226,8 @@ __all__ = [
     "META_CONFIRM_RE",
     "TEASER_RE",
     "TOOL_INTENT_RE",
+    "UNGROUNDED_CITATION_FALLBACK",
+    "UNGROUNDED_SECTION_CITATION_RE",
     "AbFabricationHook",
     "ArgumentGroundingHook",
     "BailContext",
@@ -1160,6 +1264,7 @@ __all__ = [
     "ToolResultSummarizerHook",
     "Truncated",
     "TruncatedHook",
+    "UngroundedCitationHook",
     "UnparseableHook",
     "default_hook_pipeline",
     "looks_like_ab_fabrication",

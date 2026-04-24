@@ -223,8 +223,7 @@ def _load_alternates(
                 )
         else:
             raise ValueError(
-                f"{path}[{idx}].{field}[{kid}] must be str or list[str], "
-                f"got {type(entry).__name__}"
+                f"{path}[{idx}].{field}[{kid}] must be str or list[str], got {type(entry).__name__}"
             )
         out.append(alternates)
     return tuple(out)

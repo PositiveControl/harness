@@ -234,12 +234,19 @@ def _run_scenario(scenario: dict[str, Any]) -> ToolLoopCase:
         for m in scenario.get("messages", [{"role": "user", "content": "hi"}])
     ]
     max_rounds = int(scenario.get("max_rounds", 8))
+    # `memory_block_attached` is the flag the ungrounded_citation
+    # finalize hook consumes. Fixture rows that want to simulate "a
+    # retrieval memory block landed in the prompt" set it to True —
+    # otherwise the default (False) models the cold / out-of-scope
+    # retrieval path where the catcher is armed.
+    memory_block_attached = bool(scenario.get("memory_block_attached", False))
     result = run_tool_loop(
         adapter,
         messages,
         registry,
         max_rounds=max_rounds,
         confirm=lambda _call: True,
+        memory_block_attached=memory_block_attached,
     )
     contains = tuple(str(s) for s in scenario.get("expected_contains", []))
     not_contains = tuple(str(s) for s in scenario.get("expected_not_contains", []))

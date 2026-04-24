@@ -530,6 +530,7 @@ def run_tool_loop(
     temperature: float = 0.5,
     router: Router | None = None,
     hooks: HookPipeline | None = None,
+    memory_block_attached: bool = False,
 ) -> ToolLoopResult:
     """Drive a model + tool registry until the model emits a text-only
     reply or `max_rounds` rounds are spent.
@@ -556,7 +557,16 @@ def run_tool_loop(
 
     `hooks` lets callers supply a custom HookPipeline — useful for
     subagent loops (1.A) that want to share or layer on the parent's
-    catchers. Defaults to the module-level pipeline."""
+    catchers. Defaults to the module-level pipeline.
+
+    `memory_block_attached` records whether the caller assembled a
+    retrieval memory block into the system prompt for this turn. The
+    `ungrounded_citation` finalize hook consumes it: a reply with a
+    JO-style section citation + no memory block + no grounding tool
+    call is a fabricated citation, so the hook replaces the reply with
+    a scope-aware refusal. Defaults to False — callers that don't
+    plumb the signal leave the hook permissive (only the other two
+    signals can disarm it)."""
     pipeline = hooks if hooks is not None else _DEFAULT_PIPELINE
     working: list[ChatMessage] = list(messages)
     initial_count = len(working)
@@ -652,7 +662,12 @@ def run_tool_loop(
             # (legitimate final reply) disarms the fallback; a Truncated
             # outcome keeps the partial reply.
             finalize_outcome = pipeline.run_finalize(
-                FinalizeContext(reply=last_reply, last_outcome=bail_outcome),
+                FinalizeContext(
+                    reply=last_reply,
+                    last_outcome=bail_outcome,
+                    tools_ran=frozenset(succeeded_tools),
+                    memory_block_attached=memory_block_attached,
+                ),
                 disabled=_disabled_snapshot(),
             )
             if isinstance(finalize_outcome, Halt):

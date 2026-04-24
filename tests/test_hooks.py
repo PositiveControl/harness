@@ -9,6 +9,7 @@ attribution eval (`tests/test_tool_loop_eval.py`).
 from __future__ import annotations
 
 from harness.orchestrator.hooks import (
+    UNGROUNDED_CITATION_FALLBACK,
     AbFabricationHook,
     ArgumentGroundingHook,
     BailContext,
@@ -32,6 +33,7 @@ from harness.orchestrator.hooks import (
     ToolIntentHook,
     Truncated,
     TruncatedHook,
+    UngroundedCitationHook,
     UnparseableHook,
     default_hook_pipeline,
 )
@@ -287,6 +289,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "paired_meta_confirm_strip",
         "duplicate_call",
         "argument_grounding",
+        "ungrounded_citation",
         "fabrication_fallback",
     )
 
@@ -502,6 +505,176 @@ def test_fabrication_fallback_passes_on_clean_reply() -> None:
     reply = _reply("the final answer")
     outcome = FabricationFallbackHook().check(FinalizeContext(reply=reply, last_outcome=Continue()))
     assert isinstance(outcome, Continue)
+
+
+# ---------- ungrounded citation hook ----------
+
+
+_FAKE_REPLY = (
+    "Standard IFR minimums in Class B airspace are 1,200 ft AGL during "
+    "the day and 1,500 ft AGL at night. See JO 7110.65 §12-1-2 for the "
+    "full airspace classification."
+)
+
+
+def test_ungrounded_citation_fires_when_no_grounding() -> None:
+    """Section citation + no memory block + no grounding tool =>
+    replace the reply with the character-agnostic refusal."""
+    reply = _reply(_FAKE_REPLY)
+    outcome = UngroundedCitationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset(),
+            memory_block_attached=False,
+        )
+    )
+    assert isinstance(outcome, Halt)
+    assert outcome.reply.content == UNGROUNDED_CITATION_FALLBACK
+    assert outcome.reply.tool_calls == ()
+
+
+def test_ungrounded_citation_passes_when_memory_block_attached() -> None:
+    """If retrieval surfaced a memory block, the model had grounding
+    material to work from — don't second-guess the citation."""
+    reply = _reply(_FAKE_REPLY)
+    outcome = UngroundedCitationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset(),
+            memory_block_attached=True,
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_ungrounded_citation_passes_when_search_memory_ran() -> None:
+    """A successful search_memory call counts as grounding."""
+    reply = _reply(_FAKE_REPLY)
+    outcome = UngroundedCitationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_ungrounded_citation_passes_when_fact_search_ran() -> None:
+    """fact_search is also in the grounding set."""
+    reply = _reply(_FAKE_REPLY)
+    outcome = UngroundedCitationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset({"fact_search"}),
+            memory_block_attached=False,
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_ungrounded_citation_ignores_non_grounding_tools() -> None:
+    """fetch_url / search_web / read_file are NOT grounding for
+    section-citation purposes."""
+    reply = _reply(_FAKE_REPLY)
+    outcome = UngroundedCitationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset({"fetch_url", "search_web", "read_file"}),
+            memory_block_attached=False,
+        )
+    )
+    assert isinstance(outcome, Halt)
+
+
+def test_ungrounded_citation_passes_on_reply_without_section_pattern() -> None:
+    """No `§N-N-N` => no trigger; let the reply through untouched."""
+    reply = _reply("Class B airspace surrounds major airports. No citations here.")
+    outcome = UngroundedCitationHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Continue(),
+            tools_ran=frozenset(),
+            memory_block_attached=False,
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_ungrounded_citation_regex_tolerates_en_dash_and_minus() -> None:
+    """Real corpus uses hyphen, en-dash, and unicode-minus
+    interchangeably — all three must match."""
+    for sep in ("-", "–", "−"):  # noqa: RUF001 — intentional unicode-dash variants
+        reply = _reply(f"See JO 7110.65 §12{sep}1{sep}2 for details.")
+        outcome = UngroundedCitationHook().check(
+            FinalizeContext(
+                reply=reply,
+                last_outcome=Continue(),
+                tools_ran=frozenset(),
+                memory_block_attached=False,
+            )
+        )
+        assert isinstance(outcome, Halt), f"separator {sep!r} did not match"
+
+
+def test_ungrounded_citation_ignores_currency_and_short_anchors() -> None:
+    """Narrow-regex contract: prices ($19.99), plain section marks
+    (§2), and two-segment refs (§3-1) must NOT trip the hook."""
+    for content in ("The fee is $19.99 per month.", "See §2 for preamble.", "Ref §3-1 only."):
+        reply = _reply(content)
+        outcome = UngroundedCitationHook().check(
+            FinalizeContext(
+                reply=reply,
+                last_outcome=Continue(),
+                tools_ran=frozenset(),
+                memory_block_attached=False,
+            )
+        )
+        assert isinstance(outcome, Continue), f"false positive on: {content!r}"
+
+
+def test_ungrounded_citation_respects_disabled_toggle() -> None:
+    """The attribution eval disables catchers by name — pipeline must
+    honor 'ungrounded_citation' in the `disabled` frozenset."""
+    pipe = default_hook_pipeline()
+    reply = _reply(_FAKE_REPLY)
+    ctx = FinalizeContext(
+        reply=reply,
+        last_outcome=Continue(),
+        tools_ran=frozenset(),
+        memory_block_attached=False,
+    )
+    # Enabled: the hook halts and replaces the reply.
+    enabled = pipe.run_finalize(ctx, disabled=frozenset())
+    assert isinstance(enabled, Halt)
+    # Disabled: the hook is skipped; downstream fabrication_fallback
+    # doesn't fire either because last_outcome is Continue.
+    disabled = pipe.run_finalize(ctx, disabled=frozenset({"ungrounded_citation"}))
+    assert isinstance(disabled, Continue)
+
+
+def test_ungrounded_citation_runs_before_fabrication_fallback() -> None:
+    """Pipeline ordering: when BOTH hooks would fire (citation + a
+    surviving Nudge bail outcome), ungrounded_citation wins and its
+    scope-aware refusal is what the user sees."""
+    pipe = default_hook_pipeline()
+    reply = _reply(_FAKE_REPLY)
+    outcome = pipe.run_finalize(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Nudge("...surviving nudge..."),
+            tools_ran=frozenset(),
+            memory_block_attached=False,
+        ),
+        disabled=frozenset(),
+    )
+    assert isinstance(outcome, Halt)
+    assert outcome.reply.content == UNGROUNDED_CITATION_FALLBACK
 
 
 # ---------- custom pipeline construction ----------

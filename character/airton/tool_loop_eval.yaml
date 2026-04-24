@@ -276,6 +276,23 @@
   expected_fallback: true
   expected_not_contains: ["search the web"]
 
+- id: ungrounded_citation_no_grounding
+  label: ungrounded_citation
+  description: Out-of-scope question for a citation-scoped character
+    produces a fabricated §-citation reply with no memory block attached
+    and no search_memory / fact_search call. Finalize hook swaps in a
+    character-agnostic refusal so the user doesn't see the real-looking
+    but fabricated section number (harness-oc8).
+  messages:
+    - role: user
+      content: "what are standard IFR minimums in class b airspace?"
+  scripted_replies:
+    - content: "Standard IFR minimums in Class B airspace are 1,200 ft AGL
+        during the day and 1,500 ft AGL at night. See JO 7110.65 §12-1-2
+        for the full airspace classification rules."
+  expected_contains: ["fabricating a citation"]
+  expected_not_contains: ["§12-1-2", "1,200 ft AGL"]
+
 # ---------- controls (catchers must not fire) ----------
 
 - id: control_clean_reply
@@ -303,3 +320,14 @@
     - content: "The entry is now included."
   expected_contains: ["The entry is now included."]
   expected_events_not_contain: [bail_retry]
+
+- id: control_citation_with_memory_block
+  label: control
+  description: §-citation reply paired with an attached memory block — the
+    ungrounded_citation finalize hook must stand down, the citation is
+    grounded in character-owned memory (harness-oc8).
+  memory_block_attached: true
+  scripted_replies:
+    - content: "See JO 7110.65 §2-1-4 for the handoff rule."
+  expected_contains: ["§2-1-4"]
+  expected_not_contains: ["fabricating a citation"]
