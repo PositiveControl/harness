@@ -52,6 +52,54 @@ def test_sanitize_single_token_no_operator() -> None:
     assert sanitize_fts_query("BeadsAdapter") == '"BeadsAdapter"'
 
 
+def test_sanitize_hyphen_compound_emits_phrase_query() -> None:
+    """Hyphenated compound like 'aircraft-to-aircraft' is shredded by
+    FTS5's unicode61 tokenizer into [aircraft, to, aircraft]. The
+    two-pass sanitize emits both the individual-token OR chain AND a
+    quoted phrase query ('aircraft to aircraft') so BM25 can reward
+    sections that use the exact n-gram adjacency (harness-5uq follow-up)."""
+    out = sanitize_fts_query("aircraft-to-aircraft alerts")
+    assert '"aircraft"' in out
+    assert '"to"' in out
+    assert '"alerts"' in out
+    # Phrase query wraps the compound with internal hyphens replaced
+    # by spaces — FTS5 phrase syntax.
+    assert '"aircraft to aircraft"' in out
+
+
+def test_sanitize_slash_compound_emits_phrase_query() -> None:
+    """Slash compounds like 'L/MF' (JO 7110.65 §4-1-2 Radio Beacon
+    class) or 'CA/MCI' get the same phrase treatment."""
+    out = sanitize_fts_query("L/MF Radio Beacon")
+    assert '"L"' in out
+    assert '"MF"' in out
+    assert '"L MF"' in out
+
+
+def test_sanitize_bare_hyphen_between_words_treats_as_compound() -> None:
+    """'non-standard' → tokens 'non' + 'standard' + phrase 'non standard'."""
+    out = sanitize_fts_query("non-standard formations")
+    assert '"non"' in out
+    assert '"standard"' in out
+    assert '"formations"' in out
+    assert '"non standard"' in out
+
+
+def test_sanitize_no_compound_no_phrase_emitted() -> None:
+    """Query with no hyphens/slashes shouldn't grow any phrase
+    clauses — pass-1 output unchanged."""
+    assert sanitize_fts_query("who said this") == '"who" OR "said" OR "this"'
+
+
+def test_sanitize_single_segment_with_hyphen_at_boundary_is_token_only() -> None:
+    """'-word' or 'word-' (hyphen at a boundary, no second segment to
+    join) must not emit a phantom phrase — compound regex requires 2+
+    segments connected by the punctuation."""
+    out = sanitize_fts_query("-foo bar-")
+    # Only single tokens, no phrase clauses.
+    assert out == '"foo" OR "bar"'
+
+
 def test_rrf_empty_input() -> None:
     assert reciprocal_rank_fusion([]) == []
     assert reciprocal_rank_fusion([[]]) == []

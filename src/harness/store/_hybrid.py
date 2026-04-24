@@ -25,16 +25,40 @@ import re
 _FTS_TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 
 
+# Matches hyphen- or slash-joined compounds: 2+ alphanumeric-underscore
+# runs glued by `-` or `/`. Drives the phrase-query pass added for
+# harness-5uq-followup — without this, FTS5's unicode61 tokenizer
+# shreds "aircraft-to-aircraft" into [aircraft, to, aircraft] and the
+# distinctive n-gram is lost in an OR-sea of common tokens. Phrase
+# queries preserve adjacency, so the ranker sees "aircraft to aircraft"
+# as a contiguous match on §13-1-2 rather than three disjunctive token
+# hits against every oceanic chapter mentioning 'aircraft' 50+ times.
+# Alternation `[-/]` covers both corpus conventions (hyphens in
+# aircraft-to-aircraft, L/MF, non-standard; slashes in CA/MCI).
+_FTS_COMPOUND_RE = re.compile(r"[A-Za-z0-9_]+(?:[-/][A-Za-z0-9_]+)+")
+
+
 def sanitize_fts_query(query: str) -> str:
     """Turn arbitrary user text into a safe FTS5 MATCH clause.
 
-    Strategy: extract alphanumeric+underscore tokens, wrap each in
+    Strategy (two-pass):
+
+    Pass 1: extract alphanumeric+underscore tokens, wrap each in
     double quotes so FTS5 treats them as literal phrase-search
     terms (never reserved operators like AND / OR / NOT / NEAR),
-    then join with explicit OR for recall. OR rather than the
-    FTS5-default AND matters because the hybrid ranker combines
-    with the dense-cosine pass via RRF — precision comes from the
-    fusion, not from requiring every user token to appear literally.
+    join with explicit OR.
+
+    Pass 2: extract hyphen/slash compounds (`aircraft-to-aircraft`,
+    `L/MF`, `non-standard`). Each becomes a quoted FTS5 phrase
+    query with the internal punctuation replaced by a single
+    space — `"aircraft to aircraft"` — so the underlying tokenizer
+    sees the three-token sequence and BM25 can score adjacency.
+    OR'd onto the pass-1 tokens.
+
+    OR rather than the FTS5-default AND matters because the hybrid
+    ranker combines with the dense-cosine pass via RRF — precision
+    comes from the fusion, not from requiring every user token to
+    appear literally.
 
     Quoting also defangs a user who happens to type "AND" as part
     of their actual query — without the quotes, FTS5 would try to
@@ -46,8 +70,12 @@ def sanitize_fts_query(query: str) -> str:
     tokens = _FTS_TOKEN_RE.findall(query)
     if not tokens:
         return ""
-    quoted = [f'"{t}"' for t in tokens]
-    return " OR ".join(quoted)
+    clauses = [f'"{t}"' for t in tokens]
+    for compound in _FTS_COMPOUND_RE.findall(query):
+        phrase = re.sub(r"[-/]+", " ", compound).strip()
+        if phrase and " " in phrase:
+            clauses.append(f'"{phrase}"')
+    return " OR ".join(clauses)
 
 
 def reciprocal_rank_fusion(

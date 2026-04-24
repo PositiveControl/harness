@@ -246,6 +246,29 @@ cases:
       - ["threshold", "landing threshold"]
     min_keyword_hits: 2
 
+  # Retrieval regression — session 2026-04-24. User asked
+  # 'Where can a controller find information for aircraft-to-aircraft
+  # alerts?' expecting §13-1-2(a), got §2-1-6 SAFETY ALERT and various
+  # unrelated hits. Root cause (sanitize_fts_query in
+  # src/harness/store/_hybrid.py): the hyphenated compound
+  # 'aircraft-to-aircraft' was shredded into three OR'd single-token
+  # clauses, so the distinctive n-gram lost all adjacency signal and
+  # §13-1-2 dropped out of top-12. Post-fix, the sanitizer also emits
+  # a quoted phrase clause ('aircraft to aircraft') which text-mode
+  # BM25 rewards, lifting §13-1-2 into top-10. Keywords key on
+  # §13-1-2(a)'s 'EDST' + 'conflict probe' + 'aircraft-to-aircraft'
+  # so any future regression in sanitize_fts_query or the tokenizer
+  # pipeline surfaces here.
+  - id: controller_aircraft_to_aircraft_alerts
+    audience: controller
+    question: "Where can a controller find information for aircraft-to-aircraft alerts?"
+    expected_citations: ["13-1-2"]
+    expected_keywords:
+      - ["EDST", "En Route Decision Support Tool"]
+      - ["aircraft-to-aircraft", "aircraft to aircraft"]
+      - ["conflict probe", "conflict alert", "conflict detection"]
+    min_keyword_hits: 2
+
   # Regression — session 2026-04-24. airton_c1 correctly cited §4-1-1
   # but hallucinated the MH row of TBL 4-1-2 (wrote "50 miles" — the
   # value from the H row — instead of the true "25 miles"). Retrieval
