@@ -1,0 +1,155 @@
+{
+  "character": "airton_c1",
+  "fixture": "/Users/mevans/dev/ideas/harness/character/airton_c1/atc_eval.yaml",
+  "k": 10,
+  "recall_at_1": 1.0,
+  "recall_at_3": 1.0,
+  "recall_at_5": 1.0,
+  "recall_at_k": 1.0,
+  "median_rank": 0.0,
+  "cases": [
+    {
+      "id": "controller_readback_requirement",
+      "audience": "controller",
+      "query": "What do I need to verify when a pilot reads back an ATC clearance, per JO 7110.65?",
+      "expected_anchors": [
+        "2-4-3"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true
+    },
+    {
+      "id": "controller_wake_turbulence_application",
+      "audience": "controller",
+      "query": "When do wake turbulence procedures apply under JO 7110.65?",
+      "expected_anchors": [
+        "2-1-19"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.031754032258064516,
+      "found": true
+    },
+    {
+      "id": "controller_same_runway_departure",
+      "audience": "controller",
+      "query": "When can I clear a departing aircraft for takeoff behind another departing aircraft on the same runway?",
+      "expected_anchors": [
+        "3-9-6"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03009207275993712,
+      "found": true
+    },
+    {
+      "id": "controller_same_runway_arrival",
+      "audience": "controller",
+      "query": "When may an arriving aircraft cross the landing threshold behind another aircraft on the same runway?",
+      "expected_anchors": [
+        "3-10-3"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.032018442622950824,
+      "found": true
+    },
+    {
+      "id": "controller_same_runway_arrival_lay_phrasing",
+      "audience": "controller",
+      "query": "What is the shortest distance an aircraft is allowed to be next to another aircraft on approach to the runway?",
+      "expected_anchors": [
+        "3-10-3"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.0315136476426799,
+      "found": true
+    },
+    {
+      "id": "controller_ifr_clearance_items_order",
+      "audience": "controller",
+      "query": "In what order do I issue IFR clearance items?",
+      "expected_anchors": [
+        "4-2-1"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.032266458495966696,
+      "found": true
+    },
+    {
+      "id": "controller_vertical_separation_rvsm",
+      "audience": "controller",
+      "query": "What's the IFR vertical separation minimum up to FL 410, and what changes above it?",
+      "expected_anchors": [
+        "4-5-1"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03252247488101534,
+      "found": true
+    },
+    {
+      "id": "controller_radar_standard_separation",
+      "audience": "controller",
+      "query": "What's the standard radar separation minimum in terminal airspace when using single-sensor ASR?",
+      "expected_anchors": [
+        "5-5-4"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03252247488101534,
+      "found": true
+    },
+    {
+      "id": "controller_handoff_responsibilities",
+      "audience": "controller",
+      "query": "What must the transferring controller do before making a flight-path change during a radar handoff?",
+      "expected_anchors": [
+        "5-4-5"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true
+    },
+    {
+      "id": "controller_missed_approach_precoord",
+      "audience": "controller",
+      "query": "When must I issue a specific missed approach procedure before the aircraft starts final descent?",
+      "expected_anchors": [
+        "5-10-11"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true
+    },
+    {
+      "id": "controller_class_b_vfr_clearance",
+      "audience": "controller",
+      "query": "What's the phraseology for clearing a VFR aircraft into Class B airspace?",
+      "expected_anchors": [
+        "7-9-2"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true
+    },
+    {
+      "id": "controller_vfr_on_top",
+      "audience": "controller",
+      "query": "Under what condition may I clear an IFR aircraft to maintain 'VFR-on-top'?",
+      "expected_anchors": [
+        "7-3-1"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.032266458495966696,
+      "found": true
+    },
+    {
+      "id": "controller_emergency_distress_urgency",
+      "audience": "controller",
+      "query": "What's the difference between a Distress and an Urgency emergency, and how does a pilot declare each?",
+      "expected_anchors": [
+        "10-1-1"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true
+    }
+  ]
+}

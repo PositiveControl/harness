@@ -2530,6 +2530,165 @@ def eval_atc(
         console.print(f"[dim]by audience — {detail}[/dim]")
 
 
+@eval_app.command("atc-retrieval")
+def eval_atc_retrieval(
+    fixture_path: Path | None = typer.Option(
+        None,
+        "--fixture",
+        help="Path to an atc eval YAML. Defaults to `character/<name>/atc_eval.yaml`.",
+    ),
+    k: int = typer.Option(10, help="Top-K depth ceiling for retrieval"),
+    audience: str | None = typer.Option(
+        None,
+        "--audience",
+        help="Filter fixture to one audience. Default: all.",
+    ),
+    save_baseline: bool = typer.Option(
+        False,
+        "--save-baseline",
+        help=(
+            "Write the run to character/<name>/atc_retrieval_baseline.json. "
+            "Intended for snapshotting post-change so future runs can diff "
+            "against the frozen rank-of-first-expected per case."
+        ),
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+) -> None:
+    """Retrieval-only atc eval: runs each fixture case through the
+    episodic store and reports rank-of-first-expected + aggregate
+    recall@1/@3/@5/@K. Skips the model entirely — decouples retrieval
+    quality measurement from reply quality (harness-dfa)."""
+    import json as _json_mod
+
+    from harness.evals.atc import (
+        default_fixture_path as _atc_default_fixture,
+    )
+    from harness.evals.atc import (
+        load_fixture as _atc_load_fixture,
+    )
+    from harness.evals.atc_retrieval import (
+        RetrievalHit,
+        default_baseline_path,
+        run_atc_retrieval,
+    )
+
+    character = load_character(settings.character_path)
+    path = fixture_path or _atc_default_fixture(settings.character_path)
+    if not path.exists():
+        raise typer.BadParameter(f"atc eval fixture not found: {path}")
+    fixture = _atc_load_fixture(path)
+    if audience is not None:
+        fixture = tuple(row for row in fixture if row.audience == audience)
+    if not fixture:
+        console.print("[yellow](no cases in fixture after filter — nothing to score)[/yellow]")
+        raise typer.Exit(code=0)
+
+    store = _open_episodic_store(character, ingest=False)
+    if store is None:
+        raise typer.BadParameter(
+            "retrieval eval needs the `retrieval` extra — re-run `uv sync --extra retrieval`."
+        )
+
+    def _search(query: str, depth: int) -> list[RetrievalHit]:
+        raw = store.search(query, k=depth, mode="hybrid")
+        return [
+            RetrievalHit(principle=rec.principle or "", score=float(score)) for rec, score in raw
+        ]
+
+    result = run_atc_retrieval(fixture, _search, k=k)
+
+    if as_json:
+        envelope = {
+            "character": character.name,
+            "fixture": str(path),
+            "k": result.k,
+            "recall_at_1": result.recall_at_1,
+            "recall_at_3": result.recall_at_3,
+            "recall_at_5": result.recall_at_5,
+            "recall_at_k": result.recall_at_k,
+            "median_rank": result.median_rank,
+            "cases": [
+                {
+                    "id": c.id,
+                    "audience": c.audience,
+                    "query": c.query,
+                    "expected_anchors": list(c.expected_anchors),
+                    "rank_of_first_expected": c.rank_of_first_expected,
+                    "score_of_first_expected": c.score_of_first_expected,
+                    "found": c.found,
+                    "top_hits": [{"principle": h.principle, "score": h.score} for h in c.hits],
+                }
+                for c in result.cases
+            ],
+        }
+        if save_baseline:
+            baseline_path = default_baseline_path(settings.character_path)
+            baseline_path.write_text(_json_mod.dumps(envelope, indent=2))
+        console.print_json(data=envelope)
+        return
+
+    from rich.table import Table
+
+    table = Table(title=f"atc retrieval eval (k={result.k})", show_lines=False)
+    table.add_column("pass", justify="center")
+    table.add_column("id")
+    table.add_column("expected")
+    table.add_column("rank", justify="right")
+    table.add_column("score", justify="right")
+    for c in result.cases:
+        mark = (
+            "[green]✓[/green]"
+            if c.recall_at(3)
+            else ("[yellow]~[/yellow]" if c.found else "[red]✗[/red]")
+        )
+        rank = str(c.rank_of_first_expected) if c.rank_of_first_expected is not None else "—"
+        score = f"{c.score_of_first_expected:.4f}" if c.score_of_first_expected is not None else "—"
+        expected = ", ".join(c.expected_anchors)
+        table.add_row(mark, c.id, expected, rank, score)
+    console.print(table)
+    console.print(
+        f"[bold]recall@1: {result.recall_at_1 * 100:.1f}%  · "
+        f"recall@3: {result.recall_at_3 * 100:.1f}%  · "
+        f"recall@5: {result.recall_at_5 * 100:.1f}%  · "
+        f"recall@{result.k}: {result.recall_at_k * 100:.1f}%[/bold]"
+    )
+    median = result.median_rank
+    if median is not None:
+        console.print(f"[dim]median rank of first expected (among found): {median:g}[/dim]")
+    misses = result.hard_misses()
+    if misses:
+        console.print(
+            f"[dim]hard misses (expected not in top-{result.k}): "
+            f"{', '.join(m.id for m in misses)}[/dim]"
+        )
+    if save_baseline:
+        baseline_path = default_baseline_path(settings.character_path)
+        envelope = {
+            "character": character.name,
+            "fixture": str(path),
+            "k": result.k,
+            "recall_at_1": result.recall_at_1,
+            "recall_at_3": result.recall_at_3,
+            "recall_at_5": result.recall_at_5,
+            "recall_at_k": result.recall_at_k,
+            "median_rank": result.median_rank,
+            "cases": [
+                {
+                    "id": c.id,
+                    "audience": c.audience,
+                    "query": c.query,
+                    "expected_anchors": list(c.expected_anchors),
+                    "rank_of_first_expected": c.rank_of_first_expected,
+                    "score_of_first_expected": c.score_of_first_expected,
+                    "found": c.found,
+                }
+                for c in result.cases
+            ],
+        }
+        baseline_path.write_text(_json_mod.dumps(envelope, indent=2))
+        console.print(f"[dim]baseline written → {baseline_path}[/dim]")
+
+
 @eval_app.command("tool-loop")
 def eval_tool_loop(
     fixture_path: Path | None = typer.Option(
