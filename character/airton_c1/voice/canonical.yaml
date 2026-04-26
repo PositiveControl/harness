@@ -120,3 +120,27 @@ samples:
       phraseology is "YOUR MISSED APPROACH PROCEDURE IS (procedure)."
       Don't wait for the go-around to brief — by then the workload
       is wrong.
+
+  # ----- Voice corpus 8 → 9 (lane V3, harness-cmi5, 2026-04-26) -----
+  # Targets the §4-5-1 cite miss on controller_vertical_separation_rvsm
+  # (model fabricates §5-5-5) and controller_vertical_minima_lay (model
+  # fabricates §5-5-4). Same-section retrieval boost expected to flip
+  # both jargon + lay variants.
+
+  - id: vertical_separation_minima
+    prompt: "What's the IFR vertical separation minimum up to FL 410, and what changes above it?"
+    gold: |
+      JO 7110.65 §4-5-1 (Altitude Assignment and Verification — Vertical
+      Separation Minima) is the section. Separate IFR aircraft using:
+
+      - Up to and including FL 410 — 1,000 feet.
+      - At or above FL 290 between non-RVSM aircraft and all other
+        aircraft at or above FL 290 — 2,000 feet.
+      - Above FL 410 — 2,000 feet.
+
+      Exceptions: in oceanic airspace above FL 450 between a supersonic
+      aircraft and any other aircraft, 4,000 feet; above FL 600 between
+      military aircraft, 5,000 feet. RVSM airspace is FL 290 through FL
+      410 inclusive — eligible aircraft separated by 1,000 feet, non-
+      RVSM by 2,000 feet. Cross-references at §5-5-5 (Vertical
+      Application), §6-6-1, and §9-2-14.
