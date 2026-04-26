@@ -371,6 +371,8 @@ class EpisodicStore:
         mode: SearchMode = "hybrid",
         bm25_min_score: float | None = None,
         allowed_sessions: tuple[str, ...] | None = None,
+        recency_ranks: dict[str, int] | None = None,
+        recency_weight: float = 0.0,
     ) -> list[tuple[EpisodicRecord, float]]:
         """Return up to `k` active records ranked by `mode`.
 
@@ -412,7 +414,18 @@ class EpisodicStore:
         seeds). Tuple of session ids = NULL OR session_id IN (...).
         NULL rows always pass — the C-plan treats them as 'always
         eligible' so consolidator output, seeds, and harvested
-        procedural memory survive every scope."""
+        procedural memory survive every scope.
+
+        `recency_ranks` + `recency_weight` (harness-w3mo step 5) —
+        opt-in recency boost in the hybrid path. When `recency_weight
+        > 0`, hybrid fuses a third RRF ranking built from
+        `recency_ranks[session_id]` so newer-session rows tilt
+        higher in the fused score. NULL-session rows (seeds /
+        procedural / cross-session consolidated) skip the recency
+        ranking — they ride on dense + BM25 alone, so seeds aren't
+        artificially aged out. Default `recency_weight=0.0` keeps
+        the gate off; chat boots with `HARNESS_RETRIEVAL_RECENCY_WEIGHT`
+        from settings."""
         if mode == "dense":
             return self._search_dense(
                 query,
@@ -431,6 +444,8 @@ class EpisodicStore:
             bm25_min_score=bm25_floor,
             user_id=user_id,
             allowed_sessions=allowed_sessions,
+            recency_ranks=recency_ranks,
+            recency_weight=recency_weight,
         )
 
     def _search_dense(
@@ -546,6 +561,8 @@ class EpisodicStore:
         bm25_min_score: float,
         user_id: str | None,
         allowed_sessions: tuple[str, ...] | None = None,
+        recency_ranks: dict[str, int] | None = None,
+        recency_weight: float = 0.0,
     ) -> list[tuple[EpisodicRecord, float]]:
         # Widen the candidate sets ~4x so RRF has room to reorder.
         # Past ~50 candidates the tail contributes <0.001 per match
@@ -572,9 +589,31 @@ class EpisodicStore:
             record_map[rec.id] = rec
         for rec, _ in text_hits:
             record_map.setdefault(rec.id, rec)
-        fused = reciprocal_rank_fusion(
-            [[rec.id for rec, _ in dense_hits], [rec.id for rec, _ in text_hits]]
-        )
+
+        rankings: list[list[int]] = [
+            [rec.id for rec, _ in dense_hits],
+            [rec.id for rec, _ in text_hits],
+        ]
+        weights: list[float] = [1.0, 1.0]
+        if recency_weight > 0.0 and recency_ranks:
+            # Build the recency ranking from the union of dense + text
+            # candidates. Records with NULL session_id are excluded —
+            # they shouldn't get aged out (seeds + procedural memory)
+            # nor get an artificial freshness boost; the gate is for
+            # session-tagged rows only. Sort by recency rank ascending
+            # (lower = newer) so the most-recent records lead the list.
+            session_tagged = [rec for rec in record_map.values() if rec.session_id is not None]
+            recency_sorted = sorted(
+                session_tagged,
+                key=lambda r: recency_ranks.get(
+                    r.session_id or "",
+                    len(recency_ranks) + 1,
+                ),
+            )
+            rankings.append([rec.id for rec in recency_sorted])
+            weights.append(recency_weight)
+
+        fused = reciprocal_rank_fusion(rankings, weights=weights)
         return [(record_map[rid], score) for rid, score in fused[:k] if rid in record_map]
 
     def _gate_text_hits_by_cosine(

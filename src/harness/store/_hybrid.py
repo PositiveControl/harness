@@ -111,10 +111,12 @@ def reciprocal_rank_fusion(
     rankings: list[list[int]],
     *,
     k: int = 60,
+    weights: list[float] | None = None,
 ) -> list[tuple[int, float]]:
     """Fuse multiple ranked lists of record ids into one ranking by
-    RRF: score(id) = Σ_i 1 / (k + rank_i), where rank_i is the id's
-    1-indexed position in the i-th list (absent = no contribution).
+    weighted RRF: score(id) = Σ_i w_i / (k + rank_i), where rank_i
+    is the id's 1-indexed position in the i-th list (absent = no
+    contribution from that list).
 
     k=60 is the Cormack/Clarke/Büttcher default. Low-rank items in
     the top-10 dominate the score; items ranked past ~60 contribute
@@ -122,11 +124,41 @@ def reciprocal_rank_fusion(
     is in the hybrid top-k iff at least one source strongly believes
     in it."
 
+    `weights` (harness-w3mo) — optional per-list scaling factor. None
+    defaults to all 1.0 (the original RRF). Use it to dial a
+    secondary signal (e.g. recency) up or down without rewriting
+    the call site. A weight of 0.0 is equivalent to omitting the
+    list entirely.
+
     Returns id → score pairs, sorted high-to-low. Callers re-hydrate
     the full records from their own side-indexes.
     """
+    if weights is None:
+        weights = [1.0] * len(rankings)
+    if len(weights) != len(rankings):
+        raise ValueError(f"weights length {len(weights)} != rankings length {len(rankings)}")
     scores: dict[int, float] = {}
-    for ranking in rankings:
+    for ranking, w in zip(rankings, weights, strict=True):
+        if w == 0.0:
+            continue
         for rank, rid in enumerate(ranking, start=1):
-            scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank)
+            scores[rid] = scores.get(rid, 0.0) + w * (1.0 / (k + rank))
     return sorted(scores.items(), key=lambda t: t[1], reverse=True)
+
+
+def build_session_recency_ranks(
+    sessions_newest_first: list[str],
+) -> dict[str, int]:
+    """Map each session id to its 1-indexed recency rank (1 = most
+    recently active). Used by `_search_hybrid` to build the third
+    RRF ranking for the recency-weighted retrieval gate
+    (harness-w3mo). NULL-session rows are intentionally absent —
+    callers skip them when building the recency ranking, so seeds /
+    procedural memory ride solely on dense + BM25 contributions.
+
+    Pass the output of `Transcript.list_sessions()` already ordered
+    by `last_at DESC` (its default) to make this a one-shot
+    map-build. Caller is expected to refresh the dict at session
+    boundaries — within one chat, a stale dict is fine because the
+    only new session is the running one and it'd be rank 1 anyway."""
+    return {sid: rank for rank, sid in enumerate(sessions_newest_first, start=1)}

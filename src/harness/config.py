@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     # lands. See harness-e4m, harness-5b3 in beads for the full data.
     embedder_repo: str = "BAAI/bge-small-en-v1.5"
     router_repo: str = "mlx-community/Hermes-3-Llama-3.2-3B-4bit"
+    # Recency-boost weight for the third RRF tier in hybrid retrieval
+    # (harness-w3mo step 5). 0.0 = off (default — keeps existing
+    # dense+BM25 fusion behavior). Positive values fuse a third
+    # ranking ordered by source-session recency so newer-session rows
+    # tilt up. NULL-session rows (seeds, procedural, cross-session
+    # consolidated) skip the tier and ride on dense+BM25 alone.
+    # Tunable via HARNESS_RETRIEVAL_RECENCY_WEIGHT. A value of 1.0
+    # gives recency the same weight as dense or BM25; <1 dampens.
+    retrieval_recency_weight: float = 0.0
     # MLX free-cache cap in megabytes. None = no cap (MLX default).
     # Caps the pool of buffers that MLX has allocated but not yet
     # returned to the system allocator — the active model weights and

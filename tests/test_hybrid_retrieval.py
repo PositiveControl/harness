@@ -742,6 +742,131 @@ def test_semantic_allowed_sessions_filters_to_subset(tmp_path: Path) -> None:
         store.close()
 
 
+def test_rrf_weights_scale_per_list_contribution() -> None:
+    """harness-w3mo step 5: weighted RRF lets a third tier (recency)
+    tilt fused scores without rewriting callers. id=A is rank 1 in
+    list 0 only; id=B is rank 1 in list 2 only. With weights
+    [1, 1, 5] B's score should exceed A's. With weights [1, 1, 0]
+    A wins (the third list contributes nothing)."""
+    rankings = [[1], [], [2]]
+    boosted = dict(reciprocal_rank_fusion(rankings, weights=[1.0, 1.0, 5.0]))
+    assert boosted[2] > boosted[1]
+
+    cancelled = dict(reciprocal_rank_fusion(rankings, weights=[1.0, 1.0, 0.0]))
+    assert 2 not in cancelled
+    assert 1 in cancelled
+
+
+def test_rrf_weights_length_must_match_rankings() -> None:
+    """Mismatched lengths raise ValueError so a typo doesn't silently
+    discard a list's contribution."""
+    with pytest.raises(ValueError, match="weights length"):
+        reciprocal_rank_fusion([[1], [2]], weights=[1.0])
+
+
+def test_build_session_recency_ranks_indexes_by_position() -> None:
+    """`build_session_recency_ranks` returns 1-indexed ranks where 1
+    is the most recently active session. Used by the chat boot to
+    materialize the dict the stores consume."""
+    from harness.store._hybrid import build_session_recency_ranks
+
+    ranks = build_session_recency_ranks(["newest", "middle", "oldest"])
+    assert ranks == {"newest": 1, "middle": 2, "oldest": 3}
+
+
+def test_episodic_recency_weight_tilts_newer_session_up(tmp_path: Path) -> None:
+    """harness-w3mo step 5: when two records share dense + BM25 rank,
+    a positive `recency_weight` tilts the newer-session row higher."""
+    embedder = _SteerableEmbedder(
+        axes={"AXIS_QUERY": (1.0, 0.0, 0.0, 0.0), "AXIS_MATCH": (1.0, 0.0, 0.0, 0.0)}
+    )
+    store = EpisodicStore(tmp_path / "h.sqlite", embedder=embedder)
+    try:
+        store.ingest(
+            external_id="newer",
+            title="AXIS_MATCH from newer-session",
+            body="AXIS_MATCH from newer-session",
+            tier="working",
+            source="user",
+            session_id="s_newer",
+        )
+        store.ingest(
+            external_id="older",
+            title="AXIS_MATCH from older-session",
+            body="AXIS_MATCH from older-session",
+            tier="working",
+            source="user",
+            session_id="s_older",
+        )
+
+        recency = {"s_newer": 1, "s_older": 2}
+        with_boost = store.search(
+            "AXIS_QUERY AXIS_MATCH",
+            mode="hybrid",
+            k=2,
+            recency_ranks=recency,
+            recency_weight=2.0,
+        )
+        ids = [r.external_id for r, _ in with_boost]
+        assert ids[0] == "newer"
+        assert ids[1] == "older"
+
+        # Disable the boost — fall back to dense+BM25 only. Records
+        # tie there (same axes, same body) so order is implementation-
+        # detail; key thing is both still surface.
+        no_boost = store.search(
+            "AXIS_QUERY AXIS_MATCH",
+            mode="hybrid",
+            k=2,
+            recency_ranks=recency,
+            recency_weight=0.0,
+        )
+        assert {r.external_id for r, _ in no_boost} == {"newer", "older"}
+    finally:
+        store.close()
+
+
+def test_episodic_recency_does_not_age_out_null_session_rows(tmp_path: Path) -> None:
+    """NULL-session rows skip the recency ranking — seeds + procedural
+    + cross-session consolidated should ride dense + BM25 alone, not
+    get artificially boosted or aged out by the recency tier."""
+    embedder = _SteerableEmbedder(
+        axes={"AXIS_QUERY": (1.0, 0.0, 0.0, 0.0), "AXIS_MATCH": (1.0, 0.0, 0.0, 0.0)}
+    )
+    store = EpisodicStore(tmp_path / "h.sqlite", embedder=embedder)
+    try:
+        store.ingest(
+            external_id="seed",
+            title="AXIS_MATCH shared seed",
+            body="AXIS_MATCH shared seed",
+            tier="seed",
+            source="yaml",
+            session_id=None,
+        )
+        store.ingest(
+            external_id="newer",
+            title="AXIS_MATCH from newer-session",
+            body="AXIS_MATCH from newer-session",
+            tier="working",
+            source="user",
+            session_id="s_newer",
+        )
+
+        recency = {"s_newer": 1}
+        hits = store.search(
+            "AXIS_QUERY AXIS_MATCH",
+            mode="hybrid",
+            k=5,
+            recency_ranks=recency,
+            recency_weight=2.0,
+        )
+        ids = {r.external_id for r, _ in hits}
+        assert "seed" in ids
+        assert "newer" in ids
+    finally:
+        store.close()
+
+
 def test_session_scope_filter_helper_shapes() -> None:
     """Pure-function pin on session_scope_filter — drives the SQL
     fragment + bind params for the three cases. Keeping the contract

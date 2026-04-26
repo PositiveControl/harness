@@ -489,6 +489,8 @@ class ChatApp(App[None]):
         ab_adapter: BeadsAdapter | None = None,
         hooks: object | None = None,
         allowed_sessions: tuple[str, ...] | None = None,
+        recency_ranks: dict[str, int] | None = None,
+        recency_weight: float = 0.0,
     ) -> None:
         super().__init__()
         self._character = character
@@ -540,6 +542,12 @@ class ChatApp(App[None]):
         # IN (...). Threaded into `_retrieve_turn_context` per turn so
         # the TUI matches the classic REPL's session-bounded retrieval.
         self._allowed_sessions = allowed_sessions
+        # Recency-RRF gate (harness-w3mo step 5). When weight > 0,
+        # the store's hybrid search fuses a third RRF tier ordered
+        # by session recency. None ranks + zero weight means the
+        # gate is fully off and the store skips the third ranking.
+        self._recency_ranks = recency_ranks
+        self._recency_weight = recency_weight
         # Accept an external retrieval_health reference so the
         # IntrospectTool (harness-8is) can see live voice/episodic/
         # semantic health without a callback plumbing. When None the
@@ -961,6 +969,8 @@ class ChatApp(App[None]):
                 state=self._state.retrieval_health,
                 warn=self._emit_warning,
                 allowed_sessions=self._allowed_sessions,
+                recency_ranks=self._recency_ranks,
+                recency_weight=self._recency_weight,
             )
 
             system_content = (

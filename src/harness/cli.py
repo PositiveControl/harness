@@ -149,6 +149,26 @@ def _encode_assistant_with_tool_calls(content: str, tool_calls: tuple[ToolCall, 
     return f"{content}{_TOOL_CALLS_SENTINEL}{payload}"
 
 
+def _build_recency_ranks() -> dict[str, int]:
+    """One-shot build of the session_id → recency-rank map for the
+    chat process. Read from the live transcript ordered by `last_at
+    DESC`; stale within a process is fine because the only new
+    session per chat run is the running one and it'd be rank 1
+    anyway. NULL-session rows aren't in the dict — they skip the
+    recency tier entirely (seeds + procedural + cross-session
+    consolidated). Used by `_search_hybrid` when
+    `HARNESS_RETRIEVAL_RECENCY_WEIGHT > 0`. harness-w3mo step 5."""
+    from harness.store._hybrid import build_session_recency_ranks
+    from harness.store.transcript import Transcript
+
+    ts = Transcript(settings.character_db_path)
+    try:
+        sessions = ts.list_sessions()
+    finally:
+        ts.close()
+    return build_session_recency_ranks([s.session for s in sessions])
+
+
 def _resolve_memory_scope(
     *,
     memory_scope: str,
@@ -1208,6 +1228,8 @@ def _retrieve_turn_context(
     state: _RetrievalState,
     warn: Callable[[str], None],
     allowed_sessions: tuple[str, ...] | None = None,
+    recency_ranks: dict[str, int] | None = None,
+    recency_weight: float = 0.0,
 ) -> tuple[list[VoiceSample], list[EpisodicRecord], list[SemanticFact]]:
     """Run the three retrieval sources for one turn. Any that raise are
     disabled for the rest of the session (flagged on `state`) and a
@@ -1238,6 +1260,8 @@ def _retrieve_turn_context(
                 min_score=memories_threshold,
                 user_id=speaker,
                 allowed_sessions=allowed_sessions,
+                recency_ranks=recency_ranks,
+                recency_weight=recency_weight,
             )
             recalled = [rec for rec, _score in hits]
         except Exception as exc:
@@ -1253,6 +1277,8 @@ def _retrieve_turn_context(
                 min_score=facts_threshold,
                 user_id=speaker,
                 allowed_sessions=allowed_sessions,
+                recency_ranks=recency_ranks,
+                recency_weight=recency_weight,
             )
             known_facts = [f for f, _score in fact_hits]
         except Exception as exc:
@@ -2013,6 +2039,18 @@ def chat(
             f"[dim]memory-scope: {memory_scope} → "
             f"{len(allowed_sessions)} session(s) + untagged[/dim]"
         )
+    # Recency-RRF gate (harness-w3mo step 5). Build the session_id →
+    # rank map once at chat boot when the env-driven weight is
+    # positive; keep it None otherwise so the store skips the third
+    # ranking entirely.
+    recency_weight = settings.retrieval_recency_weight
+    recency_ranks: dict[str, int] | None = None
+    if recency_weight > 0.0:
+        recency_ranks = _build_recency_ranks()
+        console.print(
+            f"[dim]retrieval-recency: weight={recency_weight:.2f} "
+            f"over {len(recency_ranks)} session(s)[/dim]"
+        )
     if tui:
         from harness.cli_tui import run_tui
 
@@ -2046,6 +2084,9 @@ def chat(
             router_mode=router_mode,
             include_internal=include_internal,
             dev=dev,
+            allowed_sessions=allowed_sessions,
+            recency_ranks=recency_ranks,
+            recency_weight=recency_weight,
         )
         return
 
@@ -2085,6 +2126,8 @@ def chat(
         router_repo=router_repo,
         router_mode=router_mode,
         allowed_sessions=allowed_sessions,
+        recency_ranks=recency_ranks,
+        recency_weight=recency_weight,
     )
     return
 

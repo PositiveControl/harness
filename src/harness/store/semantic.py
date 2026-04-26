@@ -317,6 +317,8 @@ class SemanticStore:
         as_of: datetime | None = None,
         bm25_min_score: float | None = None,
         allowed_sessions: tuple[str, ...] | None = None,
+        recency_ranks: dict[str, int] | None = None,
+        recency_weight: float = 0.0,
     ) -> list[tuple[SemanticFact, float]]:
         """Return up to `k` active facts (not superseded) where stored
         confidence >= `min_confidence`, ranked by `mode` and filtered
@@ -374,6 +376,8 @@ class SemanticStore:
             user_id=user_id,
             as_of_iso=as_of_iso,
             allowed_sessions=allowed_sessions,
+            recency_ranks=recency_ranks,
+            recency_weight=recency_weight,
         )
 
     def _search_dense(
@@ -519,6 +523,8 @@ class SemanticStore:
         user_id: str | None,
         as_of_iso: str,
         allowed_sessions: tuple[str, ...] | None = None,
+        recency_ranks: dict[str, int] | None = None,
+        recency_weight: float = 0.0,
     ) -> list[tuple[SemanticFact, float]]:
         candidate_k = max(k * 4, 20)
         dense_hits = self._search_dense(
@@ -549,9 +555,29 @@ class SemanticStore:
             record_map[fact.id] = fact
         for fact, _ in text_hits:
             record_map.setdefault(fact.id, fact)
-        fused = reciprocal_rank_fusion(
-            [[fact.id for fact, _ in dense_hits], [fact.id for fact, _ in text_hits]]
-        )
+
+        rankings: list[list[int]] = [
+            [fact.id for fact, _ in dense_hits],
+            [fact.id for fact, _ in text_hits],
+        ]
+        weights: list[float] = [1.0, 1.0]
+        if recency_weight > 0.0 and recency_ranks:
+            # Mirror of EpisodicStore — recency ranking is over the
+            # session-tagged subset of candidates only. NULL-session
+            # facts (seeds, manually-added shared, cross-session
+            # consolidated) skip the recency tier.
+            session_tagged = [fact for fact in record_map.values() if fact.session_id is not None]
+            recency_sorted = sorted(
+                session_tagged,
+                key=lambda f: recency_ranks.get(
+                    f.session_id or "",
+                    len(recency_ranks) + 1,
+                ),
+            )
+            rankings.append([fact.id for fact in recency_sorted])
+            weights.append(recency_weight)
+
+        fused = reciprocal_rank_fusion(rankings, weights=weights)
         return [(record_map[rid], score) for rid, score in fused[:k] if rid in record_map]
 
     def _gate_text_hits_by_cosine(

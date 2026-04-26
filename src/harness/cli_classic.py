@@ -364,6 +364,12 @@ class ClassicChatSession:
     # None = no filter (default 'all'); tuple = NULL OR session_id IN
     # (...). Used by `_retrieve_turn_context` per turn (harness-w3mo).
     allowed_sessions: tuple[str, ...] | None = None
+    # Recency-RRF gate (harness-w3mo step 5). When weight > 0, the
+    # store fuses a third RRF tier ordered by session recency. ranks
+    # is None when weight is 0 — keeps the gate fully off rather than
+    # paying the dict-lookup cost.
+    recency_ranks: dict[str, int] | None = None
+    recency_weight: float = 0.0
 
     def tool_label(self, name: str) -> str:
         if self.registry is not None and name in self.registry:
@@ -442,6 +448,8 @@ class ClassicChatSession:
             state=self.retrieval_state,
             warn=self.warn_once,
             allowed_sessions=self.allowed_sessions,
+            recency_ranks=self.recency_ranks,
+            recency_weight=self.recency_weight,
         )
 
         if examples:
@@ -628,6 +636,8 @@ def run_classic_chat(
     router_repo: str,
     router_mode: str,
     allowed_sessions: tuple[str, ...] | None = None,
+    recency_ranks: dict[str, int] | None = None,
+    recency_weight: float = 0.0,
 ) -> None:
     """Classic-mode chat entry point. Handles setup, REPL loop, and
     teardown; dispatches per-turn work to `ClassicChatSession.run_turn`."""
@@ -808,6 +818,8 @@ def run_classic_chat(
         hooks=hooks,
         audit_store=audit_store,
         allowed_sessions=allowed_sessions,
+        recency_ranks=recency_ranks,
+        recency_weight=recency_weight,
     )
 
     if ab_adapter is not None:

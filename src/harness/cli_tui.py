@@ -56,6 +56,8 @@ def run_tui(
     include_internal: bool,
     dev: bool,
     allowed_sessions: tuple[str, ...] | None = None,
+    recency_ranks: dict[str, int] | None = None,
+    recency_weight: float = 0.0,
 ) -> None:
     from harness.cli import (
         _build_tool_registry_for_tui,
@@ -190,6 +192,8 @@ def run_tui(
         ab_adapter=ab_adapter,
         hooks=hooks,
         allowed_sessions=allowed_sessions,
+        recency_ranks=recency_ranks,
+        recency_weight=recency_weight,
     ).run()
     if compaction_store is not None:
         compaction_store.close()

@@ -93,6 +93,8 @@ class _RaisingStore:
         min_score: float = 0.0,
         user_id: str | None = None,
         allowed_sessions: tuple[str, ...] | None = None,
+        recency_ranks: dict[str, int] | None = None,
+        recency_weight: float = 0.0,
     ) -> list[tuple[object, float]]:
         raise RuntimeError(f"{self.kind} search blew up")
 
@@ -109,6 +111,8 @@ class _StaticMemoryStore:
         min_score: float = 0.0,
         user_id: str | None = None,
         allowed_sessions: tuple[str, ...] | None = None,
+        recency_ranks: dict[str, int] | None = None,
+        recency_weight: float = 0.0,
     ) -> list[tuple[object, float]]:
         return self.hits
 
