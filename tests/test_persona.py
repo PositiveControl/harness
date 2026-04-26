@@ -392,3 +392,171 @@ def test_persona_adapter_reinjects_citation_dropped_by_rewriter() -> None:
     out = adapter.complete([ChatMessage(role="user", content="readback?")])
     assert out.startswith("Read back altitudes.")
     assert "AIM 4-4-7" in out
+
+
+# ---------- lead_with_citation forward pass (plan #7) ----------
+
+
+def test_lead_with_citation_passthrough_when_already_cited() -> None:
+    """Draft already opens with a citation — return unchanged."""
+    from harness.persona.rewriter import lead_with_citation
+
+    text = (
+        "JO 7110.65 §5-10-11 — Before final descent, issue the missed "
+        "approach procedure. Phraseology: YOUR MISSED APPROACH..."
+    )
+    assert lead_with_citation(text) == text
+
+
+def test_lead_with_citation_hoists_first_citation_to_front() -> None:
+    """Draft contains a citation but doesn't lead with it. Hoist."""
+    from harness.persona.rewriter import lead_with_citation
+
+    text = (
+        "Issue the missed approach procedure before the aircraft starts "
+        "final descent. The relevant section is JO 7110.65 §5-10-11."
+    )
+    out = lead_with_citation(text)
+    assert out.startswith("JO 7110.65 §5-10-11 — ")
+    # Original body is preserved after the dash.
+    assert "Issue the missed approach procedure" in out
+
+
+def test_lead_with_citation_passthrough_when_no_citation() -> None:
+    """No citation in the draft — nothing to hoist; return as-is.
+    MissingCitationHook + UngroundedCitationHook handle this case."""
+    from harness.persona.rewriter import lead_with_citation
+
+    text = "I'm not sure which section covers this — try search_memory."
+    assert lead_with_citation(text) == text
+
+
+def test_lead_with_citation_handles_empty_string() -> None:
+    from harness.persona.rewriter import lead_with_citation
+
+    assert lead_with_citation("") == ""
+
+
+def test_lead_with_citation_uses_first_when_draft_has_multiple() -> None:
+    """When the draft has several citations, hoist only the first.
+    Voice samples lead with one anchor; piling all of them on the
+    front would read worse than the natural body order."""
+    from harness.persona.rewriter import lead_with_citation
+
+    text = (
+        "Apply wake turbulence procedures behind a leader. "
+        "See JO 7110.65 §5-5-4 for radar minima and §3-9-6 for "
+        "same-runway timing."
+    )
+    out = lead_with_citation(text)
+    assert out.startswith("JO 7110.65 §5-5-4 — ")
+    # Both still present — only the first was hoisted.
+    assert "§3-9-6" in out
+
+
+def test_lead_with_citation_recognises_aim_and_cfr_styles() -> None:
+    """Hoisting works for any citation pattern preserve_citations
+    recognises (JO, AIM, CFR, AC), not just §-anchors."""
+    from harness.persona.rewriter import lead_with_citation
+
+    aim_text = "Pilot must read back altitude. See AIM 4-4-7 for the rule."
+    cfr_text = "Cloud clearance varies by airspace. 14 CFR §91.155 has the table."
+    assert lead_with_citation(aim_text).startswith("AIM 4-4-7 — ")
+    assert lead_with_citation(cfr_text).startswith("14 CFR §91.155 — ")
+
+
+def test_lead_with_citation_preserves_dash_variant_in_check() -> None:
+    """Draft already opens with a citation that uses a unicode minus
+    instead of ASCII hyphen — should still pass through, since
+    canonicalisation folds them. Was the bug we'd hit if the head-
+    membership check used raw equality."""
+    from harness.persona.rewriter import lead_with_citation
+
+    minus = "−"  # unicode-minus is the test premise
+    text = f"JO 7110.65 §5{minus}10{minus}11 — Before final descent."
+    # Should be detected as already-leading and returned unchanged.
+    assert lead_with_citation(text) == text
+
+
+def test_persona_adapter_skips_lead_with_citation_when_flag_off() -> None:
+    """Default characters (lead_with_citation=False) get the existing
+    pass-1 → rewriter → preserve_citations path. The forward hook
+    must not fire for them."""
+    from harness.character import Character
+    from harness.persona.rewriter import PersonaAdapter
+
+    character = load_character(AIRTON)
+    # Sanity: airton ships with lead_with_citation default False.
+    assert isinstance(character, Character)
+    assert character.lead_with_citation is False
+
+    @dataclass
+    class _Drafter:
+        id: str = "drafter"
+        context_window: int = 8192
+        seen_drafts: list[str] = field(default_factory=list)
+        call_idx: int = 0
+
+        def complete(
+            self,
+            messages: Iterable[ChatMessage],
+            *,
+            max_tokens: int = 512,
+            temperature: float = 0.7,
+        ) -> str:
+            idx = self.call_idx
+            self.call_idx += 1
+            if idx == 0:
+                return "Issue missed approach. JO 7110.65 §5-10-11 has it."
+            # Capture what the rewriter saw as the draft body.
+            for m in messages:
+                if m.role == "user" and "Draft" in m.content:
+                    self.seen_drafts.append(m.content)
+            return "Issue missed approach."
+
+    base = _Drafter()
+    adapter = PersonaAdapter(base, character, chain_rewrites=False)
+    adapter.complete([ChatMessage(role="user", content="missed approach?")])
+    # Rewriter saw the unmodified draft (citation NOT hoisted).
+    assert any(
+        "Issue missed approach. JO 7110.65 §5-10-11 has it." in seen for seen in base.seen_drafts
+    )
+
+
+def test_persona_adapter_applies_lead_with_citation_when_flag_on() -> None:
+    """airton_c1's flag is True. Pass-1 draft with a non-leading
+    citation gets hoisted before the rewriter sees it."""
+    from harness.persona.rewriter import PersonaAdapter
+
+    airton_c1_path = REPO / "character" / "airton_c1"
+    character = load_character(airton_c1_path)
+    assert character.lead_with_citation is True
+
+    @dataclass
+    class _Drafter:
+        id: str = "drafter"
+        context_window: int = 8192
+        seen_drafts: list[str] = field(default_factory=list)
+        call_idx: int = 0
+
+        def complete(
+            self,
+            messages: Iterable[ChatMessage],
+            *,
+            max_tokens: int = 512,
+            temperature: float = 0.7,
+        ) -> str:
+            idx = self.call_idx
+            self.call_idx += 1
+            if idx == 0:
+                return "Issue missed approach. JO 7110.65 §5-10-11 has it."
+            for m in messages:
+                if m.role == "user" and "Draft" in m.content:
+                    self.seen_drafts.append(m.content)
+            return "Issue missed approach."
+
+    base = _Drafter()
+    adapter = PersonaAdapter(base, character, chain_rewrites=False)
+    adapter.complete([ChatMessage(role="user", content="missed approach?")])
+    # Rewriter saw the HOISTED draft (citation leads).
+    assert any("JO 7110.65 §5-10-11 — Issue missed approach." in seen for seen in base.seen_drafts)

@@ -87,6 +87,16 @@ class Character:
     # / `--facts`) still runs in addition, not in place. Default False;
     # every other character leaves behavior unchanged.
     require_search_memory: bool = False
+    # Plan #7 / forward citation-discipline pass. When true,
+    # PersonaAdapter.complete() runs `rewriter.lead_with_citation()` on
+    # the pass-1 draft before the voice rewriter sees it — hoists the
+    # first citation in the draft to the opening (`§X-Y-Z — body`)
+    # when the draft has a citation but doesn't lead with it. Mirror
+    # of `preserve_citations` (harness-cco, post-rewrite). Drafts
+    # without any citation pass through unchanged. Default False;
+    # set true on characters whose directive is "name the section
+    # before answering" (currently airton_c1).
+    lead_with_citation: bool = False
 
     def system_prompt(
         self,
@@ -265,4 +275,5 @@ def load_character(path: Path) -> Character:
         holdout_voice_samples=tuple(holdout_samples),
         seed_memories=tuple(seeds),
         require_search_memory=bool(core.get("require_search_memory", False)),
+        lead_with_citation=bool(core.get("lead_with_citation", False)),
     )

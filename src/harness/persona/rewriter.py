@@ -59,6 +59,74 @@ def extract_citations(text: str) -> list[str]:
     return out
 
 
+# How many characters from the start of the text count as "the
+# opening" for the lead_with_citation check. 20 chars accommodates
+# `Per ` / `Per the ` / `According to ` prefixes that voice samples
+# sometimes use ahead of the citation, but rejects citations buried
+# mid-sentence (e.g. position 22 in `Issue missed approach. JO ...`).
+_LEAD_OPENING_BUDGET = 20
+
+
+def _first_citation_match(text: str) -> re.Match[str] | None:
+    """Earliest citation match in `text` across all citation patterns,
+    sorted by text-position (NOT pattern order — `extract_citations`
+    iterates patterns first which doesn't preserve textual ordering)."""
+    earliest: re.Match[str] | None = None
+    for pattern in _CITATION_PATTERNS:
+        match = pattern.search(text)
+        if match is None:
+            continue
+        if earliest is None or match.start() < earliest.start():
+            earliest = match
+    return earliest
+
+
+def lead_with_citation(text: str) -> str:
+    """Forward citation-discipline pass (mirror of `preserve_citations`).
+
+    Scans `text` for citation-shaped substrings (the same patterns
+    `preserve_citations` re-injects) and ensures the reply opens with
+    one. Three cases:
+
+      1. `text` already opens with a citation (citation start index is
+         within the first ~80 chars): return unchanged.
+      2. `text` contains at least one citation, but not at the opening:
+         hoist the EARLIEST-by-position citation to the front as
+         `<cite> — <body>`. Matches the airton_c1 voice-sample pattern
+         (e.g. `JO 7110.65 §10-1-1 — an emergency is...`).
+      3. `text` contains no citation: return unchanged. Nothing to
+         hoist; this is `MissingCitationHook` /
+         `UngroundedCitationHook`'s domain.
+
+    The post-rewrite fixup `preserve_citations` runs LATER on the
+    rewriter's output. The forward step ensures the rewriter sees a
+    citation-first draft so the rewriter prompt's "preserve citations
+    verbatim" instruction has the right material to preserve. If the
+    rewriter strips the citation anyway, `preserve_citations` re-appends
+    it as a trailing em-dash line — belt-and-suspenders.
+
+    Character-gated: callers should only invoke this when
+    `character.lead_with_citation` is True (airton_c1's directive
+    "Name the chapter and section before answering"). General-purpose
+    characters leave behaviour unchanged.
+
+    Position-based opening detection avoids the `7110.65` false-
+    positive a sentence-end heuristic would hit (the period in the
+    decimal would cut the head at char 7 and miss the actual
+    citation that starts at char 0)."""
+    if not text:
+        return text
+    first = _first_citation_match(text)
+    if first is None:
+        return text
+    if first.start() < _LEAD_OPENING_BUDGET:
+        return text
+    # Hoist the earliest citation to the front. Strip any leading
+    # whitespace from the body so the result reads cleanly.
+    body = text.lstrip()
+    return f"{first.group(0)} — {body}"
+
+
 def preserve_citations(draft: str, rewritten: str) -> str:
     """Append citations that survived pass-1 but disappeared in the
     rewrite, so `ppl_readback_basics`-style failures where the style
@@ -266,6 +334,15 @@ class PersonaAdapter:
         temperature: float = 0.7,
     ) -> str:
         draft = self.base.complete(messages, max_tokens=max_tokens, temperature=temperature)
+        # Forward citation-discipline pass (plan #7). Mirror of the
+        # post-rewrite preserve_citations fixup: hoists the first
+        # citation to the opening of the draft when the character's
+        # directive is to lead with the section anchor (airton_c1's
+        # "Name the chapter and section before answering"). The
+        # rewriter then preserves it; preserve_citations re-appends
+        # if the rewriter still drops it.
+        if getattr(self.character, "lead_with_citation", False):
+            draft = lead_with_citation(draft)
         rewrite_cap = self.rewriter_max_tokens if self.rewriter_max_tokens else max_tokens
 
         style_msgs = build_rewriter_messages(self.character, draft, focus="style")
@@ -320,6 +397,15 @@ class PersonaAdapter:
             draft_parts.append(delta)
             yield delta
         draft = "".join(draft_parts)
+        # Forward citation-discipline pass (plan #7) — see complete()
+        # for rationale. Streamed deltas have already reached the user
+        # so we don't re-emit the hoisted draft to the caller; we only
+        # use it as the rewriter's input. This means the streamed
+        # draft view may not be citation-first, but the rewriter sees
+        # the canonical form and the final reply (post-rewriter +
+        # preserve_citations) is the citation-first one.
+        if getattr(self.character, "lead_with_citation", False):
+            draft = lead_with_citation(draft)
 
         yield "\n\n*— voice pass —*\n\n"
 

@@ -21,6 +21,15 @@ relationship:
 # downstream. Opt-in: unset/false for airton, airton_b, airton_c.
 require_search_memory: true
 
+# Plan #7: forward citation-discipline pass. PersonaAdapter.complete()
+# runs `rewriter.lead_with_citation()` on the pass-1 draft when this
+# flag is set — hoists the first §-anchor to the opening so the
+# rewriter sees a citation-first draft (e.g. "§5-10-11 — body"). Mirror
+# of `preserve_citations` (harness-cco, post-rewrite re-injection).
+# Matches airton_c1's directive "Name the chapter and section before
+# answering." Default false for general-purpose personas.
+lead_with_citation: true
+
 premise: >
   airton_c1 is a reference expert on FAA Order JO 7110.65 —
   Air Traffic Control. It reads the controller's handbook and
