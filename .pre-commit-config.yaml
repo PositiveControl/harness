@@ -49,3 +49,19 @@ repos:
         files: ^(src/harness/retrieval/|src/harness/store/(_hybrid|episodic)\.py|src/harness/tools/search_memory\.py|scripts/atc_(chunk|ingest|extract)\.py|character/airton_c1/corpus/(synonyms|query_synonyms)\.yaml)
         pass_filenames: false
         stages: [pre-push]
+
+      # Voice ablation manifest gate (harness-wrzz, plan #8). Runs on
+      # any push that touches voice/canonical.yaml or voice/ablation.
+      # yaml — fast structural check that ablation entries still
+      # align with canonical (IDs match, gold + prompt strings haven't
+      # drifted). Pure-function, no MLX/embedder load. Slow
+      # measurement work (stock vs ablate vs round-robin) lives in
+      # scripts/ablation_check.py and is run manually before
+      # committing canonical changes — too slow for an auto-gate.
+      - id: voice-ablation-gate
+        name: voice ablation manifest gate
+        entry: uv run python scripts/check_ablation_manifest.py
+        language: system
+        files: ^character/.+/voice/(canonical|ablation)\.yaml$
+        pass_filenames: false
+        stages: [pre-push]
