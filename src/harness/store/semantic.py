@@ -308,6 +308,7 @@ class SemanticStore:
         user_id: str | None = None,
         mode: SearchMode = "hybrid",
         as_of: datetime | None = None,
+        bm25_min_score: float | None = None,
     ) -> list[tuple[SemanticFact, float]]:
         """Return up to `k` active facts (not superseded) where stored
         confidence >= `min_confidence`, ranked by `mode` and filtered
@@ -353,11 +354,13 @@ class SemanticStore:
                 user_id=user_id,
                 as_of_iso=as_of_iso,
             )
+        bm25_floor = bm25_min_score if bm25_min_score is not None else max(min_score - 0.15, 0.0)
         return self._search_hybrid(
             query,
             k=k,
             min_confidence=min_confidence,
             min_score=min_score,
+            bm25_min_score=bm25_floor,
             user_id=user_id,
             as_of_iso=as_of_iso,
         )
@@ -480,6 +483,7 @@ class SemanticStore:
         k: int,
         min_confidence: float,
         min_score: float,
+        bm25_min_score: float,
         user_id: str | None,
         as_of_iso: str,
     ) -> list[tuple[SemanticFact, float]]:
@@ -499,6 +503,10 @@ class SemanticStore:
             user_id=user_id,
             as_of_iso=as_of_iso,
         )
+        if bm25_min_score > 0.0 and text_hits:
+            text_hits = self._gate_text_hits_by_cosine(
+                query=query, hits=text_hits, threshold=bm25_min_score
+            )
         if not dense_hits and not text_hits:
             return []
         record_map: dict[int, SemanticFact] = {}
@@ -510,6 +518,41 @@ class SemanticStore:
             [[fact.id for fact, _ in dense_hits], [fact.id for fact, _ in text_hits]]
         )
         return [(record_map[rid], score) for rid, score in fused[:k] if rid in record_map]
+
+    def _gate_text_hits_by_cosine(
+        self,
+        *,
+        query: str,
+        hits: list[tuple[SemanticFact, float]],
+        threshold: float,
+    ) -> list[tuple[SemanticFact, float]]:
+        """Drop BM25 hits whose dense cosine to the query is below
+        `threshold` so a lexical match on a common token doesn't
+        rank a semantically unrelated fact into hybrid top-K
+        (harness-dffh, mirror of EpisodicStore._gate_text_hits_by_cosine)."""
+        if not hits:
+            return []
+        q_vec = self.embedder.embed([query])[0].astype(np.float32)
+        ids = [fact.id for fact, _ in hits]
+        placeholders = ",".join("?" * len(ids))
+        rows = self._conn.execute(
+            f"SELECT id, embedding, embedding_dim FROM semantic WHERE id IN ({placeholders})",  # noqa: S608 — placeholders param-bind, not user data
+            ids,
+        ).fetchall()
+        embed_map = {row[0]: (row[1], int(row[2])) for row in rows}
+        out: list[tuple[SemanticFact, float]] = []
+        for fact, bm in hits:
+            payload = embed_map.get(fact.id)
+            if payload is None:
+                continue
+            blob, dim = payload
+            if dim != self.embedder.dimension:
+                continue
+            vec = np.frombuffer(blob, dtype=np.float32)
+            cos = float(np.dot(q_vec, vec))
+            if cos >= threshold:
+                out.append((fact, bm))
+        return out
 
     def fetch_embedding(self, record_id: int) -> np.ndarray:
         row = self._conn.execute(

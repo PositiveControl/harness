@@ -17,7 +17,7 @@ help it too much.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -438,3 +438,229 @@ def test_hybrid_returns_empty_list_on_no_match(episodic: EpisodicStore) -> None:
     # text sides are starved (dense by embedder coincidence, text by
     # sanitizer). Hybrid must gracefully return [].
     assert episodic.search("!!!", mode="text") == []
+
+
+# ---------- harness-dffh: bm25 cosine floor ----------
+
+
+@dataclass
+class _SteerableEmbedder:
+    """Embedder where similarity is dictated by axis tokens in the
+    input text. Each token in `axes` maps to a unit vector along
+    one basis direction; the embedder picks the matching axis when
+    its token appears anywhere in the embedded text and falls back
+    to a default vector otherwise.
+
+    This lets bm25-floor tests pin the cosine between the query and
+    each ingested row without having to mirror the store's
+    `_build_embed_text` formatting exactly. The store wraps body
+    text with `[tier: …]` headers before embedding, so a strict
+    by-text dict misses every ingested row; substring matching on
+    a unique axis token (`AXIS_BLEED`, `AXIS_ONTOPIC`, …) is
+    robust to that wrapping."""
+
+    id: str = "steer"
+    dimension: int = 4
+    fallback: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+    axes: dict[str, tuple[float, float, float, float]] = field(default_factory=dict)
+
+    def embed(self, texts: Iterable[str]) -> np.ndarray:
+        out: list[np.ndarray] = []
+        for text in texts:
+            chosen: tuple[float, float, float, float] | None = None
+            for token, vec in self.axes.items():
+                if token in text:
+                    chosen = vec
+                    break
+            v = np.array(chosen if chosen is not None else self.fallback, dtype=np.float32)
+            n = float(np.linalg.norm(v))
+            out.append(v / n if n > 0 else v)
+        return np.stack(out)
+
+
+def test_episodic_hybrid_drops_bm25_only_hit_below_cosine_floor(tmp_path: Path) -> None:
+    """harness-dffh: a pure BM25 hit whose dense cosine to the
+    query is well below `bm25_min_score` must NOT make it into
+    the hybrid top-K. Exercises the topical-bleed failure mode:
+    a stored row shares one common token with the query but is
+    semantically unrelated."""
+    embedder = _SteerableEmbedder(
+        axes={
+            # Query carries AXIS_QUERY → vector e0.
+            "AXIS_QUERY": (1.0, 0.0, 0.0, 0.0),
+            # Bleed row body shares the lexical token "junior" with
+            # the query but lives on a different semantic axis (e1).
+            # Dense cosine query↔bleed ≈ 0.
+            "AXIS_BLEED": (0.0, 1.0, 0.0, 0.0),
+            # Ontopic row sits on the same axis as the query (e0):
+            # dense cosine query↔ontopic ≈ 1.
+            "AXIS_ONTOPIC": (1.0, 0.0, 0.0, 0.0),
+        }
+    )
+    store = EpisodicStore(tmp_path / "h.sqlite", embedder=embedder)
+    try:
+        store.ingest(
+            external_id="bleed",
+            title="topical bleed AXIS_BLEED",
+            body="junior reference AXIS_BLEED — semantically unrelated",
+            tier="working",
+            source="user",
+        )
+        store.ingest(
+            external_id="ontopic",
+            title="ontopic AXIS_ONTOPIC",
+            body="junior eng coaching playbook AXIS_ONTOPIC",
+            tier="working",
+            source="user",
+        )
+
+        # Realistic chat config: dense floor 0.5 + BM25 floor 0.5.
+        # Without the BM25 gate (the harness-dffh fix) the bleed
+        # row would re-enter via the BM25 side of RRF even though
+        # dense rejected it. With the gate, only on-axis stays.
+        gated = store.search(
+            "junior eng question AXIS_QUERY",
+            mode="hybrid",
+            k=2,
+            min_score=0.5,
+            bm25_min_score=0.5,
+        )
+        ids_gated = {r.external_id for r, _ in gated}
+        assert "ontopic" in ids_gated
+        assert "bleed" not in ids_gated
+
+        # Disable both floors → bleed comes back via RRF, proving the
+        # gate is what pruned it (not some unrelated filter).
+        no_floor = store.search(
+            "junior eng question AXIS_QUERY",
+            mode="hybrid",
+            k=2,
+            min_score=0.0,
+            bm25_min_score=0.0,
+        )
+        assert "bleed" in {r.external_id for r, _ in no_floor}
+    finally:
+        store.close()
+
+
+def test_episodic_hybrid_default_floor_derives_from_min_score(tmp_path: Path) -> None:
+    """When `bm25_min_score` is not passed, the default is
+    `max(min_score - 0.15, 0.0)`. Verify the derivation actually
+    fires at the gate: with min_score=0.5 the soft floor is 0.35,
+    so a row whose cosine to the query is 0.4 should pass while a
+    row at cosine 0.1 should not."""
+    embedder = _SteerableEmbedder(
+        axes={
+            "AXIS_QUERY": (1.0, 0.0, 0.0, 0.0),
+            # cos(query, border) = 0.4 (above 0.35 soft floor)
+            "AXIS_BORDER": (0.4, float(np.sqrt(1 - 0.16)), 0.0, 0.0),
+            # cos(query, far) = 0.1 (below 0.35 soft floor)
+            "AXIS_FAR": (0.1, float(np.sqrt(1 - 0.01)), 0.0, 0.0),
+        }
+    )
+    store = EpisodicStore(tmp_path / "h.sqlite", embedder=embedder)
+    try:
+        store.ingest(
+            external_id="border",
+            title="border AXIS_BORDER",
+            body="lexical-token shared with query AXIS_BORDER",
+            tier="working",
+            source="user",
+        )
+        store.ingest(
+            external_id="far",
+            title="far AXIS_FAR",
+            body="lexical-token shared with query AXIS_FAR",
+            tier="working",
+            source="user",
+        )
+        # Default bm25_min_score derives to 0.35 from min_score=0.5.
+        hits = store.search(
+            "lexical-token AXIS_QUERY",
+            mode="hybrid",
+            min_score=0.5,
+        )
+        ids = {r.external_id for r, _ in hits}
+        # Both rows are below the strict 0.5 dense floor, so dense
+        # rejected both; the soft BM25 floor at 0.35 lets `border`
+        # through (cos 0.4) and cuts `far` (cos 0.1).
+        assert "border" in ids
+        assert "far" not in ids
+    finally:
+        store.close()
+
+
+def test_episodic_hybrid_explicit_zero_disables_floor(tmp_path: Path) -> None:
+    """Pass `bm25_min_score=0.0` to opt out of the gate entirely
+    (e.g. for identifier-heavy queries where dense cosine is
+    genuinely low). Verifies the parameter is wired and isn't
+    masked by the auto-derivation."""
+    embedder = _SteerableEmbedder(
+        axes={
+            "AXIS_QUERY": (1.0, 0.0, 0.0, 0.0),
+            "AXIS_IDENT": (0.0, 1.0, 0.0, 0.0),  # cos = 0
+        }
+    )
+    store = EpisodicStore(tmp_path / "h.sqlite", embedder=embedder)
+    try:
+        store.ingest(
+            external_id="ident",
+            title="BeadsAdapter AXIS_IDENT",
+            body="Renamed BeadsAdapter.get_focus to resolve_focus AXIS_IDENT",
+            tier="working",
+            source="user",
+        )
+        # min_score=0.5 would normally derive a soft floor of 0.35;
+        # explicit 0.0 keeps the identifier match.
+        hits = store.search(
+            "needle BeadsAdapter AXIS_QUERY",
+            mode="hybrid",
+            min_score=0.5,
+            bm25_min_score=0.0,
+        )
+        assert "ident" in {r.external_id for r, _ in hits}
+    finally:
+        store.close()
+
+
+def test_semantic_hybrid_drops_bm25_only_hit_below_cosine_floor(tmp_path: Path) -> None:
+    """Same gate on the semantic store. BM25 hit on a shared token
+    in the (subject, predicate, object) triple shouldn't survive
+    if its dense cosine to the full query is below threshold."""
+    embedder = _SteerableEmbedder(
+        axes={
+            "AXIS_QUERY": (1.0, 0.0, 0.0, 0.0),
+            "AXIS_BLEED": (0.0, 1.0, 0.0, 0.0),
+            "AXIS_KEEP": (1.0, 0.0, 0.0, 0.0),
+        }
+    )
+    store = SemanticStore(tmp_path / "h.sqlite", embedder=embedder)
+    try:
+        store.add(
+            subject="mark",
+            predicate="prefers",
+            object="stack-rank reviews AXIS_BLEED",
+            confidence=0.8,
+            source="scribe",
+            tier="working",
+        )
+        store.add(
+            subject="mark",
+            predicate="prefers",
+            object="stack postgres AXIS_KEEP",
+            confidence=0.8,
+            source="scribe",
+            tier="working",
+        )
+        gated = store.search(
+            "mark stack preference AXIS_QUERY",
+            mode="hybrid",
+            k=5,
+            min_score=0.5,
+            bm25_min_score=0.5,
+        )
+        objs = {f.object for f, _ in gated}
+        assert any("AXIS_KEEP" in o for o in objs)
+        assert not any("AXIS_BLEED" in o for o in objs)
+    finally:
+        store.close()

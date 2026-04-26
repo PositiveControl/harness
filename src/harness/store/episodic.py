@@ -362,6 +362,7 @@ class EpisodicStore:
         min_score: float = 0.0,
         user_id: str | None = None,
         mode: SearchMode = "hybrid",
+        bm25_min_score: float | None = None,
     ) -> list[tuple[EpisodicRecord, float]]:
         """Return up to `k` active records ranked by `mode`.
 
@@ -371,6 +372,17 @@ class EpisodicStore:
         ('when did we decide to rename BeadsAdapter.get_focus').
         `min_score` is applied to the dense component pre-fusion; the
         returned score is the RRF score, not a cosine similarity.
+
+        `bm25_min_score` (harness-dffh) — soft cosine floor applied to
+        BM25 candidates pre-fusion. Without it, a lexical match on a
+        common token ('junior', 'stack') could rank a semantically
+        unrelated row into the top-K via the BM25 side of RRF. When
+        unset, defaults to `max(min_score - 0.15, 0.0)` — softer than
+        the dense floor so identifier queries (where dense cosine is
+        genuinely lower) keep working, but enough of a floor that
+        common-word topical bleed is filtered out. Pass `0.0`
+        explicitly to disable the gate. No effect on `dense` /
+        `text` modes.
 
         `mode='dense'` — legacy path, pure cosine similarity. Rows
         whose embedding dim doesn't match the current embedder are
@@ -389,7 +401,14 @@ class EpisodicStore:
             return self._search_dense(query, k=k, min_score=min_score, user_id=user_id)
         if mode == "text":
             return self._search_text(query, k=k, user_id=user_id)
-        return self._search_hybrid(query, k=k, min_score=min_score, user_id=user_id)
+        bm25_floor = bm25_min_score if bm25_min_score is not None else max(min_score - 0.15, 0.0)
+        return self._search_hybrid(
+            query,
+            k=k,
+            min_score=min_score,
+            bm25_min_score=bm25_floor,
+            user_id=user_id,
+        )
 
     def _search_dense(
         self,
@@ -490,6 +509,7 @@ class EpisodicStore:
         *,
         k: int,
         min_score: float,
+        bm25_min_score: float,
         user_id: str | None,
     ) -> list[tuple[EpisodicRecord, float]]:
         # Widen the candidate sets ~4x so RRF has room to reorder.
@@ -498,6 +518,10 @@ class EpisodicStore:
         candidate_k = max(k * 4, 20)
         dense_hits = self._search_dense(query, k=candidate_k, min_score=min_score, user_id=user_id)
         text_hits = self._search_text(query, k=candidate_k, user_id=user_id)
+        if bm25_min_score > 0.0 and text_hits:
+            text_hits = self._gate_text_hits_by_cosine(
+                query=query, hits=text_hits, threshold=bm25_min_score
+            )
         if not dense_hits and not text_hits:
             return []
         record_map: dict[int, EpisodicRecord] = {}
@@ -509,6 +533,47 @@ class EpisodicStore:
             [[rec.id for rec, _ in dense_hits], [rec.id for rec, _ in text_hits]]
         )
         return [(record_map[rid], score) for rid, score in fused[:k] if rid in record_map]
+
+    def _gate_text_hits_by_cosine(
+        self,
+        *,
+        query: str,
+        hits: list[tuple[EpisodicRecord, float]],
+        threshold: float,
+    ) -> list[tuple[EpisodicRecord, float]]:
+        """Drop BM25 hits whose dense cosine to the query is below
+        `threshold`. Prevents the topical-bleed failure mode where
+        a lexical match on a common token drags a semantically
+        unrelated row into the hybrid top-K (harness-dffh).
+
+        Batch-fetches embeddings for the hit ids in one query to
+        keep this O(1) extra DB round-trip regardless of |hits|.
+        Rows whose embedding_dim doesn't match the current embedder
+        are dropped (same as the dense path), since we can't compute
+        a meaningful cosine across dimensions."""
+        if not hits:
+            return []
+        q_vec = self.embedder.embed([query])[0].astype(np.float32)
+        ids = [rec.id for rec, _ in hits]
+        placeholders = ",".join("?" * len(ids))
+        rows = self._conn.execute(
+            f"SELECT id, embedding, embedding_dim FROM episodic WHERE id IN ({placeholders})",  # noqa: S608 — placeholders param-bind, not user data
+            ids,
+        ).fetchall()
+        embed_map = {row[0]: (row[1], int(row[2])) for row in rows}
+        out: list[tuple[EpisodicRecord, float]] = []
+        for rec, bm in hits:
+            payload = embed_map.get(rec.id)
+            if payload is None:
+                continue
+            blob, dim = payload
+            if dim != self.embedder.dimension:
+                continue
+            vec = np.frombuffer(blob, dtype=np.float32)
+            cos = float(np.dot(q_vec, vec))
+            if cos >= threshold:
+                out.append((rec, bm))
+        return out
 
     def count(
         self,
