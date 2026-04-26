@@ -233,12 +233,7 @@ def test_load_merges_shared_and_query_only_files(tmp_path: Path) -> None:
     Same section in both: variants union (shared first, then query-only,
     duplicates deduped)."""
     shared = tmp_path / "synonyms.yaml"
-    shared.write_text(
-        "version: 1\n"
-        "sections:\n"
-        '  "3-10-3":\n'
-        "    - shortest distance on approach\n"
-    )
+    shared.write_text('version: 1\nsections:\n  "3-10-3":\n    - shortest distance on approach\n')
     query_only = tmp_path / "query_synonyms.yaml"
     query_only.write_text(
         "version: 1\n"
@@ -261,9 +256,7 @@ def test_load_with_only_query_only_file(tmp_path: Path) -> None:
     """A character with no shared synonyms.yaml but a query_synonyms.yaml
     still gets an expander — the shared-file branch is optional."""
     query_only = tmp_path / "query_synonyms.yaml"
-    query_only.write_text(
-        "version: 1\nsections:\n  \"2-1-19\":\n    - small plane behind big jet\n"
-    )
+    query_only.write_text('version: 1\nsections:\n  "2-1-19":\n    - small plane behind big jet\n')
     exp = load_query_expander(tmp_path / "synonyms.yaml", query_only_path=query_only)
     assert not exp.is_empty
     assert exp.triggered_sections("small plane behind big jet") == ("2-1-19",)

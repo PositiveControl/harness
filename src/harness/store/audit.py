@@ -127,9 +127,7 @@ class AuditStore:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(
-            self.db_path, isolation_level=None, check_same_thread=False
-        )
+        self._conn = sqlite3.connect(self.db_path, isolation_level=None, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA synchronous = NORMAL")
         self._conn.execute("PRAGMA busy_timeout = 5000")
@@ -212,9 +210,7 @@ class AuditStore:
             raise KeyError(f"no audit record #{record_id}")
         return self._row_to_record(row)
 
-    def list(
-        self, *, session: str | None = None, limit: int = 50
-    ) -> list[AuditRecord]:
+    def list(self, *, session: str | None = None, limit: int = 50) -> list[AuditRecord]:
         """Return the most recent audit rows, newest first. Filters
         by session when given; otherwise across all sessions."""
         if session is not None:
@@ -316,9 +312,7 @@ def record_turn_audit(
     if audit_store is None:
         return None
     if loop_result is not None:
-        hits = tuple(
-            hit for tr in loop_result.tool_results for hit in tr.hits
-        )
+        hits = tuple(hit for tr in loop_result.tool_results for hit in tr.hits)
         citations_grounded = loop_result.citations_grounded
         tools_ran = loop_result.tools_ran
     else:

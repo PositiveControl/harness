@@ -248,9 +248,7 @@ class ToolLoopResult:
     def citations_grounded(self) -> frozenset[str]:
         """Union of citations_grounded across every tool call this
         turn. Used by the audit log + low-confidence fallback."""
-        return frozenset().union(
-            *(r.citations_grounded for r in self.tool_results)
-        )
+        return frozenset().union(*(r.citations_grounded for r in self.tool_results))
 
     @property
     def tools_ran(self) -> frozenset[str]:
@@ -808,9 +806,7 @@ def run_tool_loop(
             # from the working thread's role="tool" messages — every
             # tool execution (and dedup-skip) appends one. Feeds
             # table_fabrication's verbatim-row check (harness-5uq).
-            turn_tool_outputs = tuple(
-                m.content for m in working if m.role == "tool" and m.content
-            )
+            turn_tool_outputs = tuple(m.content for m in working if m.role == "tool" and m.content)
             # Aggregate retrieval-side telemetry for the finalize phase
             # (harness-ywp.3 consumer). Walks the event log — every
             # tool dispatch site emits an event with the ToolResult, so

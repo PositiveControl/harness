@@ -14,9 +14,7 @@ def test_broader_two_segment_form() -> None:
 
 def test_multiple_citations_union() -> None:
     text = "compare §4-1-1 and §13-1-2, plus TBL 4-1-2 and Figure 5-5-1"
-    assert extract_citations(text) == frozenset(
-        {"§4-1-1", "§13-1-2", "TBL 4-1-2", "FIGURE 5-5-1"}
-    )
+    assert extract_citations(text) == frozenset({"§4-1-1", "§13-1-2", "TBL 4-1-2", "FIGURE 5-5-1"})
 
 
 def test_en_dash_canonicalised_to_ascii() -> None:

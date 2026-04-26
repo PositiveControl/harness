@@ -43,9 +43,7 @@ def test_no_retrieval_metadata_continues() -> None:
     tools only, or no tool calls) slip past — the hook is a retrieval-
     signal gate, not a blanket citation check."""
     hook = LowConfidenceFallbackHook()
-    out = hook.check(
-        _ctx(reply_text="Per §4-1-1 the answer is X.", retrieval_top_score=None)
-    )
+    out = hook.check(_ctx(reply_text="Per §4-1-1 the answer is X.", retrieval_top_score=None))
     assert isinstance(out, Continue)
 
 
@@ -158,6 +156,4 @@ def test_registered_in_default_pipeline_before_ungrounded_citation() -> None:
     names = [type(h).__name__ for h in pipeline.finalize]
     assert "LowConfidenceFallbackHook" in names
     assert "UngroundedCitationHook" in names
-    assert names.index("LowConfidenceFallbackHook") < names.index(
-        UngroundedCitationHook.__name__
-    )
+    assert names.index("LowConfidenceFallbackHook") < names.index(UngroundedCitationHook.__name__)

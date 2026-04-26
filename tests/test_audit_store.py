@@ -123,12 +123,8 @@ def test_list_filters_by_session_and_orders_newest_first(tmp_path: Path) -> None
 
 def test_list_across_sessions_when_no_filter(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    store.record(
-        session="sA", character="c", user_id=None, user_message="a", model_reply="r"
-    )
-    store.record(
-        session="sB", character="c", user_id=None, user_message="b", model_reply="r"
-    )
+    store.record(session="sA", character="c", user_id=None, user_message="a", model_reply="r")
+    store.record(session="sB", character="c", user_id=None, user_message="b", model_reply="r")
     rows = store.list()
     assert len(rows) == 2
     assert {r.user_message for r in rows} == {"a", "b"}
@@ -164,9 +160,7 @@ def test_get_raises_on_missing_record(tmp_path: Path) -> None:
 
 def test_user_id_nullable(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    rec = store.record(
-        session="s", character="c", user_id=None, user_message="q", model_reply="r"
-    )
+    rec = store.record(session="s", character="c", user_id=None, user_message="q", model_reply="r")
     fetched = store.get(rec.id)
     assert fetched.user_id is None
 
@@ -174,9 +168,7 @@ def test_user_id_nullable(tmp_path: Path) -> None:
 def test_persists_across_connections(tmp_path: Path) -> None:
     db = tmp_path / "harness.sqlite"
     store1 = AuditStore(db)
-    store1.record(
-        session="s", character="c", user_id=None, user_message="q", model_reply="r"
-    )
+    store1.record(session="s", character="c", user_id=None, user_message="q", model_reply="r")
     store1.close()
     store2 = AuditStore(db)
     rows = store2.list()

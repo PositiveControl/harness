@@ -57,12 +57,8 @@ def test_happy_path_inserts_rows_with_expected_fields(tmp_path: Path) -> None:
 
 def test_idempotent_on_re_ingest(tmp_path: Path) -> None:
     tool = _tool(tmp_path / "mem.sqlite")
-    tool.call(
-        turns=_turns(3), session_id="sim-1", user_id="t", source_tag="manual"
-    )
-    out = tool.call(
-        turns=_turns(3), session_id="sim-1", user_id="t", source_tag="manual"
-    )
+    tool.call(turns=_turns(3), session_id="sim-1", user_id="t", source_tag="manual")
+    out = tool.call(turns=_turns(3), session_id="sim-1", user_id="t", source_tag="manual")
     assert "ingested 0 turns" in out
     assert "3 already present" in out
     assert len(list(tool.store.all())) == 3

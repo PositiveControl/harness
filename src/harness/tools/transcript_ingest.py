@@ -58,9 +58,7 @@ class TranscriptIngestTool:
                             "properties": {
                                 "speaker": {
                                     "type": "string",
-                                    "description": (
-                                        "Who spoke (e.g. 'TWR', 'N123AB', 'trainee')."
-                                    ),
+                                    "description": ("Who spoke (e.g. 'TWR', 'N123AB', 'trainee')."),
                                 },
                                 "text": {
                                     "type": "string",
@@ -136,9 +134,7 @@ class TranscriptIngestTool:
             text = turn.get("text")
             timestamp = turn.get("timestamp")
             if not speaker or not text or not timestamp:
-                raise ValueError(
-                    f"turn {i} missing required field (speaker/text/timestamp)"
-                )
+                raise ValueError(f"turn {i} missing required field (speaker/text/timestamp)")
 
             ext_id = f"transcript:{session_id}:{i}"
             already_present = self.store.has(ext_id)

@@ -200,15 +200,12 @@ def test_purpose_of_order_uncited_reply_gets_nudged() -> None:
     result = _run_scenario(
         {
             "id": "_purpose_of_order_uncited",
-            "registry": [
-                {"name": "search_memory", "output": _PURPOSE_1_1_1_TOOL_OUTPUT}
-            ],
+            "registry": [{"name": "search_memory", "output": _PURPOSE_1_1_1_TOOL_OUTPUT}],
             "messages": [
                 {
                     "role": "user",
                     "content": (
-                        "What is the purpose of 7110.65 as it pertains to "
-                        "Air Traffic Control?"
+                        "What is the purpose of 7110.65 as it pertains to Air Traffic Control?"
                     ),
                 }
             ],
@@ -259,9 +256,7 @@ def test_loa_uncited_reply_gets_nudged() -> None:
     result = _run_scenario(
         {
             "id": "_loa_uncited",
-            "registry": [
-                {"name": "search_memory", "output": _LOA_1_1_10_TOOL_OUTPUT}
-            ],
+            "registry": [{"name": "search_memory", "output": _LOA_1_1_10_TOOL_OUTPUT}],
             "messages": [
                 {
                     "role": "user",
@@ -277,9 +272,7 @@ def test_loa_uncited_reply_gets_nudged() -> None:
                     "tool_calls": [
                         {
                             "name": "search_memory",
-                            "arguments": {
-                                "query": "procedures jointly applied between facilities"
-                            },
+                            "arguments": {"query": "procedures jointly applied between facilities"},
                         }
                     ],
                 },
@@ -333,15 +326,11 @@ def test_four_primary_purposes_count_mismatch_gets_nudged() -> None:
     result = _run_scenario(
         {
             "id": "_four_purposes_count_mismatch",
-            "registry": [
-                {"name": "search_memory", "output": _ATC_SERVICE_2_1_1_TOOL_OUTPUT}
-            ],
+            "registry": [{"name": "search_memory", "output": _ATC_SERVICE_2_1_1_TOOL_OUTPUT}],
             "messages": [
                 {
                     "role": "user",
-                    "content": (
-                        "List the 4 specific Primary Purposes of Air Traffic Control"
-                    ),
+                    "content": ("List the 4 specific Primary Purposes of Air Traffic Control"),
                 }
             ],
             "scripted_replies": [
@@ -422,7 +411,7 @@ def test_reserved_squawk_7500_gets_nudged() -> None:
                 {
                     "role": "user",
                     "content": (
-                        'Correct the following radar phraseology: '
+                        "Correct the following radar phraseology: "
                         '"Services stopped, squawk seventy five hundred"'
                     ),
                 }
@@ -433,16 +422,14 @@ def test_reserved_squawk_7500_gets_nudged() -> None:
                     "tool_calls": [
                         {
                             "name": "search_memory",
-                            "arguments": {
-                                "query": "radar service termination phraseology"
-                            },
+                            "arguments": {"query": "radar service termination phraseology"},
                         }
                     ],
                 },
                 # The observed uncorrected-code reply.
                 {
                     "content": (
-                        'The correct phraseology is:\n\n'
+                        "The correct phraseology is:\n\n"
                         '"Radar service terminated, squawk seven five hundred."\n\n'
                         "Per JO 7110.65 §7-6-11."
                     ),
@@ -555,10 +542,7 @@ def test_mixed_rooster_and_faa_prompt_still_nudges_scope_redirect() -> None:
             "registry": [
                 {
                     "name": "search_memory",
-                    "output": (
-                        "[0.029] LANDING AREA CONDITION\n"
-                        "  lesson: JO_7110.65 §3-3-1\n"
-                    ),
+                    "output": ("[0.029] LANDING AREA CONDITION\n  lesson: JO_7110.65 §3-3-1\n"),
                 }
             ],
             "messages": [
@@ -694,7 +678,7 @@ def test_phraseology_retry_without_citation_gets_nudged() -> None:
                 {
                     "role": "user",
                     "content": (
-                        'Correct the following radar phraseology: '
+                        "Correct the following radar phraseology: "
                         '"Services stopped, squawk seventy five hundred"'
                     ),
                 }
@@ -763,7 +747,7 @@ def test_reserved_squawk_does_not_nudge_when_reply_echoes_user_input() -> None:
                 {
                     "role": "user",
                     "content": (
-                        'Correct the following radar phraseology: '
+                        "Correct the following radar phraseology: "
                         '"Services stopped, squawk seventy five hundred"'
                     ),
                 }
@@ -774,9 +758,7 @@ def test_reserved_squawk_does_not_nudge_when_reply_echoes_user_input() -> None:
                     "tool_calls": [
                         {
                             "name": "search_memory",
-                            "arguments": {
-                                "query": "radar service termination phraseology"
-                            },
+                            "arguments": {"query": "radar service termination phraseology"},
                         }
                     ],
                 },
@@ -832,7 +814,7 @@ def test_missing_citation_fires_on_uppercase_phraseology_without_order_name() ->
                 {
                     "role": "user",
                     "content": (
-                        'Correct the following radar phraseology: '
+                        "Correct the following radar phraseology: "
                         '"Services stopped, squawk seventy five hundred"'
                     ),
                 }

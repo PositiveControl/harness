@@ -119,11 +119,7 @@ class SearchMemoryTool:
         grounded = frozenset().union(
             *(
                 extract_citations(
-                    " ".join(
-                        part
-                        for part in (rec.title, rec.body, rec.principle)
-                        if part
-                    )
+                    " ".join(part for part in (rec.title, rec.body, rec.principle) if part)
                 )
                 for rec, _ in hits
             )

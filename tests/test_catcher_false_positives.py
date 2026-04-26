@@ -78,9 +78,7 @@ _EDST_13_1_2 = (
 # (id, reply, tool_outputs, tools_ran, memory_block_attached)
 # Each row is a truthful reply shape the user might plausibly see.
 # Catchers must NOT Halt or Nudge on any of them.
-_CONTROL_CORPUS: tuple[
-    tuple[str, str, tuple[str, ...], frozenset[str], bool], ...
-] = (
+_CONTROL_CORPUS: tuple[tuple[str, str, tuple[str, ...], frozenset[str], bool], ...] = (
     (
         "truthful_mh_rbn_prose",
         "The usable distance for an MH class RBN is 25 miles, per JO 7110.65 §4-1-1.",
@@ -182,10 +180,7 @@ _CONTROL_CORPUS: tuple[
             "2. Provide a safe, orderly, and expeditious flow of traffic.\n"
             "3. Support National Security and Homeland Defense missions."
         ),
-        (
-            "[0.031] ATC SERVICE\n"
-            "  lesson: JO_7110.65 §2-1-1\n",
-        ),
+        ("[0.031] ATC SERVICE\n  lesson: JO_7110.65 §2-1-1\n",),
         frozenset({"search_memory"}),
         False,
     ),
@@ -198,10 +193,7 @@ _CONTROL_CORPUS: tuple[
             "apply the procedures in §10-2-6 (Hijacked Aircraft). "
             "7500 is a pilot-initiated code; controllers do not assign it."
         ),
-        (
-            "[0.031] HIJACK/UNLAWFUL INTERFERENCE\n"
-            "  lesson: JO_7110.65 §5-2-5\n",
-        ),
+        ("[0.031] HIJACK/UNLAWFUL INTERFERENCE\n  lesson: JO_7110.65 §5-2-5\n",),
         frozenset({"search_memory"}),
         False,
     ),
@@ -209,13 +201,10 @@ _CONTROL_CORPUS: tuple[
         # reserved_squawk_code silent path: correct VFR code assignment.
         "truthful_squawk_1200_vfr_termination",
         (
-            'Per JO 7110.65 §7-6-11 and §5-2-7, the correct phraseology '
+            "Per JO 7110.65 §7-6-11 and §5-2-7, the correct phraseology "
             'is: "Radar service terminated, squawk one two zero zero."'
         ),
-        (
-            "[0.029] TERMINATION OF SERVICE\n"
-            "  lesson: JO_7110.65 §7-6-11\n",
-        ),
+        ("[0.029] TERMINATION OF SERVICE\n  lesson: JO_7110.65 §7-6-11\n",),
         frozenset({"search_memory"}),
         False,
     ),
@@ -231,14 +220,11 @@ _CONTROL_CORPUS: tuple[
         # test_reserved_squawk_does_not_nudge_when_reply_echoes_user_input.
         "truthful_uppercase_phraseology_with_cite",
         (
-            'Per JO 7110.65 §7-6-11 and §5-2-7, the correct phraseology is: '
+            "Per JO 7110.65 §7-6-11 and §5-2-7, the correct phraseology is: "
             '"RADAR SERVICE TERMINATED, SQUAWK ONE TWO ZERO ZERO" or '
             '"RADAR SERVICE TERMINATED, SQUAWK VFR".'
         ),
-        (
-            "[0.029] TERMINATION OF SERVICE\n"
-            "  lesson: JO_7110.65 §7-6-11\n",
-        ),
+        ("[0.029] TERMINATION OF SERVICE\n  lesson: JO_7110.65 §7-6-11\n",),
         frozenset({"search_memory"}),
         False,
     ),
@@ -308,9 +294,7 @@ _CONTROL_CORPUS: tuple[
             "accordance with the procedures and minima in the order. "
             "Additional services are required when the work situation permits."
         ),
-        (
-            "[0.031] ATC SERVICE\n  lesson: JO_7110.65 §2-1-1\n",
-        ),
+        ("[0.031] ATC SERVICE\n  lesson: JO_7110.65 §2-1-1\n",),
         frozenset({"search_memory"}),
         False,
     ),
@@ -426,16 +410,14 @@ def test_control_corpus_covers_each_finalize_catcher() -> None:
     cases = _CONTROL_CORPUS
     # At least one case with a §-citation reply + grounding tool run
     # (exercises ungrounded_citation's grounded-disarm path).
-    assert any(
-        "§" in c[1] and "search_memory" in c[3]
-        for c in cases
-    ), "no control case exercises (citation + grounding-tool-ran)"
+    assert any("§" in c[1] and "search_memory" in c[3] for c in cases), (
+        "no control case exercises (citation + grounding-tool-ran)"
+    )
     # At least one case with a pipe table in the reply
     # (exercises table_fabrication's pass path).
-    assert any(
-        "\n|" in c[1] and "search_memory" in c[3]
-        for c in cases
-    ), "no control case exercises (pipe-table reply + grounding-tool-ran)"
+    assert any("\n|" in c[1] and "search_memory" in c[3] for c in cases), (
+        "no control case exercises (pipe-table reply + grounding-tool-ran)"
+    )
     # At least one case with a (label, number, unit) prose claim
     # (exercises numeric_fabrication's pass path).
     assert any(
@@ -446,7 +428,6 @@ def test_control_corpus_covers_each_finalize_catcher() -> None:
     ), "no control case exercises (labeled-numeric prose + grounding-tool-ran)"
     # At least one case with memory_block_attached=True and §-citation
     # (exercises ungrounded_citation's memory-disarm path).
-    assert any(
-        c[4] is True and "§" in c[1]
-        for c in cases
-    ), "no control case exercises (citation + memory_block_attached)"
+    assert any(c[4] is True and "§" in c[1] for c in cases), (
+        "no control case exercises (citation + memory_block_attached)"
+    )

@@ -1247,9 +1247,7 @@ class ChatApp(App[None]):
             # user can diagnose WHY the retry happened.
             self._stream.reset()
             suffix = f" ({event.catcher})" if event.catcher else ""
-            log.write(
-                Text(f"⋯ discarding draft, retrying{suffix}…", style="dim")
-            )
+            log.write(Text(f"⋯ discarding draft, retrying{suffix}…", style="dim"))
         # Other event kinds (round_start, model_call_start/end,
         # round_complete) are internal book-keeping — the metrics
         # footer already covers 'model is thinking'.
