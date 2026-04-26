@@ -1,10 +1,10 @@
 {
   "character": "airton_c1",
-  "fixture": "/Users/mevans/dev/ideas/harness/character/airton_c1/atc_eval.yaml",
+  "fixture": "/Users/m7s/dev/harness/character/airton_c1/atc_eval.yaml",
   "k": 10,
-  "recall_at_1": 0.8235294117647058,
-  "recall_at_3": 0.9411764705882353,
-  "recall_at_5": 0.9411764705882353,
+  "recall_at_1": 0.7368421052631579,
+  "recall_at_3": 0.8947368421052632,
+  "recall_at_5": 0.8947368421052632,
   "recall_at_k": 1.0,
   "median_rank": 0.0,
   "cases": [
@@ -27,7 +27,7 @@
         "2-1-19"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.031754032258064516,
+      "score_of_first_expected": 0.03200204813108039,
       "found": true
     },
     {
@@ -38,7 +38,7 @@
         "3-9-6"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03009207275993712,
+      "score_of_first_expected": 0.029726775956284153,
       "found": true
     },
     {
@@ -49,7 +49,7 @@
         "3-10-3"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03252247488101534,
+      "score_of_first_expected": 0.03278688524590164,
       "found": true
     },
     {
@@ -60,7 +60,7 @@
         "3-10-3"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03252247488101534,
+      "score_of_first_expected": 0.03278688524590164,
       "found": true
     },
     {
@@ -159,7 +159,7 @@
         "10-2-5"
       ],
       "rank_of_first_expected": 1,
-      "score_of_first_expected": 0.031099324975891997,
+      "score_of_first_expected": 0.03131881575727918,
       "found": true
     },
     {
@@ -170,7 +170,7 @@
         "4-6-4"
       ],
       "rank_of_first_expected": 1,
-      "score_of_first_expected": 0.030679156908665108,
+      "score_of_first_expected": 0.030158730158730156,
       "found": true
     },
     {
@@ -180,8 +180,8 @@
       "expected_anchors": [
         "2-1-19"
       ],
-      "rank_of_first_expected": 6,
-      "score_of_first_expected": 0.02571241401899771,
+      "rank_of_first_expected": 8,
+      "score_of_first_expected": 0.025849212924606464,
       "found": true
     },
     {
@@ -192,7 +192,29 @@
         "3-10-3"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03252247488101534,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true
+    },
+    {
+      "id": "controller_aircraft_to_aircraft_alerts",
+      "audience": "controller",
+      "query": "Where can a controller find information for aircraft-to-aircraft alerts?",
+      "expected_anchors": [
+        "13-1-2"
+      ],
+      "rank_of_first_expected": 6,
+      "score_of_first_expected": 0.016129032258064516,
+      "found": true
+    },
+    {
+      "id": "controller_rbn_mh_usable_distance",
+      "audience": "controller",
+      "query": "What is the usable distance for an MH class RBN?",
+      "expected_anchors": [
+        "4-1-1"
+      ],
+      "rank_of_first_expected": 1,
+      "score_of_first_expected": 0.032266458495966696,
       "found": true
     }
   ]
