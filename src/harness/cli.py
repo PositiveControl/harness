@@ -2612,6 +2612,36 @@ def eval_atc_retrieval(
             "against the frozen rank-of-first-expected per case."
         ),
     ),
+    compare_baseline: bool = typer.Option(
+        False,
+        "--compare-baseline",
+        help=(
+            "Diff this run against character/<name>/atc_retrieval_baseline.json "
+            "(or --baseline-path). Exits non-zero on regression: aggregate "
+            "recall@N drop OR per-case rank worsening past --regression-budget. "
+            "The gate that turns the baseline JSON from a snapshot into a "
+            "contract (harness-sb6r)."
+        ),
+    ),
+    baseline_path: Path | None = typer.Option(
+        None,
+        "--baseline-path",
+        help=(
+            "Override the baseline file location for --save-baseline / "
+            "--compare-baseline. Defaults to "
+            "character/<name>/atc_retrieval_baseline.json."
+        ),
+    ),
+    regression_budget: int = typer.Option(
+        0,
+        "--regression-budget",
+        min=0,
+        help=(
+            "Allow up to N per-case rank regressions WHEN aggregate recall "
+            "holds. Use sparingly — chunker changes that rebalance top-K "
+            "without losing recall are the only legit case."
+        ),
+    ),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
 ) -> None:
     """Retrieval-only atc eval: runs each fixture case through the
@@ -2628,9 +2658,18 @@ def eval_atc_retrieval(
     )
     from harness.evals.atc_retrieval import (
         RetrievalHit,
+        compare_baselines,
         default_baseline_path,
+        load_baseline,
         run_atc_retrieval,
     )
+
+    if save_baseline and compare_baseline:
+        raise typer.BadParameter(
+            "--save-baseline and --compare-baseline are mutually exclusive: "
+            "compare first to confirm no regression, then re-run with "
+            "--save-baseline to snapshot the new known-good state."
+        )
 
     character = load_character(settings.character_path)
     path = fixture_path or _atc_default_fixture(settings.character_path)
@@ -2676,8 +2715,19 @@ def eval_atc_retrieval(
 
     result = run_atc_retrieval(fixture, _search, k=k)
 
+    resolved_baseline_path = baseline_path or default_baseline_path(settings.character_path)
+
+    comparison = None
+    if compare_baseline:
+        if not resolved_baseline_path.exists():
+            raise typer.BadParameter(
+                f"no baseline at {resolved_baseline_path}; run with "
+                f"--save-baseline first to snapshot a known-good state."
+            )
+        comparison = compare_baselines(load_baseline(resolved_baseline_path), result)
+
     if as_json:
-        envelope = {
+        envelope: dict[str, object] = {
             "character": character.name,
             "fixture": str(path),
             "k": result.k,
@@ -2700,10 +2750,33 @@ def eval_atc_retrieval(
                 for c in result.cases
             ],
         }
+        if comparison is not None:
+            envelope["comparison"] = {
+                "baseline_path": str(resolved_baseline_path),
+                "regression_budget": regression_budget,
+                "has_regression": comparison.has_regression(regression_budget=regression_budget),
+                "aggregate_deltas": [
+                    {"metric": d.metric, "old": d.old, "new": d.new}
+                    for d in comparison.aggregate_deltas
+                ],
+                "case_regressions": [
+                    {"id": d.id, "old_rank": d.old_rank, "new_rank": d.new_rank}
+                    for d in comparison.case_regressions
+                ],
+                "case_improvements": [
+                    {"id": d.id, "old_rank": d.old_rank, "new_rank": d.new_rank}
+                    for d in comparison.case_improvements
+                ],
+                "new_cases": list(comparison.new_cases),
+                "dropped_cases": list(comparison.dropped_cases),
+            }
         if save_baseline:
-            baseline_path = default_baseline_path(settings.character_path)
-            baseline_path.write_text(_json_mod.dumps(envelope, indent=2))
+            resolved_baseline_path.write_text(_json_mod.dumps(envelope, indent=2))
         console.print_json(data=envelope)
+        if comparison is not None and comparison.has_regression(
+            regression_budget=regression_budget
+        ):
+            raise typer.Exit(code=1)
         return
 
     from rich.table import Table
@@ -2741,7 +2814,6 @@ def eval_atc_retrieval(
             f"{', '.join(m.id for m in misses)}[/dim]"
         )
     if save_baseline:
-        baseline_path = default_baseline_path(settings.character_path)
         envelope = {
             "character": character.name,
             "fixture": str(path),
@@ -2764,8 +2836,59 @@ def eval_atc_retrieval(
                 for c in result.cases
             ],
         }
-        baseline_path.write_text(_json_mod.dumps(envelope, indent=2))
-        console.print(f"[dim]baseline written → {baseline_path}[/dim]")
+        resolved_baseline_path.write_text(_json_mod.dumps(envelope, indent=2))
+        console.print(f"[dim]baseline written → {resolved_baseline_path}[/dim]")
+
+    if comparison is not None:
+        diff_table = Table(
+            title=f"baseline diff (vs {resolved_baseline_path.name})",
+            show_lines=False,
+        )
+        diff_table.add_column("metric")
+        diff_table.add_column("old", justify="right")
+        diff_table.add_column("new", justify="right")
+        diff_table.add_column("Δ", justify="right")
+        for agg in comparison.aggregate_deltas:
+            delta = agg.new - agg.old
+            color = "red" if delta < 0 else ("green" if delta > 0 else "dim")
+            diff_table.add_row(
+                agg.metric,
+                f"{agg.old * 100:.1f}%",
+                f"{agg.new * 100:.1f}%",
+                f"[{color}]{delta * 100:+.1f} pp[/{color}]",
+            )
+        console.print(diff_table)
+
+        if comparison.case_regressions:
+            console.print(f"[red]case regressions ({len(comparison.case_regressions)}):[/red]")
+            for case in comparison.case_regressions:
+                old_s = "—" if case.old_rank is None else str(case.old_rank)
+                new_s = "—" if case.new_rank is None else str(case.new_rank)
+                console.print(f"  [red]✗[/red] {case.id}: rank {old_s} → {new_s}")
+        if comparison.case_improvements:
+            console.print(
+                f"[green]case improvements ({len(comparison.case_improvements)}):[/green]"
+            )
+            for case in comparison.case_improvements:
+                old_s = "—" if case.old_rank is None else str(case.old_rank)
+                new_s = "—" if case.new_rank is None else str(case.new_rank)
+                console.print(f"  [green]✓[/green] {case.id}: rank {old_s} → {new_s}")
+        if comparison.new_cases:
+            console.print(
+                f"[dim]new cases (no baseline entry): {', '.join(comparison.new_cases)}[/dim]"
+            )
+        if comparison.dropped_cases:
+            console.print(
+                f"[dim]dropped cases (in baseline, not in run): "
+                f"{', '.join(comparison.dropped_cases)}[/dim]"
+            )
+
+        if comparison.has_regression(regression_budget=regression_budget):
+            console.print(
+                f"[bold red]✗ regression detected[/bold red] (budget={regression_budget})"
+            )
+            raise typer.Exit(code=1)
+        console.print("[bold green]✓ no regressions[/bold green]")
 
 
 @eval_app.command("tool-loop")

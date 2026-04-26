@@ -24,10 +24,12 @@ list so scoring stays deterministic (harness-dfa).
 
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from harness.evals.atc import AtcFixtureRow
 
@@ -206,3 +208,163 @@ def default_baseline_path(character_path: Path) -> Path:
     full-stack eval) so retrieval-only deltas don't fight reply-side
     deltas in the same diff."""
     return character_path / "atc_retrieval_baseline.json"
+
+
+# ---------- baseline comparator (harness-sb6r) ----------
+#
+# `--save-baseline` writes a snapshot; `--compare-baseline` reads one
+# and asserts that the current run hasn't regressed. The JSON shape we
+# read is whatever the CLI writes — see envelope construction in
+# cli.py::eval_atc_retrieval. We treat the file as a Mapping[str, Any]
+# rather than a typed model: the writer owns the schema, the reader
+# tolerates missing optional fields. Older snapshots without
+# recall_at_5, for example, simply skip that aggregate comparison.
+
+
+def load_baseline(path: Path) -> Mapping[str, Any]:
+    """Read a baseline JSON snapshot from disk. Raises FileNotFoundError
+    if the file is absent — callers translate that into a user-facing
+    error pointing at --save-baseline."""
+    return json.loads(path.read_text())  # type: ignore[no-any-return]
+
+
+@dataclass(frozen=True)
+class CaseRankDelta:
+    """Per-case rank movement between baseline and current run. Rank is
+    None for hard misses (expected anchor never appeared in top-K).
+
+    Regression semantics: a case regresses when it (a) was found before
+    and isn't now, or (b) is found at a worse (higher-numbered) rank.
+    Improvement is the mirror — newly found, or rank improved. Hard
+    miss → hard miss is neither (no signal either direction)."""
+
+    id: str
+    old_rank: int | None
+    new_rank: int | None
+
+    @property
+    def is_regression(self) -> bool:
+        if self.new_rank is None and self.old_rank is None:
+            return False
+        if self.new_rank is None:
+            return True
+        if self.old_rank is None:
+            return False
+        return self.new_rank > self.old_rank
+
+    @property
+    def is_improvement(self) -> bool:
+        if self.new_rank is None and self.old_rank is None:
+            return False
+        if self.old_rank is None:
+            return True
+        if self.new_rank is None:
+            return False
+        return self.new_rank < self.old_rank
+
+
+@dataclass(frozen=True)
+class AggregateDelta:
+    """recall@N movement. `metric` is the JSON key
+    ("recall_at_1" / "recall_at_3" / "recall_at_5" / "recall_at_k")."""
+
+    metric: str
+    old: float
+    new: float
+
+    @property
+    def is_regression(self) -> bool:
+        return self.new < self.old
+
+
+@dataclass(frozen=True)
+class BaselineComparison:
+    """Result of comparing a current RetrievalResult against a saved
+    baseline. Aggregate regressions always fail the gate; per-case
+    regressions fail unless covered by `regression_budget` AND aggregate
+    recall holds (the budget is an explicit allowance for chunker
+    changes that rebalance ranks without losing recall)."""
+
+    case_deltas: tuple[CaseRankDelta, ...]
+    aggregate_deltas: tuple[AggregateDelta, ...]
+    new_cases: tuple[str, ...]
+    dropped_cases: tuple[str, ...]
+
+    @property
+    def case_regressions(self) -> tuple[CaseRankDelta, ...]:
+        return tuple(d for d in self.case_deltas if d.is_regression)
+
+    @property
+    def case_improvements(self) -> tuple[CaseRankDelta, ...]:
+        return tuple(d for d in self.case_deltas if d.is_improvement)
+
+    @property
+    def aggregate_regressions(self) -> tuple[AggregateDelta, ...]:
+        return tuple(d for d in self.aggregate_deltas if d.is_regression)
+
+    def has_regression(self, *, regression_budget: int = 0) -> bool:
+        if self.aggregate_regressions:
+            return True
+        return len(self.case_regressions) > regression_budget
+
+
+_AGGREGATE_METRICS: tuple[tuple[str, str], ...] = (
+    ("recall_at_1", "recall_at_1"),
+    ("recall_at_3", "recall_at_3"),
+    ("recall_at_5", "recall_at_5"),
+    ("recall_at_k", "recall_at_k"),
+)
+
+
+def compare_baselines(
+    baseline: Mapping[str, Any],
+    result: RetrievalResult,
+) -> BaselineComparison:
+    """Diff a saved baseline against a fresh RetrievalResult. The
+    baseline is whatever `--save-baseline` writes; we read only the
+    fields we need and tolerate missing optionals."""
+    base_cases_raw = baseline.get("cases", []) or []
+    base_cases: dict[str, Mapping[str, Any]] = {
+        str(c["id"]): c for c in base_cases_raw if "id" in c
+    }
+    new_cases: dict[str, RetrievalCase] = {c.id: c for c in result.cases}
+
+    shared_ids = sorted(base_cases.keys() & new_cases.keys())
+    case_deltas = tuple(
+        CaseRankDelta(
+            id=case_id,
+            old_rank=_int_or_none(base_cases[case_id].get("rank_of_first_expected")),
+            new_rank=new_cases[case_id].rank_of_first_expected,
+        )
+        for case_id in shared_ids
+    )
+
+    new_metric_values: dict[str, float] = {
+        "recall_at_1": result.recall_at_1,
+        "recall_at_3": result.recall_at_3,
+        "recall_at_5": result.recall_at_5,
+        "recall_at_k": result.recall_at_k,
+    }
+    aggregate_deltas: list[AggregateDelta] = []
+    for json_key, attr in _AGGREGATE_METRICS:
+        old = baseline.get(json_key)
+        if old is None:
+            continue
+        aggregate_deltas.append(
+            AggregateDelta(metric=attr, old=float(old), new=new_metric_values[attr])
+        )
+
+    return BaselineComparison(
+        case_deltas=case_deltas,
+        aggregate_deltas=tuple(aggregate_deltas),
+        new_cases=tuple(sorted(new_cases.keys() - base_cases.keys())),
+        dropped_cases=tuple(sorted(base_cases.keys() - new_cases.keys())),
+    )
+
+
+def _int_or_none(value: Any) -> int | None:
+    """Tolerate JSON-shape variation: rank may be int, null, or
+    serialized as a string in a hand-edited baseline."""
+    if value is None:
+        return None
+    return int(value)
