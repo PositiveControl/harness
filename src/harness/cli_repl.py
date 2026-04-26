@@ -86,12 +86,21 @@ class ContextMeter:
     def __post_init__(self) -> None:
         """Restore any persisted /clear watermark for `session` so the
         cut survives chat restarts. Compaction store stays optional;
-        when it's missing the meter behaves exactly as it used to."""
+        when it's missing the meter behaves exactly as it used to.
+
+        Also flips `retrieval_state.muted = True` when a watermark
+        hydrates: in-process /clear mutes retrieval for the lifetime
+        of the chat, so the durable form must mirror that — otherwise
+        a restart re-enables retrieval and old episodic / semantic
+        memories leak back into the prompt on the very first turn
+        post-restart (harness-eftf)."""
         if self.clear_after_id is not None or self.compaction_store is None:
             return
         watermark = self.compaction_store.latest_clear_after_id(self.session)
         if watermark is not None:
             self.clear_after_id = watermark
+            if self.retrieval_state is not None:
+                self.retrieval_state.muted = True
 
     def load_history(self) -> tuple[ChatMessage | None, list[ChatMessage]]:
         """Return (optional summary-system-message, turns-since-pointer).

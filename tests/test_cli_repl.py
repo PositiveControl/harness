@@ -199,6 +199,60 @@ def test_clear_is_a_noop_on_empty_transcript(tmp_path: Path) -> None:
     assert [m.content for m in history] == ["first prompt"]
 
 
+def test_watermark_hydration_also_mutes_retrieval(tmp_path: Path) -> None:
+    """harness-eftf: an in-process /clear flips
+    `retrieval_state.muted=True`. The durable form (rrkj) must
+    mirror that — otherwise a chat restart with a hydrated
+    watermark cuts history but lets episodic / semantic memories
+    leak back in via the retriever on the very first post-restart
+    turn. ContextMeter.__post_init__ owns this."""
+    from harness.cli import _RetrievalState
+
+    db = tmp_path / "harness.sqlite"
+    transcript = Transcript(db)
+    compaction = CompactionStore(db)
+    transcript.append(session="t", channel="cli", speaker="mark", role="user", content="u0")
+    transcript.append(session="t", channel="cli", speaker="airton", role="assistant", content="a0")
+    compaction.record_clear(session_id="t", after_id=2)
+
+    retrieval_state = _RetrievalState()
+    assert retrieval_state.muted is False
+    meter = ContextMeter(
+        adapter=EchoAdapter(),
+        character=load_character(AIRTON),
+        transcript=transcript,
+        compaction_store=compaction,
+        session="t",
+        console=Console(file=open("/dev/null", "w")),  # noqa: SIM115 — test lifetime
+        retrieval_state=retrieval_state,
+    )
+    # Hydrating the watermark must also mute retrieval.
+    assert meter.clear_after_id == 2
+    assert retrieval_state.muted is True
+
+
+def test_watermark_hydration_skips_mute_when_no_watermark(tmp_path: Path) -> None:
+    """A fresh session without a persisted watermark must not flip
+    `retrieval_state.muted`. Mute is the durable analogue of
+    /clear; it should fire only when the user actually cleared."""
+    from harness.cli import _RetrievalState
+
+    db = tmp_path / "harness.sqlite"
+    transcript = Transcript(db)
+    compaction = CompactionStore(db)
+    retrieval_state = _RetrievalState()
+    ContextMeter(
+        adapter=EchoAdapter(),
+        character=load_character(AIRTON),
+        transcript=transcript,
+        compaction_store=compaction,
+        session="fresh",
+        console=Console(file=open("/dev/null", "w")),  # noqa: SIM115 — test lifetime
+        retrieval_state=retrieval_state,
+    )
+    assert retrieval_state.muted is False
+
+
 def test_clear_persists_watermark_across_meter_instances(tmp_path: Path) -> None:
     """harness-rrkj: /clear used to be process-only. After the
     persistence layer lands, a second ContextMeter for the same

@@ -14,6 +14,7 @@ from harness.cli import (
     _retrieve_turn_context,
     _StreamRenderer,
     _ThinkingSpinner,
+    _topic_boundary_suffix,
 )
 from harness.model.adapter import ChatMessage, approx_token_count, count_tokens
 from harness.model.echo import EchoAdapter
@@ -459,3 +460,22 @@ def test_render_tool_event_marks_failed_and_declined() -> None:
     output = _render_all(events)
     assert "✗" in output
     assert "declined" in output
+
+
+def test_topic_boundary_suffix_silent_when_unmuted() -> None:
+    """harness-eftf: a fresh / non-cleared session must not get the
+    topic-boundary note. Default `_RetrievalState` has muted=False."""
+    state = _RetrievalState()
+    assert _topic_boundary_suffix(state) == ""
+
+
+def test_topic_boundary_suffix_fires_when_muted() -> None:
+    """When retrieval is muted (by /clear in this process or by the
+    persistent watermark hydrating on init), the suffix carries a
+    leading separator + the canonical NEW TOPIC marker so the model
+    has a frame for ignoring spurious bleed."""
+    state = _RetrievalState(muted=True)
+    suffix = _topic_boundary_suffix(state)
+    assert suffix.startswith("\n\n")
+    assert "NEW TOPIC" in suffix
+    assert "reset this conversation" in suffix

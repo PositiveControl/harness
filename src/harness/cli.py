@@ -1105,12 +1105,33 @@ class _RetrievalState:
     `muted` is a separate axis flipped by `/clear` (harness-zpe): when
     True, all three sources return empty without querying so prior-
     session memories can't leak back into the fresh start. Stored data
-    is untouched — restart the process to re-enable retrieval."""
+    is untouched — restart the process to re-enable retrieval (or, when
+    the persisted /clear watermark hydrates on init, ContextMeter sets
+    muted there too — harness-rrkj + harness-eftf)."""
 
     voice_ok: bool = True
     episodic_ok: bool = True
     semantic_ok: bool = True
     muted: bool = False
+
+
+_TOPIC_BOUNDARY_NOTE = (
+    "[NEW TOPIC] The user just reset this conversation. "
+    "Earlier exchanges in this session may not apply to "
+    "the current turn unless the user explicitly references them."
+)
+
+
+def _topic_boundary_suffix(retrieval_state: _RetrievalState) -> str:
+    """Return the topic-boundary system-prompt suffix (with leading
+    separator) when retrieval is muted, else empty string. Centralizes
+    the wording so the classic REPL and the TUI both surface the same
+    note, and future triggers (--memory-scope=current-session,
+    auto-detected topic shift) hook here without copy-paste drift.
+    harness-eftf."""
+    if retrieval_state.muted:
+        return f"\n\n{_TOPIC_BOUNDARY_NOTE}"
+    return ""
 
 
 def _retrieve_turn_context(

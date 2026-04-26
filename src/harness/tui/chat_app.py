@@ -678,13 +678,17 @@ class ChatApp(App[None]):
         # Honor any persisted /clear watermark so a prior `/clear`
         # in this session stays cut after a chat restart (harness-rrkj).
         # Compaction store may be unwired (e.g. compact_at=0); fall
-        # back to the plain tail in that case.
+        # back to the plain tail in that case. When a watermark
+        # hydrates, also flip retrieval_health.muted so the next
+        # turn sees the same retrieval-suppression an in-process
+        # /clear would have set (harness-eftf).
         clear_after = (
             self._compaction_store.latest_clear_after_id(self._session)
             if self._compaction_store is not None
             else None
         )
         if clear_after is not None:
+            self._state.retrieval_health.muted = True
             rows = self._transcript.fetch_after(self._session, after_id=clear_after)
             tail = rows[-self._max_history_replay :] if rows else []
         else:
@@ -940,6 +944,15 @@ class ChatApp(App[None]):
                 )
             if known_facts:
                 system_content = f"{system_content}\n\n{_render_fact_block(known_facts)}"
+
+            # Topic-boundary signal (harness-eftf). Mirror of the
+            # classic-REPL injection — same wording via the shared
+            # `_topic_boundary_suffix` helper.
+            from harness.cli import _topic_boundary_suffix
+
+            system_content = (
+                f"{system_content}{_topic_boundary_suffix(self._state.retrieval_health)}"
+            )
 
             system = ChatMessage(role="system", content=system_content)
             user_msg = ChatMessage(role="user", content=user_input)

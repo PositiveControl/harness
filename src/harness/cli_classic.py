@@ -463,6 +463,14 @@ class ClassicChatSession:
         if known_facts:
             system_content = f"{system_content}\n\n{_render_fact_block(known_facts)}"
 
+        # Topic-boundary signal (harness-eftf). Cheap (~25 tokens),
+        # fires only when retrieval is muted — the user ran /clear in
+        # this process, or a prior process's watermark hydrated and
+        # carried the mute forward.
+        from harness.cli import _topic_boundary_suffix
+
+        system_content = f"{system_content}{_topic_boundary_suffix(self.retrieval_state)}"
+
         system = ChatMessage(role="system", content=system_content)
 
         summary_msg, history = self.ctx_meter.load_history()
