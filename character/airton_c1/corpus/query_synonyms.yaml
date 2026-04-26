@@ -51,3 +51,38 @@ sections:
     - flying behind large aircraft
     - smaller plane trailing larger plane
     - controller worry wake behind jet
+
+  "5-10-11":
+    # Missed approach procedure issuance — case
+    # `controller_missed_approach_lay`. Lay phrasing uses "go around"
+    # (vs jargon "missed approach") and the temporal "last second" /
+    # "before final descent" framing. The doc-text uses
+    # "Before an aircraft starts final descent" which has zero token
+    # overlap with the lay phrasing. Entries bridge "go around" ↔
+    # "missed approach" + the timing semantics. Rank: hard-miss → 0
+    # (added 2026-04-25, query-only sufficient per policy).
+    # Jargon case `controller_missed_approach_precoord` (§5-10-11
+    # paired) confirmed unchanged at rank 0 post-add.
+    - go around at last second
+    - missed approach already told pilot
+    - tell pilot missed approach before descent
+    - issue missed approach before final descent
+    - missed approach instructions advance
+
+  "5-4-5":
+    # Transferring controller handoff — case `controller_handoff_lay`.
+    # Lay phrasing collapses "transferring controller" to "next sector"
+    # and "flight path / altitude / speed change" to "changing the
+    # plane's altitude." Doc-text says "Verbally obtain the receiving
+    # controller's approval prior to making any changes to an
+    # aircraft's flight path, altitude..." — direct overlap on
+    # "altitude" but lay omits "receiving" / "transferring." Entries
+    # bridge the role-naming gap. Rank: hard-miss → 0 (added
+    # 2026-04-25, query-only sufficient per policy). Jargon case
+    # `controller_handoff_responsibilities` (§5-4-5 paired) confirmed
+    # unchanged at rank 0 post-add.
+    - changing altitude during handoff
+    - approval before changing altitude handoff
+    - next sector approval before altitude change
+    - altitude change while handoff in progress
+    - coordinate altitude change handoff next controller
