@@ -174,6 +174,10 @@ _SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/quit", "leave chat"),
     ("/retro", "ab's thought-graph retrospective (summary)"),
     ("/scribe", "extract memory candidates from recent turns"),
+    ("/sessions", "list every recorded chat session, newest first"),
+    ("/session", "dump current session (or `<id>`) as paste-ready markdown"),
+    ("/session-compact-reset", "drop folded summary for current (or `<id>`)"),
+    ("/session-reset", "full clean of current (or `<id>`): summary + clear + working memory"),
 )
 
 
@@ -747,12 +751,18 @@ class ChatApp(App[None]):
         # so the cost is free). harness-4ate.
         if self._ab_adapter is not None:
             self._ab_adapter.reset_turn_counter()
-        cmd = text.lower()
+        # Split off the verb (lowercased so case doesn't matter for
+        # the command word) from any positional args. Session ids are
+        # case-sensitive and pass through verbatim.
+        parts = text.strip().split()
+        cmd = parts[0].lower() if parts else ""
+        cmd_args = parts[1:]
         # Slash-command intercept. Parity with the classic REPL:
         # /exit, /quit, :q all exit; /edit (+ /capture alias) opens
         # $EDITOR on Airton's last reply for voice capture; /compact,
         # /scribe, /consolidate invoke the corresponding memory op;
-        # /retro runs ab's retrospective summary.
+        # /retro runs ab's retrospective summary; /sessions + /session
+        # family inspect / reset persisted session state.
         # Unrecognized slash commands fall through to the model so a
         # user who types '/anything' isn't silently dropped.
         if cmd in {"/exit", "/quit", ":q"}:
@@ -782,6 +792,22 @@ class ChatApp(App[None]):
         if cmd == "/retro":
             event.input.value = ""
             self._ops.run_retro()
+            return
+        if cmd == "/sessions":
+            event.input.value = ""
+            self._ops.run_session_list()
+            return
+        if cmd == "/session":
+            event.input.value = ""
+            self._ops.run_session_show(cmd_args[0] if cmd_args else None)
+            return
+        if cmd == "/session-compact-reset":
+            event.input.value = ""
+            self._ops.run_session_compact_reset(cmd_args[0] if cmd_args else None)
+            return
+        if cmd == "/session-reset":
+            event.input.value = ""
+            self._ops.run_session_reset(cmd_args[0] if cmd_args else None)
             return
         event.input.value = ""
         # Always-on prompt: if a turn is in flight, enqueue instead of

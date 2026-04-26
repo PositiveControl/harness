@@ -983,6 +983,172 @@ async def test_turn_has_blank_separator_and_badges(tmp_path) -> None:  # type: i
 
 
 @pytest.mark.asyncio
+async def test_slash_sessions_lists_recorded_sessions(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """/sessions should print one line per session in the transcript,
+    newest activity first, with the active session marked."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        # Seed two sessions: the active one ("test", from _build_app)
+        # plus a stale "yesterday".
+        tui_app._transcript.append(
+            session="yesterday",
+            channel="cli",
+            speaker="mark",
+            role="user",
+            content="old",
+        )
+        tui_app._transcript.append(
+            session=tui_app._session,
+            channel="cli",
+            speaker="mark",
+            role="user",
+            content="new",
+        )
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "/sessions"
+        await pilot.press("enter")
+        await pilot.pause()
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "test" in rendered
+        assert "yesterday" in rendered
+        assert "(current)" in rendered
+
+
+@pytest.mark.asyncio
+async def test_slash_session_dumps_current_when_no_arg(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """/session (no arg) defaults to the current session and renders
+    the most recent turns into the log."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        for content in ("first", "second"):
+            tui_app._transcript.append(
+                session=tui_app._session,
+                channel="cli",
+                speaker="mark",
+                role="user",
+                content=content,
+            )
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "/session"
+        await pilot.press("enter")
+        await pilot.pause()
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "first" in rendered
+        assert "second" in rendered
+
+
+@pytest.mark.asyncio
+async def test_slash_session_compact_reset_drops_summary(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """/session-compact-reset with a wired compaction store deletes
+    every summary row for the named session."""
+    from harness.compaction import CompactionStore
+
+    db = tmp_path / "t.sqlite"
+    transcript = Transcript(db)
+    compaction = CompactionStore(db)
+    compaction.append(
+        session_id="alpha",
+        summary="folded",
+        up_to_turn_id=1,
+        covered_turns=2,
+        model_id="echo",
+    )
+
+    character = load_character(settings.character_path)
+    app = ChatApp(
+        character=character,
+        speaker="mark",
+        session="now",
+        channel="cli",
+        adapter=EchoAdapter(),
+        transcript=transcript,
+        retriever=None,
+        top_k=0,
+        memory_store=None,
+        memories=0,
+        semantic_store=None,
+        facts=0,
+        registry=None,
+        workspace_path=None,
+        compaction_store=compaction,
+    )
+    async with app.run_test() as pilot:
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "/session-compact-reset alpha"
+        await pilot.press("enter")
+        await pilot.pause()
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "dropped 1 compaction summary" in rendered
+    assert compaction.latest_for_session("alpha") is None
+
+
+@pytest.mark.asyncio
+async def test_slash_session_reset_current_clears_in_memory_state(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """/session-reset (no arg) resets the current session and also
+    wipes _state.history + mutes retrieval + clears the log so the
+    next turn starts clean immediately, without requiring a chat
+    restart."""
+    from harness.compaction import CompactionStore
+
+    db = tmp_path / "t.sqlite"
+    transcript = Transcript(db)
+    compaction = CompactionStore(db)
+
+    character = load_character(settings.character_path)
+    app = ChatApp(
+        character=character,
+        speaker="mark",
+        session="active",
+        channel="cli",
+        adapter=EchoAdapter(),
+        transcript=transcript,
+        retriever=None,
+        top_k=0,
+        memory_store=None,
+        memories=0,
+        semantic_store=None,
+        facts=0,
+        registry=None,
+        workspace_path=None,
+        compaction_store=compaction,
+    )
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        # Pretend a turn already ran.
+        tui_app._state.history = [
+            ChatMessage(role="user", content="prior"),
+            ChatMessage(role="assistant", content="reply"),
+        ]
+        tui_app._transcript.append(
+            session=tui_app._session,
+            channel="cli",
+            speaker="mark",
+            role="user",
+            content="prior",
+        )
+
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "/session-reset"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "session reset (current)" in rendered
+        assert tui_app._state.history == []
+        assert tui_app._state.retrieval_health.muted is True
+    # Watermark persisted so a chat restart on this session honors it.
+    assert compaction.latest_clear_after_id("active") is not None
+    # Transcript untouched.
+    assert len(transcript.tail("active", limit=10)) == 1
+
+
+@pytest.mark.asyncio
 async def test_slash_consolidate_without_stores_reports(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """/consolidate without memory+fact stores should emit an error
     line, not a traceback."""

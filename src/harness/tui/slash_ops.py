@@ -104,6 +104,141 @@ class SlashOps:
         # zero immediately instead of waiting for the next tick.
         app._refresh_metrics()
 
+    def run_session_list(self) -> None:
+        """/sessions — list every recorded session, newest activity
+        first. Renders 1 line per session; capped at 20 to keep the
+        log scrollable. Read-only, runs on the UI thread."""
+        app = self._app
+        log = app.query_one("#output", RichLog)
+        rows = app._transcript.list_sessions()
+        if not rows:
+            log.write(Text("(no sessions yet)", style="dim"))
+            return
+        log.write(Text(f"sessions ({len(rows)}):", style="bold"))
+        for r in rows[:20]:
+            mark = " (current)" if r.session == app._session else ""
+            log.write(
+                Text(
+                    f"  {r.session}{mark}  "
+                    f"{r.total_rows} turns  "
+                    f"{r.first_at.strftime('%Y-%m-%d %H:%M')} → "
+                    f"{r.last_at.strftime('%Y-%m-%d %H:%M')}",
+                    style="dim",
+                )
+            )
+        if len(rows) > 20:
+            log.write(Text(f"  … ({len(rows) - 20} older)", style="dim"))
+
+    def run_session_show(self, session_id: str | None = None) -> None:
+        """/session [id] — dump a session as markdown into the log.
+
+        Defaults to the current session. Caps the dump at the most
+        recent 50 turns so a long session doesn't fill the log all
+        at once — use `harness session show <id>` outside chat for
+        the unbounded form."""
+        app = self._app
+        log = app.query_one("#output", RichLog)
+        sid = session_id or app._session
+        rows = app._transcript.fetch_after(sid, after_id=0)
+        if not rows:
+            log.write(Text(f"(session {sid!r} has no turns)", style="dim"))
+            return
+        tail = rows[-50:]
+        truncated = len(rows) - len(tail)
+        log.write(
+            Text(
+                f"session {sid} ({len(rows)} turns"
+                + (f", showing last {len(tail)}" if truncated else "")
+                + "):",
+                style="bold",
+            )
+        )
+        for msg in tail:
+            ts = msg.created_at.strftime("%H:%M:%S")
+            header = Text(f"  {msg.role} ({msg.speaker}) — {ts}", style="dim")
+            log.write(header)
+            log.write(Text(f"    {msg.content}"))
+
+    def run_session_compact_reset(self, session_id: str | None = None) -> None:
+        """/session-compact-reset [id] — drop the compaction summary
+        for a session so the next chat invocation falls through to
+        the raw-transcript tail path (harness-xf8d). Defaults to
+        current session. No transcript rows touched."""
+        app = self._app
+        log = app.query_one("#output", RichLog)
+        if app._compaction_store is None:
+            log.write(
+                Text(
+                    "/session-compact-reset: no compaction store wired",
+                    style="yellow",
+                )
+            )
+            return
+        sid = session_id or app._session
+        existing = app._compaction_store.latest_for_session(sid)
+        if existing is None:
+            log.write(Text(f"(session {sid!r} has no compaction summary)", style="dim"))
+            return
+        deleted = app._compaction_store.invalidate_summaries(sid)
+        log.write(
+            Text(
+                f"dropped {deleted} compaction summary row(s) "
+                f"for session {sid!r} ({existing.covered_turns} turns folded).",
+                style="yellow",
+            )
+        )
+        # If we just compact-reset the current session, also refresh
+        # ctx metrics so the load_history fallback shows up in the
+        # next tick (compaction summary no longer prepended).
+        if sid == app._session:
+            app._refresh_metrics()
+
+    def run_session_reset(self, session_id: str | None = None) -> None:
+        """/session-reset [id] — full per-session clean: drop summary,
+        set persistent /clear watermark, prune working-tier scribed
+        memory tagged to the session (harness-k7m9). Transcript rows
+        survive. Defaults to current session — when so, also wipes
+        in-memory history and mutes retrieval so the post-reset turn
+        starts clean immediately."""
+        app = self._app
+        log = app.query_one("#output", RichLog)
+        if app._compaction_store is None:
+            log.write(Text("/session-reset: no compaction store wired", style="yellow"))
+            return
+        sid = session_id or app._session
+        tail = app._transcript.tail(sid, limit=1)
+        tip = tail[-1].id if tail else 0
+        summaries = app._compaction_store.invalidate_summaries(sid)
+        app._compaction_store.record_clear(session_id=sid, after_id=tip)
+        episodic_dropped = (
+            app._memory_store.delete_working_for_session(sid)
+            if app._memory_store is not None
+            else 0
+        )
+        semantic_dropped = (
+            app._semantic_store.delete_working_for_session(sid)
+            if app._semantic_store is not None
+            else 0
+        )
+        log.write(
+            Text(
+                f"reset session {sid!r}: "
+                f"summary={summaries} clear_after_id={tip} "
+                f"episodic_working={episodic_dropped} "
+                f"semantic_working={semantic_dropped}",
+                style="yellow",
+            )
+        )
+        # If the user reset the session they're currently in, also
+        # carry the in-memory effects of /clear so the next turn
+        # actually starts clean without requiring a chat restart.
+        if sid == app._session:
+            app._state.history = []
+            app._state.retrieval_health.muted = True
+            log.clear()
+            log.write(Text("─── session reset (current) ───", style="dim"))
+            app._refresh_metrics()
+
     def run_retro(self) -> None:
         """/retro — ab's thought-graph retrospective (read-only bd
         query, fast + safe on the UI thread)."""
