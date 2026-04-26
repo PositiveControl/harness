@@ -107,6 +107,29 @@ class CompactionStore:
             created_at=datetime.fromisoformat(now),
         )
 
+    def invalidate_summaries(self, session_id: str) -> int:
+        """Drop every compaction summary recorded for `session_id`.
+
+        Used by `harness session compact-reset` to force load_history
+        to fall through to the raw-transcript tail path. The
+        transcript table is untouched, so audit + scribe + retro
+        still see every turn — only the *summary* the model would
+        otherwise prepend disappears. Returns the number of rows
+        deleted so the CLI can show the user what happened
+        (harness-xf8d).
+
+        Older rows for the same session are also removed: the store
+        is append-only by convention but `latest_for_session` only
+        ever reads `ORDER BY id DESC LIMIT 1`, so leaving stale
+        rows in place would let an older summary resurface as 'the
+        latest' the moment a single row is deleted. Wipe-all keeps
+        the invalidation deterministic."""
+        cur = self._conn.execute(
+            "DELETE FROM compaction_summary WHERE session_id = ?",
+            (session_id,),
+        )
+        return cur.rowcount or 0
+
     def record_clear(self, *, session_id: str, after_id: int) -> None:
         """Persist a /clear cut for `session_id` at `after_id`.
 

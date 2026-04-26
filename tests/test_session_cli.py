@@ -164,6 +164,63 @@ def test_chat_default_session_is_unique_per_launch() -> None:
     assert first != second
 
 
+def test_session_compact_reset_drops_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`harness session compact-reset <id> --yes` deletes the
+    compaction summary so the next chat invocation falls through
+    to the raw-transcript tail path. Transcript rows stay
+    intact for audit (harness-xf8d)."""
+    from harness.compaction import CompactionStore
+
+    db = _redirect_settings(monkeypatch, tmp_path)
+    _seed_db(db)
+    store = CompactionStore(db)
+    try:
+        store.append(
+            session_id="alpha",
+            summary="folded-old-threads",
+            up_to_turn_id=2,
+            covered_turns=4,
+            model_id="echo",
+        )
+        assert store.latest_for_session("alpha") is not None
+    finally:
+        store.close()
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["session", "compact-reset", "alpha", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "dropped" in result.output
+
+    store2 = CompactionStore(db)
+    try:
+        assert store2.latest_for_session("alpha") is None
+    finally:
+        store2.close()
+
+    # Transcript rows survive the reset — verify by re-running show.
+    show = runner.invoke(app, ["session", "show", "alpha"])
+    assert show.exit_code == 0, show.output
+    assert "hi" in show.output
+    assert "hey" in show.output
+
+
+def test_session_compact_reset_quiet_when_nothing_to_drop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If a session has no compaction summary, the command exits 0
+    with a stderr hint and skips the confirm prompt — `--yes`
+    isn't even required for the no-op path."""
+    db = _redirect_settings(monkeypatch, tmp_path)
+    _seed_db(db)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["session", "compact-reset", "alpha"])
+    assert result.exit_code == 0, result.output
+    assert "no compaction summary" in result.output
+
+
 def test_session_list_empty_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`session list` against a fresh db prints a (no sessions) hint
     and exits cleanly."""

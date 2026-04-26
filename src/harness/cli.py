@@ -3801,5 +3801,55 @@ def session_show_cmd(
         transcript.close()
 
 
+@session_app.command("compact-reset")
+def session_compact_reset_cmd(
+    session_id: str = typer.Argument(
+        ...,
+        help="Session id whose compaction summary should be invalidated.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the confirmation prompt.",
+    ),
+) -> None:
+    """Drop the compaction summary for a session so future chat
+    invocations don't reattach folded-turn context.
+
+    Compaction summaries are otherwise permanent: once turns fold,
+    every future load_history call prepends 'Earlier conversation:
+    [old threads]' even on totally unrelated topics. This command
+    forces load_history to fall through to the raw-transcript tail
+    path. The transcript itself is untouched — scribe + retro +
+    `harness session show` still see every turn (harness-xf8d).
+
+    Pairs with `harness-rrkj` (durable /clear): `/clear` cuts BOTH
+    the summary and the raw history; `compact-reset` only drops
+    the summary, keeping the raw history available for the next
+    chat to roll forward."""
+    from harness.compaction import CompactionStore
+
+    store = CompactionStore(settings.character_db_path)
+    try:
+        existing = store.latest_for_session(session_id)
+        if existing is None:
+            typer.echo(f"(session {session_id!r} has no compaction summary)", err=True)
+            return
+        if not yes:
+            typer.confirm(
+                f"Drop compaction summary for session {session_id!r} "
+                f"({existing.covered_turns} turns folded)? Transcript stays.",
+                abort=True,
+            )
+        deleted = store.invalidate_summaries(session_id)
+        console.print(
+            f"[yellow]dropped {deleted} compaction summary "
+            f"row(s) for session {session_id!r}.[/yellow]"
+        )
+    finally:
+        store.close()
+
+
 if __name__ == "__main__":
     app()

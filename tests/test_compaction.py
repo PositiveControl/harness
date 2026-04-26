@@ -148,6 +148,64 @@ def test_record_clear_is_idempotent_upsert(tmp_path: Path) -> None:
         store.close()
 
 
+def test_invalidate_summaries_drops_all_rows_for_session(tmp_path: Path) -> None:
+    """harness-xf8d: compaction summaries used to be permanent;
+    invalidate_summaries deletes every row for a session so
+    `latest_for_session` returns None afterwards. Wipe-all is
+    intentional — leaving older rows would let an obsolete
+    summary resurface on the next read."""
+    store = CompactionStore(tmp_path / "c.sqlite")
+    try:
+        store.append(
+            session_id="s",
+            summary="first",
+            up_to_turn_id=5,
+            covered_turns=3,
+            model_id="m",
+        )
+        store.append(
+            session_id="s",
+            summary="second",
+            up_to_turn_id=10,
+            covered_turns=5,
+            model_id="m",
+        )
+        deleted = store.invalidate_summaries("s")
+        assert deleted == 2
+        assert store.latest_for_session("s") is None
+    finally:
+        store.close()
+
+
+def test_invalidate_summaries_keeps_other_sessions(tmp_path: Path) -> None:
+    """A compact-reset on session A must not wipe session B's
+    summary. Sessions are isolated by `session_id` PK semantics."""
+    store = CompactionStore(tmp_path / "c.sqlite")
+    try:
+        store.append(
+            session_id="a", summary="alpha", up_to_turn_id=1, covered_turns=1, model_id="m"
+        )
+        store.append(session_id="b", summary="beta", up_to_turn_id=1, covered_turns=1, model_id="m")
+        store.invalidate_summaries("a")
+        assert store.latest_for_session("a") is None
+        b = store.latest_for_session("b")
+        assert b is not None
+        assert b.summary == "beta"
+    finally:
+        store.close()
+
+
+def test_invalidate_summaries_no_op_on_empty_session(tmp_path: Path) -> None:
+    """Returns 0 when there's nothing to delete; the CLI uses this
+    to print a helpful '(no compaction summary)' message rather
+    than erroring out."""
+    store = CompactionStore(tmp_path / "c.sqlite")
+    try:
+        assert store.invalidate_summaries("never-touched") == 0
+    finally:
+        store.close()
+
+
 def test_record_clear_keys_by_session(tmp_path: Path) -> None:
     """Watermarks for different sessions live in distinct rows so a
     /clear in one chat never silences another."""
