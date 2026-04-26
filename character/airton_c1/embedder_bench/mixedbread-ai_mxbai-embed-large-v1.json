@@ -1,0 +1,1029 @@
+{
+  "repo": "mixedbread-ai/mxbai-embed-large-v1",
+  "sanitized": "mixedbread-ai_mxbai-embed-large-v1",
+  "db_path": "/Users/m7s/dev/harness/character/airton_c1/data/bench/mixedbread-ai_mxbai-embed-large-v1.sqlite",
+  "fixture": "/Users/m7s/dev/harness/character/airton_c1/atc_eval.yaml",
+  "ingest": {
+    "seconds": 113.85927550002816,
+    "rss_before_mb": 21.75,
+    "rss_after_mb": 527.140625,
+    "rss_delta_mb": 505.390625,
+    "rows_ingested": 2092,
+    "embed_dim": 1024
+  },
+  "eval_seconds": 6.621639791992493,
+  "recall_at_1": 0.7368421052631579,
+  "recall_at_3": 0.8947368421052632,
+  "recall_at_5": 0.9473684210526315,
+  "recall_at_k": 0.9473684210526315,
+  "median_rank": 0.0,
+  "cases": [
+    {
+      "id": "controller_readback_requirement",
+      "audience": "controller",
+      "query": "What do I need to verify when a pilot reads back an ATC clearance, per JO 7110.65?",
+      "expected_anchors": [
+        "2-4-3"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a72-4-3 (Radio and Interphone Communications \u2014 PILOT ACKNOWLEDGMENT/READ BACK)",
+          "score": 0.03278688524590164
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-10-5 (Arrival Procedures and Separation \u2014 LANDING CLEARANCE)",
+          "score": 0.030776515151515152
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-5-9 (Altitude Assignment and Verification \u2014 ALTITUDE CONFIRMATION\u2212 NONRADAR)",
+          "score": 0.03021353930031804
+        },
+        {
+          "principle": "JO_7110.65 \u00a72-4-3 (Radio and Interphone Communications \u2014 PILOT ACKNOWLEDGMENT/READ BACK)",
+          "score": 0.029850746268656716
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-10-5 (Arrival Procedures and Separation \u2014 LANDING CLEARANCE)",
+          "score": 0.029273504273504274
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-2-17 (Beacon/ADS\u2212B Systems \u2014 ALTITUDE CONFIRMATION\u2212 NON\u2212MODE C)",
+          "score": 0.02821869488536155
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-3-2 (Departure Procedures \u2014 DEPARTURE CLEARANCES)",
+          "score": 0.02804284323271665
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-5-7 (Altitude Assignment and Verification \u2014 ALTITUDE INFORMATION)",
+          "score": 0.02690100430416069
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-3-4 (Departure Procedures \u2014 DEPARTURE RELEASE, HOLD FOR RELEASE, RELEASE TIMES, DEPARTURE RESTRICTIONS, AND CLEARANCE VOID TIMES)",
+          "score": 0.026767330130404943
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-3-2 (Departure Procedures \u2014 DEPARTURE CLEARANCES)",
+          "score": 0.02552166934189406
+        }
+      ]
+    },
+    {
+      "id": "controller_wake_turbulence_application",
+      "audience": "controller",
+      "query": "When do wake turbulence procedures apply under JO 7110.65?",
+      "expected_anchors": [
+        "2-1-19"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03125763125763126,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a72-1-19 (General \u2014 WAKE TURBULENCE)",
+          "score": 0.03125763125763126
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-9-9 (Radar Arrivals \u2014 SIMULTANEOUS OFFSET INSTRUMENT APPROACHES (SOIA))",
+          "score": 0.03125
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-5-4 (Radar Separation \u2014 MINIMA)",
+          "score": 0.029957522915269395
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-10-5 (Arrival Procedures and Separation \u2014 LANDING CLEARANCE)",
+          "score": 0.029726775956284153
+        },
+        {
+          "principle": "JO_7110.65 \u00a72-1-20 (General \u2014 WAKE TURBULENCE CAUTIONARY ADVISORIES)",
+          "score": 0.029116045245077504
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-9-9 (Radar Arrivals \u2014 SIMULTANEOUS OFFSET INSTRUMENT APPROACHES (SOIA))",
+          "score": 0.029083245521601686
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-7 (Departure Procedures and Separation \u2014 WAKE TURBULENCE SEPARATION FOR INTERSECTION DEPARTURES)",
+          "score": 0.028629032258064516
+        },
+        {
+          "principle": "JO_7110.65 \u00a72-1-20 (General \u2014 WAKE TURBULENCE CAUTIONARY ADVISORIES)",
+          "score": 0.02817460317460317
+        },
+        {
+          "principle": "JO_7110.65 \u00a77-8-3 (Class C Service\u2212 Terminal \u2014 SEPARATION)",
+          "score": 0.028006267136701922
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-7 (Departure Procedures and Separation \u2014 WAKE TURBULENCE SEPARATION FOR INTERSECTION DEPARTURES)",
+          "score": 0.027972027972027972
+        }
+      ]
+    },
+    {
+      "id": "controller_same_runway_departure",
+      "audience": "controller",
+      "query": "When can I clear a departing aircraft for takeoff behind another departing aircraft on the same runway?",
+      "expected_anchors": [
+        "3-9-6"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03200204813108039,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.03200204813108039
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.03177805800756621
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-7 (Departure Procedures and Separation \u2014 WAKE TURBULENCE SEPARATION FOR INTERSECTION DEPARTURES)",
+          "score": 0.03009207275993712
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.03007688828584351
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.02821939586645469
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.02804284323271665
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-7 (Departure Procedures and Separation \u2014 WAKE TURBULENCE SEPARATION FOR INTERSECTION DEPARTURES)",
+          "score": 0.028006267136701922
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-10-4 (Arrival Procedures and Separation \u2014 INTERSECTING RUNWAY/INTERSECTING FLIGHT PATH OPERATIONS)",
+          "score": 0.027783137179239824
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-7 (Departure Procedures and Separation \u2014 WAKE TURBULENCE SEPARATION FOR INTERSECTION DEPARTURES)",
+          "score": 0.027313266443701224
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-8 (Departure Procedures and Separation \u2014 INTERSECTING RUNWAY/INTERSECTING FLIGHT PATH OPERATIONS)",
+          "score": 0.02690100430416069
+        }
+      ]
+    },
+    {
+      "id": "controller_same_runway_arrival",
+      "audience": "controller",
+      "query": "When may an arriving aircraft cross the landing threshold behind another aircraft on the same runway?",
+      "expected_anchors": [
+        "3-10-3"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a73-10-3 (Arrival Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: shortest distance on approach; minimum spacing on final; in-trail spacing on approach; approach separation minima; landing behind another aircraft; how close can aircraft be on approach; aircraft spacing on final; trailing aircraft on approach]",
+          "score": 0.03278688524590164
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-10-3 (Arrival Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: shortest distance on approach; minimum spacing on final; in-trail spacing on approach; approach separation minima; landing behind another aircraft; how close can aircraft be on approach; aircraft spacing on final; trailing aircraft on approach]",
+          "score": 0.03225806451612903
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-10-3 (Arrival Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: shortest distance on approach; minimum spacing on final; in-trail spacing on approach; approach separation minima; landing behind another aircraft; how close can aircraft be on approach; aircraft spacing on final; trailing aircraft on approach]",
+          "score": 0.031024531024531024
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.031009615384615385
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.031009615384615385
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.030798389007344232
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.03007688828584351
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-5-4 (Radar Separation \u2014 MINIMA)",
+          "score": 0.028169014084507043
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.02761904761904762
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.02715098147128967
+        }
+      ]
+    },
+    {
+      "id": "controller_same_runway_arrival_lay_phrasing",
+      "audience": "controller",
+      "query": "What is the shortest distance an aircraft is allowed to be next to another aircraft on approach to the runway?",
+      "expected_anchors": [
+        "3-10-3"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a73-10-3 (Arrival Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: shortest distance on approach; minimum spacing on final; in-trail spacing on approach; approach separation minima; landing behind another aircraft; how close can aircraft be on approach; aircraft spacing on final; trailing aircraft on approach]",
+          "score": 0.03278688524590164
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-10-3 (Arrival Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: shortest distance on approach; minimum spacing on final; in-trail spacing on approach; approach separation minima; landing behind another aircraft; how close can aircraft be on approach; aircraft spacing on final; trailing aircraft on approach]",
+          "score": 0.03225806451612903
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-10-3 (Arrival Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: shortest distance on approach; minimum spacing on final; in-trail spacing on approach; approach separation minima; landing behind another aircraft; how close can aircraft be on approach; aircraft spacing on final; trailing aircraft on approach]",
+          "score": 0.031746031746031744
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.030776515151515152
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.030776515151515152
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.03076923076923077
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.029418126757516764
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.029418126757516764
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.028790389395194696
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.02857142857142857
+        }
+      ]
+    },
+    {
+      "id": "controller_ifr_clearance_items_order",
+      "audience": "controller",
+      "query": "In what order do I issue IFR clearance items?",
+      "expected_anchors": [
+        "4-2-1"
+      ],
+      "rank_of_first_expected": 1,
+      "score_of_first_expected": 0.032018442622950824,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a74-2-9 (Clearances \u2014 CLEARANCE ITEMS)",
+          "score": 0.03252247488101534
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-2-1 (Clearances \u2014 CLEARANCE ITEMS)",
+          "score": 0.032018442622950824
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-2-1 (Clearances \u2014 CLEARANCE ITEMS)",
+          "score": 0.03200204813108039
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-3-2 (Departure Procedures \u2014 DEPARTURE CLEARANCES)",
+          "score": 0.030536130536130537
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-2-8 (Clearances \u2014 IFR\u2212VFR AND VFR\u2212IFR FLIGHTS)",
+          "score": 0.029513888888888888
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-2-8 (Clearances \u2014 IFR\u2212VFR AND VFR\u2212IFR FLIGHTS)",
+          "score": 0.027777777777777776
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-3-2 (Departure Procedures \u2014 DEPARTURE CLEARANCES)",
+          "score": 0.02684684684684685
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-6-2 (Holding Aircraft \u2014 CLEARANCE BEYOND FIX)",
+          "score": 0.026754075124025514
+        },
+        {
+          "principle": "JO_7110.65 \u00a77-5-2 (Special VFR (SVFR) \u2014 PRIORITY)",
+          "score": 0.024696835255841466
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-3-3 (Departure Procedures \u2014 ABBREVIATED DEPARTURE CLEARANCE)",
+          "score": 0.0227214377406932
+        }
+      ]
+    },
+    {
+      "id": "controller_vertical_separation_rvsm",
+      "audience": "controller",
+      "query": "What's the IFR vertical separation minimum up to FL 410, and what changes above it?",
+      "expected_anchors": [
+        "4-5-1"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a74-5-1 (Altitude Assignment and Verification \u2014 VERTICAL SEPARATION MINIMA)",
+          "score": 0.03278688524590164
+        },
+        {
+          "principle": "JO_7110.65 \u00a76-6-2 (Vertical Separation \u2014 EXCEPTIONS)",
+          "score": 0.02862400327131466
+        },
+        {
+          "principle": "JO_7110.65 \u00a76-5-4 (Lateral Separation \u2014 MINIMA ALONG OTHER THAN ESTABLISHED AIRWAYS OR ROUTES)",
+          "score": 0.026856524873828405
+        },
+        {
+          "principle": "JO_7110.65 \u00a714-3-3 (Advanced Technologies and Oceanic Procedures (ATOP) \u2212 Oceanic Controller Pilot Data Link Communications (CPDLC) \u2014 ABNORMAL CONDITIONS)",
+          "score": 0.02582908163265306
+        },
+        {
+          "principle": "JO_7110.65 \u00a79-2-14 (Special Operations \u2014 MILITARY OPERATIONS ABOVE FL 600)",
+          "score": 0.024350649350649352
+        },
+        {
+          "principle": "JO_7110.65 \u00a79-4-4 (Fuel Dumping \u2014 SEPARATION MINIMA)",
+          "score": 0.023959827833572454
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-6-3 (Vectoring \u2014 VECTORS BELOW MINIMUM ALTITUDE)",
+          "score": 0.023809523809523808
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-5-5 (Altitude Assignment and Verification \u2014 ADJUSTED MINIMUM FLIGHT LEVEL)",
+          "score": 0.023015873015873017
+        },
+        {
+          "principle": "JO_7110.65 \u00a712-1-4 (General Control \u2014 SEPARATION)",
+          "score": 0.02268649064342476
+        },
+        {
+          "principle": "JO_7110.65 \u00a77-9-4 (Class B Service Area\u2212 Terminal \u2014 SEPARATION)",
+          "score": 0.016129032258064516
+        }
+      ]
+    },
+    {
+      "id": "controller_radar_standard_separation",
+      "audience": "controller",
+      "query": "What's the standard radar separation minimum in terminal airspace when using single-sensor ASR?",
+      "expected_anchors": [
+        "5-5-4"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03252247488101534,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a75-5-4 (Radar Separation \u2014 MINIMA)",
+          "score": 0.03252247488101534
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-5-9 (Radar Separation \u2014 SEPARATION FROM OBSTRUCTIONS)",
+          "score": 0.031754032258064516
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-5-1 (Radar Separation \u2014 APPLICATION)",
+          "score": 0.030798389007344232
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-5-7 (Radar Separation \u2014 PASSING OR DIVERGING)",
+          "score": 0.029437229437229435
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-5-4 (Radar Separation \u2014 MINIMA)",
+          "score": 0.028373015873015873
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-5-4 (Radar Separation \u2014 MINIMA)",
+          "score": 0.028370221327967807
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-5-4 (Radar Separation \u2014 MINIMA)",
+          "score": 0.02804284323271665
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-5-4 (Radar Separation \u2014 MINIMA)",
+          "score": 0.026234567901234566
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-1-2 (General \u2014 ATC SURVEILLANCE SOURCE USE)",
+          "score": 0.025481764612199396
+        },
+        {
+          "principle": "JO_7110.65 \u00a78-5-5 (Offshore/Oceanic Transition Procedures \u2014 RADAR IDENTIFICATION APPLICATION)",
+          "score": 0.024809741248097414
+        }
+      ]
+    },
+    {
+      "id": "controller_handoff_responsibilities",
+      "audience": "controller",
+      "query": "What must the transferring controller do before making a flight-path change during a radar handoff?",
+      "expected_anchors": [
+        "5-4-5"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03252247488101534,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a75-4-5 (Transfer of Radar Identification \u2014 TRANSFERRING CONTROLLER HANDOFF)",
+          "score": 0.03252247488101534
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-4-6 (Transfer of Radar Identification \u2014 RECEIVING CONTROLLER HANDOFF)",
+          "score": 0.032018442622950824
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-4-5 (Transfer of Radar Identification \u2014 TRANSFERRING CONTROLLER HANDOFF)",
+          "score": 0.03055037313432836
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-4-6 (Transfer of Radar Identification \u2014 RECEIVING CONTROLLER HANDOFF)",
+          "score": 0.030536130536130537
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-4-5 (Transfer of Radar Identification \u2014 TRANSFERRING CONTROLLER HANDOFF)",
+          "score": 0.030158730158730156
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-4-7 (Transfer of Radar Identification \u2014 POINT OUT)",
+          "score": 0.02976190476190476
+        },
+        {
+          "principle": "JO_7110.65 \u00a72-1-15 (General \u2014 CONTROL TRANSFER)",
+          "score": 0.027425373134328357
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-2-2 (Beacon/ADS\u2212B Systems \u2014 RADAR BEACON CODE CHANGES)",
+          "score": 0.027364110201042444
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-10-15 (Radar Approaches\u2212 Terminal \u2014 MILITARY SINGLE FREQUENCY APPROACHES)",
+          "score": 0.026515151515151516
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-3-8 (Departure Procedures \u2014 COORDINATION WITH RECEIVING FACILITY)",
+          "score": 0.02591362126245847
+        }
+      ]
+    },
+    {
+      "id": "controller_missed_approach_precoord",
+      "audience": "controller",
+      "query": "When must I issue a specific missed approach procedure before the aircraft starts final descent?",
+      "expected_anchors": [
+        "5-10-11"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a75-10-11 (Radar Approaches\u2212 Terminal \u2014 MISSED APPROACH)",
+          "score": 0.03278688524590164
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-8-9 (Approach Clearance Procedures \u2014 MISSED APPROACH)",
+          "score": 0.03125763125763126
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-8-9 (Approach Clearance Procedures \u2014 MISSED APPROACH)",
+          "score": 0.02967032967032967
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-8-9 (Approach Clearance Procedures \u2014 MISSED APPROACH)",
+          "score": 0.028790389395194696
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-11-3 (Surveillance Approaches\u2212 Terminal \u2014 DESCENT NOTIFICATION)",
+          "score": 0.027893738140417457
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-12-3 (PAR Approaches\u2212 Terminal \u2014 DESCENT INSTRUCTION)",
+          "score": 0.027809742999616416
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-8-12 (Approach Clearance Procedures \u2014 LOW APPROACH AND TOUCH-AND-GO)",
+          "score": 0.027777777777777776
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-10-6 (Radar Approaches\u2212 Terminal \u2014 LANDING CHECK)",
+          "score": 0.0277569392348087
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-10-12 (Radar Approaches\u2212 Terminal \u2014 LOW APPROACH AND TOUCH-AND-GO)",
+          "score": 0.027745885954841176
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-7-5 (Arrival Procedures \u2014 MILITARY TURBOJET EN ROUTE DESCENT)",
+          "score": 0.027252906976744186
+        }
+      ]
+    },
+    {
+      "id": "controller_class_b_vfr_clearance",
+      "audience": "controller",
+      "query": "What's the phraseology for clearing a VFR aircraft into Class B airspace?",
+      "expected_anchors": [
+        "7-9-2"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03252247488101534,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a77-9-2 (Class B Service Area\u2212 Terminal \u2014 VFR AIRCRAFT IN CLASS B AIRSPACE)",
+          "score": 0.03252247488101534
+        },
+        {
+          "principle": "JO_7110.65 \u00a77-9-2 (Class B Service Area\u2212 Terminal \u2014 VFR AIRCRAFT IN CLASS B AIRSPACE)",
+          "score": 0.03252247488101534
+        },
+        {
+          "principle": "JO_7110.65 \u00a77-9-3 (Class B Service Area\u2212 Terminal \u2014 METHODS)",
+          "score": 0.031024531024531024
+        },
+        {
+          "principle": "JO_7110.65 \u00a714-3-3 (Advanced Technologies and Oceanic Procedures (ATOP) \u2212 Oceanic Controller Pilot Data Link Communications (CPDLC) \u2014 ABNORMAL CONDITIONS)",
+          "score": 0.031009615384615385
+        },
+        {
+          "principle": "JO_7110.65 \u00a77-5-1 (Special VFR (SVFR) \u2014 AUTHORIZATION)",
+          "score": 0.02821869488536155
+        },
+        {
+          "principle": "JO_7110.65 \u00a712-1-2 (General Control \u2014 AIRSPACE CLASSIFICATION)",
+          "score": 0.02786377708978328
+        },
+        {
+          "principle": "JO_7110.65 \u00a712-1-3 (General Control \u2014 ONE THOUSAND\u2212ON\u2212TOP)",
+          "score": 0.02661064425770308
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-5-10 (Radar Separation \u2014 ADJACENT AIRSPACE)",
+          "score": 0.026190476190476188
+        },
+        {
+          "principle": "JO_7110.65 \u00a77-5-1 (Special VFR (SVFR) \u2014 AUTHORIZATION)",
+          "score": 0.026153846153846153
+        },
+        {
+          "principle": "JO_7110.65 \u00a72-4-22 (Radio and Interphone Communications \u2014 AIRSPACE CLASSES)",
+          "score": 0.025859192525859193
+        }
+      ]
+    },
+    {
+      "id": "controller_vfr_on_top",
+      "audience": "controller",
+      "query": "Under what condition may I clear an IFR aircraft to maintain 'VFR-on-top'?",
+      "expected_anchors": [
+        "7-3-1"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03252247488101534,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a77-3-1 (VFR-On-Top \u2014 VFR-ON-TOP)",
+          "score": 0.03252247488101534
+        },
+        {
+          "principle": "JO_7110.65 \u00a77-3-1 (VFR-On-Top \u2014 VFR-ON-TOP)",
+          "score": 0.03252247488101534
+        },
+        {
+          "principle": "JO_7110.65 \u00a77-3-1 (VFR-On-Top \u2014 VFR-ON-TOP)",
+          "score": 0.03149801587301587
+        },
+        {
+          "principle": "JO_7110.65 \u00a712-1-3 (General Control \u2014 ONE THOUSAND\u2212ON\u2212TOP)",
+          "score": 0.030309988518943745
+        },
+        {
+          "principle": "JO_7110.65 \u00a79-3-3 (Special Use, ATC\u2212Assigned Airspace, and Stationary ALTRVs \u2014 VFR-ON-TOP)",
+          "score": 0.029910714285714284
+        },
+        {
+          "principle": "JO_7110.65 \u00a77-1-2 (General \u2014 VFR CONDITIONS)",
+          "score": 0.029571646010002173
+        },
+        {
+          "principle": "JO_7110.65 \u00a77-3-2 (VFR-On-Top \u2014 ALTITUDE FOR DIRECTION OF FLIGHT)",
+          "score": 0.02854251012145749
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-2-8 (Clearances \u2014 IFR\u2212VFR AND VFR\u2212IFR FLIGHTS)",
+          "score": 0.028309409888357256
+        },
+        {
+          "principle": "JO_7110.65 \u00a714-3-3 (Advanced Technologies and Oceanic Procedures (ATOP) \u2212 Oceanic Controller Pilot Data Link Communications (CPDLC) \u2014 ABNORMAL CONDITIONS)",
+          "score": 0.027777777777777776
+        },
+        {
+          "principle": "JO_7110.65 \u00a77-5-1 (Special VFR (SVFR) \u2014 AUTHORIZATION)",
+          "score": 0.027071520029266508
+        }
+      ]
+    },
+    {
+      "id": "controller_emergency_distress_urgency",
+      "audience": "controller",
+      "query": "What's the difference between a Distress and an Urgency emergency, and how does a pilot declare each?",
+      "expected_anchors": [
+        "10-1-1"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a710-1-1 (General \u2014 EMERGENCY DETERMINATIONS)",
+          "score": 0.03278688524590164
+        },
+        {
+          "principle": "JO_7110.65 \u00a710-1-2 (General \u2014 OBTAINING INFORMATION)",
+          "score": 0.03128054740957967
+        },
+        {
+          "principle": "JO_7110.65 \u00a714-3-3 (Advanced Technologies and Oceanic Procedures (ATOP) \u2212 Oceanic Controller Pilot Data Link Communications (CPDLC) \u2014 ABNORMAL CONDITIONS)",
+          "score": 0.030117753623188408
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-2-3 (Beacon/ADS\u2212B Systems \u2014 EMERGENCY CODE ASSIGNMENT)",
+          "score": 0.029211087420042643
+        },
+        {
+          "principle": "JO_7110.65 \u00a72-1-8 (General \u2014 MINIMUM FUEL)",
+          "score": 0.028594771241830064
+        },
+        {
+          "principle": "JO_7110.65 \u00a710-6-3 (Oceanic Emergency Procedures \u2014 ALERTING SERVICE AND SPECIAL ASSISTANCE)",
+          "score": 0.028205128205128206
+        },
+        {
+          "principle": "JO_7110.65 \u00a710-2-5 (Emergency Assistance \u2014 EMERGENCY SITUATIONS)",
+          "score": 0.026767330130404943
+        },
+        {
+          "principle": "JO_7110.65 \u00a710-6-5 (Oceanic Emergency Procedures \u2014 SERVICES TO RESCUE AIRCRAFT)",
+          "score": 0.02667140825035562
+        },
+        {
+          "principle": "JO_7110.65 \u00a710-1-4 (General \u2014 RESPONSIBILITY)",
+          "score": 0.026279628993473032
+        },
+        {
+          "principle": "JO_7110.65 \u00a714-3-3 (Advanced Technologies and Oceanic Procedures (ATOP) \u2212 Oceanic Controller Pilot Data Link Communications (CPDLC) \u2014 ABNORMAL CONDITIONS)",
+          "score": 0.025914384123339348
+        }
+      ]
+    },
+    {
+      "id": "controller_emergency_declaration_authority",
+      "audience": "controller",
+      "query": "Who may declare an emergency for an aircraft?",
+      "expected_anchors": [
+        "10-2-5"
+      ],
+      "rank_of_first_expected": 1,
+      "score_of_first_expected": 0.031054405392392875,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a710-1-1 (General \u2014 EMERGENCY DETERMINATIONS)",
+          "score": 0.03278688524590164
+        },
+        {
+          "principle": "JO_7110.65 \u00a710-2-5 (Emergency Assistance \u2014 EMERGENCY SITUATIONS)",
+          "score": 0.031054405392392875
+        },
+        {
+          "principle": "JO_7110.65 \u00a710-1-2 (General \u2014 OBTAINING INFORMATION)",
+          "score": 0.030798389007344232
+        },
+        {
+          "principle": "JO_7110.65 \u00a710-2-8 (Emergency Assistance \u2014 RADAR ASSISTANCE TO VFR AIRCRAFT IN WEATHER DIFFICULTY)",
+          "score": 0.030536130536130537
+        },
+        {
+          "principle": "JO_7110.65 \u00a72-1-8 (General \u2014 MINIMUM FUEL)",
+          "score": 0.030330882352941176
+        },
+        {
+          "principle": "JO_7110.65 \u00a710-2-11 (Emergency Assistance \u2014 AIRCRAFT BOMB THREATS)",
+          "score": 0.027500922849760058
+        },
+        {
+          "principle": "JO_7110.65 \u00a710-2-1 (Emergency Assistance \u2014 INFORMATION REQUIREMENTS)",
+          "score": 0.02749266862170088
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-2-3 (Beacon/ADS\u2212B Systems \u2014 EMERGENCY CODE ASSIGNMENT)",
+          "score": 0.02701252236135957
+        },
+        {
+          "principle": "JO_7110.65 \u00a710-1-7 (General \u2014 INFLIGHT EMERGENCIES INVOLVING MILITARY FIGHTER-TYPE AIRCRAFT)",
+          "score": 0.026153846153846153
+        },
+        {
+          "principle": "JO_7110.65 \u00a710-1-6 (General \u2014 AIRPORT GROUND EMERGENCY)",
+          "score": 0.025035205758097326
+        }
+      ]
+    },
+    {
+      "id": "controller_omit_holding_instructions",
+      "audience": "controller",
+      "query": "When may a controller leave out part of the holding instructions to an aircraft?",
+      "expected_anchors": [
+        "4-6-4"
+      ],
+      "rank_of_first_expected": 2,
+      "score_of_first_expected": 0.029726775956284153,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a74-6-1 (Holding Aircraft \u2014 CLEARANCE TO HOLDING FIX)",
+          "score": 0.03252247488101534
+        },
+        {
+          "principle": "JO_7110.65 \u00a714-2-4 (En Route Controller Pilot Data Link Communications (CPDLC) \u2212 Domestic \u2014 SPECIFIC UPLINKS)",
+          "score": 0.03128054740957967
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-6-4 (Holding Aircraft \u2014 HOLDING INSTRUCTIONS)",
+          "score": 0.029726775956284153
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-10-9 (Arrival Procedures and Separation \u2014 RUNWAY EXITING)",
+          "score": 0.029513888888888888
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-6-4 (Holding Aircraft \u2014 HOLDING INSTRUCTIONS)",
+          "score": 0.02877846790890269
+        },
+        {
+          "principle": "JO_7110.65 \u00a72-4-3 (Radio and Interphone Communications \u2014 PILOT ACKNOWLEDGMENT/READ BACK)",
+          "score": 0.027031963470319637
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-10-5 (Arrival Procedures and Separation \u2014 LANDING CLEARANCE)",
+          "score": 0.02667140825035562
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-7-2 (Taxi and Ground Movement Procedures \u2014 TAXI AND GROUND MOVEMENT OPERATIONS)",
+          "score": 0.026334026334026334
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-6-2 (Holding Aircraft \u2014 CLEARANCE BEYOND FIX)",
+          "score": 0.02625418060200669
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-13-9 (Automation\u2212 En Route \u2014 ERAM COMPUTER ENTRY OF HOLD INFORMATION)",
+          "score": 0.024250440917107582
+        }
+      ]
+    },
+    {
+      "id": "controller_wake_turbulence_concern_lay",
+      "audience": "controller",
+      "query": "When does a controller need to worry about a small plane flying behind a big jet?",
+      "expected_anchors": [
+        "2-1-19"
+      ],
+      "rank_of_first_expected": null,
+      "score_of_first_expected": null,
+      "found": false,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a75-5-4 (Radar Separation \u2014 MINIMA)",
+          "score": 0.032266458495966696
+        },
+        {
+          "principle": "JO_7110.65 \u00a76-1-5 (General \u2014 ARRIVAL MINIMA)",
+          "score": 0.031754032258064516
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-7-3 (Taxi and Ground Movement Procedures \u2014 GROUND OPERATIONS)",
+          "score": 0.030834914611005692
+        },
+        {
+          "principle": "JO_7110.65 \u00a76-1-5 (General \u2014 ARRIVAL MINIMA)",
+          "score": 0.03028233151183971
+        },
+        {
+          "principle": "JO_7110.65 \u00a76-1-4 (General \u2014 ADJACENT AIRPORT OPERATION)",
+          "score": 0.02854251012145749
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-5-4 (Radar Separation \u2014 MINIMA)",
+          "score": 0.02797339593114241
+        },
+        {
+          "principle": "JO_7110.65 \u00a76-7-5 (Timed Approaches \u2014 INTERVAL MINIMA)",
+          "score": 0.026553280111072546
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-10-4 (Arrival Procedures and Separation \u2014 INTERSECTING RUNWAY/INTERSECTING FLIGHT PATH OPERATIONS)",
+          "score": 0.02578981302385558
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-10-4 (Arrival Procedures and Separation \u2014 INTERSECTING RUNWAY/INTERSECTING FLIGHT PATH OPERATIONS)",
+          "score": 0.024322344322344324
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.022001934235976787
+        }
+      ]
+    },
+    {
+      "id": "controller_same_runway_arrival_lay_time",
+      "audience": "controller",
+      "query": "How soon after a plane lands can the next one cross the runway threshold?",
+      "expected_anchors": [
+        "3-10-3"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.030679156908665108,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a73-10-3 (Arrival Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: shortest distance on approach; minimum spacing on final; in-trail spacing on approach; approach separation minima; landing behind another aircraft; how close can aircraft be on approach; aircraft spacing on final; trailing aircraft on approach]",
+          "score": 0.030679156908665108
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.03036576949620428
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-7-2 (Taxi and Ground Movement Procedures \u2014 TAXI AND GROUND MOVEMENT OPERATIONS)",
+          "score": 0.030017921146953404
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-8-5 (Radar Departures \u2014 DEPARTURES AND ARRIVALS ON PARALLEL OR NONINTERSECTING DIVERGING RUNWAYS)",
+          "score": 0.02813852813852814
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.027972027972027972
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-10-9 (Arrival Procedures and Separation \u2014 RUNWAY EXITING)",
+          "score": 0.02749266862170088
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-9-6 (Departure Procedures and Separation \u2014 SAME RUNWAY SEPARATION) [synonyms: minimum spacing between departures; shortest distance before takeoff; takeoff spacing behind another aircraft; trailing departure spacing; how long before next takeoff; departure separation minima]",
+          "score": 0.026830135039090264
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-8-5 (Radar Departures \u2014 DEPARTURES AND ARRIVALS ON PARALLEL OR NONINTERSECTING DIVERGING RUNWAYS)",
+          "score": 0.026289682539682536
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-6-4 (Airport Surface Detection Procedures \u2014 SAFETY LOGIC ALERT RESPONSES)",
+          "score": 0.025528455284552845
+        },
+        {
+          "principle": "JO_7110.65 \u00a73-12-3 (Sea Lane Operations \u2014 ARRIVAL SEPARATION)",
+          "score": 0.025122549019607844
+        }
+      ]
+    },
+    {
+      "id": "controller_aircraft_to_aircraft_alerts",
+      "audience": "controller",
+      "query": "Where can a controller find information for aircraft-to-aircraft alerts?",
+      "expected_anchors": [
+        "13-1-2"
+      ],
+      "rank_of_first_expected": 3,
+      "score_of_first_expected": 0.01639344262295082,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a72-1-6 (General \u2014 SAFETY ALERT)",
+          "score": 0.02904040404040404
+        },
+        {
+          "principle": "JO_7110.65 \u00a75-13-1 (Automation\u2212 En Route \u2014 CONFLICT ALERT (CA) AND MODE C INTRUDER (MCI) ALERT)",
+          "score": 0.023333333333333334
+        },
+        {
+          "principle": "JO_7110.65 \u00a714-3-3 (Advanced Technologies and Oceanic Procedures (ATOP) \u2212 Oceanic Controller Pilot Data Link Communications (CPDLC) \u2014 ABNORMAL CONDITIONS)",
+          "score": 0.01639344262295082
+        },
+        {
+          "principle": "JO_7110.65 \u00a713-1-2 (ERAM \u2212 En Route \u2014 CONFLICT DETECTION AND RESOLUTION)",
+          "score": 0.01639344262295082
+        },
+        {
+          "principle": "JO_7110.65 \u00a710-6-3 (Oceanic Emergency Procedures \u2014 ALERTING SERVICE AND SPECIAL ASSISTANCE)",
+          "score": 0.016129032258064516
+        },
+        {
+          "principle": "JO_7110.65 \u00a71-1-3 (Introduction \u2014 WHERE TO FIND THIS ORDER)",
+          "score": 0.016129032258064516
+        },
+        {
+          "principle": "JO_7110.65 \u00a710-2-13 (Emergency Assistance \u2014 MANPADS ALERT)",
+          "score": 0.015873015873015872
+        },
+        {
+          "principle": "JO_7110.65 \u00a714-3-3 (Advanced Technologies and Oceanic Procedures (ATOP) \u2212 Oceanic Controller Pilot Data Link Communications (CPDLC) \u2014 ABNORMAL CONDITIONS)",
+          "score": 0.015873015873015872
+        },
+        {
+          "principle": "JO_7110.65 \u00a71-2-6 (Terms of Reference \u2014 ABBREVIATIONS)",
+          "score": 0.015625
+        },
+        {
+          "principle": "JO_7110.65 \u00a713-2-5 (WEATHER DEVIATION TOOL)",
+          "score": 0.015625
+        }
+      ]
+    },
+    {
+      "id": "controller_rbn_mh_usable_distance",
+      "audience": "controller",
+      "query": "What is the usable distance for an MH class RBN?",
+      "expected_anchors": [
+        "4-1-1"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true,
+      "top_hits": [
+        {
+          "principle": "JO_7110.65 \u00a74-1-1 (NAVAID Use Limitations \u2014 ALTITUDE AND DISTANCE LIMITATIONS)",
+          "score": 0.03278688524590164
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-1-1 (NAVAID Use Limitations \u2014 ALTITUDE AND DISTANCE LIMITATIONS)",
+          "score": 0.0315136476426799
+        },
+        {
+          "principle": "JO_7110.65 \u00a76-4-3 (Longitudinal Separation \u2014 MINIMA ON OPPOSITE COURSES)",
+          "score": 0.03149801587301587
+        },
+        {
+          "principle": "JO_7110.65 \u00a714-3-3 (Advanced Technologies and Oceanic Procedures (ATOP) \u2212 Oceanic Controller Pilot Data Link Communications (CPDLC) \u2014 ABNORMAL CONDITIONS)",
+          "score": 0.029418126757516764
+        },
+        {
+          "principle": "JO_7110.65 \u00a76-4-3 (Longitudinal Separation \u2014 MINIMA ON OPPOSITE COURSES)",
+          "score": 0.02877846790890269
+        },
+        {
+          "principle": "JO_7110.65 \u00a77-5-7 (Special VFR (SVFR) \u2014 GROUND VISIBILITY BELOW 1 MILE)",
+          "score": 0.020833333333333332
+        },
+        {
+          "principle": "JO_7110.65 \u00a76-4-5 (Longitudinal Separation \u2014 RNAV AIRCRAFT ALONG VOR AIRWAYS/ROUTES)",
+          "score": 0.016129032258064516
+        },
+        {
+          "principle": "JO_7110.65 \u00a76-1-1 (General \u2014 DISTANCE)",
+          "score": 0.015873015873015872
+        },
+        {
+          "principle": "JO_7110.65 \u00a71-1-4 (Introduction \u2014 WHAT THIS ORDER CANCELS)",
+          "score": 0.015625
+        },
+        {
+          "principle": "JO_7110.65 \u00a74-5-4 (Altitude Assignment and Verification \u2014 LOWEST USABLE FLIGHT LEVEL)",
+          "score": 0.015384615384615385
+        }
+      ]
+    }
+  ]
+}

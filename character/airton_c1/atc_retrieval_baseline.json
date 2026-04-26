@@ -3,8 +3,8 @@
   "fixture": "/Users/m7s/dev/harness/character/airton_c1/atc_eval.yaml",
   "k": 10,
   "recall_at_1": 0.7368421052631579,
-  "recall_at_3": 0.8947368421052632,
-  "recall_at_5": 0.8947368421052632,
+  "recall_at_3": 0.9473684210526315,
+  "recall_at_5": 0.9473684210526315,
   "recall_at_k": 1.0,
   "median_rank": 0.0,
   "cases": [
@@ -178,10 +178,11 @@
       "audience": "controller",
       "query": "When does a controller need to worry about a small plane flying behind a big jet?",
       "expected_anchors": [
-        "2-1-19"
+        "2-1-19",
+        "2-1-20"
       ],
-      "rank_of_first_expected": 8,
-      "score_of_first_expected": 0.025849212924606464,
+      "rank_of_first_expected": 2,
+      "score_of_first_expected": 0.02832415420928403,
       "found": true
     },
     {

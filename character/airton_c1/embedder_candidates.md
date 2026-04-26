@@ -98,6 +98,121 @@ test (5+ pp recall lift on a query set the fine-tune did NOT see).
 6. Fine-tune lane only if the off-the-shelf sweep caps below the
    gate.
 
+## Sweep results (2026-04-25, tier 1)
+
+All four tier-1 candidates benched against the post-catchup
+BGE-small baseline (recall@1 73.7 / @3 89.5 / @5 89.5 / @10 100.0
+on 19 cases).
+
+| candidate                            | @1   | @3   | @5   | @10  | ingest_s | rss_Δ_MB | dim |
+| ------------------------------------ | ---- | ---- | ---- | ---- | -------- | -------- | --- |
+| `BAAI/bge-small-en-v1.5` (baseline)  | 73.7 | 89.5 | 89.5 | 100.0| —        | —        | 384 |
+| `BAAI/bge-large-en-v1.5`             | **78.9** | 89.5 | **94.7** | 94.7 | 182.8 | +516 | 1024 |
+| `mixedbread-ai/mxbai-embed-large-v1` | 73.7 | 89.5 | 94.7 | 94.7 | 113.9   | +505     | 1024 |
+| `BAAI/bge-m3`                        | **68.4** | 89.5 | 94.7 | 94.7 | 280.8 | +973 | 1024 |
+| `nomic-ai/nomic-embed-text-v1.5`     | 73.7 | 89.5 | 94.7 | 94.7 | 139.7   | +510     |  768 |
+
+### Per-case findings
+
+Two **universal wins** across every candidate vs the baseline:
+
+- `controller_aircraft_to_aircraft_alerts`: rank 6 → 3-4 (lifts
+  out of weak-match territory).
+- `controller_rbn_mh_usable_distance`: rank 1 → 0 (canonical
+  rank-zero hit instead of rank-one neighbour).
+
+One **universal regression** across every candidate:
+
+- `controller_wake_turbulence_concern_lay`: rank 8 → hard miss
+  (out of top-10) for ALL four candidates. Same case `harness-zxw6`
+  was already tracking as a known-flaky lay-paraphrase outlier.
+  Not an embedder problem; investigated separately.
+
+Per-candidate noise:
+
+- `bge-large`: zero additional slips beyond the universal regression.
+  Cleanest of the four.
+- `mxbai-large`: extra slip on `ifr_clearance_items_order` 0 → 1.
+- `bge-m3`: extra slips on `ifr_clearance_items_order` 0 → 1 AND
+  `same_runway_arrival_lay_time` 0 → 2; recall@1 itself dropped
+  by 5.3 pp.
+- `nomic`: extra slip on `ifr_clearance_items_order` 0 → 1.
+
+### Bead gate verdict
+
+Initial reading of the sweep numbers suggested `bge-large-en-v1.5`
+as the winner: only candidate that lifted recall@1 (+5.2 pp), only
+one with zero additional slips beyond a universal wake_turb
+regression. Investigation into that universal regression
+(`harness-zxw6`, lay-paraphrase outlier) reframed the conclusion.
+
+**Investigation finding (2026-04-25):** the wake_turb case
+(`controller_wake_turbulence_concern_lay`) is **fixture
+over-specification**, not an embedder problem.
+
+The lay query — "When does a controller need to worry about a small
+plane flying behind a big jet?" — has TWO legitimate JO 7110.65
+answers, both surfaced by retrieval:
+
+- §2-1-19 (Wake Turbulence — general application rule).
+- §2-1-20 (Wake Turbulence Cautionary Advisories — when to issue
+  advisories to aircraft behind larger aircraft).
+
+The fixture had `expected_citations: ["2-1-19"]` only. Every
+embedder candidate converges on §2-1-20 because it's semantically
+closer to the "controller worries" lay phrasing. Broadening the
+fixture to accept either anchor is the structural fix:
+
+```yaml
+expected_citations:
+  - ["2-1-19", "2-1-20"]
+```
+
+Promoting §2-1-19's lay synonyms from `query_synonyms.yaml` to
+`synonyms.yaml` (the alternative fix considered) was rejected —
+`query_synonyms.yaml`'s own header documents that this regresses
+the mirror jargon case `wake_turbulence_application` from rank 0
+to rank 9. Fixture broadening is the no-trade-off fix.
+
+### Sweep verdict (post-fixture-broaden)
+
+Re-running bge-large against the broadened-fixture baseline shifted
+the picture: bge-small lifts @3 (89.5 → 94.7) and @10 (94.7 → 100)
+just from finding §2-1-20 at rank 2 on wake_turb. bge-large does
+NOT find either §2-1-19 or §2-1-20 in top-10 for that query —
+its top hits are §5-5-4 / §6-1-5 / §3-7-3, surface-token matches
+on "wake turbulence" / "behind / separation" without the §2-1-*
+abstraction-level connection bge-small still makes.
+
+| candidate                            | @1   | @3   | @5   | @10  | net Δ |
+| ------------------------------------ | ---- | ---- | ---- | ---- | ----- |
+| `BAAI/bge-small-en-v1.5` (baseline)  | 73.7 | 94.7 | 94.7 | 100.0 | —     |
+| `BAAI/bge-large-en-v1.5`             | 78.9 | 89.5 | 94.7 | 94.7  | -1    |
+
+bge-large is **not** a ship-as-default. It picks up +5.2 pp @1
+(rbn_mh 1 → 0, aircraft_to_aircraft 6 → 3) but loses @3 + @10
+(wake_turb 2 → None, omit_holding 1 → 2).
+
+### Lane outcome
+
+Off-the-shelf swap lane closes without a default change. The actual
+recall lift came from the fixture-broadening probe, not from any
+candidate swap. Phase B fine-tune (`harness-6l9o`) stays open as a
+future option if fixture growth (`harness-44l4` etc.) surfaces new
+register-gap regressions the current corpus + synonyms don't cover.
+
+For the record on the ranking: across every tier-1 candidate, the
+two universal wins (aircraft_to_aircraft, rbn_mh) replicate, but no
+candidate replicates bge-small's wake_turb behaviour AND its other
+recall numbers. The 384-dim model trained on the right data
+out-resolves a 1024-dim model trained on more general data for this
+specific corpus + fixture shape.
+
+Tier 2 candidates (`arctic-embed-l`, `e5-large-v2`, `gte-large-en`)
+not run — the tier 1 sweep makes it unlikely a tier 2 candidate
+flips the verdict. Re-evaluate if the corpus or fixture grows
+non-trivially.
+
 ## Result envelope
 
 `scripts/bench_embedder.py` writes one JSON per candidate at

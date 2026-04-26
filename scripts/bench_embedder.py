@@ -118,6 +118,11 @@ def _ingest_with_embedder(
     env = os.environ.copy()
     env["HARNESS_CHARACTER_NAME"] = character_name
     env["HARNESS_EMBEDDER_REPO"] = embedder_repo
+    # Ingest may need to download the candidate embedder on first
+    # touch — clear any inherited offline flags. The eval pass below
+    # re-enables them once the model is cached.
+    env.pop("HF_HUB_OFFLINE", None)
+    env.pop("TRANSFORMERS_OFFLINE", None)
     # Point the store at the scratch DB so the live store stays clean.
     # config.db_path_for derives from character + root; the simpler
     # override is to symlink data/harness.sqlite → scratch DB for the
@@ -135,6 +140,22 @@ def _ingest_with_embedder(
     bench_char_name = f"{character_name}_bench__{db_path.stem}"
     bench_char_root = REPO_ROOT / "character" / bench_char_name
     bench_char_root.mkdir(parents=True, exist_ok=True)
+
+    # Mirror every top-level entry from the real character dir EXCEPT
+    # the ones we override (data + corpus). The character loader needs
+    # core.yaml, constitution.md, voice/, seed_memories/ — symlinking
+    # the whole dir is the cheapest way to keep the bench character
+    # behaviorally identical to the real one minus the embedder swap.
+    real_char_root = REPO_ROOT / "character" / character_name
+    overridden = frozenset({"data", "corpus", "bd"})
+    for entry in real_char_root.iterdir():
+        if entry.name in overridden:
+            continue
+        link = bench_char_root / entry.name
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(entry.resolve())
+
     # Mirror chunks dir into the bench character so atc_ingest finds it.
     chunks_link = bench_char_root / "corpus" / "chunks"
     chunks_link.parent.mkdir(parents=True, exist_ok=True)
@@ -143,7 +164,7 @@ def _ingest_with_embedder(
     chunks_link.symlink_to(chunks_dir.resolve())
     # Ditto for synonyms.yaml so ingest enrichment matches the real run.
     for synonyms_name in ("synonyms.yaml",):
-        src = (REPO_ROOT / "character" / character_name / "corpus" / synonyms_name).resolve()
+        src = (real_char_root / "corpus" / synonyms_name).resolve()
         if src.exists():
             link = bench_char_root / "corpus" / synonyms_name
             if link.exists() or link.is_symlink():
