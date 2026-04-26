@@ -2578,7 +2578,7 @@ def eval_atc(
     ),
     memories: int = typer.Option(3, help="Top-K episodic memories per turn"),
     facts: int = typer.Option(5, help="Top-K semantic facts per turn"),
-    top_k: int = typer.Option(6, help="Top-K voice samples per turn"),
+    top_k: int = typer.Option(8, help="Top-K voice samples per turn"),
     audience: str | None = typer.Option(
         None,
         "--audience",

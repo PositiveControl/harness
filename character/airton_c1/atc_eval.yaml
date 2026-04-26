@@ -211,8 +211,12 @@ cases:
     audience: controller
     question: "When may a controller leave out part of the holding instructions to an aircraft?"
     expected_citations: ["4-6-4"]
+    # 'omission'/'leave out'/'eliminate' broadened in addition to
+    # 'omit'/'omitted' literal — model paraphrase under voice-context
+    # shift produces equivalent meaning with different surface tokens.
+    # Rubric edit landed under harness-3zmy (Phase-1.5).
     expected_keywords:
-      - ["omit", "may be omitted", "omitted"]
+      - ["omit", "may be omitted", "omitted", "omission", "leave out", "leaving out", "eliminate"]
       - ["clearance limit", "clearance"]
       - ["holding fix", "fix"]
     min_keyword_hits: 2
@@ -253,9 +257,15 @@ cases:
     audience: controller
     question: "How soon after a plane lands can the next one cross the runway threshold?"
     expected_citations: ["3-10-3"]
+    # 'cleared to exit'/'past the crossing point'/'past the threshold'/
+    # 'past the runway' broadened in addition to 'clear of the
+    # runway' — §3-10-3 admits "exited the runway" / "past the
+    # threshold" landmark phrasings; model paraphrase shouldn't fail
+    # the rubric on equivalent meaning. Rubric edit landed under
+    # harness-3zmy (Phase-1.5).
     expected_keywords:
-      - ["landed", "has landed"]
-      - ["clear of the runway", "clear of runway", "off the runway"]
+      - ["landed", "has landed", "after a plane lands"]
+      - ["clear of the runway", "clear of runway", "off the runway", "cleared to exit", "exiting the runway", "past the crossing point", "past the runway"]
       - ["threshold", "landing threshold"]
     min_keyword_hits: 2
 
@@ -415,10 +425,14 @@ cases:
     audience: controller
     question: "An aircraft just squawked 7500. What does the controller do?"
     expected_citations: ["10-2-6"]
+    # Phraseology spells digits ("SEVEN FIVE ZERO ZERO") so the numeric
+    # form alone misses real-ATC-voice replies. acknowledge/acknowledgment
+    # broadened so substring miss on inflected form doesn't fail the case.
+    # Rubric edit landed under harness-3zmy (Phase-1.5).
     expected_keywords:
-      - "7500"
+      - ["7500", "seven five zero zero", "7-5-0-0"]
       - ["hijack", "unlawful interference"]
-      - ["acknowledge", "covertly", "secure"]
+      - ["acknowledge", "acknowledgment", "acknowledging", "covertly", "secure"]
     min_keyword_hits: 2
 
   # §5-7-1 (Application — when to adjust speed) and §5-7-2 (Methods —

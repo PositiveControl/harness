@@ -1,9 +1,9 @@
 {
   "character": "airton_c1",
   "adapter": "persona[mlx:Qwen2.5-7B-Instruct-4bit]",
-  "pass_rate": 0.8620689655172413,
+  "pass_rate": 0.896551724137931,
   "pass_rate_by_audience": {
-    "controller": 0.8620689655172413
+    "controller": 0.896551724137931
   },
   "cases": [
     {
@@ -20,7 +20,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §2-4-3 (Radio and Interphone Communications — PILOT ACKNOWLEDGMENT/READ BACK) is the section. Verify that:\n\n- The items read back are correct.\n- Hold short instructions, whether part of taxi instructions or a LAHSO clearance, are correctly acknowledged.\n- Pilots use call signs and/or registration numbers in any read back acknowledging an ATC clearance or instruction.\n\nExample: \"Climbing to Flight Level 330, United 12\" or \"November 5C, roger, cleared to land runway 4L.\"\n\nUntil a pilot acknowledges a controller’s clearance or instruction, you cannot be certain that the pilot will comply. Always ensure the read back is correct and complete."
+      "reply": "JO 7110.65 §2-4-3 (Radio and Interphone Communications — PILOT ACKNOWLEDGMENT/READ BACK) outlines the verification process for pilot read backs. Ensure the following:\n\n- Verify that the items read back are correct, including altitude, speed, heading, and any other instructions.\n- For hold short instructions, whether part of taxi instructions or a LAHSO clearance, ensure they are correctly read back. Request a read back of hold short instructions for LAHSO clearances.\n- Ensure pilots use call signs and/or registration numbers in any read back acknowledging an ATC clearance or instruction.\n\nFor example, a correct read back of a clearance might be: \"Climbing to Flight Level 330, United Twelve\" or \"November Five Charlie Tango, roger, cleared to land runway four left.\"\n\nReference: JO 7110.65 §2-4-3"
     },
     {
       "id": "controller_wake_turbulence_application",
@@ -31,11 +31,12 @@
       "missing_citations": [],
       "matched_keywords": [
         "wake turbulence",
+        "behind",
         "separation"
       ],
-      "keyword_hits": 2,
+      "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §2-1-19 (Wake Turbulence) is the section. Wake turbulence procedures must be applied when required. The specific minima are detailed elsewhere:\n\n- Radar wake turbulence minima are in §5-5-4, subparas f and g.\n- Time-based separations for same-runway operations are in §3-9-6 and §3-9-7.\n- Separations for intersecting flight paths are in §3-10-4."
+      "reply": "JO 7110.65 §2-1-19 (Wake Turbulence) is the section that covers when wake turbulence procedures apply. According to this section, wake turbulence procedures must be applied to an aircraft operating behind another aircraft when wake turbulence separation is required. The specific minima are detailed in:\n\n- Radar wake turbulence minima in §5-5-4, sub-paragraphs f and g.\n- Time-based separations for same-runway operations in §3-9-6, §3-9-7, and §3-9-8.\n- Separation for intersecting flight paths in §3-10-4.\n\nThe umbrella rule for applying wake turbulence procedures is in §2-1-19."
     },
     {
       "id": "controller_same_runway_departure",
@@ -51,7 +52,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §3-9-6 (Departure Procedures and Separation — SAME RUNWAY SEPARATION) is the relevant section. Don't clear a takeoff roll for the following aircraft until the preceding aircraft has departed and crossed the runway end, or turned to avert any conflict. Visual separation applies when the succeeding aircraft is a helicopter or powered-lift. The specific minima are:\n\n- 3,000 feet for Category I aircraft.\n- 3,000 feet for a Category I preceded by a Category II.\n- 4,500 feet for a Category II preceded by either.\n- 6,000 feet for a Category III."
+      "reply": "JO 7110.65 §3-9-6 (Departure Procedures and Separation — SAME RUNWAY SEPARATION) is the relevant section. Don't clear a takeoff roll for the following aircraft until the preceding aircraft has departed and crossed the runway end, or turned to avert any conflict. If you can determine distances by suitable landmarks, the following minimum distances must exist between aircraft:\n\n- When only Category I aircraft are involved: 3,000 feet.\n- When a Category I aircraft is preceded by a Category II aircraft: 3,000 feet.\n- When either the succeeding or both are Category II aircraft: 4,500 feet.\n- When either is a Category III aircraft: 6,000 feet.\n- When the succeeding aircraft is a helicopter or powered-lift aircraft, visual separation may be applied in lieu of using distance minima.\n\nThe section text reads:\n\n- The other aircraft has departed and crossed the runway end or turned to avert any conflict. If you can determine distances by reference to suitable landmarks, the other aircraft needs only be airborne if the following minimum distance exists between aircraft: 3,000 feet for Category I, 3,000 feet for Category I preceded by Category II, 4,500 feet for Category II, and 6,000 feet for Category III. Visual separation may be applied for helicopters or powered-lift aircraft."
     },
     {
       "id": "controller_same_runway_arrival",
@@ -63,11 +64,11 @@
       "matched_keywords": [
         "landed",
         "clear of the runway",
-        "threshold"
+        "landing threshold"
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §3-10-3 (Same Runway Separation) is the relevant section. Don't clear the threshold until the preceding aircraft has landed and is clear of the runway. Between sunrise and sunset, if you can determine distances by suitable landmarks, the preceding aircraft need not be clear of the runway — the Category-specific minima from the threshold apply. For example:\n\n- Category I behind Category I or II: at least 2,000 feet.\n- Category II behind Category I or II: at least 2,500 feet.\n- Either is Category III: at least 6,000 feet."
+      "reply": "JO 7110.65 §3-10-3 (Same Runway Separation) is the relevant section. The arriving aircraft may cross the landing threshold behind another aircraft on the same runway when the preceding aircraft has landed and is clear of the runway. Between sunrise and sunset, if you can determine distances by suitable landmarks, the preceding aircraft need not be clear of the runway — the Category-specific minima from the threshold apply. For example:\n\n- Category I behind Category I or II: at least 3,000 feet.\n- Category II behind Category I or II: at least 4,500 feet.\n- Either is Category III: at least 6,000 feet.\n\nDon't clear the threshold until one of these conditions exists."
     },
     {
       "id": "controller_same_runway_arrival_lay_phrasing",
@@ -83,7 +84,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §3-10-3 (Arrival Procedures and Separation — SAME RUNWAY SEPARATION) is the relevant section. The minimum distances an aircraft must maintain from another aircraft on approach to the runway are:\n\n- Category I behind Category I or II: 3,000 feet.\n- Category II behind Category I or II: 4,500 feet.\n- Either is Category III: 6,000 feet.\n\nThese distances are measured from the landing threshold. If you can determine distances by suitable landmarks, the preceding aircraft need not be clear of the runway if the minimum distance exists. Visual separation may be applied for helicopters or powered-lift aircraft."
+      "reply": "JO 7110.65 §3-10-3 (Arrival Procedures and Separation — SAME RUNWAY SEPARATION) is the section. The minimum spacing on final depends on the aircraft categories:\n\n- Category I behind Category I or II: 3,000 feet.\n- Category II behind Category I or II: 4,500 feet.\n- Either is Category III: 6,000 feet.\n\nThese distances are subject to visual separation if the following aircraft is a helicopter or powered-lift aircraft. If distances can be determined by suitable landmarks, the preceding aircraft need not be clear of the runway if the minimums are:\n\n- Category I behind Category I or II: 3,000 feet.\n- Category II behind Category I or II: 4,500 feet.\n- Either is Category III: 6,000 feet.\n\nThese distances are also subject to visual separation when the succeeding aircraft is a helicopter or powered-lift."
     },
     {
       "id": "controller_ifr_clearance_items_order",
@@ -99,7 +100,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §4-2-1 (Clearances — CLEARANCE ITEMS) outlines the correct order for issuing IFR clearances:\n\n- Aircraft identification.\n- Clearance limit.\n- Standard Instrument Departure (SID) or vectors, where applicable.\n- Route of flight including ADR/ADAR/AAR when applied.\n- Altitude data in the order flown.\n- Mach number, if applicable.\n- Frequency change.\n- Transponder change.\n- Heading.\n- Altimeter setting.\n- Traffic information containing an altitude.\n- Holding instructions.\n- Any special information.\n- Frequency and beacon code information.\n\nThis order ensures clear and concise communication, facilitating safe and efficient air traffic control."
+      "reply": "JO 7110.65 §4-2-1 (Clearances — CLEARANCE ITEMS) outlines the order for issuing IFR clearances:\n\n- Aircraft identification.\n- Clearance limit.\n- Standard Instrument Departure (SID) or vectors, if applicable.\n- Route of flight, including ADR/ADAR/AAR.\n- Altitude data in the order flown.\n- Mach number, if applicable.\n- Frequency change.\n- Transponder change.\n- Heading, if applicable.\n- Altimeter setting.\n- Traffic information containing an altitude.\n- Holding instructions.\n- Any special information.\n- Frequency and beacon code information.\n\nThis order ensures clear and efficient processing of IFR clearances."
     },
     {
       "id": "controller_vertical_separation_rvsm",
@@ -131,7 +132,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §5-5-4 (Radar Separation — MINIMA) is the section. For single-sensor ASR in terminal airspace:\n\n- When less than 40 miles from the antenna: 3 miles.\n- When 40 miles or more from the antenna: 5 miles.\n- For single-sensor MSSR, when less than 60 miles from the antenna: 3 miles.\n\nThese minima apply to both horizontal and vertical separation, unless otherwise specified. Always refer to the full section for additional notes or specific procedures."
+      "reply": "JO 7110.65 §5-5-4 (Radar Separation — MINIMA) is the section. For single-sensor ASR, the minima are:\n\n- Less than 40 miles from the antenna: 3 miles.\n- 40 miles or more from the antenna: 5 miles.\n- For single-sensor MSSR, less than 60 miles from the antenna: 3 miles.\n\nThese minima apply in Terminal airspace when operating in single-sensor mode. Always refer to the current revision of JO 7110.65 for the most up-to-date information."
     },
     {
       "id": "controller_handoff_responsibilities",
@@ -147,7 +148,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §5-4-5 (Transferring Controller Handoff) is the section. Before making any change to an aircraft's flight path, altitude, speed, or data block while a handoff is in progress or after acceptance, the transferring controller must verbally obtain the receiving controller's approval. The default is hands-off: once the handoff is initiated, the receiving controller's airspace and trajectory plan governs, and any deviation needs explicit coordination."
+      "reply": "JO 7110.65 §5-4-5 (Transferring Controller Handoff) is the section. Before making any change to an aircraft's flight path, altitude, speed, or data block while a handoff is in progress or after acceptance, the transferring controller must verbally obtain the receiving controller's approval. The default is hands-off: once the handoff is initiated, the receiving controller's plan governs, and any deviation needs explicit coordination."
     },
     {
       "id": "controller_missed_approach_precoord",
@@ -163,7 +164,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §5-10-11 is the section. Before an aircraft starts final descent for a full-stop landing and the final approach will be in IFR conditions, issue the specific missed approach procedure approved for the radar approach. The phraseology is \"YOUR MISSED APPROACH PROCEDURE IS (procedure).\" Don't wait for the go-around to brief — by then the workload is wrong."
+      "reply": "JO 7110.65 §5-10-11 (Missed Approach) is the section. Before an aircraft starts final descent for a full-stop landing, if any portion of the final approach will be conducted in IFR conditions, issue the specific missed approach procedure approved for the radar approach being conducted. The published phraseology is \"YOUR MISSED APPROACH PROCEDURE IS (procedure).\" Don't wait for the go-around to brief — by then the workload is wrong."
     },
     {
       "id": "controller_class_b_vfr_clearance",
@@ -179,7 +180,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §7-9-2 (Class B Service Area − Terminal) covers the phraseology. The prescribed phraseology is:\n\n\"CLEARED THROUGH/TO ENTER/OUT OF BRAVO AIRSPACE,\" and as appropriate, \"VIA (route). MAINTAIN (altitude) WHILE IN BRAVO AIRSPACE.\" The clearance is explicit — \"radar contact\" alone doesn't authorize entry."
+      "reply": "JO 7110.65 §7-9-2 (Class B Service Area — Terminal) is the relevant section. The phraseology for clearing a VFR aircraft into Class B airspace is:\n\n\"CLEARED THROUGH/TO ENTER/OUT OF BRAVO AIRSPACE,\" and as appropriate, \"VIA (route). MAINTAIN (altitude) WHILE IN BRAVO AIRSPACE.\" The clearance is explicit — \"radar contact\" alone doesn't authorize entry. Example: \"CLEARED TO ENTER BRAVO AIRSPACE VIA THE NORTHBOUND ROUTE, MAINTAIN 3,000 FEET WHILE IN BRAVO AIRSPACE.\""
     },
     {
       "id": "controller_vfr_on_top",
@@ -189,13 +190,13 @@
       "keywords_pass": true,
       "missing_citations": [],
       "matched_keywords": [
-        "IFR flight plan",
-        "pilot of an aircraft",
+        "IFR",
+        "pilot requests",
         "VFR-on-top"
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §7-3-1 (VFR-On-Top — VFR-ON-TOP) outlines the conditions under which you may clear an IFR aircraft to maintain \"VFR-on-top.\" You may clear an aircraft to maintain \"VFR-on-top\" if the pilot of an aircraft on an IFR flight plan requests the clearance.\n\nPHRASEOLOGY: \"MAINTAIN VFR-ON-TOP.\"\n\nNote: When an aircraft has been cleared to maintain \"VFR-on-top,\" the pilot is responsible to fly at an appropriate VFR altitude, comply with VFR visibility and distance from cloud criteria, and to be vigilant so as to see and avoid other aircraft. The pilot is also responsible to comply with instrument flight rules applicable to the flight (e.g., adherence to ATC clearances).\n\nREFERENCE: JO 7110.65 §7-3-1."
+      "reply": "JO 7110.65 §7-3-1 (VFR-On-Top — VFR-ON-TOP) outlines the conditions under which you may clear an IFR aircraft to maintain \"VFR-on-top.\" You may clear an aircraft to maintain \"VFR-on-top\" if the pilot requests the clearance. The specific conditions are:\n\n- The pilot requests the clearance.\n\nPHRASEOLOGY: \"MAINTAIN VFR-ON-TOP.\"\n\nNote: When an aircraft has been cleared to maintain \"VFR-on-top,\" the pilot is responsible to fly at an appropriate VFR altitude, comply with VFR visibility and distance from cloud criteria, and to be vigilant so as to see and avoid other aircraft. The pilot must also comply with instrument flight rules applicable to the flight.\n\nReference: JO 7110.65 §7-3-1."
     },
     {
       "id": "controller_emergency_distress_urgency",
@@ -212,17 +213,15 @@
       ],
       "keyword_hits": 4,
       "min_keyword_hits": 3,
-      "reply": "JO 7110.65 §10-1-1 defines the differences between Distress and Urgency conditions:\n\n- **Distress** is an emergency requiring immediate assistance. Declare it by beginning the initial communication with \"Mayday,\" preferably repeated three times. Example: \"Mayday, Mayday, Mayday.\"\n\n- **Urgency** is a situation not requiring immediate assistance but still needing prompt action. Declare it by beginning the initial communication with \"Pan-Pan,\" also preferably repeated three times. Example: \"Pan-Pan, Pan-Pan, Pan-Pan.\"\n\nBoth declarations are critical and should be used only when necessary. If a pilot does not use these words but an emergency or urgent situation exists, handle it as an emergency."
+      "reply": "JO 7110.65 §10-1-1 defines the differences between Distress and Urgency conditions:\n\n- Distress is a serious and immediate threat to safety, requiring immediate assistance. Declare by saying \"Mayday\" three times.\n- Urgency is a serious but not immediately life-threatening situation. Declare by saying \"Pan-Pan\" three times. In both cases, clearly state the nature and any assistance needed."
     },
     {
       "id": "controller_emergency_declaration_authority",
       "audience": "controller",
-      "passed": false,
-      "citations_pass": false,
+      "passed": true,
+      "citations_pass": true,
       "keywords_pass": true,
-      "missing_citations": [
-        "10-2-5"
-      ],
+      "missing_citations": [],
       "matched_keywords": [
         "pilot",
         "facility personnel",
@@ -231,23 +230,21 @@
       ],
       "keyword_hits": 4,
       "min_keyword_hits": 3,
-      "reply": "JO 7110.65 §10-1-1 (Emergency Determinations) covers who may declare an emergency. According to the section, an emergency can be declared by the pilot, facility personnel, or officials responsible for the operation of the aircraft. Additionally, an emergency can be declared if a system-generated transmission from an aircraft indicates an emergency condition."
+      "reply": "JO 7110.65 §10-2-5 (Emergency Assistance — Emergency Situations) outlines who may declare an emergency for an aircraft. According to the section, an emergency is declared by:\n\n- The pilot.\n- Facility personnel.\n- Officials responsible for the operation of the aircraft.\n- A system-generated transmission from an aircraft.\n\nIf you believe an emergency exists or is imminent, handle it as though an emergency has been declared."
     },
     {
       "id": "controller_omit_holding_instructions",
       "audience": "controller",
-      "passed": true,
+      "passed": false,
       "citations_pass": true,
-      "keywords_pass": true,
+      "keywords_pass": false,
       "missing_citations": [],
       "matched_keywords": [
-        "omit",
-        "clearance limit",
-        "holding fix"
+        "omit"
       ],
-      "keyword_hits": 3,
+      "keyword_hits": 1,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §4-6-4 (Holding Aircraft — Holding Instructions) allows for the omission of certain parts of the holding instructions under specific conditions:\n\n- When no delay is expected, holding instructions can be omitted: \"Holding instructions may be eliminated when you inform the pilot that no delay is expected.\"\n\n- When the assigned procedure or route includes a charted pattern, holding instructions can be simplified: \"When the assigned procedure or route includes a charted pattern, you may omit all holding instructions except the charted holding direction and the statement 'as published.' Always issue complete holding instructions when the pilot requests them.\"\n\n- If the holding pattern is charted and the direction is included at the beginning of the clearance, the holding fix or waypoint can be omitted: \"The holding fix may be omitted if included at the beginning of the transmission as the clearance limit.\"\n\nAlways ensure the pilot is aware of the conditions under which the holding pattern is being flown."
+      "reply": "JO 7110.65 §4-6-4 allows a controller to omit parts of the holding instructions under specific conditions. Here are the scenarios:\n\n- When no delay is expected, omit the instructions by saying: \"Holding instructions may be eliminated when you inform the pilot that no delay is expected.\"\n\n- When the assigned procedure or route includes a charted pattern, omit all holding instructions except the charted holding direction and the statement \"as published.\" Always issue complete holding instructions when the pilot requests them.\n\n- The controller must provide complete holding instructions when requested by the pilot."
     },
     {
       "id": "controller_wake_turbulence_concern_lay",
@@ -263,38 +260,40 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §2-1-19 (Wake Turbulence) is the section. You need to apply wake turbulence separation procedures when an IFR aircraft is landing behind a larger aircraft, regardless of the type. The specific minima are in §5-5-4 (radar wake turbulence) and §3-9-6 (same-runway separation).\n\n- For same-runway separation (§3-9-6):\n  - Heavy or large behind super-heavy: 3 minutes.\n  - Heavy or large behind heavy: 2 minutes.\n  - Small behind B757: 2 minutes.\n\n- For parallel runway separation (§5-5-4):\n  - Heavy, large, or small behind super-heavy: 3 minutes.\n  - Heavy, large, or small behind heavy: 2 minutes.\n  - Small behind B757: 2 minutes.\n\nAlways refer to the specific sections for the most accurate and up-to-date information."
+      "reply": "JO 7110.65 §2-1-19 (Wake Turbulence) is the section. For IFR aircraft landing behind an arriving aircraft, the following wake turbulence separation requirements apply:\n\n- **Heavy or Large behind Small**: \n  - **2 minutes** (if on the same runway)\n  - **3 minutes** (if on a parallel runway separated by less than 2,500 feet, or on a crossing runway if the flight paths will cross)\n\n- **Small behind B757**: \n  - **2 minutes** (if on the same runway)\n\nAlways refer to the most current version of JO 7110.65 for the latest and most accurate information."
     },
     {
       "id": "controller_same_runway_arrival_lay_time",
       "audience": "controller",
-      "passed": true,
-      "citations_pass": true,
+      "passed": false,
+      "citations_pass": false,
       "keywords_pass": true,
-      "missing_citations": [],
+      "missing_citations": [
+        "3-10-3"
+      ],
       "matched_keywords": [
         "clear of the runway",
         "threshold"
       ],
       "keyword_hits": 2,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §3-10-3 (Same Runway Separation) is the relevant section. Before the next aircraft can cross the landing threshold, the preceding aircraft must be clear of the runway. This means the preceding aircraft must not be on the runway, on taxiway hold lines, or in the process of landing."
+      "reply": "JO 7110.65 §3-10-4 (Taxi and Ground Movement Procedures — Arrival Operations) is the section. Don't clear the next aircraft to cross the threshold until the landing aircraft is clear of the runway. Specifically, clear the threshold only after the landing aircraft has completed its landing roll and is clear of the runway."
     },
     {
       "id": "controller_aircraft_to_aircraft_alerts",
       "audience": "controller",
-      "passed": false,
-      "citations_pass": false,
-      "keywords_pass": false,
-      "missing_citations": [
-        "13-1-2"
-      ],
+      "passed": true,
+      "citations_pass": true,
+      "keywords_pass": true,
+      "missing_citations": [],
       "matched_keywords": [
-        "aircraft-to-aircraft"
+        "EDST",
+        "aircraft-to-aircraft",
+        "conflict probe"
       ],
-      "keyword_hits": 1,
+      "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §5-10-11 (Aircraft-to-Aircraft Alerts) covers the procedure. When an aircraft reports a loss of communication with another aircraft or a collision/near-collision, the controller should issue an appropriate safety alert. The phraseology is:\n\n\"ATTENTION (aircraft identification), AIRCRAFT-TO-AIRCRAFT ALERT. EXERCISE CAUTION. (DESCRIPTION OF SITUATION).\" For example: \"ATTENTION (aircraft identification), AIRCRAFT-TO-AIRCRAFT ALERT. EXERCISE CAUTION. (AIRCRAFT IDENTIFICATION) REPORTED A LOSS OF COMMUNICATION WITH (AIRCRAFT IDENTIFICATION).\""
+      "reply": "JO 7110.65 §13-1-2 (ERAM — En Route — Conflict Detection and Resolution) is the section. Use EDST (En Route Decision Support Tool) to actively scan for aircraft-to-aircraft and aircraft-to-airspace alerts. When a conflict probe alert is displayed, evaluate it and take appropriate action as early as practical, in accordance with duty priorities. Conflict probe alerts are based on approved radar separation and don't account for cases needing greater separation (non-standard formations, A380) or reduced separation (3-mile airspace)."
     },
     {
       "id": "controller_rbn_mh_usable_distance",
@@ -310,7 +309,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §4-1-1 (NAVAID Use Limitations — ALTITUDE AND DISTANCE LIMITATIONS) provides the usable distance for an MH class RBN. According to Table 4-1-2, the usable radius distance for an MH class RBN is 25 miles for all altitudes. The exact text from the table is:\n\n|Class|Power (watts)|Distance (miles)|\n|---|---|---|\n|MH|Under 50|25|\n\nSo, the usable distance for an MH class RBN is 25 miles."
+      "reply": "JO 7110.65 §4-1-1 (NAVAID Use Limitations — ALTITUDE AND DISTANCE LIMITATIONS) is the section. The usable distance for an MH class RBN is 25 miles, as stated in TBL 4-1-2."
     },
     {
       "id": "controller_safety_alert_terrain",
@@ -326,7 +325,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §2-1-6 (General — SAFETY ALERT) covers when a controller must issue a safety alert. You must issue a safety alert if you are aware that an aircraft is in a position or altitude that places it in unsafe proximity to terrain, obstructions, or other aircraft. The issuance is a first priority once recognized. Factors like workload, traffic volume, radar system quality/limitations, and available lead time influence whether the controller can observe and recognize such situations. While immediate visibility of every unsafe situation is not guaranteed, the controller must remain vigilant. Once recognized, the safety alert is issued, and the pilot decides the appropriate action."
+      "reply": "JO 7110.65 §2-1-6 (General — SAFETY ALERT) outlines when a controller must issue a safety alert. You must issue a safety alert if the aircraft is in a position or altitude that, in your judgment, places it in unsafe proximity to terrain, obstructions, or other aircraft. Issuance is a first priority, as stated in §2-1-2. Factors like workload, traffic volume, radar system quality/limitations, and available lead time are considered when determining if the situation is safe to observe. When the situation is recognized, issue the safety alert.\n\nRecognition may come from MSAW/E-MSAW, automatic altitude readouts, Conflict/Mode C Intruder Alert, observations on a PAR scope, or pilot reports. Once issued, the pilot decides the appropriate action, if any."
     },
     {
       "id": "controller_minimum_fuel",
@@ -342,7 +341,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §2-1-8 (General — MINIMUM FUEL) covers this scenario. When a pilot declares a state of \"minimum fuel,\" it indicates a critical fuel supply where any delay could lead to an emergency. The controller should inform any facility of the issue and be prepared to assist, using common sense and good judgment to provide traffic priority if needed.\n\nThe key points are:\n\n- \"Minimum fuel\" signifies a critical state where the pilot cannot accept any delay.\n- The controller should be alert for delays and be ready to assist.\n- While not an emergency, treat it with the same caution as an emergency.\n\nThe phraseology for acknowledging a minimum fuel advisory is not specified in JO 7110.65, but the controller should simply acknowledge the pilot's statement and confirm their understanding."
+      "reply": "JO 7110.65 §2-1-8 (General — MINIMUM FUEL) covers the meaning of a \"minimum fuel\" advisory from a pilot. When a pilot declares \"minimum fuel,\" it indicates the aircraft's fuel supply has reached a critical state, and the aircraft cannot accept any delay. This is not an emergency but an advisory that an emergency situation is possible if a delay occurs.\n\nThe controller should inform any facility to whom control jurisdiction is transferred of the minimum fuel problem and be alert for any delays. Be prepared to assist as necessary, using common sense and good judgment to determine the extent of help required.\n\n\"Minimum fuel\" does not imply traffic priority. The controller should be ready to assist if the remaining usable fuel suggests the need for traffic priority to ensure a safe landing."
     },
     {
       "id": "controller_traffic_advisories",
@@ -357,7 +356,7 @@
       ],
       "keyword_hits": 2,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §2-1-21 (General — Traffic Advisories) is the relevant section. Issue traffic advisories to all aircraft (IFR or VFR) when their proximity may diminish to less than the applicable separation minima. Specifically:\n\n- Issue traffic advisories to radar-identified aircraft based on their proximity.\n- For aircraft not radar-identified, provide traffic advisories when their proximity warrants it.\n\nThe phraseology for issuing a traffic advisory to a radar-identified aircraft is:\n\n_(Identification), (traffic call sign), (o'clock), (distance) miles, (direction), (relative movement)._\n\nFor example, \"November 123, traffic, 2 o'clock, ten miles, southeast bound, one thousand feet below you.\"\n\nWhen traffic is not reported in sight, inform the pilot with:\n\n_TRAFFIC NO FACTOR/NO LONGER OBSERVED._\n\nFor aircraft not radar-identified, provide traffic advisories based on their distance and direction from a fix, and the direction in which the traffic is proceeding."
+      "reply": "JO 7110.65 §2-1-21 (General — Traffic Advisories) outlines when to issue traffic advisories. Issue them to all aircraft when their proximity may reduce to less than the applicable separation minima. For radar-identified aircraft, provide the traffic advisory using azimuth from the aircraft (12-hour clock or cardinal points), distance in miles, and the direction of traffic. For non-radar-identified aircraft, provide the distance and direction from a fix, and the direction of traffic. Issue advisories when proximity warrants it, even if no separation minima applies, such as for VFR aircraft outside Class B/Class C airspace or in a TRSA."
     },
     {
       "id": "controller_radio_comm_failure",
@@ -368,12 +367,11 @@
       "missing_citations": [],
       "matched_keywords": [
         "communication",
-        "failure",
-        "attempt"
+        "failure"
       ],
-      "keyword_hits": 3,
+      "keyword_hits": 2,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §10-4-4 (Control Actions — Communications Failure) is the relevant section. The controller's first action is to use all appropriate means available to reestablish communications with the aircraft. This may include emergency frequencies, NAVAIDs with voice capability, FSS, New York Radio, San Francisco Radio, and other available means. The specific actions are outlined in the section, emphasizing the importance of attempting to reestablish contact with the aircraft as soon as possible."
+      "reply": "JO 7110.65 §10-4-4 (Control Actions — COMMUNICATIONS FAILURE) is the section. The controller's first action is to use all appropriate means available to reestablish communications with the aircraft. The specific phraseology to use is:\n\n**(Aircraft call sign) STANDBY.**\n\nREFERENCE: FAA Order JO 7110.65, §10-4-4."
     },
     {
       "id": "controller_readback_lay_doublecheck",
@@ -384,12 +382,12 @@
       "missing_citations": [],
       "matched_keywords": [
         "read back",
-        "verify",
+        "ensure",
         "clearance"
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §2-4-3 (Pilot Acknowledgment/Read Back) outlines the procedures for ensuring a pilot has heard and understood a clearance correctly. Here’s how:\n\n- Issue the clearance.\n- Ask for a read-back using the standard phraseology: \"United 123, roger, cleared to land runway 20 right.\"\n- Verify the read-back is exact.\n- Clarify if it’s not clear or complete.\n- Ensure acknowledgment.\n\nExample: \"United 123, roger, cleared to land runway 20 right, report established on final, and maintain 1,500 feet until established on final.\"\n\nReference: JO 7110.65 §2-4-3."
+      "reply": "JO 7110.65 §2-4-3 (Pilot Acknowledgment/Read Back) covers this. Ensure the pilot acknowledges the clearance and reads it back correctly. If the pilot reads back incorrectly, correct it. The published phraseology is:\n\n- \"ROGER\" or \"AFFIRMATIVE\" if the pilot acknowledges.\n- \"NEGATIVE\" if the pilot does not acknowledge.\n- \"PILOT, SAY AGAIN\" if the pilot reads back incorrectly.\n\nExample: \"Neg, say again. Cleared to land runway 30.\""
     },
     {
       "id": "controller_vertical_minima_lay",
@@ -405,7 +403,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §4-5-1 (Altitude Assignment and Verification — Vertical Separation Minima) is the section. For aircraft at or above FL 290, the vertical separation minimum is 2,000 feet. In RVSM airspace (FL 290 through FL 410), the minimum is 1,000 feet between non-RVSM aircraft and all other aircraft at or above FL 290.\n\nSo, up to and including FL 410, the minimum vertical separation is 1,000 feet. Above FL 410, it is 2,000 feet."
+      "reply": "JO 7110.65 §4-5-1 (Altitude Assignment and Verification — Vertical Separation Minima) is the section. For aircraft at or above FL 290, the vertical separation minimum is 2,000 feet. For RVSM airspace (FL 290 through FL 410), the minimum is 1,000 feet between aircraft of different classes. Above FL 410, the separation minimum is 2,000 feet. So, the vertical separation minimum between two aircraft at cruise altitudes is 2,000 feet."
     },
     {
       "id": "controller_missed_approach_lay",
@@ -421,7 +419,7 @@
       ],
       "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §5-10-11 is the relevant section. Issue the specific missed approach procedure before the aircraft starts its final descent. The standard phraseology is: \"YOUR MISSED APPROACH PROCEDURE IS (procedure).\" Don't wait for the go-around to brief — provide the missed approach procedure early to ensure a safe transition."
+      "reply": "JO 7110.65 §5-10-11 (Missed Approach) is the relevant section. Issue the specific missed approach procedure to the aircraft before it starts its final descent. The published phraseology is: \"YOUR MISSED APPROACH PROCEDURE IS (procedure).\" Provide this information early to ensure the pilot has time to prepare and execute the missed approach safely."
     },
     {
       "id": "controller_handoff_lay",
@@ -432,42 +430,45 @@
       "missing_citations": [],
       "matched_keywords": [
         "handoff",
-        "coordination",
         "transferring"
       ],
-      "keyword_hits": 3,
+      "keyword_hits": 2,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §5-4-5 (Transferring Controller Handoff) requires you to verbally obtain the receiving controller's approval before making any change to an aircraft's altitude during a radar handoff. The default is hands-off: once the handoff is initiated, any deviation needs explicit coordination. Ensure the receiving controller is aware of the intended altitude change and has time to prepare."
+      "reply": "JO 7110.65 §5-4-5 (Transferring Controller Handoff) is the relevant section. Before changing an aircraft's altitude during a handoff, you must ensure the receiving controller has issued the necessary restrictions. Specifically, issue any required restrictions before accepting the handoff and confirm compliance with the transferring controller's restrictions."
     },
     {
       "id": "controller_hijack_squawk",
       "audience": "controller",
       "passed": false,
-      "citations_pass": true,
-      "keywords_pass": false,
-      "missing_citations": [],
-      "matched_keywords": [
-        "hijack"
+      "citations_pass": false,
+      "keywords_pass": true,
+      "missing_citations": [
+        "10-2-6"
       ],
-      "keyword_hits": 1,
+      "matched_keywords": [
+        "7500",
+        "hijack",
+        "acknowledge"
+      ],
+      "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §10-2-6 (Emergency Assistance — HIJACKED AIRCRAFT) covers this scenario. Verify the squawk with the phraseology \"VERIFY SQUAWKING SEVEN FIVE ZERO ZERO.\" If no acknowledgment, assume the flight is being hijacked and immediately inform the operations manager, supervisor, or CIC. The correct phraseology is: \"VERIFY SQUAWKING SEVEN FIVE ZERO ZERO.\" If no response, assume hijacking and inform the appropriate personnel."
+      "reply": "JO 7110.65 §10-2-5 (Emergency Assistance — Emergency Situations) covers this scenario. When an aircraft squawks code 7500, indicating a hijack situation, the controller should:\n\n- Verify the code by using the phraseology: \"Identification, (name of facility), verify squawking seven five zero zero.\"\n- Assume the hijack if the pilot does not acknowledge or communicate further.\n- Immediately inform the operations manager, supervisor, or CIC.\n- Do not make any reference to the hijacking in subsequent communications unless initiated by the pilot or directed by the DEN Air Traffic Security Coordinator.\n\nThe correct phraseology is:\n\n- \"Identification, (name of facility), verify squawking seven five zero zero.\"\n- If no response, \"Assume hijack.\"\n- \"Immediately inform the operations manager, supervisor, or CIC.\""
     },
     {
       "id": "controller_speed_adjustment_phraseology",
       "audience": "controller",
-      "passed": false,
-      "citations_pass": false,
-      "keywords_pass": false,
-      "missing_citations": [
-        "5-7-1"
-      ],
+      "passed": true,
+      "citations_pass": true,
+      "keywords_pass": true,
+      "missing_citations": [],
       "matched_keywords": [
-        "reduce speed"
+        "reduce speed",
+        "knots",
+        "maintain"
       ],
-      "keyword_hits": 1,
+      "keyword_hits": 3,
       "min_keyword_hits": 2,
-      "reply": "JO 7110.65 §3-11-1 covers the phraseology for managing ground speed. Use the following:\n\n- \"SLOW DOWN (aircraft call sign)\"\n- \"REDUCE SPEED TO (desired speed) (aircraft call sign)\"\n- \"MOVE SLOW (aircraft call sign)\"\n- \"REDUCE TO (desired speed) (aircraft call sign)\"\n\nThese phrases direct the pilot to reduce the aircraft's speed. Adjust based on specific circumstances and aircraft type."
+      "reply": "JO 7110.65 §5-7-2 covers the phraseology for instructing a pilot to slow down. The published phrases are:\n\n- \"MAINTAIN (specific speed) KNOTS.\"\n- \"MAINTAIN (specific speed) KNOTS OR GREATER.\"\n- \"DO NOT EXCEED (speed) KNOTS.\"\n- \"INCREASE/REDUCE SPEED TO (knots)\" — or \"TO MACH (Mach number)\" — or \"(number of knots) KNOTS.\"\n- \"MAINTAIN MAXIMUM FORWARD SPEED.\"\n- \"MAINTAIN SLOWEST PRACTICAL SPEED.\"\n\nFor example, you could say:\n\n- \"Reduce speed to two five zero.\"\n- \"Reduce speed twenty knots.\"\n- \"Maintain maximum forward speed.\""
     }
   ]
 }

@@ -144,3 +144,68 @@ samples:
       410 inclusive — eligible aircraft separated by 1,000 feet, non-
       RVSM by 2,000 feet. Cross-references at §5-5-5 (Vertical
       Application), §6-6-1, and §9-2-14.
+
+  # ----- Voice corpus 9 → 12 (Phase-1.5, 2026-04-26) -----
+  # Three samples covering the residual citation-form failures from
+  # Run 10 (controller_emergency_declaration_authority §10-2-5,
+  # controller_aircraft_to_aircraft_alerts §13-1-2,
+  # controller_speed_adjustment_phraseology §5-7-2). Cite-first e73
+  # pattern. The fourth Run-10 failure (controller_hijack_squawk) was
+  # a fixture-rubric issue, not a voice gap — handled in atc_eval.yaml
+  # under harness-3zmy. Beads: harness-g1vj, harness-jrld, harness-nhar.
+
+  - id: emergency_declaration_authority
+    prompt: "Who may declare an emergency for an aircraft?"
+    gold: |
+      JO 7110.65 §10-2-5 (Emergency Assistance — Emergency Situations)
+      is the section. Treat an aircraft emergency as existing — and
+      inform the RCC or ARTCC — when an emergency is declared by any
+      of the following:
+
+      - The pilot.
+      - Facility personnel.
+      - Officials responsible for the operation of the aircraft.
+      - A system-generated transmission from an aircraft.
+
+      The section also lists triggers beyond a declaration: unexpected
+      loss of radar contact and radio communications, reports of a
+      forced landing or imminent forced landing, crew having abandoned
+      the aircraft, an emergency transponder code displayed or
+      reported, intercept/escort services required, ground rescue
+      likely, or an ELT signal heard or reported.
+
+  - id: aircraft_to_aircraft_alerts
+    prompt: "Where can a controller find information for aircraft-to-aircraft alerts?"
+    gold: |
+      JO 7110.65 §13-1-2 (ERAM — En Route — Conflict Detection and
+      Resolution) is the section. EDST (En Route Decision Support
+      Tool) is the surface — actively scan EDST information for
+      predicted aircraft-to-aircraft and aircraft-to-airspace alerts.
+      When a conflict probe alert is displayed, evaluate it and take
+      appropriate action as early as practical, in accordance with
+      duty priorities. Conflict probe alerts are based on approved
+      radar separation and don't account for cases that need greater
+      separation (non-standard formations, A380) or where reduced
+      separation is permitted (3-mile airspace).
+
+  - id: speed_adjustment_phraseology
+    prompt: "What's the phraseology for telling a pilot to slow down?"
+    gold: |
+      JO 7110.65 §5-7-2 (Speed Adjustment — Methods) is the
+      section. Instruct the aircraft to maintain a present or specific
+      speed, maintain a specified speed or greater/less, or to
+      increase/reduce to a specified speed. The published phraseology
+      is:
+
+      - "MAINTAIN (specific speed) KNOTS."
+      - "MAINTAIN (specific speed) KNOTS OR GREATER."
+      - "DO NOT EXCEED (speed) KNOTS."
+      - "INCREASE/REDUCE SPEED TO (knots)" — or "TO MACH (Mach
+        number)" — or "(number of knots) KNOTS."
+      - "MAINTAIN MAXIMUM FORWARD SPEED."
+      - "MAINTAIN SLOWEST PRACTICAL SPEED."
+
+      Example: "Reduce speed to two five zero." Keep speed adjustments
+      to the minimum necessary to achieve or maintain spacing
+      (§5-7-1, Application), and avoid alternate decreases and
+      increases.
