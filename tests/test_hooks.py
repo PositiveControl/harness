@@ -19,6 +19,7 @@ from harness.orchestrator.hooks import (
     DuplicateCallHook,
     FabricatedItemizationHook,
     FabricatedSearchHook,
+    FabricatedSectionHook,
     FabricationFallbackHook,
     FalseSuccessHook,
     FinalizeContext,
@@ -295,6 +296,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "ab_fabrication",
         "tool_intent",
         "missing_citation",
+        "fabricated_section",
         "list_count_mismatch",
         "reserved_squawk_code",
         "scope_redirect",
@@ -1992,4 +1994,156 @@ def test_custom_pipeline_can_omit_phases() -> None:
         BailContext(reply=_reply("anything"), tools_ran_this_turn=False),
         disabled=frozenset(),
     )
+    assert isinstance(outcome, Continue)
+
+
+# ---------- FabricatedSectionHook (harness-aise) ----------
+
+
+def _ctx_with_reply(content: str) -> BailContext:
+    return BailContext(
+        reply=_reply(content),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_memory"}),
+    )
+
+
+def test_fabricated_section_silent_with_empty_anchor_set() -> None:
+    """No corpus → hook silent regardless of reply content. Default
+    construction yields an empty frozenset; airton / airton_b / airton_c
+    rely on this."""
+    outcome = FabricatedSectionHook().check(
+        _ctx_with_reply("Per JO 7110.65 §99-99-99, hijack codes are blue.")
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_fabricated_section_silent_when_no_citations() -> None:
+    outcome = FabricatedSectionHook(
+        valid_anchors=frozenset({"§3-10-3"}),
+    ).check(_ctx_with_reply("That's outside JO 7110.65 — talk to airton_c."))
+    assert isinstance(outcome, Continue)
+
+
+def test_fabricated_section_passes_when_all_cited_anchors_valid() -> None:
+    outcome = FabricatedSectionHook(
+        valid_anchors=frozenset({"§3-10-3", "§4-1-1", "§3-10"}),
+    ).check(_ctx_with_reply("Per JO 7110.65 §3-10-3, same-runway separation applies to arrivals."))
+    assert isinstance(outcome, Continue)
+
+
+def test_fabricated_section_fires_on_invented_anchor() -> None:
+    """The §3-99-3 case — model invented a section that doesn't exist."""
+    outcome = FabricatedSectionHook(
+        valid_anchors=frozenset({"§3-10-3", "§4-1-1"}),
+    ).check(
+        _ctx_with_reply("Per JO 7110.65 §3-99-3, hijack squawk handling requires immediate vector.")
+    )
+    assert isinstance(outcome, Nudge)
+    assert "§3-99-3" in outcome.text
+    assert "search_memory" in outcome.text
+
+
+def test_fabricated_section_fires_on_mixed_valid_and_invalid() -> None:
+    """One real cite + one invented cite — must Nudge with the invented
+    one named, not silenced by the presence of the real one."""
+    outcome = FabricatedSectionHook(
+        valid_anchors=frozenset({"§3-10-3"}),
+    ).check(
+        _ctx_with_reply(
+            "Per JO 7110.65 §3-10-3 (same runway) and §3-99-3 (made up), see the table."
+        )
+    )
+    assert isinstance(outcome, Nudge)
+    assert "§3-99-3" in outcome.text
+    # The valid anchor should not appear in the nudge — only the offender.
+    assert "§3-10-3" not in outcome.text
+
+
+def test_fabricated_section_fires_on_multiple_invented_anchors() -> None:
+    """Multi-offender shape uses the plural nudge variant."""
+    outcome = FabricatedSectionHook(
+        valid_anchors=frozenset({"§3-10-3"}),
+    ).check(_ctx_with_reply("Per JO 7110.65 §3-99-3 and §99-1-1, both procedures apply."))
+    assert isinstance(outcome, Nudge)
+    assert "§3-99-3" in outcome.text
+    assert "§99-1-1" in outcome.text
+    # Plural form names "none of these".
+    assert "none of these" in outcome.text
+
+
+def test_fabricated_section_accepts_parent_section_when_only_paragraph_in_set() -> None:
+    """Valid-anchor set is built with §N-N parents when §N-N-N is
+    present (see section_index.collect_valid_anchors). A reply citing
+    the parent without paragraph passes."""
+    outcome = FabricatedSectionHook(
+        valid_anchors=frozenset({"§3-10-3", "§3-10"}),
+    ).check(_ctx_with_reply("Per JO 7110.65 §3-10, same-runway separation applies."))
+    assert isinstance(outcome, Continue)
+
+
+def test_fabricated_section_skips_tbl_and_fig_citations() -> None:
+    """TBL/FIG citations need a different index (table-level enumeration)
+    so we deliberately let them pass even if they look fabricated to a
+    section-only set."""
+    outcome = FabricatedSectionHook(
+        valid_anchors=frozenset({"§4-1-1"}),
+    ).check(
+        _ctx_with_reply("Per JO 7110.65 TBL 4-1-2, an MH class RBN has 25 mile usable distance.")
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_fabricated_section_normalises_dash_variants() -> None:
+    """Corpus uses unicode-minus and en-dash variants. The model may
+    emit either. Canonical form (used in valid_anchors) has ASCII
+    hyphens, so a cite using a non-ASCII dash should still match."""
+    minus = "−"  # noqa: RUF001 — unicode-minus dash variant is the test premise
+    cited = f"§3{minus}10{minus}3"
+    outcome = FabricatedSectionHook(
+        valid_anchors=frozenset({"§3-10-3"}),
+    ).check(_ctx_with_reply(f"Per JO 7110.65 {cited}, same-runway separation."))
+    assert isinstance(outcome, Continue)
+
+
+def test_default_pipeline_threads_anchors_into_fabricated_section_hook() -> None:
+    """End-to-end: build the shipping pipeline with a non-empty anchor
+    set, run it against a reply that cites a fabricated section, and
+    confirm the bail outcome is a Nudge attributed to fabricated_section."""
+    pipeline = default_hook_pipeline(
+        valid_section_anchors=frozenset({"§3-10-3"}),
+    )
+    outcome = pipeline.run_bail(
+        BailContext(
+            reply=_reply(
+                "Per JO 7110.65 §99-99-99, the procedure applies to all controlled airports."
+            ),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        ),
+        disabled=frozenset(),
+    )
+    assert isinstance(outcome, Nudge)
+    assert outcome.catcher == "fabricated_section"
+
+
+def test_default_pipeline_silent_on_empty_anchors_for_invented_cite() -> None:
+    """Default construction (no anchors) → FabricatedSectionHook stays
+    quiet. A reply with an invented §-anchor and a real cite passes
+    bail; the invented-cite case is then covered by finalize hooks
+    (UngroundedCitation / LowConfidenceFallback) on a per-tool basis."""
+    pipeline = default_hook_pipeline()
+    outcome = pipeline.run_bail(
+        BailContext(
+            reply=_reply(
+                "Per JO 7110.65 §3-10-3, same-runway separation applies "
+                "to arrivals — see also §99-99-99 for unrelated cases."
+            ),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        ),
+        disabled=frozenset(),
+    )
+    # No fabricated_section nudge; ListCountMismatch / others won't
+    # match either. Continue.
     assert isinstance(outcome, Continue)

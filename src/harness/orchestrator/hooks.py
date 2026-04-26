@@ -1577,6 +1577,85 @@ class MissingCitationHook:
         return Nudge(_MISSING_CITATION_NUDGE)
 
 
+@dataclass(frozen=True)
+class FabricatedSectionHook:
+    """Catch §-citations whose section number doesn't exist anywhere
+    in the character's corpus (harness-aise).
+
+    Different from `UngroundedCitationHook` (no grounding tool ran)
+    and `LowConfidenceFallbackHook` (tool ran but scored weakly):
+    this is a STRUCTURAL existence check. We don't ask whether the
+    cited section was retrieved — we ask whether it's even a real
+    section. A reply citing `§3-99-3` trips this hook regardless of
+    retrieval state, because no chunk in the corpus carries that
+    section number.
+
+    The valid-anchor set is built once at startup from the chunks
+    JSONL (see `section_index.collect_valid_anchors`) and includes
+    both `§N-N-N` paragraph anchors and their `§N-N` parents — a
+    reply that cites the parent section without paragraph passes.
+
+    Trigger conditions (ALL must hold):
+      1. `valid_anchors` is non-empty. Empty set = the character has
+         no enumerable corpus, hook is silent (default behaviour for
+         airton, airton_b, airton_c).
+      2. Reply contains at least one §-style citation
+         (`extract_citations` returns a member that starts with §).
+      3. At least one cited §-anchor is NOT in `valid_anchors`.
+
+    Action: Nudge — drop the reply and re-prompt with the invalid
+    section name so the model can either pick a real anchor or
+    admit it doesn't know. Bail-phase, not finalize, because a
+    structural correction is recoverable: the model can call
+    `search_memory` to find a real section, or scope-redirect.
+
+    Placed AFTER `missing_citation` in the bail list: a no-citation
+    reply gets the missing-cite nudge first; only a reply that DID
+    cite something faces the existence check. TBL/FIG citations are
+    deliberately not validated here — those need a different index
+    (table-level enumeration) and are tracked separately."""
+
+    valid_anchors: frozenset[str] = frozenset()
+    name: str = "fabricated_section"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if not self.valid_anchors:
+            return Continue()
+        from harness.tools.citations import extract_citations
+
+        cited = extract_citations(ctx.reply.content)
+        if not cited:
+            return Continue()
+        # Only validate §-style cites here. TBL/FIG live alongside
+        # sections but need their own enumeration (a TBL is implicit
+        # in its parent section's body, not a top-level chunker
+        # stamp), so we deliberately let those pass.
+        section_cites = frozenset(c for c in cited if c.startswith("§"))
+        if not section_cites:
+            return Continue()
+        invalid = section_cites - self.valid_anchors
+        if not invalid:
+            return Continue()
+        if len(invalid) == 1:
+            offender = next(iter(invalid))
+            nudge = (
+                f"Your reply cited {offender}, which is not a section "
+                "in the corpus you have access to. Either cite a real "
+                "section (call search_memory if you don't know which "
+                "one covers the topic), or admit you don't know and "
+                "redirect the user."
+            )
+        else:
+            offenders = ", ".join(sorted(invalid))
+            nudge = (
+                f"Your reply cited {offenders} — none of these are "
+                "sections in the corpus you have access to. Either "
+                "cite real sections (call search_memory if you don't "
+                "know which) or admit you don't know."
+            )
+        return Nudge(nudge)
+
+
 # ---------- post-model hooks ----------
 
 
@@ -2337,7 +2416,10 @@ class HookPipeline:
         return Continue()
 
 
-def default_hook_pipeline() -> HookPipeline:
+def default_hook_pipeline(
+    *,
+    valid_section_anchors: frozenset[str] = frozenset(),
+) -> HookPipeline:
     """Build the shipping pipeline. Order mirrors the pre-refactor
     `_diagnose_bail` branch order so first-match semantics stay
     identical — swapping two hooks could change which nudge text the
@@ -2346,7 +2428,13 @@ def default_hook_pipeline() -> HookPipeline:
     `post_tool` ships empty by default: the only hook that currently
     targets this phase is `ToolResultSummarizerHook`, which requires
     a summarizer adapter and is registered opt-in by the CLI when
-    --summarize-tool-results is set."""
+    --summarize-tool-results is set.
+
+    `valid_section_anchors` is the structural §-anchor index for
+    the FabricatedSectionHook (harness-aise). Empty (the default)
+    leaves the hook silent — non-corpus characters never trip it.
+    Built by `section_index.collect_valid_anchors` at startup from
+    the chunks JSONL."""
     return HookPipeline(
         bail=[
             TruncatedHook(),
@@ -2363,6 +2451,14 @@ def default_hook_pipeline() -> HookPipeline:
             # reply that survived every fabrication gate gets asked
             # the compliance question 'did you cite your source?'.
             MissingCitationHook(),
+            # Structural existence check on whatever §-anchors the
+            # reply DID cite (harness-aise). Runs immediately after
+            # MissingCitationHook so the no-citation case is handled
+            # by the right catcher: missing → MissingCitation;
+            # invented → FabricatedSection. Silent (Continue-only)
+            # when valid_section_anchors is empty, which is the
+            # default for non-corpus characters.
+            FabricatedSectionHook(valid_anchors=valid_section_anchors),
             # Internal-consistency check: the reply's own count claim
             # vs. its enumerated list. Runs after missing_citation so
             # a reply that ADDS a citation on retry doesn't get
@@ -2566,6 +2662,7 @@ __all__ = [
     "DuplicateCallHook",
     "FabricatedItemizationHook",
     "FabricatedSearchHook",
+    "FabricatedSectionHook",
     "FabricationFallbackHook",
     "FalseSuccessHook",
     "FinalizeContext",

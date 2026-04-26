@@ -29,6 +29,7 @@ import yaml
 
 from harness.model.adapter import ChatMessage, Role
 from harness.orchestrator import run_tool_loop
+from harness.orchestrator.hooks import HookPipeline
 from harness.orchestrator.tool_loop import _CATCHER_NAMES, _DISABLED_CATCHERS
 from harness.tools.base import (
     ModelReply,
@@ -270,6 +271,21 @@ def _run_scenario(scenario: dict[str, Any]) -> ToolLoopCase:
     # otherwise the default (False) models the cold / out-of-scope
     # retrieval path where the catcher is armed.
     memory_block_attached = bool(scenario.get("memory_block_attached", False))
+    # Per-scenario hook pipeline override — currently used to inject a
+    # `valid_section_anchors` set so the FabricatedSectionHook
+    # (harness-aise) has something to compare against in scenarios
+    # that exercise it. Other scenarios omit the field; the module
+    # default (empty anchor set) keeps the hook silent.
+    raw_anchors = scenario.get("valid_section_anchors") or ()
+    valid_section_anchors = frozenset(str(a) for a in raw_anchors)
+    if valid_section_anchors:
+        from harness.orchestrator.hooks import default_hook_pipeline as _build_pipeline
+
+        hooks_override: HookPipeline | None = _build_pipeline(
+            valid_section_anchors=valid_section_anchors,
+        )
+    else:
+        hooks_override = None
     result = run_tool_loop(
         adapter,
         messages,
@@ -277,6 +293,7 @@ def _run_scenario(scenario: dict[str, Any]) -> ToolLoopCase:
         max_rounds=max_rounds,
         confirm=lambda _call: True,
         memory_block_attached=memory_block_attached,
+        hooks=hooks_override,
     )
     contains = tuple(str(s) for s in scenario.get("expected_contains", []))
     not_contains = tuple(str(s) for s in scenario.get("expected_not_contains", []))

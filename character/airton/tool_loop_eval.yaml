@@ -457,6 +457,35 @@
   expected_contains: ["§1-1-1", "JO 7110.65"]
   expected_events_contain: [bail_retry]
 
+- id: fabricated_section_invented_anchor
+  label: fabricated_section
+  description: Model cited §99-99-99 — a section that doesn't structurally
+    exist in the corpus. valid_section_anchors only carries §3-10-3 (the
+    real section the grounding tool surfaced). FabricatedSectionHook
+    (harness-aise) Nudges with the offending §-anchor named so the model
+    can either drop it on retry or call search_memory for a real one.
+    Different from ungrounded_citation (no tool ran) and
+    low_confidence_fallback (tool ran, weak score) — this is a
+    structural existence check.
+  valid_section_anchors:
+    - §3-10-3
+  registry:
+    - name: search_memory
+      output: "[0.033] SAME RUNWAY SEPARATION\n  lesson: JO_7110.65 §3-10-3 (Airport Traffic Control — SAME RUNWAY SEPARATION)\n  Aircraft on the same runway must be separated per the table.\n"
+  messages:
+    - role: user
+      content: "What's the rule for same-runway separation?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_memory
+          arguments: { query: "same runway separation" }
+    - content: "Per JO 7110.65 §99-99-99, same-runway separation depends on aircraft category and weight class."
+    - content: "Per JO 7110.65 §3-10-3, same-runway separation depends on aircraft category and the table in the section."
+  expected_contains: ["§3-10-3"]
+  expected_not_contains: ["§99-99-99"]
+  expected_events_contain: [bail_retry]
+
 - id: ungrounded_citation_no_grounding
   label: ungrounded_citation
   description: Out-of-scope question for a citation-scoped character

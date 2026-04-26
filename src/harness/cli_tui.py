@@ -160,6 +160,7 @@ def run_tui(
         router=router,
         router_repo=router_repo,
         console=console,
+        character_path=settings.character_path,
     )
 
     ChatApp(

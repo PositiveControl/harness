@@ -82,20 +82,38 @@ def _build_hook_pipeline(
     router: Router | None,
     router_repo: str,
     console: Console,
+    character_path: Path,
 ) -> HookPipeline | None:
-    """Return a HookPipeline override when the summarizer is requested,
-    else None so the orchestrator uses its module default.
+    """Build a HookPipeline override when the character has a corpus
+    chunks dir (so FabricatedSectionHook gets its anchor index) OR
+    the summarizer is requested. Returns None when neither — the
+    orchestrator falls back to its module default.
+
+    `valid_section_anchors` (harness-aise) is loaded once at startup
+    from `<character>/corpus/chunks/*.jsonl`. Empty for characters
+    without that directory, which keeps FabricatedSectionHook silent
+    on airton, airton_b, airton_c — only airton_c1 currently ships a
+    chunks JSONL. The cost is one set-up file walk; no embedder.
 
     The summarizer reuses the router's adapter when available — it's
     a small MLX model already loaded into the process. Otherwise we
     build a fresh MLX adapter from `router_repo`. Either way the
     extra model cost is bounded (~1 GB for a 3B-4bit router)."""
-    if not summarize_tool_results:
+    from harness.orchestrator.section_index import collect_valid_anchors
+
+    valid_anchors = collect_valid_anchors(character_path / "corpus" / "chunks")
+    if not summarize_tool_results and not valid_anchors:
         return None
+
     from harness.orchestrator.hooks import (
         ToolResultSummarizerHook,
         default_hook_pipeline,
     )
+
+    pipeline = default_hook_pipeline(valid_section_anchors=valid_anchors)
+
+    if not summarize_tool_results:
+        return pipeline
 
     summarizer_adapter: Any
     if router is not None and hasattr(router, "adapter"):
@@ -109,7 +127,6 @@ def _build_hook_pipeline(
             f"[dim]tool-result summarizer: loading {router_repo} (first turn is slower)[/dim]"
         )
 
-    pipeline = default_hook_pipeline()
     pipeline.post_tool.append(ToolResultSummarizerHook(summarizer=summarizer_adapter))
     return pipeline
 
@@ -742,6 +759,7 @@ def run_classic_chat(
         router=router,
         router_repo=router_repo,
         console=console,
+        character_path=settings.character_path,
     )
 
     chat_session = ClassicChatSession(
