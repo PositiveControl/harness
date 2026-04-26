@@ -120,6 +120,30 @@ Not yet filed in `bd` (forward look):
 - Kuzu graph layer. When we want relationship graphs over entities (who-works-with-whom, project-depends-on-project).
 - Scheduled initiative. Phase 5 — Airton opens threads unprompted, reacts to external events.
 
+## ATC niche product lane
+
+Sequenced exploration of facility back-office automation built on the cite-grounded retrieval core (airton_c / airton_c1 + UngroundedCitationHook + per-character corpora). Identified during a 2026-04-26 niche-pursuit pass against ATC-facility role inventory (ATM/OM/FLM admin, training, QA/QC, procedures/A&P, traffic management, tech ops). Existing simulation/training products (UFA, TSS, MINT, RICTE, PilotEdge, TAC Trainer) all do simulation or training-management; none do citation-grounded text Q&A on rules — this lane fills that gap. Umbrella: `harness-mw89`.
+
+**Hardening prerequisite** (`harness-or69`): airton_c1 Phase-1 gate — `eval atc` ≥ 80% (currently 8/12 = 66.7%). Gates the entire lane via the retrieval epic (`harness-rhto`) + two voice-sample lanes (`harness-thbf`, `harness-ocqo`).
+
+**Niches** (sequenced; each is its own epic — full descriptions in bd):
+
+1. **Phraseology lint / voice-tape QA** (`harness-0pte`, P2) — utterance → JO 7110.65 § verdict. Phase-1 text-only validates the cite-grounded core. Phase-2 adds STT (`harness-o92o`) and streaming (`harness-ep9o`). Long-tail vision: 100% voice-tape audit replacing today's human sampling. Children: `harness-h2iz` (eval fixture), `harness-q35t` (compare tool), `harness-15dy` (eval cmd + pre-push gate).
+
+2. **LOA / SOP drift detector** (`harness-mevm`, P3) — diff facility LOA/SOP corpus against JO 7110.65 change notices, flag conflicting paragraphs with cited deltas. Builds on per-facility persona pattern (`harness-jpgq` deferred). Recurring trigger: every change-notice publication. Customer = Procedures Specialist / A&P.
+
+3. **MOR / incident narrative drafting** (`harness-yha9`, P3) — structured event data (radar replay + voice transcript + weather + NOTAMs + equipment state) → cited prose report. Customer = QA/QC + SRM. Pure text-from-structured-data work, exactly LLM-shaped.
+
+4. **Deal / LoS incident packet assembler** (`harness-p0sj`, P3) — multi-source aggregator producing a structured investigation packet with cited rule analysis. Wraps phraseology-lint verdicts + MOR-drafting narrative into one artifact. Highest-value niche after phraseology lint — replaces a half-day-per-deal manual workflow at every facility. Depends on niche 3.
+
+5. **Position handoff / brief-up notes** (`harness-1ocx`, P4, deferred) — turnover note for relieving controller. Weakest fit on the lane — wants live data feeds more than corpus-anchored Q&A. Filed for completeness; revisit only on facility-partner request.
+
+6. **NOTAM clarity / authoring assistance** (`harness-d7nw`, P4, deferred) — flag ambiguous/conflicting NOTAM wording against Order 7930.2. Narrow but stable problem; per-facility usage low. Pairs with airton_c (generalist) once R3 corpus restore lands.
+
+**Adjacent (instructor-facing, not back-office):** CFI cite tool (`harness-hyht`, P3) — packaging exercise wrapping airton_c* for instructors mid-debrief. Children: `harness-o2c8` (UX decision), `harness-woz5` (HTTP gateway), `harness-ksef` (instructor-shaped eval expansion). Sequenced after phraseology lint per niche-pursuit plan.
+
+**Skip if niche 1 demos poorly** — falsifies the entire lane. Don't fork before signal.
+
 ## Robustness backlog
 
 Deferred items from a 2026-04-16 critique pass. Not load-bearing for a single-user local CLI; relevant as the system opens to multiple gateways, multiple users, or automated scheduling. Filed here so we don't lose them.
