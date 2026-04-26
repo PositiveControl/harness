@@ -280,16 +280,15 @@ def expand_many(expander: QueryExpander, queries: Iterable[str]) -> tuple[str, .
 
 
 _DEFAULT_LLM_EXPAND_PROMPT = """\
-You convert a user's question into 3-5 short keyword phrases that
-match the wording the source document would use. The source document
-is {context_hint}.
+Convert the user's question into 3-5 short keyword phrases matching
+the wording {context_hint} would use for THE QUESTION'S SPECIFIC TOPIC.
 
 Rules:
-- Output ONLY the phrases, one per line.
-- No numbering, no bullets, no quotes, no commentary.
-- Use the document's jargon, not lay paraphrasing.
-  Example: "shortest distance" → "minimum same-runway separation".
-- Each phrase should be 2-6 words.
+- Output ONLY the phrases, one per line. No numbering, no bullets,
+  no quotes, no commentary, no examples.
+- Stay on the question's topic. Do not emit generic separation /
+  spacing / approach phrases unless the question is about those.
+- Each phrase 2-6 words.
 - Skip the user's literal phrasing — that's already in the query.
 
 User question: {query}
