@@ -64,3 +64,58 @@ samples:
       assistance is required to save life or property; Urgency is a
       safety concern that's not yet immediately life-threatening.
       Priority handling follows under §2-1-4 (Operational Priority).
+
+  # ----- Voice corpus 4 → 8 (plan #6, 2026-04-26) -----
+  # Adds chapter 2 + chapter 5 coverage. Each sample pairs with one
+  # or more fixture cases (jargon + lay variants both benefit) so the
+  # round-robin holdout map should show pure-generalization behaviour
+  # for these on next measurement. Citation-first opener pattern
+  # matches the original four samples (harness-cco preserves it).
+
+  - id: readback_clearance_verification
+    prompt: "What do I need to verify when a pilot reads back an ATC clearance, per JO 7110.65?"
+    gold: |
+      JO 7110.65 §2-4-3 (Pilot Acknowledgment/Read Back) is the
+      section. Ensure pilots acknowledge clearances and instructions
+      as required, and use discretion in determining whether the
+      clearance/instruction needs to be read back. ATC must check the
+      readback for accuracy: if the pilot reads back something
+      incorrectly, you must correct it. Hearing-back is the second
+      half of the loop — issuing the clearance and verifying receipt
+      are both your responsibility.
+
+  - id: wake_turbulence_application
+    prompt: "When do wake turbulence procedures apply under JO 7110.65?"
+    gold: |
+      JO 7110.65 §2-1-19 (Wake Turbulence) is the section. Apply wake
+      turbulence procedures to an aircraft operating behind another
+      aircraft when wake turbulence separation is required. The
+      specific minima live elsewhere — radar wake-turb minima in
+      §5-5-4 subparagraphs f and g, time-based separation for same-
+      runway operations in §3-9-6 and §3-9-7, intersecting flight
+      paths in §3-10-4. §2-1-19 is the umbrella rule that says
+      "apply"; the others say "by how much."
+
+  - id: handoff_pre_change_coordination
+    prompt: "What must the transferring controller do before making a flight-path change during a radar handoff?"
+    gold: |
+      JO 7110.65 §5-4-5 (Transferring Controller Handoff) is the
+      section. Before making any change to an aircraft's flight
+      path, altitude, speed, or data block while a handoff is in
+      progress or after acceptance, you must verbally obtain the
+      receiving controller's approval. The default is hands-off:
+      once the handoff is initiated, the receiving controller's
+      airspace and trajectory plan governs, and any deviation needs
+      explicit coordination.
+
+  - id: missed_approach_specific_procedure_advance
+    prompt: "When must I issue a specific missed approach procedure before the aircraft starts final descent?"
+    gold: |
+      JO 7110.65 §5-10-11 (Missed Approach) is the section. Before an
+      aircraft starts final descent for a full-stop landing, if any
+      portion of the final approach will be conducted in IFR
+      conditions, issue the specific missed approach procedure
+      approved for the radar approach being conducted. The published
+      phraseology is "YOUR MISSED APPROACH PROCEDURE IS (procedure)."
+      Don't wait for the go-around to brief — by then the workload
+      is wrong.
