@@ -10,6 +10,18 @@ One command:
 uv run harness chat --model mlx --persona --memories 3 --facts 5
 ```
 
+Optional: drop a wrapper at `~/.local/bin/harness` so the CLI is callable as bare `harness` from any cwd:
+
+```sh
+cat > ~/.local/bin/harness <<'EOF'
+#!/bin/sh
+exec uv run --directory /Users/m7s/dev/harness harness "$@"
+EOF
+chmod +x ~/.local/bin/harness
+```
+
+The wrapper still uses the project's venv (no second mlx copy) and picks up code edits live. After this, every `uv run harness …` example below works as bare `harness …`.
+
 What the flags do:
 
 - `--model mlx` — use Qwen 2.5 7B on MLX (default for local dev speed; pass `--model-repo mlx-community/Qwen2.5-32B-Instruct-4bit` for the bigger model). Omit `--model mlx` to use the echo adapter (no model, just wiring — useful if MLX is down).

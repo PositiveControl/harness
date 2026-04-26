@@ -212,6 +212,11 @@ memory_app = typer.Typer(help="Inspect and manage episodic memory.", no_args_is_
 app.add_typer(memory_app, name="memory")
 voice_app = typer.Typer(help="Voice suite — capture and manage samples.", no_args_is_help=True)
 app.add_typer(voice_app, name="voice")
+session_app = typer.Typer(
+    help="Browse and stream Airton's recorded chat sessions.",
+    no_args_is_help=True,
+)
+app.add_typer(session_app, name="session")
 console = Console()
 
 
@@ -3648,6 +3653,127 @@ def voice_list_captured() -> None:
             str(s.get("gold", "?")),
         )
     console.print(table)
+
+
+def _emit_session_message(msg: TranscriptMessage, *, json_out: bool) -> None:
+    """Emit one transcript row to stdout in markdown (default) or
+    JSONL form. Plain `print()` keeps output paste-friendly when
+    redirected to a file or piped into Claude Code — no ANSI."""
+    if json_out:
+        print(
+            json.dumps(
+                {
+                    "id": msg.id,
+                    "session": msg.session,
+                    "channel": msg.channel,
+                    "speaker": msg.speaker,
+                    "role": msg.role,
+                    "content": msg.content,
+                    "created_at": msg.created_at.isoformat(),
+                }
+            )
+        )
+        return
+    ts = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"### {msg.role} ({msg.speaker}) — {ts}")
+    print()
+    print(msg.content)
+    print()
+
+
+@session_app.command("list")
+def session_list_cmd() -> None:
+    """List every recorded chat session, newest first."""
+    transcript = Transcript(settings.character_db_path)
+    try:
+        rows = transcript.list_sessions()
+        if not rows:
+            console.print("[dim](no sessions yet)[/dim]")
+            return
+        table = Table(title=f"Sessions ({len(rows)})", show_lines=False)
+        table.add_column("session", style="bold")
+        table.add_column("channel")
+        table.add_column("turns", justify="right")
+        table.add_column("user", justify="right")
+        table.add_column("airton", justify="right")
+        table.add_column("first")
+        table.add_column("last")
+        for r in rows:
+            table.add_row(
+                r.session,
+                r.channel,
+                str(r.total_rows),
+                str(r.user_turns),
+                str(r.assistant_turns),
+                r.first_at.strftime("%Y-%m-%d %H:%M"),
+                r.last_at.strftime("%Y-%m-%d %H:%M"),
+            )
+        console.print(table)
+    finally:
+        transcript.close()
+
+
+@session_app.command("show")
+def session_show_cmd(
+    session_id: str | None = typer.Argument(
+        None,
+        help="Session id to dump. Defaults to most recent.",
+    ),
+    follow: bool = typer.Option(
+        False,
+        "--follow",
+        "-f",
+        help="Tail the session — keep printing turns as they land.",
+    ),
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit JSONL (one message per line) instead of markdown.",
+    ),
+    poll_interval: float = typer.Option(
+        0.5,
+        "--poll",
+        help="Seconds between fetches in --follow mode.",
+        min=0.1,
+    ),
+) -> None:
+    """Dump a session as paste-ready markdown (default) or JSONL.
+
+    Defaults to the most recent session — pass an id to pick another.
+    Use --follow for live streaming as Airton replies."""
+    transcript = Transcript(settings.character_db_path)
+    try:
+        if session_id is None:
+            sessions = transcript.list_sessions()
+            if not sessions:
+                typer.echo("(no sessions yet)", err=True)
+                raise typer.Exit(code=1)
+            session_id = sessions[0].session
+            typer.echo(f"session: {session_id}", err=True)
+
+        rows = transcript.fetch_after(session_id, after_id=0)
+        if not rows and not follow:
+            typer.echo(f"(session {session_id!r} has no turns)", err=True)
+            return
+        last_id = 0
+        for msg in rows:
+            _emit_session_message(msg, json_out=json_out)
+            last_id = msg.id
+        if not follow:
+            return
+
+        typer.echo(f"-- following {session_id} (Ctrl+C to stop) --", err=True)
+        try:
+            while True:
+                time.sleep(poll_interval)
+                fresh = transcript.fetch_after(session_id, after_id=last_id)
+                for msg in fresh:
+                    _emit_session_message(msg, json_out=json_out)
+                    last_id = msg.id
+        except KeyboardInterrupt:
+            return
+    finally:
+        transcript.close()
 
 
 if __name__ == "__main__":

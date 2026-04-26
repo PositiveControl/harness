@@ -53,6 +53,21 @@ class SessionStats:
     assistant_turns: int
 
 
+@dataclass(frozen=True)
+class SessionSummary:
+    """One row per recorded session — used by `harness session list`
+    so the user can pick a session id to dump or follow without
+    grepping the SQLite file directly."""
+
+    session: str
+    channel: str
+    total_rows: int
+    user_turns: int
+    assistant_turns: int
+    first_at: datetime
+    last_at: datetime
+
+
 class Transcript:
     """Append-only transcript store. Single-file SQLite with WAL."""
 
@@ -132,6 +147,35 @@ class Transcript:
             user_turns=int(row[3] or 0),
             assistant_turns=int(row[4] or 0),
         )
+
+    def list_sessions(self) -> list[SessionSummary]:
+        """Return one row per session, newest-last-activity first.
+        Used by `harness session list` and as the fallback resolver
+        for `harness session show` when no session id is passed."""
+        rows = self._conn.execute(
+            """SELECT session,
+                      MAX(channel),
+                      COUNT(*),
+                      SUM(CASE WHEN role='user' THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN role='assistant' THEN 1 ELSE 0 END),
+                      MIN(created_at),
+                      MAX(created_at)
+               FROM transcript
+               GROUP BY session
+               ORDER BY MAX(created_at) DESC"""
+        ).fetchall()
+        return [
+            SessionSummary(
+                session=str(r[0]),
+                channel=str(r[1] or ""),
+                total_rows=int(r[2]),
+                user_turns=int(r[3] or 0),
+                assistant_turns=int(r[4] or 0),
+                first_at=datetime.fromisoformat(r[5]),
+                last_at=datetime.fromisoformat(r[6]),
+            )
+            for r in rows
+        ]
 
     def fetch_after(self, session: str, *, after_id: int) -> list[TranscriptMessage]:
         """Fetch every message in `session` whose id > `after_id`, in

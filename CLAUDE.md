@@ -30,6 +30,11 @@ Daily chat (see `docs/usage.md` for the intended workflow):
 
 Edge-case chat flags (discover via `uv run harness chat --help`): `--model-repo`, `--lora-path`, `--draft-repo` (MLX speculative decoding), `--summarize-tool-results`, `--no-harvest-skills`, `--no-harvest-memories`, `--rewrite-on-tools`, `--compact-at`, `--compact-keep-recent`, `--auto-scribe`, `--dev`.
 
+Session replay (paste-ready transcript dump for Claude Code or any other reader):
+
+- `uv run harness session list` — list every recorded chat session, newest-active first, with turn counts and time range.
+- `uv run harness session show [SESSION_ID]` — dump a session as markdown (no id = most recent). `--json` for JSONL, `--follow` to keep streaming as new turns land.
+
 Voice corpus:
 
 - `uv run harness voice capture --session X --gold "…"` — capture a corrected reply as a new voice sample for session X's last user prompt. Goes to `character/<name>/voice/captured.yaml`.

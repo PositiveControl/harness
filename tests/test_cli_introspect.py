@@ -35,6 +35,8 @@ _EXPECTED_COMMANDS: tuple[str, ...] = (
     "memory scribe",
     "memory search",
     "memory wipe",
+    "session list",
+    "session show",
     "voice capture",
     "voice list-captured",
 )
