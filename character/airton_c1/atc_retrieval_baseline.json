@@ -2,10 +2,10 @@
   "character": "airton_c1",
   "fixture": "/Users/m7s/dev/harness/character/airton_c1/atc_eval.yaml",
   "k": 10,
-  "recall_at_1": 0.7368421052631579,
-  "recall_at_3": 0.9473684210526315,
-  "recall_at_5": 0.9473684210526315,
-  "recall_at_k": 1.0,
+  "recall_at_1": 0.6206896551724138,
+  "recall_at_3": 0.8275862068965517,
+  "recall_at_5": 0.8620689655172413,
+  "recall_at_k": 0.9310344827586207,
   "median_rank": 0.0,
   "cases": [
     {
@@ -216,6 +216,117 @@
       ],
       "rank_of_first_expected": 1,
       "score_of_first_expected": 0.032266458495966696,
+      "found": true
+    },
+    {
+      "id": "controller_safety_alert_terrain",
+      "audience": "controller",
+      "query": "When must a controller issue a safety alert to an aircraft?",
+      "expected_anchors": [
+        "2-1-6"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true
+    },
+    {
+      "id": "controller_minimum_fuel",
+      "audience": "controller",
+      "query": "What does a 'minimum fuel' advisory from a pilot mean for a controller?",
+      "expected_anchors": [
+        "2-1-8"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true
+    },
+    {
+      "id": "controller_traffic_advisories",
+      "audience": "controller",
+      "query": "When should a controller issue a traffic advisory to an aircraft?",
+      "expected_anchors": [
+        "2-1-21"
+      ],
+      "rank_of_first_expected": 1,
+      "score_of_first_expected": 0.029418126757516764,
+      "found": true
+    },
+    {
+      "id": "controller_radio_comm_failure",
+      "audience": "controller",
+      "query": "An IFR aircraft has lost two-way radio communication \u2014 what's the controller's first action?",
+      "expected_anchors": [
+        "10-4-4"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true
+    },
+    {
+      "id": "controller_readback_lay_doublecheck",
+      "audience": "controller",
+      "query": "How do I make sure a pilot heard the clearance correctly?",
+      "expected_anchors": [
+        "2-4-3"
+      ],
+      "rank_of_first_expected": 3,
+      "score_of_first_expected": 0.01639344262295082,
+      "found": true
+    },
+    {
+      "id": "controller_vertical_minima_lay",
+      "audience": "controller",
+      "query": "How close vertically can I let two planes get up at the airliner cruise altitudes?",
+      "expected_anchors": [
+        "4-5-1"
+      ],
+      "rank_of_first_expected": 2,
+      "score_of_first_expected": 0.02128623188405797,
+      "found": true
+    },
+    {
+      "id": "controller_missed_approach_lay",
+      "audience": "controller",
+      "query": "If a plane has to go around at the last second, when am I supposed to have already told them what to do next?",
+      "expected_anchors": [
+        "5-10-11"
+      ],
+      "rank_of_first_expected": null,
+      "score_of_first_expected": null,
+      "found": false
+    },
+    {
+      "id": "controller_handoff_lay",
+      "audience": "controller",
+      "query": "What do I need to do before changing a plane's altitude during a handoff to the next sector?",
+      "expected_anchors": [
+        "5-4-5"
+      ],
+      "rank_of_first_expected": null,
+      "score_of_first_expected": null,
+      "found": false
+    },
+    {
+      "id": "controller_hijack_squawk",
+      "audience": "controller",
+      "query": "An aircraft just squawked 7500. What does the controller do?",
+      "expected_anchors": [
+        "10-2-6"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.032018442622950824,
+      "found": true
+    },
+    {
+      "id": "controller_speed_adjustment_phraseology",
+      "audience": "controller",
+      "query": "What's the phraseology for telling a pilot to slow down?",
+      "expected_anchors": [
+        "5-7-1",
+        "5-7-2"
+      ],
+      "rank_of_first_expected": 5,
+      "score_of_first_expected": 0.01639344262295082,
       "found": true
     }
   ]

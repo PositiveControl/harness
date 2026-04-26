@@ -303,3 +303,134 @@ cases:
       - ["MH", "MH class"]
       - ["radio beacon", "RBN", "L/MF"]
     min_keyword_hits: 2
+
+  # ----- Fixture growth 19 -> 29 (plan #4, 2026-04-25) -----
+  # Adds coverage for previously-uncovered chapter-2 / chapter-10
+  # sections, more lay-paraphrase pairs (paired with existing jargon
+  # cases on the same anchor), and one multi-anchor speed-adjustment
+  # case that genuinely splits across sibling sections.
+
+  # ----- Group A: core-chapter gaps -----
+
+  - id: controller_safety_alert_terrain
+    audience: controller
+    question: "When must a controller issue a safety alert to an aircraft?"
+    expected_citations: ["2-1-6"]
+    expected_keywords:
+      - "safety alert"
+      - ["terrain", "obstruction", "aircraft"]
+      - ["unsafe proximity", "deemed", "appears"]
+    min_keyword_hits: 2
+
+  - id: controller_minimum_fuel
+    audience: controller
+    question: "What does a 'minimum fuel' advisory from a pilot mean for a controller?"
+    expected_citations: ["2-1-8"]
+    expected_keywords:
+      - "minimum fuel"
+      - ["delay", "undue delay", "unable"]
+      - ["advise", "inform"]
+    min_keyword_hits: 2
+
+  - id: controller_traffic_advisories
+    audience: controller
+    question: "When should a controller issue a traffic advisory to an aircraft?"
+    expected_citations: ["2-1-21"]
+    expected_keywords:
+      - "traffic"
+      - ["advisory", "advise", "issue"]
+      - ["workload", "permits", "judgment"]
+    min_keyword_hits: 2
+
+  # Single-anchor: §10-4-4 is the only "communications failure"
+  # section. §10-4-1/2/3 cover unrelated control actions (traffic
+  # restrictions, lighting, traffic resumption).
+  - id: controller_radio_comm_failure
+    audience: controller
+    question: "An IFR aircraft has lost two-way radio communication — what's the controller's first action?"
+    expected_citations: ["10-4-4"]
+    expected_keywords:
+      - ["communication", "comm", "radio"]
+      - ["failure", "lost", "NORDO"]
+      - ["attempt", "alternative frequency", "relay"]
+    min_keyword_hits: 2
+
+  # ----- Group B: lay-paraphrase pairs -----
+  # Each B case is paired with an existing jargon case on the same
+  # anchor — recall@k of the jargon and lay variants together is the
+  # register-gap durability signal.
+
+  # Paired with controller_readback_requirement (§2-4-3, jargon).
+  - id: controller_readback_lay_doublecheck
+    audience: controller
+    question: "How do I make sure a pilot heard the clearance correctly?"
+    expected_citations: ["2-4-3"]
+    expected_keywords:
+      - ["readback", "read back"]
+      - ["verify", "ensure", "correctness"]
+      - ["clearance", "instruction"]
+    min_keyword_hits: 2
+
+  # Paired with controller_vertical_separation_rvsm (§4-5-1, jargon).
+  - id: controller_vertical_minima_lay
+    audience: controller
+    question: "How close vertically can I let two planes get up at the airliner cruise altitudes?"
+    expected_citations: ["4-5-1"]
+    expected_keywords:
+      - ["1,000", "thousand"]
+      - ["FL 290", "FL 410", "RVSM"]
+      - ["vertical", "separation"]
+    min_keyword_hits: 2
+
+  # Paired with controller_missed_approach_precoord (§5-10-11, jargon).
+  - id: controller_missed_approach_lay
+    audience: controller
+    question: "If a plane has to go around at the last second, when am I supposed to have already told them what to do next?"
+    expected_citations: ["5-10-11"]
+    expected_keywords:
+      - ["missed approach", "go around"]
+      - ["before", "prior", "advance"]
+      - ["instructions", "procedure"]
+    min_keyword_hits: 2
+
+  # Paired with controller_handoff_responsibilities (§5-4-5, jargon).
+  - id: controller_handoff_lay
+    audience: controller
+    question: "What do I need to do before changing a plane's altitude during a handoff to the next sector?"
+    expected_citations: ["5-4-5"]
+    expected_keywords:
+      - "handoff"
+      - ["coordinate", "coordination", "approval"]
+      - ["transferring", "receiving", "transferring controller"]
+    min_keyword_hits: 2
+
+  # ----- Group C: multi-anchor ambiguity -----
+  # Probes the alternate-list fixture shape introduced for
+  # wake_turbulence_concern_lay (§2-1-19 / §2-1-20). Single-anchor
+  # was the right call for hijack (§10-2-6 only — §10-2-7 is VFR
+  # weather difficulty, unrelated) and lost comms (§10-4-4 only).
+  # Speed adjustment IS genuinely split across §5-7-1 + §5-7-2.
+
+  - id: controller_hijack_squawk
+    audience: controller
+    question: "An aircraft just squawked 7500. What does the controller do?"
+    expected_citations: ["10-2-6"]
+    expected_keywords:
+      - "7500"
+      - ["hijack", "unlawful interference"]
+      - ["acknowledge", "covertly", "secure"]
+    min_keyword_hits: 2
+
+  # §5-7-1 (Application — when to adjust speed) and §5-7-2 (Methods —
+  # how to phrase the adjustment) both legitimately answer the
+  # phraseology question depending on the controller's framing.
+  - id: controller_speed_adjustment_phraseology
+    audience: controller
+    question: "What's the phraseology for telling a pilot to slow down?"
+    expected_citations:
+      - ["5-7-1", "5-7-2"]
+    expected_keywords:
+      - ["reduce speed", "slow"]
+      - ["knots", "indicated airspeed", "Mach"]
+      - "maintain"
+    min_keyword_hits: 2
