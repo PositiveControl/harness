@@ -78,6 +78,35 @@ def sanitize_fts_query(query: str) -> str:
     return " OR ".join(clauses)
 
 
+def session_scope_filter(
+    allowed_sessions: tuple[str, ...] | None,
+    *,
+    column: str = "session_id",
+) -> tuple[str, tuple[str, ...]]:
+    """Return a (sql_fragment, params) pair for an optional session-
+    scope filter, intended to be appended to a WHERE clause.
+
+    `allowed_sessions=None` → no filter (no-op fragment + empty params).
+    `allowed_sessions=()` → only `column IS NULL` rows pass (procedural /
+        shared seeds; everything session-tagged is hidden).
+    `allowed_sessions=(s1, s2, ...)` → `column IS NULL OR
+        column IN (s1, s2, ...)`. NULL rows always pass — the C-plan
+        contract treats them as 'always eligible'.
+
+    Driving harness-w3mo's `--memory-scope` flag. The fragment leads
+    with ` AND ` so callers can splice it into an existing WHERE
+    chain without conditional whitespace gymnastics."""
+    if allowed_sessions is None:
+        return "", ()
+    if not allowed_sessions:
+        return f" AND {column} IS NULL", ()
+    placeholders = ",".join("?" * len(allowed_sessions))
+    return (
+        f" AND ({column} IS NULL OR {column} IN ({placeholders}))",
+        allowed_sessions,
+    )
+
+
 def reciprocal_rank_fusion(
     rankings: list[list[int]],
     *,

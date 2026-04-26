@@ -114,6 +114,17 @@ def consolidate_episodic(
                 tags=tuple({*rep.tags, "consolidated"}),
                 tier="consolidated",
                 source=f"consolidator:merged={','.join(str(i) for i in sorted(cluster_ids))}",
+                # Inherit the most-recent-session label across the
+                # cluster (rep is `max(created_at)` so rep.session_id
+                # picks the freshest contributor's session). Lets
+                # `--memory-scope=current-session` retrieval still
+                # surface a consolidated row when the user is back
+                # in the session that produced the dominant entry.
+                # Known limitation: a cluster spanning N sessions
+                # collapses to one label — tracked in the C plan
+                # as the open-questions item on multi-session arrays
+                # (harness-w3mo).
+                session_id=rep.session_id,
                 user_id=user_id,
             )
             for cid in cluster_ids:
@@ -175,6 +186,12 @@ def consolidate_semantic(store: SemanticStore) -> tuple[int, int, int]:
             confidence=rep.confidence,
             source=f"consolidator:merged={member_ids}",
             tier="consolidated",
+            # Inherit rep's session_id (rep is max(confidence, created_at))
+            # for the same reason as the episodic consolidator above —
+            # let `--memory-scope=current-session` still surface
+            # consolidated facts for the session that produced the
+            # dominant member (harness-w3mo).
+            session_id=rep.session_id,
             user_id=rep.user_id,
         )
         for fact in members:

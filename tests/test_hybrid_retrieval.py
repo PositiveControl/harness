@@ -623,6 +623,144 @@ def test_episodic_hybrid_explicit_zero_disables_floor(tmp_path: Path) -> None:
         store.close()
 
 
+# ---------- harness-w3mo: memory-scope (session-bounded retrieval) ----------
+
+
+def test_episodic_allowed_sessions_filters_to_subset(tmp_path: Path) -> None:
+    """harness-w3mo: when `allowed_sessions` is a tuple, hybrid
+    search returns only rows whose session_id IS NULL (procedural /
+    seeds / consolidator) OR matches one of the allowed ids."""
+    embedder = _SteerableEmbedder(
+        axes={
+            "AXIS_QUERY": (1.0, 0.0, 0.0, 0.0),
+            "AXIS_MATCH": (1.0, 0.0, 0.0, 0.0),
+        }
+    )
+    store = EpisodicStore(tmp_path / "h.sqlite", embedder=embedder)
+    try:
+        # All three rows have identical content and embeddings — the
+        # only thing setting them apart is their session_id.
+        for sid in ("alpha", "beta", "gamma"):
+            store.ingest(
+                external_id=f"working-{sid}",
+                title=f"AXIS_MATCH session-{sid}",
+                body=f"AXIS_MATCH session-{sid}",
+                tier="working",
+                source="user",
+                session_id=sid,
+            )
+        # Untagged row (procedural / shared); plan says NULL session
+        # is always eligible across every scope.
+        store.ingest(
+            external_id="shared",
+            title="AXIS_MATCH shared",
+            body="AXIS_MATCH shared",
+            tier="seed",
+            source="yaml",
+            session_id=None,
+        )
+
+        # No filter → every row eligible.
+        unbound = store.search(
+            "needle AXIS_QUERY AXIS_MATCH",
+            mode="hybrid",
+            k=10,
+            allowed_sessions=None,
+        )
+        assert {r.external_id for r, _ in unbound} == {
+            "working-alpha",
+            "working-beta",
+            "working-gamma",
+            "shared",
+        }
+
+        # Filter to {alpha} → alpha + shared only.
+        scoped = store.search(
+            "needle AXIS_QUERY AXIS_MATCH",
+            mode="hybrid",
+            k=10,
+            allowed_sessions=("alpha",),
+        )
+        assert {r.external_id for r, _ in scoped} == {"working-alpha", "shared"}
+
+        # Empty tuple → only NULL-session rows survive.
+        only_null = store.search(
+            "needle AXIS_QUERY AXIS_MATCH",
+            mode="hybrid",
+            k=10,
+            allowed_sessions=(),
+        )
+        assert {r.external_id for r, _ in only_null} == {"shared"}
+    finally:
+        store.close()
+
+
+def test_semantic_allowed_sessions_filters_to_subset(tmp_path: Path) -> None:
+    """Mirror of the episodic test on SemanticStore. A two-session
+    allow-tuple lets in shared (NULL) plus those two; the third
+    session's facts disappear."""
+    embedder = _SteerableEmbedder(
+        axes={
+            "AXIS_QUERY": (1.0, 0.0, 0.0, 0.0),
+            "AXIS_MATCH": (1.0, 0.0, 0.0, 0.0),
+        }
+    )
+    store = SemanticStore(tmp_path / "h.sqlite", embedder=embedder)
+    try:
+        for sid in ("alpha", "beta", "gamma"):
+            store.add(
+                subject="mark",
+                predicate="prefers",
+                object=f"AXIS_MATCH option-{sid}",
+                confidence=0.8,
+                source="scribe",
+                tier="working",
+                session_id=sid,
+            )
+        store.add(
+            subject="airton",
+            predicate="is",
+            object="AXIS_MATCH program",
+            confidence=1.0,
+            source="yaml",
+            tier="seed",
+            session_id=None,
+        )
+
+        scoped = store.search(
+            "AXIS_QUERY AXIS_MATCH preference",
+            mode="hybrid",
+            k=10,
+            allowed_sessions=("alpha", "beta"),
+        )
+        objs = {f.object for f, _ in scoped}
+        assert "AXIS_MATCH option-alpha" in objs
+        assert "AXIS_MATCH option-beta" in objs
+        assert "AXIS_MATCH program" in objs  # shared NULL passes
+        assert "AXIS_MATCH option-gamma" not in objs
+    finally:
+        store.close()
+
+
+def test_session_scope_filter_helper_shapes() -> None:
+    """Pure-function pin on session_scope_filter — drives the SQL
+    fragment + bind params for the three cases. Keeping the contract
+    explicit so callers can trust None/()/(...) semantics."""
+    from harness.store._hybrid import session_scope_filter
+
+    none_clause, none_params = session_scope_filter(None)
+    assert none_clause == ""
+    assert none_params == ()
+
+    only_null_clause, only_null_params = session_scope_filter(())
+    assert "IS NULL" in only_null_clause
+    assert only_null_params == ()
+
+    multi_clause, multi_params = session_scope_filter(("a", "b"))
+    assert "IN (?,?)" in multi_clause
+    assert multi_params == ("a", "b")
+
+
 def test_semantic_hybrid_drops_bm25_only_hit_below_cosine_floor(tmp_path: Path) -> None:
     """Same gate on the semantic store. BM25 hit on a shared token
     in the (subject, predicate, object) triple shouldn't survive

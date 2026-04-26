@@ -92,6 +92,7 @@ class _RaisingStore:
         k: int = 3,
         min_score: float = 0.0,
         user_id: str | None = None,
+        allowed_sessions: tuple[str, ...] | None = None,
     ) -> list[tuple[object, float]]:
         raise RuntimeError(f"{self.kind} search blew up")
 
@@ -107,6 +108,7 @@ class _StaticMemoryStore:
         k: int = 3,
         min_score: float = 0.0,
         user_id: str | None = None,
+        allowed_sessions: tuple[str, ...] | None = None,
     ) -> list[tuple[object, float]]:
         return self.hits
 
@@ -479,3 +481,25 @@ def test_topic_boundary_suffix_fires_when_muted() -> None:
     assert suffix.startswith("\n\n")
     assert "NEW TOPIC" in suffix
     assert "reset this conversation" in suffix
+
+
+def test_topic_boundary_suffix_fires_when_scope_bounded() -> None:
+    """harness-w3mo: when retrieval is unmuted but `--memory-scope` is
+    bounding retrieval to a session subset, the suffix surfaces a
+    different SESSION-SCOPED note explaining why earlier sessions
+    don't apply."""
+    state = _RetrievalState()
+    suffix = _topic_boundary_suffix(state, allowed_sessions=("cli-2026-04-26",))
+    assert "SESSION-SCOPED" in suffix
+    assert "earlier sessions" in suffix
+
+
+def test_topic_boundary_suffix_mute_wins_over_scope() -> None:
+    """When both signals fire — /clear AND --memory-scope=
+    current-session — the cleared-conversation note takes
+    precedence; both can't render at once and 'just reset' is the
+    stronger framing."""
+    state = _RetrievalState(muted=True)
+    suffix = _topic_boundary_suffix(state, allowed_sessions=("X",))
+    assert "reset this conversation" in suffix
+    assert "SESSION-SCOPED" not in suffix

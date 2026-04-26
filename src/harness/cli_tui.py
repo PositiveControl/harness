@@ -55,6 +55,7 @@ def run_tui(
     router_mode: str,
     include_internal: bool,
     dev: bool,
+    allowed_sessions: tuple[str, ...] | None = None,
 ) -> None:
     from harness.cli import (
         _build_tool_registry_for_tui,
@@ -188,6 +189,7 @@ def run_tui(
         auto_scribe=auto_scribe,
         ab_adapter=ab_adapter,
         hooks=hooks,
+        allowed_sessions=allowed_sessions,
     ).run()
     if compaction_store is not None:
         compaction_store.close()

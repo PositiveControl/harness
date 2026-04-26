@@ -9,7 +9,11 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
-from harness.store._hybrid import reciprocal_rank_fusion, sanitize_fts_query
+from harness.store._hybrid import (
+    reciprocal_rank_fusion,
+    sanitize_fts_query,
+    session_scope_filter,
+)
 
 if TYPE_CHECKING:
     from harness.retrieval.embed import Embedder
@@ -42,6 +46,9 @@ _CREATE_INDEXES = """
 CREATE INDEX IF NOT EXISTS semantic_subject_idx       ON semantic (subject);
 CREATE INDEX IF NOT EXISTS semantic_tier_idx          ON semantic (tier);
 CREATE INDEX IF NOT EXISTS semantic_superseded_by_idx ON semantic (superseded_by);
+-- Speeds up `--memory-scope=current-session` retrieval and
+-- `delete_working_for_session` (harness-w3mo / harness-k7m9).
+CREATE INDEX IF NOT EXISTS semantic_session_id_idx    ON semantic (session_id);
 """
 
 # FTS5 sidecar — same design as episodic_fts. Indexes the triple
@@ -309,6 +316,7 @@ class SemanticStore:
         mode: SearchMode = "hybrid",
         as_of: datetime | None = None,
         bm25_min_score: float | None = None,
+        allowed_sessions: tuple[str, ...] | None = None,
     ) -> list[tuple[SemanticFact, float]]:
         """Return up to `k` active facts (not superseded) where stored
         confidence >= `min_confidence`, ranked by `mode` and filtered
@@ -345,6 +353,7 @@ class SemanticStore:
                 min_score=min_score,
                 user_id=user_id,
                 as_of_iso=as_of_iso,
+                allowed_sessions=allowed_sessions,
             )
         if mode == "text":
             return self._search_text(
@@ -353,6 +362,7 @@ class SemanticStore:
                 min_confidence=min_confidence,
                 user_id=user_id,
                 as_of_iso=as_of_iso,
+                allowed_sessions=allowed_sessions,
             )
         bm25_floor = bm25_min_score if bm25_min_score is not None else max(min_score - 0.15, 0.0)
         return self._search_hybrid(
@@ -363,6 +373,7 @@ class SemanticStore:
             bm25_min_score=bm25_floor,
             user_id=user_id,
             as_of_iso=as_of_iso,
+            allowed_sessions=allowed_sessions,
         )
 
     def _search_dense(
@@ -374,15 +385,17 @@ class SemanticStore:
         min_score: float,
         user_id: str | None,
         as_of_iso: str,
+        allowed_sessions: tuple[str, ...] | None = None,
     ) -> list[tuple[SemanticFact, float]]:
         # Embed the query FIRST so a lazy embedder (dimension=0 until
         # first embed() call) populates its real dimension before the
         # SQL filter reads it (harness-m35). Mirrors the episodic-store
         # fix.
         q_vec = self.embedder.embed([query])[0].astype(np.float32)
+        session_clause, session_params = session_scope_filter(allowed_sessions)
         if user_id is None:
             rows = self._conn.execute(
-                """SELECT id, subject, predicate, object, confidence, source,
+                f"""SELECT id, subject, predicate, object, confidence, source,
                           attributed_to, session_id, user_id, supersedes, tier,
                           created_at, superseded_by,
                           valid_from, valid_to, asserted_at, embedding
@@ -390,12 +403,18 @@ class SemanticStore:
                    WHERE confidence >= ? AND superseded_by IS NULL
                      AND embedding_dim = ?
                      AND (valid_from IS NULL OR valid_from <= ?)
-                     AND (valid_to IS NULL OR valid_to > ?)""",
-                (min_confidence, self.embedder.dimension, as_of_iso, as_of_iso),
+                     AND (valid_to IS NULL OR valid_to > ?){session_clause}""",  # noqa: S608 — session_clause is a static fragment with bind placeholders
+                (
+                    min_confidence,
+                    self.embedder.dimension,
+                    as_of_iso,
+                    as_of_iso,
+                    *session_params,
+                ),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                """SELECT id, subject, predicate, object, confidence, source,
+                f"""SELECT id, subject, predicate, object, confidence, source,
                           attributed_to, session_id, user_id, supersedes, tier,
                           created_at, superseded_by,
                           valid_from, valid_to, asserted_at, embedding
@@ -404,13 +423,14 @@ class SemanticStore:
                      AND embedding_dim = ?
                      AND (user_id IS NULL OR user_id = ?)
                      AND (valid_from IS NULL OR valid_from <= ?)
-                     AND (valid_to IS NULL OR valid_to > ?)""",
+                     AND (valid_to IS NULL OR valid_to > ?){session_clause}""",  # noqa: S608 — session_clause is a static fragment with bind placeholders
                 (
                     min_confidence,
                     self.embedder.dimension,
                     user_id,
                     as_of_iso,
                     as_of_iso,
+                    *session_params,
                 ),
             ).fetchall()
         if not rows:
@@ -433,13 +453,17 @@ class SemanticStore:
         min_confidence: float,
         user_id: str | None,
         as_of_iso: str,
+        allowed_sessions: tuple[str, ...] | None = None,
     ) -> list[tuple[SemanticFact, float]]:
         match = sanitize_fts_query(query)
         if not match:
             return []
+        session_clause, session_params = session_scope_filter(
+            allowed_sessions, column="s.session_id"
+        )
         if user_id is None:
             rows = self._conn.execute(
-                """SELECT s.id, s.subject, s.predicate, s.object, s.confidence,
+                f"""SELECT s.id, s.subject, s.predicate, s.object, s.confidence,
                           s.source, s.attributed_to, s.session_id, s.user_id,
                           s.supersedes, s.tier, s.created_at, s.superseded_by,
                           s.valid_from, s.valid_to, s.asserted_at,
@@ -450,14 +474,14 @@ class SemanticStore:
                      AND s.superseded_by IS NULL
                      AND s.confidence >= ?
                      AND (s.valid_from IS NULL OR s.valid_from <= ?)
-                     AND (s.valid_to IS NULL OR s.valid_to > ?)
+                     AND (s.valid_to IS NULL OR s.valid_to > ?){session_clause}
                    ORDER BY bm25_score
-                   LIMIT ?""",
-                (match, min_confidence, as_of_iso, as_of_iso, k),
+                   LIMIT ?""",  # noqa: S608 — session_clause is a static fragment with bind placeholders
+                (match, min_confidence, as_of_iso, as_of_iso, *session_params, k),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                """SELECT s.id, s.subject, s.predicate, s.object, s.confidence,
+                f"""SELECT s.id, s.subject, s.predicate, s.object, s.confidence,
                           s.source, s.attributed_to, s.session_id, s.user_id,
                           s.supersedes, s.tier, s.created_at, s.superseded_by,
                           s.valid_from, s.valid_to, s.asserted_at,
@@ -469,10 +493,18 @@ class SemanticStore:
                      AND s.confidence >= ?
                      AND (s.user_id IS NULL OR s.user_id = ?)
                      AND (s.valid_from IS NULL OR s.valid_from <= ?)
-                     AND (s.valid_to IS NULL OR s.valid_to > ?)
+                     AND (s.valid_to IS NULL OR s.valid_to > ?){session_clause}
                    ORDER BY bm25_score
-                   LIMIT ?""",
-                (match, min_confidence, user_id, as_of_iso, as_of_iso, k),
+                   LIMIT ?""",  # noqa: S608 — session_clause is a static fragment with bind placeholders
+                (
+                    match,
+                    min_confidence,
+                    user_id,
+                    as_of_iso,
+                    as_of_iso,
+                    *session_params,
+                    k,
+                ),
             ).fetchall()
         return [(_row_to_fact(row[:16]), -float(row[16])) for row in rows]
 
@@ -486,6 +518,7 @@ class SemanticStore:
         bm25_min_score: float,
         user_id: str | None,
         as_of_iso: str,
+        allowed_sessions: tuple[str, ...] | None = None,
     ) -> list[tuple[SemanticFact, float]]:
         candidate_k = max(k * 4, 20)
         dense_hits = self._search_dense(
@@ -495,6 +528,7 @@ class SemanticStore:
             min_score=min_score,
             user_id=user_id,
             as_of_iso=as_of_iso,
+            allowed_sessions=allowed_sessions,
         )
         text_hits = self._search_text(
             query,
@@ -502,6 +536,7 @@ class SemanticStore:
             min_confidence=min_confidence,
             user_id=user_id,
             as_of_iso=as_of_iso,
+            allowed_sessions=allowed_sessions,
         )
         if bm25_min_score > 0.0 and text_hits:
             text_hits = self._gate_text_hits_by_cosine(

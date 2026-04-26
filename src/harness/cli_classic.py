@@ -360,6 +360,10 @@ class ClassicChatSession:
     # after the assistant reply is rendered and before return.
     audit_store: AuditStore | None = None
     approved_tools: set[str] = field(default_factory=set)
+    # Resolved `--memory-scope` filter for episodic + semantic search.
+    # None = no filter (default 'all'); tuple = NULL OR session_id IN
+    # (...). Used by `_retrieve_turn_context` per turn (harness-w3mo).
+    allowed_sessions: tuple[str, ...] | None = None
 
     def tool_label(self, name: str) -> str:
         if self.registry is not None and name in self.registry:
@@ -437,6 +441,7 @@ class ClassicChatSession:
             facts_threshold=self.facts_threshold,
             state=self.retrieval_state,
             warn=self.warn_once,
+            allowed_sessions=self.allowed_sessions,
         )
 
         if examples:
@@ -463,13 +468,15 @@ class ClassicChatSession:
         if known_facts:
             system_content = f"{system_content}\n\n{_render_fact_block(known_facts)}"
 
-        # Topic-boundary signal (harness-eftf). Cheap (~25 tokens),
-        # fires only when retrieval is muted — the user ran /clear in
-        # this process, or a prior process's watermark hydrated and
-        # carried the mute forward.
+        # Topic-boundary signal (harness-eftf + harness-w3mo). Cheap
+        # (~25 tokens), fires when retrieval is muted (post-/clear)
+        # OR when --memory-scope is bounding retrieval to a session
+        # subset. Different wording per cause; the helper picks.
         from harness.cli import _topic_boundary_suffix
 
-        system_content = f"{system_content}{_topic_boundary_suffix(self.retrieval_state)}"
+        system_content = (
+            f"{system_content}{_topic_boundary_suffix(self.retrieval_state, self.allowed_sessions)}"
+        )
 
         system = ChatMessage(role="system", content=system_content)
 
@@ -620,6 +627,7 @@ def run_classic_chat(
     router_enabled: bool,
     router_repo: str,
     router_mode: str,
+    allowed_sessions: tuple[str, ...] | None = None,
 ) -> None:
     """Classic-mode chat entry point. Handles setup, REPL loop, and
     teardown; dispatches per-turn work to `ClassicChatSession.run_turn`."""
@@ -799,6 +807,7 @@ def run_classic_chat(
         ctx_meter=ctx_meter,
         hooks=hooks,
         audit_store=audit_store,
+        allowed_sessions=allowed_sessions,
     )
 
     if ab_adapter is not None:

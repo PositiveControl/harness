@@ -488,6 +488,7 @@ class ChatApp(App[None]):
         auto_scribe: bool = True,
         ab_adapter: BeadsAdapter | None = None,
         hooks: object | None = None,
+        allowed_sessions: tuple[str, ...] | None = None,
     ) -> None:
         super().__init__()
         self._character = character
@@ -534,6 +535,11 @@ class ChatApp(App[None]):
         # compress grep / list_dir / search_web dumps before they
         # hit the main model's context.
         self._hooks = hooks
+        # Resolved `--memory-scope` filter (harness-w3mo). None = no
+        # session filter (default 'all'). Tuple = NULL OR session_id
+        # IN (...). Threaded into `_retrieve_turn_context` per turn so
+        # the TUI matches the classic REPL's session-bounded retrieval.
+        self._allowed_sessions = allowed_sessions
         # Accept an external retrieval_health reference so the
         # IntrospectTool (harness-8is) can see live voice/episodic/
         # semantic health without a callback plumbing. When None the
@@ -954,6 +960,7 @@ class ChatApp(App[None]):
                 facts_threshold=self._facts_threshold,
                 state=self._state.retrieval_health,
                 warn=self._emit_warning,
+                allowed_sessions=self._allowed_sessions,
             )
 
             system_content = (
@@ -971,13 +978,13 @@ class ChatApp(App[None]):
             if known_facts:
                 system_content = f"{system_content}\n\n{_render_fact_block(known_facts)}"
 
-            # Topic-boundary signal (harness-eftf). Mirror of the
-            # classic-REPL injection — same wording via the shared
-            # `_topic_boundary_suffix` helper.
+            # Topic-boundary signal (harness-eftf + harness-w3mo).
+            # Mirror of the classic-REPL injection.
             from harness.cli import _topic_boundary_suffix
 
             system_content = (
-                f"{system_content}{_topic_boundary_suffix(self._state.retrieval_health)}"
+                f"{system_content}"
+                f"{_topic_boundary_suffix(self._state.retrieval_health, self._allowed_sessions)}"
             )
 
             system = ChatMessage(role="system", content=system_content)

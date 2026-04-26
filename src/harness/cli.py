@@ -149,6 +149,47 @@ def _encode_assistant_with_tool_calls(content: str, tool_calls: tuple[ToolCall, 
     return f"{content}{_TOOL_CALLS_SENTINEL}{payload}"
 
 
+def _resolve_memory_scope(
+    *,
+    memory_scope: str,
+    session: str,
+    window: int,
+    transcript_db_path: Path,
+) -> tuple[str, ...] | None:
+    """Translate a `--memory-scope` value into the `allowed_sessions`
+    tuple the stores expect. None = no filter (the 'all' default).
+    Tuple = NULL OR session_id IN (...).
+
+    'current-session' returns just the running session id; consolidated
+    rows tagged with prior sessions stay reachable via the NULL=eligible
+    rule only when the consolidator already attached this session — for
+    cross-session consolidated rows, scope='recent' or 'all' is the
+    answer. 'recent' needs the transcript to enumerate sessions by
+    last activity; we open it briefly and close it. harness-w3mo."""
+    if memory_scope == "all":
+        return None
+    if memory_scope == "current-session":
+        return (session,)
+    if memory_scope == "recent":
+        from harness.store.transcript import Transcript
+
+        ts = Transcript(transcript_db_path)
+        try:
+            rows = ts.list_sessions()
+        finally:
+            ts.close()
+        # Most recent N by last activity. Always include the current
+        # session even if no rows have been written yet (first turn
+        # of a fresh session).
+        recent = [r.session for r in rows[:window]]
+        if session not in recent:
+            recent.insert(0, session)
+        return tuple(recent)
+    raise typer.BadParameter(
+        f"--memory-scope must be one of: all, current-session, recent. Got {memory_scope!r}."
+    )
+
+
 def _coin_session_id(*, now: datetime | None = None) -> str:
     """Mint a fresh, daily-rotated, launch-unique session id.
 
@@ -1115,22 +1156,40 @@ class _RetrievalState:
     muted: bool = False
 
 
-_TOPIC_BOUNDARY_NOTE = (
+_TOPIC_BOUNDARY_NOTE_RESET = (
     "[NEW TOPIC] The user just reset this conversation. "
     "Earlier exchanges in this session may not apply to "
     "the current turn unless the user explicitly references them."
 )
 
+_TOPIC_BOUNDARY_NOTE_SCOPE = (
+    "[SESSION-SCOPED] Retrieval for this turn is restricted to the "
+    "current conversation. Memories or facts from earlier sessions "
+    "are not part of this thread unless the user explicitly references them."
+)
 
-def _topic_boundary_suffix(retrieval_state: _RetrievalState) -> str:
+
+def _topic_boundary_suffix(
+    retrieval_state: _RetrievalState,
+    allowed_sessions: tuple[str, ...] | None = None,
+) -> str:
     """Return the topic-boundary system-prompt suffix (with leading
-    separator) when retrieval is muted, else empty string. Centralizes
-    the wording so the classic REPL and the TUI both surface the same
-    note, and future triggers (--memory-scope=current-session,
-    auto-detected topic shift) hook here without copy-paste drift.
-    harness-eftf."""
+    separator). Fires on two triggers (harness-eftf + harness-w3mo):
+
+    1. `retrieval_state.muted` — the user ran /clear, either in this
+       process or via a hydrated watermark from a prior session.
+    2. `allowed_sessions is not None` — `--memory-scope` is bounding
+       retrieval to a session subset. Different note wording
+       reflects the different cause: scope-bounded retrieval is
+       not 'fresh start within this session' but 'this thread
+       excludes other sessions'.
+
+    Both signals shorten to a single note when they coincide
+    (mute wins; the cleared-conversation framing is stronger)."""
     if retrieval_state.muted:
-        return f"\n\n{_TOPIC_BOUNDARY_NOTE}"
+        return f"\n\n{_TOPIC_BOUNDARY_NOTE_RESET}"
+    if allowed_sessions is not None:
+        return f"\n\n{_TOPIC_BOUNDARY_NOTE_SCOPE}"
     return ""
 
 
@@ -1148,6 +1207,7 @@ def _retrieve_turn_context(
     facts_threshold: float,
     state: _RetrievalState,
     warn: Callable[[str], None],
+    allowed_sessions: tuple[str, ...] | None = None,
 ) -> tuple[list[VoiceSample], list[EpisodicRecord], list[SemanticFact]]:
     """Run the three retrieval sources for one turn. Any that raise are
     disabled for the rest of the session (flagged on `state`) and a
@@ -1177,6 +1237,7 @@ def _retrieve_turn_context(
                 k=memories,
                 min_score=memories_threshold,
                 user_id=speaker,
+                allowed_sessions=allowed_sessions,
             )
             recalled = [rec for rec, _score in hits]
         except Exception as exc:
@@ -1191,6 +1252,7 @@ def _retrieve_turn_context(
                 k=facts,
                 min_score=facts_threshold,
                 user_id=speaker,
+                allowed_sessions=allowed_sessions,
             )
             known_facts = [f for f, _score in fact_hits]
         except Exception as exc:
@@ -1784,6 +1846,31 @@ def chat(
         help="Cosine-similarity floor for fact retrieval. Lower than the "
         "memory floor because facts are much shorter strings and score lower.",
     ),
+    memory_scope: str = typer.Option(
+        "all",
+        "--memory-scope",
+        help=(
+            "Session-scope filter on episodic + semantic retrieval. "
+            "'all' = no filter (default — every shared / per-user row "
+            "the user can see is eligible). 'current-session' = only "
+            "rows tagged with this chat's session id, plus untagged "
+            "(seeds, procedural, consolidated cross-session) rows. "
+            "'recent' = the last --memory-scope-window sessions by "
+            "last activity, plus untagged rows. Use current-session "
+            "after a /clear when you want the next turn to learn "
+            "from this conversation only. harness-w3mo."
+        ),
+    ),
+    memory_scope_window: int = typer.Option(
+        3,
+        "--memory-scope-window",
+        help=(
+            "How many recent sessions count as 'recent' under "
+            "--memory-scope=recent. Includes the current session. "
+            "Ignored for other scope values."
+        ),
+        min=1,
+    ),
     tools: bool = typer.Option(
         False,
         "--tools/--no-tools",
@@ -1915,6 +2002,17 @@ def chat(
     if session is None:
         session = _coin_session_id()
         console.print(f"[dim]session: {session} (auto)[/dim]")
+    allowed_sessions = _resolve_memory_scope(
+        memory_scope=memory_scope,
+        session=session,
+        window=memory_scope_window,
+        transcript_db_path=settings.character_db_path,
+    )
+    if allowed_sessions is not None:
+        console.print(
+            f"[dim]memory-scope: {memory_scope} → "
+            f"{len(allowed_sessions)} session(s) + untagged[/dim]"
+        )
     if tui:
         from harness.cli_tui import run_tui
 
@@ -1986,6 +2084,7 @@ def chat(
         router_enabled=router_enabled,
         router_repo=router_repo,
         router_mode=router_mode,
+        allowed_sessions=allowed_sessions,
     )
     return
 

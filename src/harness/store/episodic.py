@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
-from harness.store._hybrid import reciprocal_rank_fusion, sanitize_fts_query
+from harness.store._hybrid import (
+    reciprocal_rank_fusion,
+    sanitize_fts_query,
+    session_scope_filter,
+)
 
 if TYPE_CHECKING:
     from harness.character import Character
@@ -83,6 +87,9 @@ _CREATE_INDEXES = """
 CREATE INDEX IF NOT EXISTS episodic_external_id_idx   ON episodic (external_id);
 CREATE INDEX IF NOT EXISTS episodic_tier_idx          ON episodic (tier);
 CREATE INDEX IF NOT EXISTS episodic_superseded_by_idx ON episodic (superseded_by);
+-- Speeds up `--memory-scope=current-session` retrieval and
+-- `delete_working_for_session` (harness-w3mo / harness-k7m9).
+CREATE INDEX IF NOT EXISTS episodic_session_id_idx    ON episodic (session_id);
 """
 
 # FTS5 sidecar for BM25 text search. External-content table points at
@@ -363,6 +370,7 @@ class EpisodicStore:
         user_id: str | None = None,
         mode: SearchMode = "hybrid",
         bm25_min_score: float | None = None,
+        allowed_sessions: tuple[str, ...] | None = None,
     ) -> list[tuple[EpisodicRecord, float]]:
         """Return up to `k` active records ranked by `mode`.
 
@@ -396,11 +404,25 @@ class EpisodicStore:
         `user_id` scopes to relationship memory across all modes:
         when given, returns rows where `user_id IS NULL` (shared) OR
         `user_id = <this user>`. Other users' private memories are
-        never returned. `user_id=None` is an owner-tier view."""
+        never returned. `user_id=None` is an owner-tier view.
+
+        `allowed_sessions` (harness-w3mo) — optional session-scope
+        filter that drives `--memory-scope`. None = no filter (today).
+        Empty tuple = only NULL-session rows (procedural / shared
+        seeds). Tuple of session ids = NULL OR session_id IN (...).
+        NULL rows always pass — the C-plan treats them as 'always
+        eligible' so consolidator output, seeds, and harvested
+        procedural memory survive every scope."""
         if mode == "dense":
-            return self._search_dense(query, k=k, min_score=min_score, user_id=user_id)
+            return self._search_dense(
+                query,
+                k=k,
+                min_score=min_score,
+                user_id=user_id,
+                allowed_sessions=allowed_sessions,
+            )
         if mode == "text":
-            return self._search_text(query, k=k, user_id=user_id)
+            return self._search_text(query, k=k, user_id=user_id, allowed_sessions=allowed_sessions)
         bm25_floor = bm25_min_score if bm25_min_score is not None else max(min_score - 0.15, 0.0)
         return self._search_hybrid(
             query,
@@ -408,6 +430,7 @@ class EpisodicStore:
             min_score=min_score,
             bm25_min_score=bm25_floor,
             user_id=user_id,
+            allowed_sessions=allowed_sessions,
         )
 
     def _search_dense(
@@ -417,6 +440,7 @@ class EpisodicStore:
         k: int,
         min_score: float,
         user_id: str | None,
+        allowed_sessions: tuple[str, ...] | None = None,
     ) -> list[tuple[EpisodicRecord, float]]:
         # Embed the query FIRST so a lazy embedder (dimension=0 until
         # first embed() call) populates its real dimension before the
@@ -424,24 +448,25 @@ class EpisodicStore:
         # matches zero rows and dense silently returns [] on the very
         # first call against a fresh embedder (harness-m35).
         q_vec = self.embedder.embed([query])[0].astype(np.float32)
+        session_clause, session_params = session_scope_filter(allowed_sessions)
         if user_id is None:
             rows = self._conn.execute(
-                """SELECT id, external_id, title, body, principle, tags, tier,
+                f"""SELECT id, external_id, title, body, principle, tags, tier,
                           source, session_id, user_id, created_at, superseded_by,
                           embedding
                    FROM episodic
-                   WHERE superseded_by IS NULL AND embedding_dim = ?""",
-                (self.embedder.dimension,),
+                   WHERE superseded_by IS NULL AND embedding_dim = ?{session_clause}""",  # noqa: S608 — session_clause is a static fragment with bind placeholders
+                (self.embedder.dimension, *session_params),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                """SELECT id, external_id, title, body, principle, tags, tier,
+                f"""SELECT id, external_id, title, body, principle, tags, tier,
                           source, session_id, user_id, created_at, superseded_by,
                           embedding
                    FROM episodic
                    WHERE superseded_by IS NULL AND embedding_dim = ?
-                     AND (user_id IS NULL OR user_id = ?)""",
-                (self.embedder.dimension, user_id),
+                     AND (user_id IS NULL OR user_id = ?){session_clause}""",  # noqa: S608 — session_clause is a static fragment with bind placeholders
+                (self.embedder.dimension, user_id, *session_params),
             ).fetchall()
         if not rows:
             return []
@@ -463,6 +488,7 @@ class EpisodicStore:
         *,
         k: int,
         user_id: str | None,
+        allowed_sessions: tuple[str, ...] | None = None,
     ) -> list[tuple[EpisodicRecord, float]]:
         match = sanitize_fts_query(query)
         if not match:
@@ -471,24 +497,32 @@ class EpisodicStore:
         # same scope filters as the dense path (superseded + user_id).
         # bm25() returns lower=better; ORDER BY bm25(...) ASC plus a
         # score negation on the way out keeps the "higher is better"
-        # external contract consistent with cosine.
+        # external contract consistent with cosine. session_scope_filter
+        # builds the optional `--memory-scope` AND-clause inline so the
+        # LIMIT k clause still returns k rows AFTER session filtering
+        # (Python-side filter would over-truncate). Reference column
+        # name resolves through the JOIN — episodic alias `e` exposes
+        # session_id as `e.session_id` for the placeholder.
+        session_clause, session_params = session_scope_filter(
+            allowed_sessions, column="e.session_id"
+        )
         if user_id is None:
             rows = self._conn.execute(
-                """SELECT e.id, e.external_id, e.title, e.body, e.principle,
+                f"""SELECT e.id, e.external_id, e.title, e.body, e.principle,
                           e.tags, e.tier, e.source, e.session_id, e.user_id,
                           e.created_at, e.superseded_by,
                           bm25(episodic_fts) AS bm25_score
                    FROM episodic_fts
                    JOIN episodic e ON e.id = episodic_fts.rowid
                    WHERE episodic_fts MATCH ?
-                     AND e.superseded_by IS NULL
+                     AND e.superseded_by IS NULL{session_clause}
                    ORDER BY bm25_score
-                   LIMIT ?""",
-                (match, k),
+                   LIMIT ?""",  # noqa: S608 — session_clause is a static fragment with bind placeholders
+                (match, *session_params, k),
             ).fetchall()
         else:
             rows = self._conn.execute(
-                """SELECT e.id, e.external_id, e.title, e.body, e.principle,
+                f"""SELECT e.id, e.external_id, e.title, e.body, e.principle,
                           e.tags, e.tier, e.source, e.session_id, e.user_id,
                           e.created_at, e.superseded_by,
                           bm25(episodic_fts) AS bm25_score
@@ -496,10 +530,10 @@ class EpisodicStore:
                    JOIN episodic e ON e.id = episodic_fts.rowid
                    WHERE episodic_fts MATCH ?
                      AND e.superseded_by IS NULL
-                     AND (e.user_id IS NULL OR e.user_id = ?)
+                     AND (e.user_id IS NULL OR e.user_id = ?){session_clause}
                    ORDER BY bm25_score
-                   LIMIT ?""",
-                (match, user_id, k),
+                   LIMIT ?""",  # noqa: S608 — session_clause is a static fragment with bind placeholders
+                (match, user_id, *session_params, k),
             ).fetchall()
         return [(_row_to_record(row[:12]), -float(row[12])) for row in rows]
 
@@ -511,13 +545,22 @@ class EpisodicStore:
         min_score: float,
         bm25_min_score: float,
         user_id: str | None,
+        allowed_sessions: tuple[str, ...] | None = None,
     ) -> list[tuple[EpisodicRecord, float]]:
         # Widen the candidate sets ~4x so RRF has room to reorder.
         # Past ~50 candidates the tail contributes <0.001 per match
         # so further widening is wasted.
         candidate_k = max(k * 4, 20)
-        dense_hits = self._search_dense(query, k=candidate_k, min_score=min_score, user_id=user_id)
-        text_hits = self._search_text(query, k=candidate_k, user_id=user_id)
+        dense_hits = self._search_dense(
+            query,
+            k=candidate_k,
+            min_score=min_score,
+            user_id=user_id,
+            allowed_sessions=allowed_sessions,
+        )
+        text_hits = self._search_text(
+            query, k=candidate_k, user_id=user_id, allowed_sessions=allowed_sessions
+        )
         if bm25_min_score > 0.0 and text_hits:
             text_hits = self._gate_text_hits_by_cosine(
                 query=query, hits=text_hits, threshold=bm25_min_score
