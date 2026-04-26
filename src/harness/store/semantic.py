@@ -67,6 +67,15 @@ AFTER INSERT ON semantic BEGIN
     INSERT INTO semantic_fts(rowid, subject, predicate, object)
     VALUES (new.id, new.subject, new.predicate, new.object);
 END;
+
+-- Mirror deletes into the external-content FTS sidecar so
+-- `delete_working_for_session` (harness-k7m9) doesn't leave dangling
+-- BM25 entries pointing at vanished rowids. Idempotent.
+CREATE TRIGGER IF NOT EXISTS semantic_fts_ad
+AFTER DELETE ON semantic BEGIN
+    INSERT INTO semantic_fts(semantic_fts, rowid, subject, predicate, object)
+    VALUES ('delete', old.id, old.subject, old.predicate, old.object);
+END;
 """  # noqa: S608 — module-level constant; _FTS_TOKENIZE is never user-supplied
 
 
@@ -275,6 +284,19 @@ class SemanticStore:
             "UPDATE semantic SET superseded_by = ? WHERE id = ?",
             (by, record_id),
         )
+
+    def delete_working_for_session(self, session_id: str) -> int:
+        """Hard-delete every tier=working row tagged with `session_id`.
+
+        Mirror of EpisodicStore.delete_working_for_session — used by
+        `harness session reset` to prune the scribed facts for one
+        session without disturbing shared seeds, consolidated facts,
+        or other sessions' working-tier writes (harness-k7m9)."""
+        cur = self._conn.execute(
+            "DELETE FROM semantic WHERE tier = 'working' AND session_id = ?",
+            (session_id,),
+        )
+        return cur.rowcount or 0
 
     def search(
         self,

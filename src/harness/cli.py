@@ -3801,6 +3801,88 @@ def session_show_cmd(
         transcript.close()
 
 
+@session_app.command("reset")
+def session_reset_cmd(
+    session_id: str = typer.Argument(
+        ...,
+        help="Session id to reset.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the confirmation prompt.",
+    ),
+) -> None:
+    """Full reset for one session: drop the compaction summary, set
+    a persistent /clear watermark at the current transcript tip,
+    and prune the working-tier scribed memory written from this
+    session.
+
+    The transcript table is preserved for audit + scribe re-runs +
+    `harness session show`. Shared seeds, consolidated memory,
+    other sessions' working-tier rows, and the procedural bd-harvest
+    tier are untouched (harness-k7m9).
+
+    Use `session reset` when a session has accumulated weeks of
+    mixed-topic context and you want a clean slate without losing
+    the raw transcript. For a lighter touch — drop the summary
+    only, keep raw history visible — use `session compact-reset`.
+    For an in-process cut — same effect but only for the running
+    chat — use `/clear` inside chat (harness-rrkj makes that cut
+    durable too)."""
+    from harness.compaction import CompactionStore
+    from harness.store.episodic import EpisodicStore
+    from harness.store.semantic import SemanticStore
+
+    transcript = Transcript(settings.character_db_path)
+    compaction = CompactionStore(settings.character_db_path)
+    embedder = _load_embedder()
+    if embedder is None:
+        # Without embeddings the stores can still open and DELETE,
+        # but skipping construction here avoids loading the model
+        # for a pure delete pass — pass None and let each store's
+        # init lazily error if a downstream call needs vectors.
+        episodic = EpisodicStore(settings.character_db_path, embedder=None)  # type: ignore[arg-type]
+        semantic = SemanticStore(settings.character_db_path, embedder=None)  # type: ignore[arg-type]
+    else:
+        episodic = EpisodicStore(settings.character_db_path, embedder=embedder)  # type: ignore[arg-type]
+        semantic = SemanticStore(settings.character_db_path, embedder=embedder)  # type: ignore[arg-type]
+    try:
+        tail = transcript.tail(session_id, limit=1)
+        tip = tail[-1].id if tail else 0
+        existing_summary = compaction.latest_for_session(session_id)
+        if not yes:
+            covered = (
+                f"{existing_summary.covered_turns} folded turns + "
+                if existing_summary is not None
+                else ""
+            )
+            typer.confirm(
+                f"Reset session {session_id!r}? Drops {covered}"
+                f"compaction summary, sets /clear watermark at row {tip}, "
+                f"and removes working-tier scribed memory tagged to this "
+                f"session. Transcript stays.",
+                abort=True,
+            )
+        summaries_dropped = compaction.invalidate_summaries(session_id)
+        compaction.record_clear(session_id=session_id, after_id=tip)
+        episodic_dropped = episodic.delete_working_for_session(session_id)
+        semantic_dropped = semantic.delete_working_for_session(session_id)
+        console.print(
+            f"[yellow]reset session {session_id!r}: "
+            f"summary={summaries_dropped} "
+            f"clear_after_id={tip} "
+            f"episodic_working={episodic_dropped} "
+            f"semantic_working={semantic_dropped}[/yellow]"
+        )
+    finally:
+        episodic.close()
+        semantic.close()
+        compaction.close()
+        transcript.close()
+
+
 @session_app.command("compact-reset")
 def session_compact_reset_cmd(
     session_id: str = typer.Argument(

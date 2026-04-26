@@ -3,11 +3,31 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 from typer.testing import CliRunner
 
 from harness.cli import app
 from harness.store.transcript import Transcript
+
+
+class _StubEmbedder:
+    """Minimal embedder fixture for tests that need to seed
+    EpisodicStore / SemanticStore through their public ingest API
+    but don't otherwise care about retrieval quality. Hash-based,
+    deterministic, no model load."""
+
+    id: str = "stub"
+    dimension: int = 4
+
+    def embed(self, texts):  # type: ignore[no-untyped-def]
+        out: list[np.ndarray] = []
+        for text in texts:
+            h = sum(ord(c) for c in text.lower())
+            v = np.array([h % 7, h % 11, h % 13, h % 17], dtype=np.float32)
+            n = float(np.linalg.norm(v))
+            out.append(v / n if n > 0 else v)
+        return np.stack(out)
 
 
 def _seed_db(db: Path) -> None:
@@ -200,6 +220,122 @@ def test_session_compact_reset_drops_summary(
         store2.close()
 
     # Transcript rows survive the reset — verify by re-running show.
+    show = runner.invoke(app, ["session", "show", "alpha"])
+    assert show.exit_code == 0, show.output
+    assert "hi" in show.output
+    assert "hey" in show.output
+
+
+def test_session_reset_full_clean(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`harness session reset <id> --yes` (harness-k7m9) must:
+    1) drop the compaction summary,
+    2) record a /clear watermark at the current tip,
+    3) delete tier=working episodic + semantic rows tagged to that
+       session,
+    4) leave the transcript intact.
+
+    Other sessions' rows + shared seeds + consolidated rows survive."""
+    from harness.compaction import CompactionStore
+    from harness.store.episodic import EpisodicStore
+    from harness.store.semantic import SemanticStore
+
+    db = _redirect_settings(monkeypatch, tmp_path)
+    _seed_db(db)
+
+    # The CLI builds an embedder via _load_embedder() which would
+    # try to download bge-small. Patch that off so the test stays
+    # offline; the delete path doesn't need vectors.
+    monkeypatch.setattr("harness.cli._load_embedder", lambda: None)
+
+    # Seed memory + summary state for session "alpha".
+    compaction = CompactionStore(db)
+    compaction.append(
+        session_id="alpha",
+        summary="folded threads",
+        up_to_turn_id=2,
+        covered_turns=4,
+        model_id="echo",
+    )
+    compaction.close()
+    embedder = _StubEmbedder()
+    episodic = EpisodicStore(db, embedder=embedder)
+    semantic = SemanticStore(db, embedder=embedder)
+    try:
+        episodic.ingest(
+            external_id=None,
+            title="alpha-working-1",
+            body="from alpha",
+            tier="working",
+            source="scribe",
+            session_id="alpha",
+        )
+        episodic.ingest(
+            external_id=None,
+            title="beta-working-1",
+            body="from beta",
+            tier="working",
+            source="scribe",
+            session_id="beta",
+        )
+        episodic.ingest(
+            external_id="seed-x",
+            title="shared seed",
+            body="seed body",
+            tier="seed",
+            source="yaml",
+        )
+        semantic.add(
+            subject="mark",
+            predicate="prefers",
+            object="raw sql",
+            confidence=0.8,
+            source="scribe",
+            tier="working",
+            session_id="alpha",
+        )
+        semantic.add(
+            subject="mark",
+            predicate="lives_in",
+            object="austin",
+            confidence=0.9,
+            source="scribe",
+            tier="working",
+            session_id="beta",
+        )
+    finally:
+        episodic.close()
+        semantic.close()
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["session", "reset", "alpha", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "summary=1" in result.output
+    assert "episodic_working=1" in result.output
+    assert "semantic_working=1" in result.output
+
+    # Post-reset state: alpha summary gone, watermark set, alpha
+    # working rows gone, others intact.
+    compaction2 = CompactionStore(db)
+    try:
+        assert compaction2.latest_for_session("alpha") is None
+        assert compaction2.latest_clear_after_id("alpha") is not None
+    finally:
+        compaction2.close()
+    episodic2 = EpisodicStore(db, embedder=embedder)
+    semantic2 = SemanticStore(db, embedder=embedder)
+    try:
+        ep_titles = {r.title for r in episodic2.all()}
+        assert "alpha-working-1" not in ep_titles
+        assert "beta-working-1" in ep_titles
+        assert "shared seed" in ep_titles
+        sm_subjects = {(f.subject, f.object) for f in semantic2.all()}
+        assert ("mark", "raw sql") not in sm_subjects
+        assert ("mark", "austin") in sm_subjects
+    finally:
+        episodic2.close()
+        semantic2.close()
+
+    # Transcript untouched.
     show = runner.invoke(app, ["session", "show", "alpha"])
     assert show.exit_code == 0, show.output
     assert "hi" in show.output

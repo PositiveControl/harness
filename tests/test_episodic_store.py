@@ -201,6 +201,98 @@ def test_ensure_seeds_preserves_principle_and_tags(store: EpisodicStore) -> None
 
 
 # ---------------------------------------------------------------------------
+# delete_working_for_session (harness-k7m9)
+# ---------------------------------------------------------------------------
+
+
+def test_delete_working_for_session_removes_only_matching_working(
+    tmp_path: Path,
+) -> None:
+    """`delete_working_for_session` hard-deletes tier=working rows
+    tagged with the given session_id. Shared seeds, consolidated
+    rows, other sessions' working rows, and procedural rows are
+    untouched. Used by `harness session reset`."""
+    store = EpisodicStore(tmp_path / "harness.sqlite", embedder=_FakeEmbedder())
+    try:
+        store.ingest(
+            external_id="seed-1",
+            title="seed",
+            body="shared",
+            tier="seed",
+            source="yaml",
+            session_id=None,
+        )
+        store.ingest(
+            external_id=None,
+            title="working-A1",
+            body="from session A",
+            tier="working",
+            source="scribe",
+            session_id="A",
+        )
+        store.ingest(
+            external_id=None,
+            title="working-A2",
+            body="also session A",
+            tier="working",
+            source="scribe",
+            session_id="A",
+        )
+        store.ingest(
+            external_id=None,
+            title="working-B1",
+            body="from session B",
+            tier="working",
+            source="scribe",
+            session_id="B",
+        )
+        store.ingest(
+            external_id=None,
+            title="consolidated",
+            body="merged record",
+            tier="consolidated",
+            source="consolidator",
+            session_id="A",
+        )
+
+        deleted = store.delete_working_for_session("A")
+        assert deleted == 2
+
+        remaining = {r.title for r in store.all()}
+        assert remaining == {"seed", "working-B1", "consolidated"}
+    finally:
+        store.close()
+
+
+def test_delete_working_for_session_purges_fts_sidecar(tmp_path: Path) -> None:
+    """Regression for the external-content FTS5 trap: deleting a row
+    from the main table must also retire its rowid from the FTS
+    sidecar, otherwise BM25 queries return stale matches that
+    join-fail back at the row level. The episodic_fts_ad trigger
+    handles this — verify by searching for the deleted row's title
+    after delete."""
+    store = EpisodicStore(tmp_path / "harness.sqlite", embedder=_FakeEmbedder())
+    try:
+        store.ingest(
+            external_id=None,
+            title="capacitor regulation",
+            body="something distinctive",
+            tier="working",
+            source="scribe",
+            session_id="X",
+        )
+        before = store.search("capacitor", k=5, mode="text")
+        assert before, "fixture: row should match before delete"
+
+        store.delete_working_for_session("X")
+
+        after = store.search("capacitor", k=5, mode="text")
+        assert after == [], "FTS sidecar must drop the deleted row's rowid"
+    finally:
+        store.close()
+
+
+# ---------------------------------------------------------------------------
 # Porter-stemming regression (harness-cpf)
 # ---------------------------------------------------------------------------
 

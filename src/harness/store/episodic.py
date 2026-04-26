@@ -114,6 +114,16 @@ AFTER INSERT ON episodic BEGIN
     INSERT INTO episodic_fts(rowid, title, body, principle)
     VALUES (new.id, new.title, new.body, COALESCE(new.principle, ''));
 END;
+
+-- Mirror deletes into the external-content FTS sidecar so
+-- `delete_working_for_session` (harness-k7m9) doesn't leave dangling
+-- BM25 entries that point at vanished rowids. Idempotent: running
+-- the migration on an existing db just adds the missing trigger.
+CREATE TRIGGER IF NOT EXISTS episodic_fts_ad
+AFTER DELETE ON episodic BEGIN
+    INSERT INTO episodic_fts(episodic_fts, rowid, title, body, principle)
+    VALUES ('delete', old.id, old.title, old.body, COALESCE(old.principle, ''));
+END;
 """  # noqa: S608 — module-level constant; _FTS_TOKENIZE is never user-supplied
 
 
@@ -313,6 +323,26 @@ class EpisodicStore:
             "UPDATE episodic SET superseded_by = ? WHERE id = ?",
             (by, record_id),
         )
+
+    def delete_working_for_session(self, session_id: str) -> int:
+        """Hard-delete every tier=working row tagged with `session_id`.
+
+        Used by `harness session reset` (harness-k7m9) to prune the
+        scribed memory for one session without touching shared seeds,
+        consolidated rows, or other sessions' working-tier writes.
+
+        Consolidated rows are intentionally left alone: they merge
+        candidates from possibly multiple sessions, so removing them
+        on a single-session reset would corrupt the merge. The
+        scribe watermark is also untouched — without it, the next
+        scribe run would re-create exactly the rows we just deleted
+        from the surviving transcript turns. Returns the number of
+        rows removed."""
+        cur = self._conn.execute(
+            "DELETE FROM episodic WHERE tier = 'working' AND session_id = ?",
+            (session_id,),
+        )
+        return cur.rowcount or 0
 
     def fetch_embedding(self, record_id: int) -> np.ndarray:
         """Return the stored embedding for a record, as a numpy array.

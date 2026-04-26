@@ -275,3 +275,91 @@ def test_fts_migration_from_old_tokenizer(tmp_path: Path) -> None:
     hits = store.search("declare", k=5, mode="text")
     assert len(hits) >= 1, "after porter migration, query 'declare' must match stored 'declared by'"
     assert hits[0][0].subject == "emergency"
+
+
+# ---------------------------------------------------------------------------
+# delete_working_for_session (harness-k7m9)
+# ---------------------------------------------------------------------------
+
+
+def test_delete_working_for_session_targets_only_matching_working(
+    tmp_path: Path,
+) -> None:
+    """`delete_working_for_session` removes only tier=working rows
+    tagged with the given session_id. Seeds, consolidated rows, and
+    other sessions' rows are untouched. Used by `harness session
+    reset` to prune scribed facts (harness-k7m9)."""
+    store = SemanticStore(tmp_path / "harness.sqlite", embedder=_FakeEmbedder())
+    try:
+        store.add(
+            subject="airton",
+            predicate="is",
+            object="program",
+            confidence=1.0,
+            source="yaml",
+            tier="seed",
+        )
+        store.add(
+            subject="mark",
+            predicate="prefers",
+            object="caveman",
+            confidence=0.8,
+            source="scribe",
+            tier="working",
+            session_id="A",
+        )
+        store.add(
+            subject="mark",
+            predicate="works_on",
+            object="harness",
+            confidence=0.8,
+            source="scribe",
+            tier="working",
+            session_id="A",
+        )
+        store.add(
+            subject="ada",
+            predicate="prefers",
+            object="dvorak",
+            confidence=0.7,
+            source="scribe",
+            tier="working",
+            session_id="B",
+        )
+        deleted = store.delete_working_for_session("A")
+        assert deleted == 2
+
+        survivors = {(f.subject, f.predicate, f.object) for f in store.all()}
+        assert ("airton", "is", "program") in survivors
+        assert ("ada", "prefers", "dvorak") in survivors
+        assert ("mark", "prefers", "caveman") not in survivors
+    finally:
+        store.close()
+
+
+def test_delete_working_for_session_purges_semantic_fts_sidecar(
+    tmp_path: Path,
+) -> None:
+    """semantic_fts_ad trigger (harness-k7m9) must drop deleted rows
+    from the FTS sidecar so BM25 doesn't return rowids that no
+    longer exist in the main table."""
+    store = SemanticStore(tmp_path / "harness.sqlite", embedder=_FakeEmbedder())
+    try:
+        store.add(
+            subject="orbit",
+            predicate="contains",
+            object="capacitor",
+            confidence=0.8,
+            source="scribe",
+            tier="working",
+            session_id="X",
+        )
+        before = store.search("capacitor", k=5, mode="text")
+        assert before, "fixture: row should match before delete"
+
+        store.delete_working_for_session("X")
+
+        after = store.search("capacitor", k=5, mode="text")
+        assert after == [], "semantic_fts sidecar must drop the deleted row's rowid"
+    finally:
+        store.close()
