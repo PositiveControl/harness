@@ -1,5 +1,14 @@
 # airton_c1 Phase-1 Baseline (2026-04-23)
 
+> **Vocabulary note (2026-04-26):** what this doc calls "ablation" /
+> `--ablate` was originally named "holdout" / `--holdout`. Renamed
+> to avoid collision with ATC phraseology ("hold short", "holding
+> pattern"). The technique is the same: an exclusion-manifest at
+> `voice/ablation.yaml` lists samples the eval should hide from
+> retrieval at run time, and the score delta vs the all-samples-
+> visible run is the generalization signal. Earlier git history
+> uses the original term.
+
 First end-to-end deterministic run of `eval atc` against airton_c1's
 stack: Qwen 2.5 7B 4-bit + PersonaAdapter + BGE-small retrieval over
 752 seed rows from JO 7110.65BB (Basic w/ Chg 1 & 2, 2026-01-22).
@@ -239,22 +248,22 @@ against. To harden the score:
 
 ---
 
-## Run 5 — durability: voice holdout generalization (2026-04-23)
+## Run 5 — durability: voice ablation generalization (2026-04-23)
 
 Carve one canonical sample (`class_b_vfr_clearance_phraseology`) into
-`voice/holdout.yaml` as an exclusion-manifest test. Runtime retrieval
+`voice/ablation.yaml` as an exclusion-manifest test. Runtime retrieval
 still sees it (canonical.yaml preserves the sample). New
-`eval atc --holdout` flag excludes it at retrieval time for a
+`eval atc --ablate` flag excludes it at retrieval time for a
 generalization measurement.
 
 | mode                            | pass  | rate  |
 | ------------------------------- | ----- | ----- |
 | stock (all samples retrievable) | 12/12 | 100%  |
-| `--holdout` (class_b excluded)  | 11/12 | 91.7% |
+| `--ablate` (class_b excluded)  | 11/12 | 91.7% |
 | **gap**                         | **1** | **8.3 pp** |
 
 Stock run is bit-identical to run 2's output — runtime behavior
-unchanged by the holdout infrastructure. The gap IS the durability
+unchanged by the ablation infrastructure. The gap IS the durability
 measurement.
 
 ### What the gap means
@@ -276,37 +285,37 @@ cite in stock-mode came from the specific class_b sample's opening
 line, not from a generalized pattern.
 
 **Memorization component**: 1 case = 8.3 pp of the 100% stock score.
-The other 11 cases pass under holdout (not tested individually for
-memorization — each would need its own holdout run to isolate).
+The other 11 cases pass under ablation (not tested individually for
+memorization — each would need its own ablation run to isolate).
 
 ### Cost / preservation
 
 The exclusion-manifest pattern keeps runtime stable. `canonical.yaml`
-still lists class_b; `holdout.yaml` names its ID as a test-time
-exclusion. If you don't pass `--holdout`, the persona sees all 4
+still lists class_b; `ablation.yaml` names its ID as a test-time
+exclusion. If you don't pass `--ablate`, the persona sees all 4
 samples. Mark's day-to-day chat never regresses — the 11/12 result
 only appears when deliberately probed.
 
 ### Residual durability work
 
-1. ~~Extend holdout manifest to test each sample individually~~ →
+1. ~~Extend ablation manifest to test each sample individually~~ →
    done in Run 6 below.
-2. Strengthen the citation-first pattern across samples so holdout
+2. Strengthen the citation-first pattern across samples so ablation
    regressions shrink. E.g., make every canonical sample's opening
    sentence start with `JO 7110.65 §X-Y-Z —` (already the case) AND
    enforce via a post-rewrite rule that compression preserves the
    section marker (lane F territory).
-3. Ship holdout as a regular CI signal — every future change to
-   canonical.yaml triggers `eval atc --holdout` as well as stock.
+3. Ship ablation as a regular CI signal — every future change to
+   canonical.yaml triggers `eval atc --ablate` as well as stock.
    Regressing the gap past 1-2 cases is a trip-wire.
 
 ---
 
 ## Run 6 — round-robin memorization map (2026-04-23)
 
-Added `--holdout-ids CSV` flag as an override for the manifest —
+Added `--ablate-ids CSV` flag as an override for the manifest —
 lets a single run exclude an arbitrary set of sample IDs without
-mutating `voice/holdout.yaml`. Drove 4 sequential deterministic
+mutating `voice/ablation.yaml`. Drove 4 sequential deterministic
 evals, one per canonical sample excluded:
 
 | excluded sample                          | pass  | Δ  | regressed cases                      | interpretation |
@@ -345,7 +354,7 @@ different gold structure. Two samples for the same section teach the
 pattern without one being an echo template.
 
 Option C — accept the known gap. Stock 12/12 is the user-facing
-score; `--holdout --holdout-ids class_b_vfr_clearance_phraseology`
+score; `--ablate --ablate-ids class_b_vfr_clearance_phraseology`
 yields 11/12 as the documented memorization-cost. Runtime is
 preserved, the gap is visible on demand.
 
@@ -404,15 +413,15 @@ the old embed text lacked.
 
 | mode    | pre-Fix-A | post-Fix-A | Δ |
 | ------- | --------- | ---------- | - |
-| stock   | 12/12     | **12/12**  | 0 |
-| holdout | 11/12     | 11/12      | 0 (size) |
+| stock    | 12/12     | **12/12**  | 0 |
+| ablation | 11/12     | 11/12      | 0 (size) |
 
 Stock preserved. Gate passed.
 
 ### Side finding — memorization case SHIFTED
 
-Before Fix A, `--holdout` regressed `controller_class_b_vfr_clearance`.
-After Fix A, `--holdout` regresses `controller_readback_requirement`
+Before Fix A, `--ablate` regressed `controller_class_b_vfr_clearance`.
+After Fix A, `--ablate` regresses `controller_readback_requirement`
 instead. class_b is no longer memorization-driven — the enriched
 §7-9-2 embed (`Class B Service Area — Terminal — VFR AIRCRAFT IN CLASS
 B AIRSPACE`) gives retrieval enough signal to cite correctly without
@@ -433,7 +442,7 @@ a follow-up under the voice-corpus-expansion bead (future Phase-1.5).
 
 ### What to re-measure on next canonical.yaml change
 
-1. Round-robin holdout (4 probes) — where does the memorization case
+1. Round-robin ablation (4 probes) — where does the memorization case
    live now?
 2. Full fixture stock — must stay 12/12.
 3. Retrieval probes for §3-9-6 / §3-10-3 / §3-12-3 — enrichment still

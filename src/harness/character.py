@@ -68,13 +68,15 @@ class Character:
     # re-reading disk. Invariant: canonical + captured = len(voice_samples).
     canonical_voice_count: int
     captured_voice_count: int
-    # Held-out samples in voice/holdout.yaml — carved out of the canonical
-    # set for generalization eval (airton_c1 harness-w49p). They are NOT
-    # added to `voice_samples`, so the VoiceRetriever can't surface them;
-    # exposing them separately lets an eval read back the prompts and
-    # measure whether the model still answers correctly without the
-    # canonical crutch. Empty for characters without a holdout file.
-    holdout_voice_samples: tuple[VoiceSample, ...]
+    # Ablated samples in voice/ablation.yaml — carved out of the canonical
+    # set for generalization eval (airton_c1 harness-w49p; renamed from
+    # "holdout" 2026-04-26 to avoid collision with ATC phraseology like
+    # "hold short" / "holding pattern"). They are NOT added to
+    # `voice_samples`, so the VoiceRetriever can't surface them; exposing
+    # them separately lets an eval read back the prompts and measure
+    # whether the model still answers correctly without the canonical
+    # crutch. Empty for characters without an ablation file.
+    ablated_voice_samples: tuple[VoiceSample, ...]
     seed_memories: tuple[SeedMemory, ...]
     # airton_c1 opt-in (harness-3uh): when true, the orchestrator injects
     # a forced `search_memory` tool call at the start of every user turn,
@@ -214,15 +216,15 @@ def load_character(path: Path) -> Character:
 
     voice_samples = tuple(canonical_samples + captured_samples)
 
-    # Holdout: samples carved out of canonical for generalization eval.
+    # Ablation samples carved out of canonical for generalization eval.
     # Same schema; loaded separately and NOT merged into voice_samples,
-    # so the VoiceRetriever can't see them. Absent file = no holdout.
-    holdout_path = path / "voice" / "holdout.yaml"
-    holdout_samples: list[VoiceSample] = []
-    if holdout_path.exists():
-        holdout_doc = yaml.safe_load(holdout_path.read_text()) or {}
-        for s in holdout_doc.get("samples", []) or []:
-            holdout_samples.append(
+    # so the VoiceRetriever can't see them. Absent file = no ablation.
+    ablation_path = path / "voice" / "ablation.yaml"
+    ablated_samples: list[VoiceSample] = []
+    if ablation_path.exists():
+        ablation_doc = yaml.safe_load(ablation_path.read_text()) or {}
+        for s in ablation_doc.get("samples", []) or []:
+            ablated_samples.append(
                 VoiceSample(id=s["id"], prompt=s["prompt"], gold=s["gold"].strip())
             )
 
@@ -272,7 +274,7 @@ def load_character(path: Path) -> Character:
         voice_samples=voice_samples,
         canonical_voice_count=len(canonical_samples),
         captured_voice_count=len(captured_samples),
-        holdout_voice_samples=tuple(holdout_samples),
+        ablated_voice_samples=tuple(ablated_samples),
         seed_memories=tuple(seeds),
         require_search_memory=bool(core.get("require_search_memory", False)),
         lead_with_citation=bool(core.get("lead_with_citation", False)),

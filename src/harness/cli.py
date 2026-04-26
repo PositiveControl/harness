@@ -2396,24 +2396,25 @@ def eval_atc(
         "--persona/--no-persona",
         help="Wrap the base adapter in PersonaAdapter (default on).",
     ),
-    holdout: bool = typer.Option(
+    ablate: bool = typer.Option(
         False,
-        "--holdout",
+        "--ablate",
         help=(
             "Exclude voice samples listed in character/<name>/voice/"
-            "holdout.yaml from retrieval for this eval run. Score delta "
+            "ablation.yaml from retrieval for this eval run. Score delta "
             "vs. the default (no flag) is the generalization signal "
-            "(harness-w49p)."
+            "(harness-w49p; renamed from --holdout 2026-04-26 to avoid "
+            "ATC phraseology collision)."
         ),
     ),
-    holdout_ids: str | None = typer.Option(
+    ablate_ids: str | None = typer.Option(
         None,
-        "--holdout-ids",
+        "--ablate-ids",
         help=(
             "Comma-separated sample IDs to exclude at retrieval time for "
-            "this run. Overrides --holdout and the on-disk manifest — "
+            "this run. Overrides --ablate and the on-disk manifest — "
             "useful for round-robin per-sample memorization probes "
-            "without mutating voice/holdout.yaml."
+            "without mutating voice/ablation.yaml."
         ),
     ),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
@@ -2463,32 +2464,33 @@ def eval_atc(
     # literal speaker keeps the retrieval API consistent while never
     # matching a user-siloed row.
 
-    # Holdout IDs (harness-w49p): samples listed in voice/holdout.yaml are
-    # excluded from the retriever's returns when `--holdout` is on. The
-    # set is empty when the flag is off or the character has no holdout
-    # file, so the default retrieval path is unchanged.
+    # Ablation IDs (harness-w49p; renamed from "holdout" 2026-04-26):
+    # samples listed in voice/ablation.yaml are excluded from the
+    # retriever's returns when `--ablate` is on. The set is empty when
+    # the flag is off or the character has no ablation file, so the
+    # default retrieval path is unchanged.
     #
-    # `--holdout-ids CSV` overrides both `--holdout` and the manifest
-    # for ad-hoc per-sample probes (round-robin memorization map).
-    if holdout_ids is not None:
-        _holdout_ids: frozenset[str] = frozenset(
-            part.strip() for part in holdout_ids.split(",") if part.strip()
+    # `--ablate-ids CSV` overrides both `--ablate` and the manifest for
+    # ad-hoc per-sample probes (round-robin memorization map).
+    if ablate_ids is not None:
+        _ablate_ids: frozenset[str] = frozenset(
+            part.strip() for part in ablate_ids.split(",") if part.strip()
         )
-    elif holdout:
-        _holdout_ids = frozenset(s.id for s in character.holdout_voice_samples)
+    elif ablate:
+        _ablate_ids = frozenset(s.id for s in character.ablated_voice_samples)
     else:
-        _holdout_ids = frozenset()
+        _ablate_ids = frozenset()
 
     def run_turn(question: str) -> str:
         examples: list[VoiceSample] = []
         if retriever is not None and top_k > 0:
             try:
-                # Ask for a wider slate when holdout is on so the post-
+                # Ask for a wider slate when ablation is on so the post-
                 # filter doesn't shrink below top_k on characters with
                 # many canonical samples (airton has 20+).
-                request_k = top_k + len(_holdout_ids)
+                request_k = top_k + len(_ablate_ids)
                 voice_hits = retriever.top_k(question, k=request_k)
-                examples = [s for s in voice_hits if s.id not in _holdout_ids][:top_k]
+                examples = [s for s in voice_hits if s.id not in _ablate_ids][:top_k]
             except Exception:  # eval is read-only; surface score only
                 examples = []
 

@@ -48,10 +48,11 @@ samples:
       AIRSPACE." The clearance is explicit — "radar contact" alone
       doesn't authorize entry.
 
-  # class_b is ALSO listed in voice/holdout.yaml — holdout is an
+  # class_b is ALSO listed in voice/ablation.yaml — ablation is an
   # exclusion manifest, not a move-out. Runtime retrieval sees the
-  # sample (kept here for 12/12 baseline); `eval atc --holdout`
-  # excludes it at retrieval time for a generalization test.
+  # sample (kept here for 12/12 baseline); `eval atc --ablate`
+  # excludes it at retrieval time for a generalization test. Renamed
+  # from "holdout" 2026-04-26 to avoid ATC-phraseology collision.
 
   - id: emergency_distress_urgency_declaration
     prompt: "How does a pilot declare an emergency, and what's the difference between Distress and Urgency?"
@@ -68,7 +69,7 @@ samples:
   # ----- Voice corpus 4 → 8 (plan #6, 2026-04-26) -----
   # Adds chapter 2 + chapter 5 coverage. Each sample pairs with one
   # or more fixture cases (jargon + lay variants both benefit) so the
-  # round-robin holdout map should show pure-generalization behaviour
+  # round-robin ablation map should show pure-generalization behaviour
   # for these on next measurement. Citation-first opener pattern
   # matches the original four samples (harness-cco preserves it).
 
