@@ -18,6 +18,18 @@ CREATE TABLE IF NOT EXISTS compaction_summary (
 
 CREATE INDEX IF NOT EXISTS compaction_summary_session_idx
     ON compaction_summary (session_id, id);
+
+-- Persistent /clear watermark per session. Survives chat restart so
+-- `harness chat --session <id>` after a /clear keeps the cut instead
+-- of re-attaching the prior compaction summary. One row per session
+-- (UPSERT on /clear); after_id stores the highest transcript row id
+-- the model is allowed to ignore. Cleared by deleting the row
+-- (no public CLI for that yet — manual sqlite for now). harness-rrkj.
+CREATE TABLE IF NOT EXISTS session_clear_watermark (
+    session_id TEXT    PRIMARY KEY,
+    after_id   INTEGER NOT NULL,
+    cleared_at TEXT    NOT NULL
+);
 """
 
 
@@ -94,6 +106,35 @@ class CompactionStore:
             model_id=model_id,
             created_at=datetime.fromisoformat(now),
         )
+
+    def record_clear(self, *, session_id: str, after_id: int) -> None:
+        """Persist a /clear cut for `session_id` at `after_id`.
+
+        Subsequent loads of this session must skip the compaction
+        summary AND drop every transcript row with id <= after_id.
+        Idempotent — UPSERT on session_id, so a second /clear in the
+        same session moves the watermark forward (never backward
+        from the caller's perspective: callers always pass the
+        current transcript tip). harness-rrkj."""
+        now = datetime.now(UTC).isoformat()
+        self._conn.execute(
+            """INSERT INTO session_clear_watermark (session_id, after_id, cleared_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(session_id) DO UPDATE SET
+                 after_id   = excluded.after_id,
+                 cleared_at = excluded.cleared_at""",
+            (session_id, after_id, now),
+        )
+
+    def latest_clear_after_id(self, session_id: str) -> int | None:
+        """Return the persisted /clear watermark for `session_id`, or
+        None if the session has never been cleared. Callers fall back
+        to compaction-summary / tail behavior when None."""
+        row = self._conn.execute(
+            "SELECT after_id FROM session_clear_watermark WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return int(row[0]) if row is not None else None
 
     def close(self) -> None:
         self._conn.close()

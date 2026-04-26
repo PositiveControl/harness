@@ -133,6 +133,35 @@ def test_compaction_store_latest_returns_most_recent_row(tmp_path: Path) -> None
         store.close()
 
 
+def test_record_clear_is_idempotent_upsert(tmp_path: Path) -> None:
+    """harness-rrkj: /clear can fire repeatedly in the same session;
+    each call should overwrite the watermark, not append a second row.
+    Read-back returns the latest after_id."""
+    store = CompactionStore(tmp_path / "c.sqlite")
+    try:
+        assert store.latest_clear_after_id("s") is None
+        store.record_clear(session_id="s", after_id=10)
+        assert store.latest_clear_after_id("s") == 10
+        store.record_clear(session_id="s", after_id=42)
+        assert store.latest_clear_after_id("s") == 42
+    finally:
+        store.close()
+
+
+def test_record_clear_keys_by_session(tmp_path: Path) -> None:
+    """Watermarks for different sessions live in distinct rows so a
+    /clear in one chat never silences another."""
+    store = CompactionStore(tmp_path / "c.sqlite")
+    try:
+        store.record_clear(session_id="a", after_id=5)
+        store.record_clear(session_id="b", after_id=99)
+        assert store.latest_clear_after_id("a") == 5
+        assert store.latest_clear_after_id("b") == 99
+        assert store.latest_clear_after_id("c") is None
+    finally:
+        store.close()
+
+
 def test_compaction_store_sessions_are_isolated(tmp_path: Path) -> None:
     store = CompactionStore(tmp_path / "c.sqlite")
     try:

@@ -73,9 +73,14 @@ class SlashOps:
         The transcript DB, memory/fact stores, compaction record, and
         voice corpus are all untouched — scribe + retro still have
         every past turn. After /clear the next model turn starts with
-        system prompt + new user msg, nothing else. Ephemeral to the
-        process: a fresh `harness chat` restart replays history from
-        the DB as before.
+        system prompt + new user msg, nothing else.
+
+        Persists a per-session watermark to the compaction store so
+        a future `harness chat --session <id>` keeps the cut instead
+        of re-attaching the prior compaction summary on restart
+        (harness-rrkj). Without that, /clear was process-only and
+        every restart resurrected the cleared content via the
+        compaction-summary path in load_history.
 
         Also mutes retrieval (voice + episodic + semantic) for the
         rest of the process when retrieval health is wired — stops
@@ -87,6 +92,13 @@ class SlashOps:
         app._state.history = []
         log.clear()
         app._state.retrieval_health.muted = True
+        if app._compaction_store is not None:
+            tail = app._transcript.tail(app._session, limit=1)
+            after_id = tail[-1].id if tail else 0
+            app._compaction_store.record_clear(
+                session_id=app._session,
+                after_id=after_id,
+            )
         log.write(Text("─── context cleared ───", style="dim"))
         # Re-render the metrics strip so the ctx-used number drops to
         # zero immediately instead of waiting for the next tick.

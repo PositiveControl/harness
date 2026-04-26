@@ -77,9 +77,21 @@ class ContextMeter:
     # the command ran. `load_history` then returns only rows > cutoff
     # AND ignores any prior compaction summary — the next turn sees
     # the system prompt + new user msg, nothing else. Persisted rows
-    # stay in the DB for audit, scribe, and retro. Ephemeral to the
-    # running process (harness-c1r).
+    # stay in the DB for audit, scribe, and retro. Hydrated from
+    # `compaction_store.latest_clear_after_id` on init so a /clear
+    # in a previous chat process still cuts this run's history
+    # (harness-c1r → harness-rrkj durability).
     clear_after_id: int | None = field(default=None)
+
+    def __post_init__(self) -> None:
+        """Restore any persisted /clear watermark for `session` so the
+        cut survives chat restarts. Compaction store stays optional;
+        when it's missing the meter behaves exactly as it used to."""
+        if self.clear_after_id is not None or self.compaction_store is None:
+            return
+        watermark = self.compaction_store.latest_clear_after_id(self.session)
+        if watermark is not None:
+            self.clear_after_id = watermark
 
     def load_history(self) -> tuple[ChatMessage | None, list[ChatMessage]]:
         """Return (optional summary-system-message, turns-since-pointer).
@@ -116,8 +128,12 @@ class ContextMeter:
     def clear(self) -> None:
         """Mark the model-visible history as reset at the current
         transcript tip. Subsequent `load_history` calls return only
-        rows appended after this moment until the process exits or
-        `clear_after_id` is explicitly reset.
+        rows appended after this moment.
+
+        The watermark also persists to `compaction_store` (harness-
+        rrkj) so a future `harness chat --session <id>` invocation
+        loads the same cut and skips the prior compaction summary —
+        rather than re-attaching it on every restart as before.
 
         Also mutes retrieval (voice + episodic + semantic) for the
         rest of the process when a `retrieval_state` is wired — so
@@ -126,6 +142,11 @@ class ContextMeter:
         See harness-zpe."""
         rows = self.transcript.tail(self.session, limit=1)
         self.clear_after_id = rows[-1].id if rows else 0
+        if self.compaction_store is not None:
+            self.compaction_store.record_clear(
+                session_id=self.session,
+                after_id=self.clear_after_id,
+            )
         if self.retrieval_state is not None:
             self.retrieval_state.muted = True
 

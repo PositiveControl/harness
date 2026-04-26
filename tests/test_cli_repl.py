@@ -199,6 +199,79 @@ def test_clear_is_a_noop_on_empty_transcript(tmp_path: Path) -> None:
     assert [m.content for m in history] == ["first prompt"]
 
 
+def test_clear_persists_watermark_across_meter_instances(tmp_path: Path) -> None:
+    """harness-rrkj: /clear used to be process-only. After the
+    persistence layer lands, a second ContextMeter for the same
+    session (= a chat restart) must see the prior cut without the
+    user re-running /clear. Compaction summary from before the cut
+    stays out of `load_history` on the new meter too."""
+    meter, transcript, compaction = _ctx_meter(tmp_path, with_compaction=True)
+    assert compaction is not None
+    last_id = _seed_transcript(transcript, meter.session, pairs=3)
+    compaction.append(
+        session_id=meter.session,
+        summary="summary-of-old-turns",
+        up_to_turn_id=last_id,
+        covered_turns=6,
+        model_id="echo",
+    )
+    meter.clear()
+    transcript.close()
+    compaction.close()
+
+    # Simulate a chat restart: rebuild stores from the same db file
+    # and instantiate a fresh ContextMeter. The watermark in the new
+    # session_clear_watermark table must hydrate `clear_after_id` on
+    # init so the prior cut still applies.
+    db = tmp_path / "harness.sqlite"
+    transcript2 = Transcript(db)
+    compaction2 = CompactionStore(db)
+    meter2 = ContextMeter(
+        adapter=EchoAdapter(),
+        character=load_character(AIRTON),
+        transcript=transcript2,
+        compaction_store=compaction2,
+        session=meter.session,
+        console=Console(file=open("/dev/null", "w")),  # noqa: SIM115 — test lifetime
+    )
+    assert meter2.clear_after_id == last_id
+    summary_after, history_after = meter2.load_history()
+    assert summary_after is None
+    assert history_after == []
+
+
+def test_clear_persists_only_for_its_own_session(tmp_path: Path) -> None:
+    """A /clear in session A must NOT cut session B's history. The
+    watermark is keyed by session_id; cross-session bleed would
+    silently hide the wrong turns from the model."""
+    db = tmp_path / "harness.sqlite"
+    transcript = Transcript(db)
+    compaction = CompactionStore(db)
+    meter_a = ContextMeter(
+        adapter=EchoAdapter(),
+        character=load_character(AIRTON),
+        transcript=transcript,
+        compaction_store=compaction,
+        session="session-a",
+        console=Console(file=open("/dev/null", "w")),  # noqa: SIM115 — test lifetime
+    )
+    _seed_transcript(transcript, "session-a", pairs=2)
+    _seed_transcript(transcript, "session-b", pairs=2)
+    meter_a.clear()
+
+    meter_b = ContextMeter(
+        adapter=EchoAdapter(),
+        character=load_character(AIRTON),
+        transcript=transcript,
+        compaction_store=compaction,
+        session="session-b",
+        console=Console(file=open("/dev/null", "w")),  # noqa: SIM115 — test lifetime
+    )
+    assert meter_b.clear_after_id is None
+    _, history_b = meter_b.load_history()
+    assert [m.content for m in history_b] == ["u0", "a0", "u1", "a1"]
+
+
 def test_handle_clear_slash_calls_meter_and_prints_banner(tmp_path: Path) -> None:
     """The REPL's /clear handler is a thin shim: delegate to the
     ContextMeter and emit a visual separator so the user sees the

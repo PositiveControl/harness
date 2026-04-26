@@ -675,7 +675,20 @@ class ChatApp(App[None]):
         raw JSON into the log. Dropping them keeps replay coherent at
         the cost of an occasional gap in the scroll-back when a prior
         session ended mid-tool-exchange."""
-        tail = self._transcript.tail(self._session, limit=self._max_history_replay)
+        # Honor any persisted /clear watermark so a prior `/clear`
+        # in this session stays cut after a chat restart (harness-rrkj).
+        # Compaction store may be unwired (e.g. compact_at=0); fall
+        # back to the plain tail in that case.
+        clear_after = (
+            self._compaction_store.latest_clear_after_id(self._session)
+            if self._compaction_store is not None
+            else None
+        )
+        if clear_after is not None:
+            rows = self._transcript.fetch_after(self._session, after_id=clear_after)
+            tail = rows[-self._max_history_replay :] if rows else []
+        else:
+            tail = self._transcript.tail(self._session, limit=self._max_history_replay)
         if not tail:
             return
         log.write(
