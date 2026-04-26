@@ -503,3 +503,132 @@ post-Fix-A probes yields bit-identical replies. The 1-case gap is
 real signal, not noise. That makes every future canonical.yaml or
 retrieval change trivially measurable: if any probe's result
 changes by more than ±1 case, the change had a non-trivial effect.
+
+---
+
+## Run 9 — retrieval-quality gate (2026-04-25)
+
+`atc_retrieval_baseline.json` was a snapshot before this run, not a
+contract. Voice samples were carrying accuracy on the full-stack
+fixture, masking retrieval drift. Two beads landed to turn the
+snapshot into a load-bearing gate:
+
+- **harness-sb6r** — `harness eval atc-retrieval --compare-baseline`
+  reads the saved snapshot, exits non-zero on regression. Aggregate
+  recall@N drop is unconditional fail; per-case rank worsening is
+  fail unless covered by `--regression-budget N` AND aggregate recall
+  holds. Improvements + new/dropped fixture cases are reported
+  separately and never flip the gate.
+- **harness-zxqs** — pre-push hook chain (`.beads/hooks/pre-push` →
+  pre-commit framework) runs the comparator only when the pushed
+  diff touches a retrieval-affecting path (`src/harness/retrieval/`,
+  `src/harness/store/{_hybrid,episodic}.py`,
+  `src/harness/tools/search_memory.py`,
+  `scripts/atc_{chunk,ingest,extract}.py`,
+  `character/airton_c1/corpus/{synonyms,query_synonyms}.yaml`).
+  Side effect: surfaces that pre-commit framework hooks (ruff,
+  mypy, pytest) had been silently dormant under
+  `core.hooksPath=.beads/hooks/`. Now firing.
+
+### Day-to-day workflow
+
+```bash
+# Make a retrieval change (chunker, synonym table, embedder, hybrid
+# weights, search_memory tool body cap, ...).
+
+# Run the gate locally to see the diff before pushing.
+HARNESS_CHARACTER_NAME=airton_c1 \
+  uv run harness eval atc-retrieval --compare-baseline
+
+# Two outcomes:
+#   ✓ no regressions → push; pre-push gate will be a no-op.
+#   ✗ regression detected → either fix, or re-snapshot if intentional.
+
+# Re-snapshot once the new state is known-good:
+HARNESS_CHARACTER_NAME=airton_c1 \
+  uv run harness eval atc-retrieval --save-baseline
+
+# Mutually exclusive with --compare-baseline: compare first to read
+# the diff, then snapshot once you've decided the new state is what
+# you want.
+```
+
+### Reading the diff
+
+Comparator output prints three blocks:
+
+1. **Aggregate diff table** — recall@1/@3/@5/@k old vs new with the
+   delta in pp. The gate hard-fails on any negative aggregate Δ.
+2. **Per-case regressions** — case_id : `old_rank → new_rank`. A
+   slip from rank 0 → 1 within top-K is still a regression even if
+   aggregate recall holds.
+3. **Per-case improvements** — same shape, opposite direction.
+   Reported but never trigger the gate.
+
+New fixture rows (in the run, not in the baseline) and dropped rows
+(in the baseline, not in the run) are listed under `new cases` /
+`dropped cases`. They don't fail the gate — adding regression seed
+cases via `harness-5zh`-style fixture growth is a deliberate act,
+and the next `--save-baseline` absorbs them.
+
+### `--regression-budget N`
+
+Allows up to N per-case rank slips IF aggregate recall holds. Use
+sparingly. The legitimate case is a chunker change that rebalances
+top-K — three §X-Y-Z chunks all live in top-5, but the order
+shuffles by 1-2 positions across the K boundary. Aggregate recall
+is unchanged; per-case ranks moved a notch. Don't reach for the
+budget to paper over a real regression — the comparator's output
+will tell you whether the slip is a rebalance or a slip.
+
+### Latent regression caught on this machine (corpus catchup)
+
+Two retrieval regression tests in `tests/test_session_regressions.py`
+(`test_aircraft_to_aircraft_retrieval_lands_13_1_2`,
+`test_mh_rbn_tool_output_contains_full_tbl_412`) had been failing
+silently on this machine because the pre-commit framework's pytest
+hook wasn't actually running (see the
+`core.hooksPath=.beads/hooks/` note above). Root cause:
+
+- `corpus/chunks/` and `*.sqlite` are gitignored — regenerable, not
+  shared across machines.
+- Local `corpus/chunks/jo_7110_65.jsonl` was generated **2026-04-23
+  22:49**, predating commit `2cb969f` (`harness-1s4` chunker
+  NOTE/PHRASEOLOGY/TBL folding) which landed **2026-04-24 11:13**.
+- Old chunker dropped TBL 4-1-2 (RBN distance table) entirely. §4-1-1
+  chunk in store had only the 349-char "see TBL 4-1-2" pointer body.
+- Local `harness.sqlite` was re-ingested 2026-04-25 19:51 but from
+  the **stale** chunks JSONL → store carried the old, table-less
+  chunks even after `atc_ingest.py` ran.
+
+Catchup sequence (now documented as the recovery step on any machine
+that pulls retrieval-stack changes):
+
+```bash
+HARNESS_CHARACTER_NAME=airton_c1 uv run python scripts/atc_chunk.py --force
+HARNESS_CHARACTER_NAME=airton_c1 uv run harness memory wipe --yes
+HARNESS_CHARACTER_NAME=airton_c1 uv run python scripts/atc_ingest.py
+```
+
+Result: 899 → 2,437 chunks; 752 → 2,092 ingested rows; both
+regression tests pass; baseline re-snapshotted to reflect the
+post-catchup state.
+
+### Anchoring future epic work
+
+The retrieval epic `harness-rhto` (lay-term ↔ doc-term gap
+remediation) ships its three lanes — Fix B (`harness-7ph5`, synonym
+enrichment), Fix C (`harness-hvu1`, small-model query expansion),
+Fix D (`harness-pw9z`, domain-tuned embedder swap) — behind this
+gate. Each lane needs a measurable recall@k Δ ≥ 0 to land. Without
+the gate, the lanes would land on vibes; with it, every lane has a
+falsifiable claim attached.
+
+Open follow-ups tracked separately:
+
+- `harness-zxw6` — `wake_turbulence_concern_lay` rank slipped 6 → 8
+  post-catchup; still in top-10 so recall@k holds, but worth
+  investigating what's now ranking ahead.
+- `harness-aise` — section-number existence check (the §3-12-3-
+  doesn't-exist class of fab); orthogonal to retrieval recall but
+  often co-occurs with the same root cause.
