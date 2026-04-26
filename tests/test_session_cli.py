@@ -137,6 +137,33 @@ def test_session_show_unknown_id_is_quiet(tmp_path: Path, monkeypatch: pytest.Mo
     assert "### " not in result.output
 
 
+def test_coin_session_id_format() -> None:
+    """`_coin_session_id` mints a daily-rotated, launch-unique id of
+    the form `cli-YYYY-MM-DD-HHMMSS` (UTC). Pin the format because
+    `harness session list` ordering and downstream regexes (eval +
+    docs) rely on it. harness-y7ua."""
+    from datetime import UTC, datetime
+
+    from harness.cli import _coin_session_id
+
+    fixed = datetime(2026, 4, 26, 14, 32, 5, tzinfo=UTC)
+    assert _coin_session_id(now=fixed) == "cli-2026-04-26-143205"
+
+
+def test_chat_default_session_is_unique_per_launch() -> None:
+    """Two `_coin_session_id()` calls a second apart produce
+    different ids, so two consecutive `harness chat` launches do
+    not collide on the prior session's compaction summary."""
+    import time
+
+    from harness.cli import _coin_session_id
+
+    first = _coin_session_id()
+    time.sleep(1.01)
+    second = _coin_session_id()
+    assert first != second
+
+
 def test_session_list_empty_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`session list` against a fresh db prints a (no sessions) hint
     and exits cleanly."""

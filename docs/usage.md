@@ -31,7 +31,7 @@ What the flags do:
 
 Other useful options:
 
-- `--session NAME` — name the session. Defaults to `local`. Helpful when you want the scribe to pull from a specific conversation later.
+- `--session NAME` — name the session. **Defaults to a fresh `cli-YYYY-MM-DD-HHMMSS` UTC id per launch** so a new chat invocation never inherits the prior run's compaction summary or scribed memory. Pass an explicit name (e.g. `--session local`) to resume a prior session, or to make scribe / voice capture target a known id later.
 - `--speaker NAME` — who you are. Defaults to `mark`. Determines whose relationship memory this session belongs to.
 - `--chain-rewrites` — add a second concrete-substitution rewrite pass. More Airton, 1.5× latency.
 - `--memories-threshold 0.5` / `--facts-threshold 0.45` — tune the similarity floors. Lower = more permissive.
@@ -206,10 +206,10 @@ Common failure modes:
 
 ## Suggested first session
 
-1. `uv run harness chat --model mlx --persona --memories 3 --facts 5`
+1. `uv run harness chat --model mlx --persona --memories 3 --facts 5` — note the auto-coined session id Airton prints on launch (e.g. `cli-2026-04-26-143205`); reuse it with `--session` if you want to extend this conversation later.
 2. Talk to Airton about something real you're working on — actual engineering, not a test prompt.
-3. When a reply lands wrong, capture the correction before moving on: `uv run harness voice capture --session local --gold "…"` in another terminal.
-4. After the session, scribe it: `uv run harness memory scribe --session local --user mark --model mlx`.
+3. When a reply lands wrong, capture the correction before moving on: `uv run harness voice capture --session <auto-coined-id> --gold "…"` in another terminal. Use `harness session list` if you forgot the id.
+4. After the session, scribe it: `uv run harness memory scribe --session <auto-coined-id> --user mark --model mlx`.
 5. Inspect what it wrote: `uv run harness memory list --tier working` and `fact-list --tier working`.
 6. Optionally consolidate: `uv run harness memory consolidate`.
 

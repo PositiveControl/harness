@@ -149,6 +149,19 @@ def _encode_assistant_with_tool_calls(content: str, tool_calls: tuple[ToolCall, 
     return f"{content}{_TOOL_CALLS_SENTINEL}{payload}"
 
 
+def _coin_session_id(*, now: datetime | None = None) -> str:
+    """Mint a fresh, daily-rotated, launch-unique session id.
+
+    Format: `cli-YYYY-MM-DD-HHMMSS` (UTC). Daily prefix groups
+    same-day sessions in `harness session list`; the timestamp
+    suffix makes every launch a clean break from the prior run's
+    compaction summary + scribed memory. Used by `cmd_chat` when
+    the user does not pass `--session`. `now` is parameterized so
+    tests can pin the timestamp."""
+    stamp = (now or datetime.now(UTC)).strftime("%Y-%m-%d-%H%M%S")
+    return f"cli-{stamp}"
+
+
 def _decode_transcript_message(m: TranscriptMessage) -> ChatMessage:
     """Convert a persisted transcript row back into a ChatMessage so the
     next turn's history reconstructs tool_calls on assistant turns and
@@ -1651,7 +1664,16 @@ def _resolve_adapter(
 
 @app.command()
 def chat(
-    session: str = typer.Option("local", help="Session identifier"),
+    session: str | None = typer.Option(
+        None,
+        help=(
+            "Session identifier. When omitted, every launch coins a "
+            "fresh id of the form `cli-YYYY-MM-DD-HHMMSS` (UTC) so a "
+            "new chat invocation never inherits the prior run's "
+            "compaction summary or scribed memory. Pass an explicit "
+            "name (e.g. --session local) to resume a prior session."
+        ),
+    ),
     channel: str = typer.Option("cli", help="Channel name"),
     speaker: str = typer.Option("mark", help="Your handle"),
     model: str = typer.Option("echo", help="Adapter: echo | mlx | ollama"),
@@ -1869,6 +1891,9 @@ def chat(
     ),
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
+    if session is None:
+        session = _coin_session_id()
+        console.print(f"[dim]session: {session} (auto)[/dim]")
     if tui:
         from harness.cli_tui import run_tui
 
