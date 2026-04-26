@@ -1,12 +1,16 @@
-"""Tests for harness.retrieval.query_expander (harness-ajn)."""
+"""Tests for harness.retrieval.query_expander (harness-ajn + harness-hvu1)."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 
+from harness.model.adapter import ChatMessage
 from harness.retrieval.query_expander import (
+    LLMQueryExpander,
     NullQueryExpander,
     QueryExpander,
+    _parse_rewrites,
     default_synonyms_path,
     expand_many,
     load_query_expander,
@@ -269,3 +273,211 @@ def test_load_default_query_only_path_is_corpus_sibling(tmp_path: Path) -> None:
     from harness.retrieval.query_expander import default_query_only_synonyms_path
 
     assert default_query_only_synonyms_path(tmp_path) == tmp_path / "corpus" / "query_synonyms.yaml"
+
+
+# ---------- LLMQueryExpander (harness-hvu1) ----------
+
+
+class _ScriptedAdapter:
+    """Stand-in for a real ModelAdapter — returns a queued reply per
+    `complete()` call. Tests assert on the captured prompt + the
+    expander's behavior given a known model output."""
+
+    def __init__(self, replies: list[str], *, raises: bool = False) -> None:
+        self.replies = list(replies)
+        self.calls: list[list[ChatMessage]] = []
+        self.raises = raises
+
+    def complete(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        max_tokens: int = 128,
+        temperature: float = 0.0,
+    ) -> str:
+        self.calls.append(list(messages))
+        if self.raises:
+            raise RuntimeError("scripted adapter failure")
+        return self.replies.pop(0)
+
+
+def test_parse_rewrites_strips_numbering_and_bullets() -> None:
+    raw = (
+        "1. minimum same-runway separation\n2) landing behind category\n- arrival spacing minima\n"
+    )
+    parsed = _parse_rewrites(raw, max_rewrites=5)
+    assert parsed == (
+        "minimum same-runway separation",
+        "landing behind category",
+        "arrival spacing minima",
+    )
+
+
+def test_parse_rewrites_strips_quotes_around_phrases() -> None:
+    raw = "\"minimum same-runway separation\"\n'landing behind category'\n"
+    parsed = _parse_rewrites(raw, max_rewrites=5)
+    assert parsed == ("minimum same-runway separation", "landing behind category")
+
+
+def test_parse_rewrites_caps_at_max() -> None:
+    raw = "phrase one\nphrase two\nphrase three\nphrase four\nphrase five\nphrase six\n"
+    parsed = _parse_rewrites(raw, max_rewrites=3)
+    assert parsed == ("phrase one", "phrase two", "phrase three")
+
+
+def test_parse_rewrites_dedupes_repeats() -> None:
+    raw = "Same Runway\nsame runway\nlanding behind\nLANDING BEHIND\n"
+    parsed = _parse_rewrites(raw, max_rewrites=5)
+    # Dedupe is case-insensitive; first occurrence's casing preserved.
+    assert parsed == ("Same Runway", "landing behind")
+
+
+def test_parse_rewrites_drops_short_header_echoes() -> None:
+    """Small models sometimes echo the prompt's `Phrases:` line back."""
+    raw = "Phrases:\nminimum same-runway separation\nOutput:\nlanding behind category\n"
+    parsed = _parse_rewrites(raw, max_rewrites=5)
+    assert parsed == ("minimum same-runway separation", "landing behind category")
+
+
+def test_parse_rewrites_empty_when_input_blank() -> None:
+    assert _parse_rewrites("", max_rewrites=5) == ()
+    assert _parse_rewrites("   \n  \n", max_rewrites=5) == ()
+
+
+def test_llm_expander_appends_paraphrases_to_query() -> None:
+    adapter = _ScriptedAdapter(
+        replies=["minimum same-runway separation\nlanding behind category\n"],
+    )
+    exp = LLMQueryExpander(adapter)
+    out = exp.expand("shortest distance next to aircraft on approach")
+    assert out == (
+        "shortest distance next to aircraft on approach "
+        "[paraphrases: minimum same-runway separation; landing behind category]"
+    )
+    # Adapter received exactly one call with one user-role message.
+    assert len(adapter.calls) == 1
+    assert len(adapter.calls[0]) == 1
+
+
+def test_llm_expander_returns_query_unchanged_when_no_rewrites() -> None:
+    adapter = _ScriptedAdapter(replies=["\n   \n"])
+    exp = LLMQueryExpander(adapter)
+    assert exp.expand("the query") == "the query"
+
+
+def test_llm_expander_falls_through_to_chained_static_expander() -> None:
+    """LLM rewrite + static synonym chain compose: LLM emits its
+    paraphrases, then the static expander layers any section-tagged
+    synonyms on top."""
+    adapter = _ScriptedAdapter(replies=["minimum runway separation\n"])
+    static = QueryExpander({"3-10-3": ("same runway separation",)})
+    exp = LLMQueryExpander(adapter, chain_to=static)
+    out = exp.expand("same runway separation")
+    # Static triggers on the augmented query and adds its [related: ...] tag.
+    assert "[paraphrases: minimum runway separation]" in out
+    assert "[related: §3-10-3:" in out
+
+
+def test_llm_expander_swallows_adapter_exceptions() -> None:
+    """Adapter failure must not crash the chat — fall through to the
+    chained expander on the original query."""
+    adapter = _ScriptedAdapter(replies=[], raises=True)
+    static = QueryExpander({"3-10-3": ("same runway separation",)})
+    exp = LLMQueryExpander(adapter, chain_to=static)
+    # No paraphrases tag (LLM failed), but static fired on the literal query.
+    out = exp.expand("same runway separation")
+    assert "[paraphrases:" not in out
+    assert "[related: §3-10-3:" in out
+
+
+def test_llm_expander_passes_max_tokens_and_temperature() -> None:
+    """Wiring sanity: the configured budget reaches the adapter call."""
+
+    class _Capturing:
+        def __init__(self) -> None:
+            self.kw: dict[str, object] = {}
+
+        def complete(self, messages: Iterable[ChatMessage], **kw: object) -> str:
+            self.kw = dict(kw)
+            return "x\n"
+
+    adapter = _Capturing()
+    exp = LLMQueryExpander(adapter, max_tokens=64, temperature=0.3)
+    exp.expand("anything")
+    assert adapter.kw == {"max_tokens": 64, "temperature": 0.3}
+
+
+def test_llm_expander_is_empty_returns_false() -> None:
+    """Even with no synonyms-table component, the LLM expander always
+    has something to contribute — so `is_empty` returns False to keep
+    callers from prematurely skipping the build."""
+    adapter = _ScriptedAdapter(replies=["x\n"])
+    assert LLMQueryExpander(adapter).is_empty is False
+
+
+def test_llm_expander_uses_default_prompt_template_when_unspecified() -> None:
+    """Default template names the corpus context hint and expects the
+    `{query}` substitution. Captured prompt should embed the user's
+    question verbatim and reference the JO context."""
+    adapter = _ScriptedAdapter(replies=["x\n"])
+    exp = LLMQueryExpander(adapter)
+    exp.expand("what is the purpose of 7110.65?")
+    sent = adapter.calls[0]
+    assert len(sent) == 1
+    content = sent[0].content
+    assert "what is the purpose of 7110.65?" in content
+    assert "JO 7110.65" in content
+
+
+def test_llm_expander_respects_custom_prompt_template() -> None:
+    """Per-character prompt override path: pass any string with the
+    {context_hint} + {query} placeholders and the expander uses it."""
+    adapter = _ScriptedAdapter(replies=["x\n"])
+    template = "Context: {context_hint}\nQuestion: {query}\nKeywords:"
+    exp = LLMQueryExpander(adapter, prompt_template=template, context_hint="ATC")
+    exp.expand("how do I separate aircraft?")
+    sent = adapter.calls[0]
+    content = sent[0].content
+    assert "Context: ATC" in content
+    assert "Question: how do I separate aircraft?" in content
+
+
+def test_default_llm_expand_prompt_path_is_under_character_dir(tmp_path: Path) -> None:
+    """Convention pin so CLI + eval agree on where the override lives."""
+    from harness.retrieval.query_expander import default_llm_expand_prompt_path
+
+    assert (
+        default_llm_expand_prompt_path(tmp_path)
+        == tmp_path / "retrieval_prompts" / "query_expansion.md"
+    )
+
+
+def test_load_llm_expand_prompt_returns_default_when_path_missing(tmp_path: Path) -> None:
+    from harness.retrieval.query_expander import (
+        _DEFAULT_LLM_EXPAND_PROMPT,
+        _load_llm_expand_prompt,
+    )
+
+    assert _load_llm_expand_prompt(None) == _DEFAULT_LLM_EXPAND_PROMPT
+    assert _load_llm_expand_prompt(tmp_path / "missing.md") == _DEFAULT_LLM_EXPAND_PROMPT
+
+
+def test_load_llm_expand_prompt_reads_file_when_present(tmp_path: Path) -> None:
+    from harness.retrieval.query_expander import _load_llm_expand_prompt
+
+    override = tmp_path / "prompt.md"
+    override.write_text("Custom: {query}", encoding="utf-8")
+    assert _load_llm_expand_prompt(override) == "Custom: {query}"
+
+
+def test_load_llm_expand_prompt_falls_back_when_file_empty(tmp_path: Path) -> None:
+    """An empty / whitespace-only override is treated as 'use default' —
+    cleaner failure mode than silently embedding an empty prompt."""
+    from harness.retrieval.query_expander import (
+        _DEFAULT_LLM_EXPAND_PROMPT,
+        _load_llm_expand_prompt,
+    )
+
+    override = tmp_path / "prompt.md"
+    override.write_text("   \n\n   ", encoding="utf-8")
+    assert _load_llm_expand_prompt(override) == _DEFAULT_LLM_EXPAND_PROMPT

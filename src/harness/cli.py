@@ -2603,6 +2603,28 @@ def eval_atc_retrieval(
             "expander). Disable for A/B baselines measuring expander lift."
         ),
     ),
+    llm_expand: bool = typer.Option(
+        False,
+        "--llm-expand/--no-llm-expand",
+        help=(
+            "Add the LLMQueryExpander pre-pass (harness-hvu1) — small "
+            "model rewrites the user query into 3-5 doc-style keyword "
+            "phrases that get appended before retrieval. Chains in front "
+            "of the static synonym expander. Default off; flip on to "
+            "measure recall lift vs the static-only baseline. Adds one "
+            "small-model call per case (~100-200ms p50)."
+        ),
+    ),
+    llm_expand_repo: str | None = typer.Option(
+        None,
+        "--llm-expand-repo",
+        help=(
+            "HF repo for the LLM-expander adapter when --llm-expand is "
+            "set. Defaults to HARNESS_ROUTER_MODEL_REPO so the same "
+            "small-model footprint serves routing + query expansion. "
+            "Shared adapter, separate calls."
+        ),
+    ),
     save_baseline: bool = typer.Option(
         False,
         "--save-baseline",
@@ -2692,13 +2714,17 @@ def eval_atc_retrieval(
     # eval recall@k numbers reflect the retrieval path a real chat turn
     # would take. --no-expand-queries gives the A/B baseline.
     from harness.retrieval.query_expander import (
+        LLMQueryExpander,
         NullQueryExpander,
+        QueryExpander,
+        _load_llm_expand_prompt,
+        default_llm_expand_prompt_path,
         default_query_only_synonyms_path,
         default_synonyms_path,
         load_query_expander,
     )
 
-    expander = (
+    base_expander: QueryExpander = (
         load_query_expander(
             default_synonyms_path(settings.character_path),
             query_only_path=default_query_only_synonyms_path(settings.character_path),
@@ -2706,6 +2732,24 @@ def eval_atc_retrieval(
         if expand_queries
         else NullQueryExpander()
     )
+
+    expander: QueryExpander
+    if llm_expand:
+        from harness.model.mlx import MLXAdapter
+
+        repo = llm_expand_repo or settings.router_repo
+        llm_adapter = MLXAdapter(repo=repo)
+        prompt_template = _load_llm_expand_prompt(
+            default_llm_expand_prompt_path(settings.character_path)
+        )
+        expander = LLMQueryExpander(
+            llm_adapter,
+            chain_to=base_expander,
+            prompt_template=prompt_template,
+        )
+        console.print(f"[dim]llm-expand: {repo}[/dim]")
+    else:
+        expander = base_expander
 
     def _search(query: str, depth: int) -> list[RetrievalHit]:
         raw = store.search(expander.expand(query), k=depth, mode="hybrid")

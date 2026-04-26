@@ -35,8 +35,12 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import yaml
+
+if TYPE_CHECKING:
+    from harness.model.adapter import ChatMessage
 
 # Minimal English stopword set. Tight by design — over-stripping hurts
 # precision more than under-stripping hurts recall, since each retained
@@ -270,3 +274,194 @@ def expand_many(expander: QueryExpander, queries: Iterable[str]) -> tuple[str, .
     their loops. Identity-preserving when `expander` is a
     `NullQueryExpander` (no allocations beyond the tuple materialization)."""
     return tuple(expander.expand(q) for q in queries)
+
+
+# ---------- LLM query expansion (harness-hvu1) ----------
+
+
+_DEFAULT_LLM_EXPAND_PROMPT = """\
+You convert a user's question into 3-5 short keyword phrases that
+match the wording the source document would use. The source document
+is {context_hint}.
+
+Rules:
+- Output ONLY the phrases, one per line.
+- No numbering, no bullets, no quotes, no commentary.
+- Use the document's jargon, not lay paraphrasing.
+  Example: "shortest distance" → "minimum same-runway separation".
+- Each phrase should be 2-6 words.
+- Skip the user's literal phrasing — that's already in the query.
+
+User question: {query}
+
+Phrases:"""
+
+
+def default_llm_expand_prompt_path(character_path: Path) -> Path:
+    """Per-character override location. When this file exists its
+    contents replace the default prompt — useful for a character with
+    a non-FAA corpus (the default is JO 7110.65-flavoured) or for
+    iterating on prompt wording without a code change."""
+    return character_path / "retrieval_prompts" / "query_expansion.md"
+
+
+def _load_llm_expand_prompt(prompt_path: Path | None) -> str:
+    """Read a prompt template from disk, fall back to default. Caller
+    formats with `.format(context_hint=..., query=...)`. Missing /
+    empty file returns the default."""
+    if prompt_path is None:
+        return _DEFAULT_LLM_EXPAND_PROMPT
+    if not prompt_path.exists():
+        return _DEFAULT_LLM_EXPAND_PROMPT
+    text = prompt_path.read_text(encoding="utf-8").strip()
+    return text or _DEFAULT_LLM_EXPAND_PROMPT
+
+
+# Lines we drop from model output: numbering, bullets, surrounding quotes.
+_LIST_PREFIX_RE = re.compile(r"^\s*(?:[-•*]|\d+[.)])\s*")
+_QUOTE_RE = re.compile(r'^\s*[\'"]?\s*(.*?)\s*[\'"]?\s*$')
+
+
+def _parse_rewrites(raw: str, *, max_rewrites: int) -> tuple[str, ...]:
+    """Pluck up to `max_rewrites` keyword phrases from the model's reply.
+    Tolerates numbered / bulleted / quoted output — the prompt asks for
+    plain newline-delimited phrases but small models drift, and we'd
+    rather return three usable phrases than zero."""
+    out: list[str] = []
+    for line in raw.splitlines():
+        cleaned = _LIST_PREFIX_RE.sub("", line).strip()
+        if not cleaned:
+            continue
+        match = _QUOTE_RE.match(cleaned)
+        if match:
+            cleaned = match.group(1).strip()
+        if not cleaned:
+            continue
+        # Drop "Phrases:" / "Output:" header echoes the model sometimes
+        # repeats from the prompt.
+        if cleaned.endswith(":") and len(cleaned) <= 16:
+            continue
+        out.append(cleaned)
+        if len(out) >= max_rewrites:
+            break
+    # Dedupe while preserving order — small models occasionally repeat
+    # themselves and a duplicate phrase doesn't add retrieval signal.
+    deduped: list[str] = []
+    seen_lower: set[str] = set()
+    for phrase in out:
+        key = phrase.lower()
+        if key in seen_lower:
+            continue
+        seen_lower.add(key)
+        deduped.append(phrase)
+    return tuple(deduped)
+
+
+@runtime_checkable
+class _LLMAdapterProto(Protocol):
+    """Structural type matching the slice of `ModelAdapter` we use.
+    Kept as a local Protocol so test stubs can implement just
+    `complete()` without taking on the full adapter contract
+    (`id`, `context_window`, etc.)."""
+
+    def complete(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        max_tokens: int = 128,
+        temperature: float = 0.0,
+    ) -> str: ...
+
+
+class LLMQueryExpander(QueryExpander):
+    """Pre-retrieval rewrite using a small model (harness-hvu1).
+
+    Lay-language queries have low overlap with corpus phrasing — even
+    after the static synonym expander runs (harness-ajn), novel
+    paraphrases the synonym table doesn't cover still miss. This
+    expander asks a small model (typically the same one driving the
+    intent router) to emit 3-5 doc-style keyword phrases for the user's
+    question, then appends them to the query so both BM25 and dense
+    cosine see the jargon-space rewriting.
+
+    Composition: `chain_to` (typically the static `QueryExpander`)
+    runs AFTER the LLM rewrite, so per-section synonym lookups still
+    fire on the original lay query AND on any rewrite that happens to
+    name a section keyword. Order chosen because the static expander
+    is cheap, deterministic, and identity-preserving when nothing
+    triggers — running it last is free.
+
+    Failure handling: any exception from the adapter (timeout,
+    decode error, OOM) falls through silently to the chained
+    expander. Retrieval still runs on the original query plus
+    static synonyms — degradation is graceful, not fatal.
+
+    Caching: stateless across instances. A per-process cache is
+    deliberately omitted in v1; the bead allots ≤200ms p50 for the
+    rewrite call, and small models hit that budget without help.
+    Add a TTL cache here if a benchmark shows repeated queries
+    dominating cost."""
+
+    def __init__(
+        self,
+        adapter: _LLMAdapterProto,
+        *,
+        chain_to: QueryExpander | None = None,
+        prompt_template: str = _DEFAULT_LLM_EXPAND_PROMPT,
+        context_hint: str = "FAA Order JO 7110.65 (Air Traffic Control)",
+        max_rewrites: int = 5,
+        max_tokens: int = 128,
+        temperature: float = 0.0,
+    ) -> None:
+        # Skip the parent constructor's section-table init — we don't
+        # use the static-table path. `chain_to`, when present, owns
+        # the section-table semantics for the chained pass.
+        self._sections = {}
+        self._term_tokens = ()
+        self._adapter = adapter
+        self._chain_to = chain_to
+        self._prompt_template = prompt_template
+        self._context_hint = context_hint
+        self._max_rewrites = max_rewrites
+        self._max_tokens = max_tokens
+        self._temperature = temperature
+
+    @property
+    def is_empty(self) -> bool:
+        # Never identity-empty: if the chained expander is empty we
+        # still emit LLM rewrites. Keeps the load_query_expander API
+        # consistent (callers that branch on `is_empty` to skip
+        # building still get a working expander when the LLM path is
+        # the only signal).
+        return False
+
+    def expand(self, query: str) -> str:
+        from harness.model.adapter import ChatMessage
+
+        prompt = self._prompt_template.format(
+            context_hint=self._context_hint,
+            query=query,
+        )
+        messages = [ChatMessage(role="user", content=prompt)]
+        try:
+            raw = self._adapter.complete(
+                messages,
+                max_tokens=self._max_tokens,
+                temperature=self._temperature,
+            )
+        except Exception:
+            # Adapter failure → no rewrites; fall through to chained
+            # expander on the original query.
+            rewrites: tuple[str, ...] = ()
+        else:
+            rewrites = _parse_rewrites(raw, max_rewrites=self._max_rewrites)
+
+        if rewrites:
+            joined = "; ".join(rewrites)
+            augmented = f"{query} [paraphrases: {joined}]"
+        else:
+            augmented = query
+
+        if self._chain_to is not None:
+            return self._chain_to.expand(augmented)
+        return augmented
