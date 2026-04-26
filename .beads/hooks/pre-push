@@ -7,3 +7,12 @@ if command -v bd >/dev/null 2>&1; then
   _bd_exit=$?; if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
 fi
 # --- END BEADS INTEGRATION v0.59.0 ---
+
+# Chain to pre-commit framework so .pre-commit-config.yaml hooks fire
+# (harness-zxqs). See pre-commit hook in this dir for context — outside
+# the BEADS markers so `bd hooks install` doesn't overwrite on upgrade.
+# pytest + atc-retrieval-gate (when retrieval paths touched) live here.
+if command -v uv >/dev/null 2>&1; then
+  uv run pre-commit run --hook-stage pre-push --color=always
+  _pc_exit=$?; if [ $_pc_exit -ne 0 ]; then exit $_pc_exit; fi
+fi

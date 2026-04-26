@@ -32,3 +32,20 @@ repos:
         types: [python]
         pass_filenames: false
         stages: [pre-push]
+
+      # Retrieval gate (harness-zxqs): blocks pushes that touch any of
+      # the chunker / store / hybrid-search / search_memory tool /
+      # synonym-table paths from regressing recall@k. `files:` is the
+      # whole load-bearing piece — pre-commit only runs the hook when
+      # at least one matching path appears in the pushed diff, so
+      # unrelated work (orchestrator, persona, TUI, model adapters)
+      # doesn't pay the embedder warm-up cost. Bypass: re-snapshot
+      # with `harness eval atc-retrieval --save-baseline` once the
+      # new state is intentional, then re-push.
+      - id: atc-retrieval-gate
+        name: atc retrieval gate (--compare-baseline)
+        entry: scripts/retrieval_gate.sh
+        language: system
+        files: ^(src/harness/retrieval/|src/harness/store/(_hybrid|episodic)\.py|src/harness/tools/search_memory\.py|scripts/atc_(chunk|ingest|extract)\.py|character/airton_c1/corpus/(synonyms|query_synonyms)\.yaml)
+        pass_filenames: false
+        stages: [pre-push]
