@@ -1,0 +1,99 @@
+version: 1
+
+# Lay-term synonyms keyed by JO 7110.65 section number. Applied at
+# ingest time by scripts/atc_ingest.py::principle_for — appended as
+# "[synonyms: term1, term2, ...]" after the base principle. The
+# augmented principle reaches (a) the [principle: X] tag in embed-text
+# header (dense cosine), (b) the standalone-line principle in embed-text
+# body (dense cosine), and (c) the FTS5 index via the episodic_fts_ai
+# trigger (BM25). So one enrichment lifts all three retrieval paths.
+#
+# Rule of discipline: only add entries with a demonstrated lay-query
+# failure. Blind enrichment risks cross-section bleed (a synonym on §X
+# attracts queries that should hit §Y). Each entry must be
+# section-specific enough that a neighbor section does not also match.
+#
+# Evidence trail:
+#   §3-10-3 — session 2026-04-24 regression (epic harness-rhto,
+#             bead harness-7ph5). User query "shortest distance next
+#             to another aircraft on approach to the runway" missed
+#             chunk 759 entirely (dense ~0.016 below 0.5 floor; BM25
+#             drowned by frequent "aircraft/runway/approach" tokens).
+#   §3-9-6  — paired mirror. Enriched with departure-specific lay
+#             terms so lay queries about takeoff spacing disambiguate
+#             from the §3-10-3 arrival enrichment.
+
+sections:
+  "3-10-3":
+    # Arrival same-runway separation. Lay terms must stay arrival-flavored
+    # so they don't bleed onto §3-9-6 (departure) or §3-12-3 (sea lane).
+    - shortest distance on approach
+    - minimum spacing on final
+    - in-trail spacing on approach
+    - approach separation minima
+    - landing behind another aircraft
+    - how close can aircraft be on approach
+    - aircraft spacing on final
+    - trailing aircraft on approach
+
+  "3-9-6":
+    # Departure same-runway separation. Mirror of §3-10-3 but for takeoff
+    # side; keeps lay queries about departure spacing off the arrival chunk.
+    - minimum spacing between departures
+    - shortest distance before takeoff
+    - takeoff spacing behind another aircraft
+    - trailing departure spacing
+    - how long before next takeoff
+    - departure separation minima
+
+  "13-1-2":
+    # ERAM — En Route Conflict Detection and Resolution. Phase-1.5
+    # eval atc 2026-04-26: query "Where can a controller find
+    # information for aircraft-to-aircraft alerts" landed §13-1-2 at
+    # rank #5 (cosine 0.016 noise floor); §2-1-6 (Safety Alert) and
+    # §1-1-3 (Where to Find This Order) dominated. Lay/meta phrasing
+    # ("where can a controller find") needs explicit binding to EDST
+    # surface terms.
+    #
+    # Discipline note: keep "aircraft" tokens hyphenated
+    # ("aircraft-to-aircraft", not "aircraft to aircraft"). The
+    # tokenizer preserves hyphens as single tokens; the un-hyphenated
+    # form decomposes to {aircraft, alert} which is a subset of any
+    # safety-alert query (§2-1-6), causing cross-section bleed.
+    # Confirmed via Run 11 retrieval gate — un-hyphenated form
+    # regressed controller_safety_alert_terrain rank 0 → 5.
+    - aircraft-to-aircraft alert
+    - EDST
+    - En Route Decision Support Tool
+    - conflict probe
+    - conflict probe alert
+    - conflict detection
+    - conflict alert
+    - aircraft-to-airspace alert
+    - where to find aircraft-to-aircraft alerts
+
+  "5-7-2":
+    # Speed Adjustment — Methods. Phase-1.5 eval atc 2026-04-26: query
+    # "phraseology for telling a pilot to slow down" landed §5-7-2 at
+    # rank #4 (cosine 0.016); §3-11-1 (Helicopter Taxi/Ground Movement)
+    # dominated because "slow"/"taxi" tokens overlap. Bind speed-
+    # adjustment lay terms here so they don't bleed onto helicopter
+    # ground operations.
+    - tell pilot to slow down
+    - reduce speed phraseology
+    - speed reduction phraseology
+    - slow down phraseology
+    - speed adjustment instructions
+    - increase or reduce speed
+    - maintain specific speed
+    - speed control phraseology
+
+  "5-7-1":
+    # Speed Adjustment — Application. Mirror entry for §5-7-2; the
+    # general "when do I issue a speed adjustment" lay queries should
+    # surface the umbrella application section, not §5-7-2's methods.
+    - when to issue speed adjustment
+    - speed adjustment minimum
+    - keep speed adjustments to minimum
+    - terminate speed adjustment
+    - apply speed control
