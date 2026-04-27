@@ -134,6 +134,68 @@ These belong to harness-q35t (rubric / retrieval) and harness-7wju
 
 ## Log (newest first)
 
+### 2026-04-27 — cluster #3 retrieval investigation (harness-kure, closed — no net improvement)
+
+**Goal.** Lift retrieval for short numeric utterances. Cluster #3
+failure pattern: "AMERICAN ONE TWENTY THREE, SQUAWK SEVEN FIVE ZERO
+ZERO" pulls §2-4-17 (Numbers Usage) instead of §10-2-6 (Hijack),
+because the phonetic-digit tokens dominate BM25 + dense signals over
+the section-distinctive verb (SQUAWK).
+
+**Approach 1 — strip phonetic digits from retrieval query.** Drop
+ZERO/ONE/.../NINETY/HUNDRED/POINT/etc. from the query before
+retrieval; model still sees the original utterance for classification.
+Result: 35% → 30% combined (-5pp). Hijack / squawk / speed-adjustment
+cluster won (9 improvements: `emerg_hijack_verify_canonical`,
+`emerg_hijack_wrong_code`, `emerg_traffic_advisory_canonical`,
+`han_speed_reduce_canonical`, etc.), but 9 canonical landing/handoff
+cases regressed (`arr_landing_canonical`, `arr_pilot_oos`,
+`han_pilot_freq_oos`, etc.). Net cases: 12 vs 14, but the SET of
+passing cases changed — we lost more on the cases that were already
+working than we gained on the cluster #3 targets.
+
+Hypothesis on the regressions: short stripped queries
+("RUNWAY CLEARED TO LAND") give BM25 / dense too little signal vs
+originals that match the corpus's spelled-form EXAMPLE blocks.
+
+**Approach 2 — augment (original + stripped concatenated).** Keep
+the original, append the stripped form so section-distinctive verbs
+get doubled in BM25. Result: 35% → 27.5% combined (-7.5pp). Citation
+accuracy rose +2.5pp (retrieval improved on cluster #3 cases) but
+verdict crashed -12.5pp — the model saw different candidates from
+the merged retrieval and verdicts shifted. The longer query changed
+the retrieval slate enough to confuse the verdict layer.
+
+**Both reverted.** Lint pipeline restored to the kl0w state (35%
+combined baseline). Tree clean.
+
+**Working theory.** The corpus's PHRASEOLOGY blocks contain
+spelled-form EXAMPLE strings ("Runway 7 Left, cleared to land") that
+match short utterances on dense embedding; the §2-4-17 (Numbers
+Usage) chapter wins NOT because it's semantically right but because
+it has the most numeric content by token count. Query-side
+modifications that fight this either lose match-quality on the
+right-section examples (approach 1) or shift the candidate slate
+enough to break verdict stability (approach 2).
+
+**Future angles to try (NOT under kure):**
+
+1. *Per-section keyword anchor map.* `SQUAWK` → §10-2-6 (or §10-2-6
+   + §5-2-11 Code Monitor), `7500` → §10-2-6, `MAYDAY` → §10-1-1,
+   etc. Bake into a small `verb_anchors.yaml` consumed by the lint
+   pipeline as a re-rank signal. Surgical — touches only the
+   utterances where verbs are unambiguous.
+2. *K bump.* Default k=8 → 12-16 with the cite-grounding gate
+   filtering ungrounded picks. More candidates means the right
+   section is more likely to appear in the slate even when it's
+   not top-1 on raw retrieval.
+3. *Two-stage retrieval.* Hybrid pull top-K, then re-rank by
+   section-specific keyword overlap with the utterance's verb-class.
+   Mirrors the cite-grounding gate pattern but as an active re-rank
+   not a passive filter.
+
+These belong to a follow-up retrieval-side bead, not this one.
+
 ### 2026-04-27 — rubric tightening: phonetic-slot clarification (harness-kl0w, closed)
 
 **Goal.** Lift the lint pipeline's combined accuracy by addressing
