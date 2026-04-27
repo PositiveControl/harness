@@ -581,15 +581,58 @@ def _expand_by_size(chunks: Iterable[Chunk]) -> Iterator[Chunk]:
             )
 
 
+def _renumber_chunk_indexes(chunks: Iterable[Chunk]) -> Iterator[Chunk]:
+    """Monotonically renumber `chunk_index` per (source, section) so the
+    ingest dedup key `(source, section, chunk_index)` stays unique
+    across distinct parser emissions that share a coarse section id.
+
+    Same shape of fix as the JO dedup tiebreaker (harness-8zx6) — JO
+    had different parser-emissions colliding under the same dedup key
+    because the tiebreaker wasn't enrichment-aware; here PHAK has them
+    colliding because the section id itself is coarse.
+
+    No-op for fine-grained sources (JO 7110.65, AIM, 14 CFR) where each
+    parser emission already has a unique (source, section): the counter
+    starts at 0, expansion-derived chunk_indexes 0..N pass through
+    unchanged because they're the only emission for that section.
+
+    Lifesaving for PHAK: the source extractor produces blocks that
+    `_parse_phak` files under `section="Chapter N"` (subheadings aren't
+    reliably detected in PHAK's PDF→MD output). Without renumbering,
+    909 distinct Chapter 16 parser emissions all collide under
+    (PHAK, Chapter 16, 0..few) and dedup keeps only ~3 of 909.
+    """
+    counters: dict[tuple[str, str], int] = {}
+    for chunk in chunks:
+        key = (chunk.source, chunk.section)
+        idx = counters.get(key, 0)
+        counters[key] = idx + 1
+        yield Chunk(
+            source=chunk.source,
+            chapter=chunk.chapter,
+            section=chunk.section,
+            parent_section=chunk.parent_section,
+            parent_section_title=chunk.parent_section_title,
+            title=chunk.title,
+            body=chunk.body,
+            principle=chunk.principle,
+            tags=chunk.tags,
+            chunk_index=idx,
+        )
+
+
 # ---------- top-level ----------
 
 
 def chunk_markdown(md: str, cfg: ParserConfig) -> list[Chunk]:
-    """Full pipeline for one document: segment → parse → size-shape."""
+    """Full pipeline for one document: segment → parse → size-shape →
+    renumber. The renumber pass keeps `chunk_index` unique per
+    `(source, section)` so coarse-section sources (PHAK) don't collapse
+    under ingest-time dedup. No-op for fine-grained sources."""
     blocks = list(_iter_blocks(md))
     parser = _PARSERS_BY_KIND[cfg.kind]
     parsed = parser(blocks, cfg)
-    return list(_expand_by_size(parsed))
+    return list(_renumber_chunk_indexes(_expand_by_size(parsed)))
 
 
 def write_jsonl(chunks: Iterable[Chunk], dst: Path) -> int:

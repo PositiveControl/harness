@@ -368,6 +368,71 @@ def test_split_oversized_splits_on_paragraphs_with_overlap(chunker: object) -> N
         assert len(chunk) <= 600 + 20
 
 
+def test_renumber_chunk_indexes_disambiguates_coarse_section(chunker: object) -> None:
+    """PHAK regression: parser emits many distinct blocks under
+    section='Chapter 16'. Without renumbering, all collide on
+    (source, section, chunk_index=0) and ingest dedup keeps just one.
+    With renumbering, each block gets a unique index per section."""
+    chunks = [
+        chunker.Chunk(  # type: ignore[attr-defined]
+            source="PHAK",
+            chapter="16",
+            section="Chapter 16",
+            parent_section="",
+            title="block-a",
+            body="aviation history begins…",
+            tags=("atc", "corpus", "PHAK"),
+        ),
+        chunker.Chunk(  # type: ignore[attr-defined]
+            source="PHAK",
+            chapter="16",
+            section="Chapter 16",
+            parent_section="",
+            title="block-b",
+            body="powered flight requires…",
+            tags=("atc", "corpus", "PHAK"),
+        ),
+        chunker.Chunk(  # type: ignore[attr-defined]
+            source="PHAK",
+            chapter="15",
+            section="Chapter 15",
+            parent_section="",
+            title="block-c",
+            body="airspace classes are…",
+            tags=("atc", "corpus", "PHAK"),
+        ),
+    ]
+    out = list(chunker._renumber_chunk_indexes(chunks))  # type: ignore[attr-defined]
+    assert [(c.section, c.chunk_index) for c in out] == [
+        ("Chapter 16", 0),
+        ("Chapter 16", 1),
+        ("Chapter 15", 0),
+    ]
+
+
+def test_renumber_chunk_indexes_noop_for_fine_grained_sections(chunker: object) -> None:
+    """JO/AIM/CFR each emit one parser-Chunk per (source, section), so
+    expand-derived chunk_index 0..N already-unique. Renumber should
+    preserve the existing 0..N sequence. Verifies no surprise drift on
+    the fine-grained sources where the bug doesn't apply."""
+    chunks = [
+        chunker.Chunk(  # type: ignore[attr-defined]
+            source="JO_7110.65",
+            chapter="3",
+            section="3-9-6",
+            parent_section="3-9",
+            title="SAME RUNWAY SEPARATION",
+            body=f"part {i}",
+            chunk_index=i,
+            tags=("atc", "corpus", "JO_7110.65"),
+        )
+        for i in range(4)
+    ]
+    out = list(chunker._renumber_chunk_indexes(chunks))  # type: ignore[attr-defined]
+    assert [c.chunk_index for c in out] == [0, 1, 2, 3]
+    assert all(c.section == "3-9-6" for c in out)
+
+
 def test_expand_by_size_indexes_splits(chunker: object) -> None:
     """When a section body splits, each piece gets its own chunk_index
     so downstream ingest can build stable external_ids per split."""
