@@ -715,3 +715,95 @@ def test_lint_utterance_uses_verb_anchor_to_promote_into_top_3(tmp_path: Path) -
     # Earliest mention of §10-2-6 should precede §2-4-17 because the
     # rerank moved it up the slate.
     assert user_msg.index("§10-2-6") < user_msg.index("§2-4-17")
+
+
+def test_source_filter_drops_non_jo_rows_from_candidate_slate(tmp_path: Path) -> None:
+    """Multi-source corpus shouldn't poison the JO-only lint contract.
+    Seed an AIM row with a takeoff-shaped body that the lexical embedder
+    will rank ahead of the JO §3-9-10 row, then verify that source_filter
+    keeps the JO row in the prompt and the AIM row out."""
+    store = EpisodicStore(tmp_path / "h.sqlite", embedder=_LexicalEmbedder())
+    # AIM row that lexically out-scores JO §3-9-10 on the takeoff query.
+    store.ingest(
+        external_id="aim-4-3-13",
+        title="DEPARTURE PROCEDURES (PILOT-FACING)",
+        body=(
+            "When a pilot is cleared for takeoff, the runway number is "
+            "stated first, followed by the takeoff clearance phrase. "
+            "TAKEOFF clearance procedures from the controller's perspective "
+            "are described in the AIM departure procedures section."
+        ),
+        principle="AIM §4-3-13 (Departure Procedures)",
+        tier="seed",
+        source="yaml",
+    )
+    _seed_phraseology_corpus(store)
+    reply = json.dumps(
+        {
+            "verdict": "ok",
+            "expected_section": "3-9-10",
+            "expected_phraseology": "RUNWAY (number), CLEARED FOR TAKEOFF.",
+            "mismatch": None,
+            "citation_quote": "RUNWAY (number), CLEARED FOR TAKEOFF.",
+        }
+    )
+    adapter = _ScriptedAdapter(replies=[reply])
+    try:
+        verdict = lint_utterance(
+            "RUNWAY TWO SEVEN, CLEARED FOR TAKEOFF.",
+            adapter=adapter,
+            episodic_store=store,
+            source_filter="JO_7110.65",
+        )
+    finally:
+        store.close()
+    assert verdict.verdict == "ok"
+    assert verdict.expected_section == "3-9-10"
+    # The JO row landed in the candidate slate; the AIM row was filtered
+    # out before the prompt was built.
+    user_msg = adapter.calls[0][1].content
+    assert "§3-9-10" in user_msg
+    assert "§4-3-13" not in user_msg
+    assert "AIM" not in user_msg
+
+
+def test_source_filter_none_preserves_legacy_behavior(tmp_path: Path) -> None:
+    """When source_filter is None (the default — airton_c1 path), AIM rows
+    are admissible to the candidate slate. Documents that the filter is
+    opt-in so JO-only corpora pay no behavior cost."""
+    store = EpisodicStore(tmp_path / "h.sqlite", embedder=_LexicalEmbedder())
+    store.ingest(
+        external_id="aim-4-3-13",
+        title="DEPARTURE PROCEDURES (PILOT-FACING)",
+        body="Departure procedures and runway takeoff clearances",
+        principle="AIM §4-3-13 (Departure Procedures)",
+        tier="seed",
+        source="yaml",
+    )
+    _seed_phraseology_corpus(store)
+    # Model picks the AIM section. Without source_filter, the cite-
+    # grounding gate accepts it because §4-3-13 IS in the candidate
+    # slate's anchor set. (This is exactly the failure mode the filter
+    # exists to prevent on multi-source corpora.)
+    reply = json.dumps(
+        {
+            "verdict": "ok",
+            "expected_section": "4-3-13",
+            "expected_phraseology": "AIM PHRASEOLOGY",
+            "mismatch": None,
+            "citation_quote": "Departure procedures",
+        }
+    )
+    adapter = _ScriptedAdapter(replies=[reply])
+    try:
+        verdict = lint_utterance(
+            "RUNWAY TWO SEVEN, CLEARED FOR TAKEOFF.",
+            adapter=adapter,
+            episodic_store=store,
+            # source_filter=None — explicit for documentation, default anyway
+        )
+    finally:
+        store.close()
+    # No filter ⇒ AIM cite passes the grounding gate. (Filter exists to
+    # prevent this on atc-family characters with wider corpora.)
+    assert verdict.expected_section == "4-3-13"

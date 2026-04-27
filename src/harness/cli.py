@@ -135,6 +135,17 @@ _ATC_FETCH_URL_ALLOWED_HOSTS: frozenset[str] = frozenset(
 # from_template.py handles the on-disk scaffold.
 _ATC_FAMILY_NAMES: frozenset[str] = frozenset({"airton_c", "airton_c1"})
 
+# Source identifier the atc-family phraseology lint pipeline filters
+# its retrieval slate against. Matches the principle prefix the
+# `scripts/atc_ingest.py` script writes for JO 7110.65 rows ("JO_7110.65
+# §<section>"). Applied to keep the JO-only lint contract intact when
+# the active character has a multi-source corpus (airton_c carries JO +
+# AIM + 14 CFR + PCG + PHAK; airton_c1 is JO-only and the filter is a
+# no-op there). All three lint call sites — chat-tier tool wrapper,
+# `harness phraseology lint`, `harness eval phraseology` — set this
+# when `character.name in _ATC_FAMILY_NAMES`.
+_ATC_LINT_SOURCE_FILTER: str = "JO_7110.65"
+
 # Sentinel used to encode structured tool_calls onto an assistant turn's
 # content when persisting to the transcript. Two-line format: human-readable
 # content, then the sentinel, then a single JSON line with the tool_calls.
@@ -1407,6 +1418,11 @@ def _build_tool_registry_for_tui(
                 store=memory_store,
                 user_id=speaker,
                 verb_anchors=phraseology_verb_anchors or None,
+                source_filter=(
+                    _ATC_LINT_SOURCE_FILTER
+                    if character is not None and character.name in _ATC_FAMILY_NAMES
+                    else None
+                ),
             )
             if (memory_store is not None and adapter is not None)
             else None
@@ -2237,6 +2253,7 @@ def phraseology_lint_cmd(
             k=k,
             temperature=temperature,
             verb_anchors=verb_anchors or None,
+            source_filter=_ATC_LINT_SOURCE_FILTER,
         )
     finally:
         memory_store.close()
@@ -3515,6 +3532,7 @@ def eval_phraseology(
                 k=k,
                 temperature=temperature,
                 verb_anchors=verb_anchors or None,
+                source_filter=_ATC_LINT_SOURCE_FILTER,
             )
 
         result = _phraseology_run(fixture, _lint_one)  # type: ignore[arg-type]
