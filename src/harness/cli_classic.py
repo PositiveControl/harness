@@ -32,6 +32,7 @@ from harness.compaction import CompactionStore
 from harness.config import settings
 from harness.model.adapter import ChatMessage, ModelAdapter
 from harness.orchestrator import ToolLoopEvent, run_tool_loop
+from harness.persona.banter import BanterStreakTracker, load_default_tracker
 from harness.persona.rewriter import build_rewriter_messages
 from harness.retrieval import VoiceRetriever
 from harness.router import GrammarRouter, ModelRouter, Router
@@ -370,6 +371,12 @@ class ClassicChatSession:
     # paying the dict-lookup cost.
     recency_ranks: dict[str, int] | None = None
     recency_weight: float = 0.0
+    # Banter intercept tracker (epic harness-jjm9). Loaded by the chat
+    # bootstrap when the active character ships a jokes.yaml; None
+    # otherwise. Holds the per-session 1-joke-then-3-redirects cycle
+    # state so smartass / empty-signal prompts deflect with a joke
+    # instead of fabricating a rule chunk from thin retrieval.
+    banter_tracker: BanterStreakTracker | None = None
 
     def tool_label(self, name: str) -> str:
         if self.registry is not None and name in self.registry:
@@ -512,6 +519,7 @@ class ClassicChatSession:
                 hooks=self.hooks,
                 memory_block_attached=bool(recalled),
                 force_search_memory=self.character.require_search_memory,
+                banter_tracker=self.banter_tracker,
             )
             streamed = True
             _persist_tool_exchange(
@@ -788,6 +796,8 @@ def run_classic_chat(
         character_path=settings.character_path,
     )
 
+    banter_tracker = load_default_tracker(settings.character_path)
+
     chat_session = ClassicChatSession(
         character=character,
         adapter=adapter,
@@ -820,6 +830,7 @@ def run_classic_chat(
         allowed_sessions=allowed_sessions,
         recency_ranks=recency_ranks,
         recency_weight=recency_weight,
+        banter_tracker=banter_tracker,
     )
 
     if ab_adapter is not None:

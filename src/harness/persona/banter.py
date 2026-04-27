@@ -28,7 +28,7 @@ from __future__ import annotations
 import random
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -211,7 +211,7 @@ class BanterCorpus:
 
 # ---------- redirect ladder ----------
 
-# Three-tier redirect copy used by D's streak tracker after a joke
+# Three-tier redirect copy used by the streak tracker after a joke
 # fires. Indexed by (streak % 4) - 1 when streak % 4 != 0 (joke turn).
 # Tone deliberately escalates from patient → terse → flat.
 REDIRECT_LADDER: tuple[str, str, str] = (
@@ -219,3 +219,61 @@ REDIRECT_LADDER: tuple[str, str, str] = (
     "I cite JO 7110.65. Send a section.",
     "No content without an anchor.",
 )
+
+
+# ---------- streak tracker ----------
+
+
+@dataclass
+class BanterStreakTracker:
+    """Per-session state for the 1-joke-then-3-redirects cycle.
+
+    Lives on the chat session and is passed into `run_tool_loop`
+    (harness-vadq). On a banter-shaped prompt the tracker decides
+    whether this turn is a joke or a redirect tier (based on `streak %
+    4`) and increments the streak. On a real (non-banter) prompt the
+    caller invokes `note_real_prompt()` which resets the streak so the
+    next banter prompt starts fresh with a joke.
+
+    Joke selection uses the corpus's no-repeat-with-reshuffle pick. The
+    tracker owns the `seen_jokes` set; the corpus stays immutable.
+    """
+
+    corpus: BanterCorpus
+    streak: int = 0
+    seen_jokes: set[str] = field(default_factory=set)
+    rng: random.Random | None = None
+
+    def consume(self) -> str:
+        """Pick the reply for this banter turn. Joke when streak % 4 ==
+        0; otherwise the (streak % 4)-1 entry of REDIRECT_LADDER. Always
+        increments streak so the next call lands on the next tier."""
+        idx = self.streak % 4
+        self.streak += 1
+        if idx == 0:
+            joke = self.corpus.pick(self.seen_jokes, rng=self.rng)
+            self.seen_jokes.add(joke.id)
+            # Reshuffle when the seen set covers the corpus — keep only
+            # the freshly-picked id so the next pick can't immediately
+            # repeat it.
+            if len(self.seen_jokes) >= len(self.corpus.jokes):
+                self.seen_jokes = {joke.id}
+            return joke.text
+        return REDIRECT_LADDER[idx - 1]
+
+    def note_real_prompt(self) -> None:
+        """Reset the cycle. A real (non-banter) prompt landing means
+        the user came back with substance — next banter prompt starts
+        fresh with a joke, not the next redirect tier."""
+        self.streak = 0
+
+
+def load_default_tracker(character_path: Path | str) -> BanterStreakTracker | None:
+    """Load `<character_path>/jokes.yaml` and return a tracker, or
+    None if the character has no jokes file. Lets callers (the chat
+    bootstrap in cli_classic) attach a tracker when the active
+    character ships a corpus and quietly skip it otherwise."""
+    path = Path(character_path) / "jokes.yaml"
+    if not path.exists():
+        return None
+    return BanterStreakTracker(corpus=BanterCorpus.load(path))

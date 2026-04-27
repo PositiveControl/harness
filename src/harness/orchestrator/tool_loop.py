@@ -36,6 +36,7 @@ from harness.orchestrator.hooks import (
     default_hook_pipeline,
     looks_like_ab_fabrication,
 )
+from harness.persona.banter import BanterStreakTracker, is_banter_prompt
 from harness.tools.base import (
     ModelReply,
     StreamComplete,
@@ -641,6 +642,7 @@ def run_tool_loop(
     hooks: HookPipeline | None = None,
     memory_block_attached: bool = False,
     force_search_memory: bool = False,
+    banter_tracker: BanterStreakTracker | None = None,
 ) -> ToolLoopResult:
     """Drive a model + tool registry until the model emits a text-only
     reply or `max_rounds` rounds are spent.
@@ -684,7 +686,16 @@ def run_tool_loop(
     characters with `require_search_memory: true` in core.yaml (e.g.
     airton_c1, harness-3uh) where passive retrieval routinely misses
     lay-language paraphrases of in-scope queries. Degrades gracefully
-    to a no-op if `search_memory` isn't in the registry."""
+    to a no-op if `search_memory` isn't in the registry.
+
+    `banter_tracker`, when set, intercepts banter-shaped user messages
+    (epic harness-jjm9) BEFORE any forced grounding, router pass, or
+    model round. On a hit, the tracker composes a joke or redirect
+    (1-joke-then-3-redirects cycle) and the loop returns immediately
+    with a 0-round result — no tokens spent on a hallucinated rule
+    chunk for 'this page intentionally left blank'. On a real (non-
+    banter) prompt the tracker is reset so the next banter prompt
+    starts fresh with a joke."""
     pipeline = hooks if hooks is not None else _DEFAULT_PIPELINE
     working: list[ChatMessage] = list(messages)
     initial_count = len(working)
@@ -719,6 +730,24 @@ def run_tool_loop(
     # the orchestrator appends its own user-role nudges during
     # bail-retries (those aren't the real user question).
     turn_user_message = _last_user_message(working[:initial_count])
+
+    # Banter intercept (epic harness-jjm9). Fires BEFORE forced search
+    # and the router pass — both would otherwise route a "this page
+    # intentionally left blank" prompt to search_memory and the model
+    # would fabricate a rule chunk from cosine ~0.02 retrieval. The
+    # tracker owns the 1-joke-then-3-redirects cycle and the no-repeat
+    # joke set; here we just consume one tier and bail with a synthetic
+    # ToolLoopResult. On a real prompt we reset the cycle so the next
+    # banter prompt starts fresh with a joke.
+    if banter_tracker is not None and turn_user_message is not None:
+        if is_banter_prompt(turn_user_message):
+            return ToolLoopResult(
+                content=banter_tracker.consume(),
+                messages=working,
+                rounds=0,
+                events=events,
+            )
+        banter_tracker.note_real_prompt()
 
     # Forced search_memory injection (harness-3uh). Runs BEFORE the
     # router prelude so the grounding result is already in-thread when

@@ -16,8 +16,10 @@ import pytest
 from harness.persona.banter import (
     REDIRECT_LADDER,
     BanterCorpus,
+    BanterStreakTracker,
     JokeEntry,
     is_banter_prompt,
+    load_default_tracker,
 )
 
 # ---------- detector positives ----------
@@ -216,3 +218,101 @@ def test_redirect_ladder_has_three_tiers() -> None:
     for line in REDIRECT_LADDER:
         assert isinstance(line, str)
         assert line  # non-empty
+
+
+# ---------- streak tracker ----------
+
+
+def _two_joke_corpus() -> BanterCorpus:
+    return BanterCorpus(
+        jokes=(
+            JokeEntry(id="alpha", text="alpha joke"),
+            JokeEntry(id="beta", text="beta joke"),
+        )
+    )
+
+
+def test_tracker_first_turn_returns_a_joke() -> None:
+    tracker = BanterStreakTracker(corpus=_two_joke_corpus(), rng=random.Random(42))
+    out = tracker.consume()
+    assert out in {"alpha joke", "beta joke"}
+    assert tracker.streak == 1
+
+
+def test_tracker_cycles_joke_then_three_redirects() -> None:
+    tracker = BanterStreakTracker(corpus=_two_joke_corpus(), rng=random.Random(42))
+    turn1 = tracker.consume()
+    turn2 = tracker.consume()
+    turn3 = tracker.consume()
+    turn4 = tracker.consume()
+    assert turn1 in {"alpha joke", "beta joke"}
+    assert turn2 == REDIRECT_LADDER[0]
+    assert turn3 == REDIRECT_LADDER[1]
+    assert turn4 == REDIRECT_LADDER[2]
+
+
+def test_tracker_fifth_turn_returns_another_joke() -> None:
+    tracker = BanterStreakTracker(corpus=_two_joke_corpus(), rng=random.Random(42))
+    for _ in range(4):
+        tracker.consume()
+    turn5 = tracker.consume()
+    assert turn5 in {"alpha joke", "beta joke"}
+
+
+def test_tracker_real_prompt_resets_cycle() -> None:
+    tracker = BanterStreakTracker(corpus=_two_joke_corpus(), rng=random.Random(42))
+    tracker.consume()  # joke
+    tracker.consume()  # redirect tier 1
+    assert tracker.streak == 2
+    tracker.note_real_prompt()
+    assert tracker.streak == 0
+    # Next banter consume → joke again, not redirect tier 2.
+    out = tracker.consume()
+    assert out in {"alpha joke", "beta joke"}
+
+
+def test_tracker_does_not_repeat_joke_within_session() -> None:
+    tracker = BanterStreakTracker(corpus=_two_joke_corpus(), rng=random.Random(42))
+    first = tracker.consume()
+    # Burn through three redirects to land on next joke turn.
+    for _ in range(3):
+        tracker.consume()
+    second = tracker.consume()
+    # Two-joke corpus: the first and second jokes must differ — that's
+    # the whole point of the no-repeat-with-reshuffle pick.
+    assert first != second
+
+
+def test_tracker_reshuffles_after_corpus_exhausted() -> None:
+    tracker = BanterStreakTracker(corpus=_two_joke_corpus(), rng=random.Random(42))
+    seen_jokes = set()
+    for _ in range(3):  # 3 joke cycles → consumes both + reshuffles
+        seen_jokes.add(tracker.consume())
+        for _ in range(3):
+            tracker.consume()
+    # After exhausting the 2-joke corpus once, the tracker still
+    # produces jokes — never raises, never goes silent.
+    assert len(seen_jokes) >= 2  # both unique jokes appeared
+
+
+def test_load_default_tracker_returns_none_when_no_jokes_yaml(tmp_path: Path) -> None:
+    # tmp_path is empty — no jokes.yaml.
+    assert load_default_tracker(tmp_path) is None
+
+
+def test_load_default_tracker_loads_when_jokes_yaml_present(tmp_path: Path) -> None:
+    (tmp_path / "jokes.yaml").write_text(
+        "- id: solo\n  text: only joke\n",
+        encoding="utf-8",
+    )
+    tracker = load_default_tracker(tmp_path)
+    assert tracker is not None
+    assert tracker.streak == 0
+    assert len(tracker.corpus.jokes) == 1
+
+
+def test_load_default_tracker_loads_airton_c1_corpus() -> None:
+    repo_root = Path(__file__).parent.parent
+    tracker = load_default_tracker(repo_root / "character" / "airton_c1")
+    assert tracker is not None
+    assert len(tracker.corpus.jokes) == 20
