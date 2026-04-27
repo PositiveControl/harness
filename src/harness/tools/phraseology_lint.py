@@ -35,8 +35,9 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from harness.persona.cite_grounding import _extract_anchor
@@ -45,6 +46,8 @@ from harness.tools.base import ToolHit, ToolResult, ToolSpec
 if TYPE_CHECKING:
     from harness.model.adapter import ChatMessage, ModelAdapter
     from harness.store.episodic import EpisodicRecord, EpisodicStore
+
+VerbAnchorMap = Mapping[str, tuple[str, ...]]
 
 
 Verdict = Literal["ok", "wrong", "incomplete", "out_of_scope"]
@@ -70,6 +73,164 @@ _DEFAULT_K = 8
 _PROMPT_CANDIDATES = 3
 
 
+def default_verb_anchors_path(character_path: Path) -> Path:
+    """Conventional location under `character/<name>/corpus/`. Mirrors
+    `default_synonyms_path` in retrieval.query_expander — keeps every
+    consumer (CLI, tool, eval) reading from the same place."""
+    return character_path / "corpus" / "verb_anchors.yaml"
+
+
+def load_verb_anchors(path: Path) -> VerbAnchorMap:
+    """Load a section → distinctive-verb-anchor map (harness-ptya).
+
+    File format::
+
+        "10-2-6":          # JO § anchor — section number string
+          - SQUAWK         # one verb / code phrase per list entry
+          - "7500"
+        "5-7-2":
+          - REDUCE SPEED
+          - INCREASE SPEED
+
+    Returns an empty mapping when the file is missing or malformed —
+    the lint pipeline still works, just without verb-anchor re-rank.
+    Anchors are uppercased on load so match-time comparison is case
+    insensitive without per-call string ops.
+    """
+    if not path.is_file():
+        return {}
+    try:
+        import yaml
+
+        with path.open(encoding="utf-8") as fp:
+            data = yaml.safe_load(fp) or {}
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, tuple[str, ...]] = {}
+    for raw_section, raw_verbs in data.items():
+        if not isinstance(raw_section, str) or not isinstance(raw_verbs, list):
+            continue
+        section = raw_section.strip().lstrip("§").strip()
+        if not section:
+            continue
+        verbs = tuple(
+            str(v).strip().upper() for v in raw_verbs if isinstance(v, str) and str(v).strip()
+        )
+        if verbs:
+            out[section] = verbs
+    return out
+
+
+def _matched_anchor_sections(utterance: str, verb_anchors: VerbAnchorMap) -> set[str]:
+    """Sections whose verb-anchor map fires on this utterance. Word-
+    boundary match against the uppercased utterance so 'CONTACT' matches
+    'CONTACT DEPARTURE' but not 'TRANSCATHETER'. Multi-word anchors
+    ('LINE UP AND WAIT') also work — we re.escape the literal."""
+    if not verb_anchors:
+        return set()
+    upper = utterance.upper()
+    matched: set[str] = set()
+    for section, verbs in verb_anchors.items():
+        for verb in verbs:
+            if re.search(rf"\b{re.escape(verb)}\b", upper):
+                matched.add(section)
+                break
+    return matched
+
+
+def _verb_anchor_rerank(
+    hits: Sequence[tuple[EpisodicRecord, float]],
+    matched_sections: set[str],
+) -> list[tuple[EpisodicRecord, float]]:
+    """Stable partition: hits whose §-anchor is in `matched_sections`
+    move to the front, retaining their relative retrieval order. Hits
+    in unmatched sections keep their relative order in the back. When
+    `matched_sections` is empty (no verb fired), pass through unchanged.
+
+    The cite-grounding gate already filters ungrounded picks, so
+    promoting matched-§ hits can only help — but if the matched § isn't
+    in the slate at all, rerank is a no-op. Pair with
+    `_inject_missing_anchored_sections` to fix that case."""
+    if not matched_sections:
+        return list(hits)
+    front: list[tuple[EpisodicRecord, float]] = []
+    back: list[tuple[EpisodicRecord, float]] = []
+    for rec, score in hits:
+        anchor = _extract_anchor(rec.principle or "")
+        if anchor and anchor in matched_sections:
+            front.append((rec, score))
+        else:
+            back.append((rec, score))
+    return front + back
+
+
+# Sentinel score for virtually-injected hits. Below the BGE-small dense
+# cosine floor so it doesn't disrupt other rank ordering, but non-zero
+# so log lines can distinguish "absent" from "present-but-low".
+_INJECTED_HIT_SCORE = 0.001
+
+
+def _inject_missing_anchored_sections(
+    hits: Sequence[tuple[EpisodicRecord, float]],
+    matched_sections: set[str],
+    episodic_store: EpisodicStore,
+    user_id: str | None,
+) -> list[tuple[EpisodicRecord, float]]:
+    """Virtual-hit injection. When a verb anchor fires for a section
+    that hybrid retrieval didn't surface in the slate, do a text-mode
+    FTS5 probe for that section number and prepend one matching row.
+    The follow-up rerank then promotes it to rank 0.
+
+    Why this is safe:
+
+    - The cite-grounding gate downstream still requires the model's
+      pick to land on a section actually present in the slate; injection
+      makes the right § *available* but doesn't fabricate a verdict.
+    - Text-mode search for a literal section anchor (e.g. ``10-2-6``)
+      lands deterministic FTS5 hits because the anchor lives in
+      `principle` which is in the FTS5 sidecar.
+    - When the section has no rows in the corpus at all, injection is
+      silently a no-op (the FTS5 probe returns empty).
+
+    `user_id` flows through so injected rows respect the same
+    user-scoping as the primary retrieval call.
+    """
+    if not matched_sections:
+        return list(hits)
+    sections_in_slate: set[str] = set()
+    for rec, _ in hits:
+        anchor = _extract_anchor(rec.principle or "")
+        if anchor:
+            sections_in_slate.add(anchor)
+    missing = matched_sections - sections_in_slate
+    if not missing:
+        return list(hits)
+
+    extended: list[tuple[EpisodicRecord, float]] = list(hits)
+    seen_external: set[str | None] = {rec.external_id for rec, _ in hits}
+    # Sort for deterministic injection order — lets tests pin a stable
+    # output and keeps multi-anchor utterances reproducible. k=5 because
+    # text-mode FTS5 on a bare section number can return cross-section
+    # hits ahead of the target — e.g. '10-2-6' as a query also matches
+    # §5-2-5 ("HIJACK/UNLAWFUL INTERFERENCE", string match on the term)
+    # and §13-2-6 (lexicographically similar number). The anchor-equality
+    # filter below picks the right row from a slightly wider FTS slate.
+    for section in sorted(missing):
+        section_hits = episodic_store.search(section, k=5, mode="text", user_id=user_id)
+        for rec, _score in section_hits:
+            anchor = _extract_anchor(rec.principle or "")
+            if anchor != section:
+                continue
+            if rec.external_id in seen_external:
+                continue
+            extended.append((rec, _INJECTED_HIT_SCORE))
+            seen_external.add(rec.external_id)
+            break
+    return extended
+
+
 @dataclass(frozen=True)
 class PhraseologyVerdict:
     """Structured output of one lint call. Mirrors the
@@ -92,6 +253,7 @@ def lint_utterance(
     user_id: str | None = None,
     k: int = _DEFAULT_K,
     temperature: float = 0.0,
+    verb_anchors: VerbAnchorMap | None = None,
 ) -> PhraseologyVerdict:
     """Lint one ATC utterance against JO 7110.65.
 
@@ -109,7 +271,23 @@ def lint_utterance(
     """
 
     query = utterance if not scenario_hint else f"{utterance}\n[scenario: {scenario_hint}]"
-    hits = episodic_store.search(query, k=k, mode="hybrid", user_id=user_id)
+    raw_hits = episodic_store.search(query, k=k, mode="hybrid", user_id=user_id)
+    # Verb-anchor pipeline (harness-ptya). Two stages:
+    #   1. Virtual-hit injection: when a verb fires for a § the embedding
+    #      didn't surface, text-mode-fetch one row so it enters the slate.
+    #      Cluster #3 (SQUAWK / hijack) needs this — §10-2-6 is dominated
+    #      by §2-4-17 (Numbers Usage) on the dense embedding and never
+    #      enters the K=8 slate without help.
+    #   2. Rerank: matched-§ hits move to the front (stable partition).
+    # When no verb fires, both stages are no-ops.
+    matched_sections = _matched_anchor_sections(utterance, verb_anchors) if verb_anchors else set()
+    if matched_sections:
+        injected = _inject_missing_anchored_sections(
+            raw_hits, matched_sections, episodic_store, user_id
+        )
+        hits = _verb_anchor_rerank(injected, matched_sections)
+    else:
+        hits = list(raw_hits)
     if not hits:
         # Pre-model gate: nothing in the corpus matched. Don't ask the
         # model — refuse outright. Distinguishes a phraseology gap in
@@ -307,6 +485,7 @@ class PhraseologyLintTool:
     store: EpisodicStore
     user_id: str | None = None
     k: int = _DEFAULT_K
+    verb_anchors: VerbAnchorMap | None = None
 
     @property
     def spec(self) -> ToolSpec:
@@ -353,6 +532,7 @@ class PhraseologyLintTool:
             scenario_hint=scenario_hint,
             user_id=self.user_id,
             k=self.k,
+            verb_anchors=self.verb_anchors,
         )
         payload = {
             "verdict": verdict.verdict,

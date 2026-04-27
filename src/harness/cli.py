@@ -1349,6 +1349,16 @@ def _build_tool_registry_for_tui(
         query_only_path=default_query_only_synonyms_path(settings.character_path),
     )
 
+    # Verb-anchor map for the phraseology lint tool (harness-ptya).
+    # Empty mapping when the file is absent so non-atc characters get
+    # the unmodified pipeline.
+    from harness.tools.phraseology_lint import (
+        default_verb_anchors_path,
+        load_verb_anchors,
+    )
+
+    phraseology_verb_anchors = load_verb_anchors(default_verb_anchors_path(settings.character_path))
+
     builders: dict[str, Callable[[], Tool | None]] = {
         "read_file": lambda: ReadFileTool(root=workspace_path),
         "edit_file": lambda: EditFileTool(root=workspace_path),
@@ -1392,7 +1402,12 @@ def _build_tool_registry_for_tui(
             TranscriptIngestTool(store=memory_store) if memory_store is not None else None
         ),
         "phraseology_lint": lambda: (
-            PhraseologyLintTool(adapter=adapter, store=memory_store, user_id=speaker)
+            PhraseologyLintTool(
+                adapter=adapter,
+                store=memory_store,
+                user_id=speaker,
+                verb_anchors=phraseology_verb_anchors or None,
+            )
             if (memory_store is not None and adapter is not None)
             else None
         ),
@@ -2206,8 +2221,13 @@ def phraseology_lint_cmd(
         )
 
     try:
-        from harness.tools.phraseology_lint import lint_utterance
+        from harness.tools.phraseology_lint import (
+            default_verb_anchors_path,
+            lint_utterance,
+            load_verb_anchors,
+        )
 
+        verb_anchors = load_verb_anchors(default_verb_anchors_path(settings.character_path))
         verdict = lint_utterance(
             utterance,
             adapter=adapter,
@@ -2216,6 +2236,7 @@ def phraseology_lint_cmd(
             user_id=None,  # rulebook seeds are shared (user_id IS NULL)
             k=k,
             temperature=temperature,
+            verb_anchors=verb_anchors or None,
         )
     finally:
         memory_store.close()
@@ -3443,7 +3464,11 @@ def eval_phraseology(
     from harness.evals.phraseology import (
         run_phraseology_eval as _phraseology_run,
     )
-    from harness.tools.phraseology_lint import lint_utterance
+    from harness.tools.phraseology_lint import (
+        default_verb_anchors_path,
+        lint_utterance,
+        load_verb_anchors,
+    )
 
     character = load_character(settings.character_path)
     if character.name not in _ATC_FAMILY_NAMES:
@@ -3476,6 +3501,8 @@ def eval_phraseology(
             "`uv sync --extra retrieval` and run `harness memory ingest`."
         )
 
+    verb_anchors = load_verb_anchors(default_verb_anchors_path(settings.character_path))
+
     try:
 
         def _lint_one(utterance: str, scenario_hint: str | None) -> object:
@@ -3487,6 +3514,7 @@ def eval_phraseology(
                 user_id=None,
                 k=k,
                 temperature=temperature,
+                verb_anchors=verb_anchors or None,
             )
 
         result = _phraseology_run(fixture, _lint_one)  # type: ignore[arg-type]
