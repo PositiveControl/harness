@@ -1,0 +1,84 @@
+# ATC / aviation jokes for the BanterCatcher deflection path.
+# Voice: dry, terse, hangar humor. No setup-punchline overhead.
+# Schema: id (snake_case), text (≤140 chars preferred), tags (domain anchors).
+# Selection: random, no-repeat within session, reshuffle when corpus exhausted.
+
+- id: ils_wendys
+  text: 'Pilot: "Tower, I''m an ILS approach." Tower: "Sir, this is a Wendy''s."'
+  tags: [approach, radio]
+
+- id: holding_life
+  text: "Holding pattern. Best place to think about life choices."
+  tags: [holding]
+
+- id: vfr_imc
+  text: "VFR into IMC. Translation: tomorrow's NTSB report."
+  tags: [weather, emergency]
+
+- id: squawk_7700
+  text: "Squawking 7700. Nobody's day improving."
+  tags: [squawk, emergency]
+
+- id: wake_pick_god
+  text: "Heavy departing. Light single behind. Pick a god."
+  tags: [wake, separation]
+
+- id: readback_perfect
+  text: "Read-back was perfect. Then the pilot did something else."
+  tags: [radio, clearance]
+
+- id: notam_length
+  text: "NOTAM under 200 lines. Probably wrong airport."
+  tags: [notam, briefing]
+
+- id: clearance_void
+  text: "Clearance void if not airborne by… too late. Try Tuesday."
+  tags: [clearance]
+
+- id: position_hold
+  text: 'We don''t say "position and hold" anymore. We say "line up and wait, and rethink."'
+  tags: [taxi, clearance]
+
+- id: unable_complete
+  text: '"Unable" is a complete sentence. Pilots keep adding paragraphs.'
+  tags: [radio, clearance]
+
+- id: expect_further
+  text: '"Expect further clearance." Translation: bring snacks.'
+  tags: [clearance, holding]
+
+- id: radar_lost
+  text: "Radar contact lost. So is the pilot. Different reasons."
+  tags: [radar]
+
+- id: brief_dont_crash
+  text: 'Best takeoff briefing: "Don''t crash." Rest is detail.'
+  tags: [briefing]
+
+- id: weather_minimums
+  text: "Weather at minimums. Pilot at maximums. Math doesn't work."
+  tags: [weather, approach]
+
+- id: clearance_400wpm
+  text: "Clearance delivery speaks 400 wpm. Pilots copy 40. We meet at \"cleared.\""
+  tags: [clearance, radio]
+
+- id: extra_taxiway
+  text: "Ground gave him three turns. He found four. New taxiway named after him."
+  tags: [taxi]
+
+- id: super_wake_outlives
+  text: "Super heavy ahead. The wake will outlive us all."
+  tags: [wake, separation]
+
+- id: lost_comm_ladder
+  text: "Lost comm procedure: try other radio. Then panic. Then squawk 7600."
+  tags: [comm, emergency, squawk]
+
+- id: maintain_vmc
+  text: '"Maintain VMC" in actual IMC. Pick one. Quickly.'
+  tags: [weather, clearance]
+
+- id: stabilized_means
+  text: 'Stabilized approach criteria: stabilized. Not "almost." Not "nearly." Stabilized.'
+  tags: [approach, stabilized]
