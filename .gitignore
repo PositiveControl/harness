@@ -28,6 +28,13 @@ character/*/data/
 # files like synonyms.yaml tracked.
 character/*/corpus/chunks/
 character/*/corpus/markdown/
+# atc_audio/ holds the LiveATC ingest pipeline output (harness-d8o2).
+# Audio bytes (raw, norm) and parser output (meta, index.jsonl, stt) are
+# derived — regenerable from ../atc-audio via the ingest scripts. Only
+# human-labelled rows under utt/ (harness-hp8k, the ground truth that
+# drives the eval) belong in the repo.
+character/*/atc_audio/*
+!character/*/atc_audio/utt/
 character/airton_c/workspace/*
 !character/airton_c/workspace/.gitkeep
 data/
