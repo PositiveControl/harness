@@ -109,6 +109,19 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "introspect",
         "spawn_subagent",
     ),
+    # Phraseology-lint focused profile (harness-q35t). Single-purpose
+    # mode for ATC controllers (or training scenarios) verifying
+    # transmissions against JO 7110.65. Pairs the lint tool with read-
+    # tier rulebook search so the model can cross-check its own
+    # verdict; introspect for self-inspection. No write tier — this is
+    # a verifier, not an authoring tool. Inherits the atc profile's
+    # search_memory description override at registry-build time so the
+    # router still treats search_memory as rulebook-first.
+    "phraseology": (
+        "phraseology_lint",
+        "search_memory",
+        "introspect",
+    ),
     # Memory-curation sessions. supersede_fact will join once
     # implemented (see bd issue harness-5tz).
     "memory": (
@@ -200,6 +213,20 @@ TOOL_PROFILE_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "timelines, stated preferences). Returns (subject, "
             "predicate, object) triples. NOT for ATC rules or "
             "procedures — use search_memory for those."
+        ),
+    },
+    # Phraseology profile inherits atc's rulebook-first search_memory
+    # framing — the lint tool's pre-model retrieval and the model's
+    # cross-check both target JO 7110.65, not autobiographical memory.
+    "phraseology": {
+        "search_memory": (
+            "Search the FAA JO 7110.65 air-traffic control rulebook for "
+            "the canonical phraseology, slot templates, or section text "
+            "behind a controller utterance. Use to fetch the rulebook "
+            "context BEFORE forming a verdict; the phraseology_lint tool "
+            "calls retrieval internally but exposes only the structured "
+            "verdict. Use this when the user wants to read the section "
+            "itself."
         ),
     },
 }

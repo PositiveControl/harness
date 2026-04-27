@@ -23,6 +23,11 @@ from harness.tools.grep import GrepTool
 from harness.tools.introspect import IntrospectContext, IntrospectTool
 from harness.tools.list_dir import ListDirTool
 from harness.tools.ops import ConsolidateMemoryTool, ScribeSessionTool
+from harness.tools.phraseology_lint import (
+    PhraseologyLintTool,
+    PhraseologyVerdict,
+    lint_utterance,
+)
 from harness.tools.profiles import (
     DEFAULT_PROFILE,
     TOOL_PROFILES,
@@ -53,6 +58,8 @@ __all__ = [
     "IntrospectTool",
     "ListDirTool",
     "ModelReply",
+    "PhraseologyLintTool",
+    "PhraseologyVerdict",
     "ReadFileTool",
     "RememberEventTool",
     "RememberFactTool",
@@ -73,5 +80,6 @@ __all__ = [
     "ToolSpec",
     "TranscriptIngestTool",
     "WriteFileTool",
+    "lint_utterance",
     "resolve_tool_names",
 ]

@@ -65,6 +65,7 @@ from harness.tools import (
     IntrospectContext,
     IntrospectTool,
     ListDirTool,
+    PhraseologyLintTool,
     ReadFileTool,
     RememberEventTool,
     RememberFactTool,
@@ -291,6 +292,11 @@ session_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(session_app, name="session")
+phraseology_app = typer.Typer(
+    help="Cite-grounded ATC transmission verifier (airton_c1, JO 7110.65).",
+    no_args_is_help=True,
+)
+app.add_typer(phraseology_app, name="phraseology")
 console = Console()
 
 
@@ -1385,6 +1391,11 @@ def _build_tool_registry_for_tui(
         "transcript_ingest": lambda: (
             TranscriptIngestTool(store=memory_store) if memory_store is not None else None
         ),
+        "phraseology_lint": lambda: (
+            PhraseologyLintTool(adapter=adapter, store=memory_store, user_id=speaker)
+            if (memory_store is not None and adapter is not None)
+            else None
+        ),
     }
     # Same ab-ops injection as the REPL builder. When an ab_adapter is
     # passed in (TUI hoists the construction so ChatApp can share the
@@ -2130,6 +2141,116 @@ def chat(
         recency_weight=recency_weight,
     )
     return
+
+
+@phraseology_app.command("lint")
+def phraseology_lint_cmd(
+    utterance: str = typer.Argument(
+        ...,
+        help='Controller utterance to lint, e.g. "RUNWAY TWO SEVEN, CLEARED FOR TAKEOFF."',
+    ),
+    scenario_hint: str | None = typer.Option(
+        None,
+        "--scenario",
+        help="Optional operational class: departure | arrival | handoff | emergency.",
+    ),
+    model: str = typer.Option("mlx", help="Adapter: echo | mlx | ollama"),
+    model_repo: str | None = typer.Option(None, "--model-repo"),
+    lora_path: str | None = typer.Option(None, "--lora-path"),
+    draft_repo: str | None = typer.Option(None, "--draft-repo"),
+    k: int = typer.Option(
+        8,
+        help=(
+            "Top-K hybrid retrieval. The candidate-anchor set used to "
+            "gate the model's citation is built from this slate."
+        ),
+    ),
+    temperature: float = typer.Option(
+        0.0,
+        help="Sampling temperature. Default 0 for stable verdicts.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+) -> None:
+    """Lint one ATC controller utterance against JO 7110.65.
+
+    Reuses the airton_c1 hardened retrieval stack (BGE-small + FTS5 +
+    RRF) plus a cite-grounding gate so the verdict either anchors to a
+    real candidate section or refuses with `out_of_scope`. No persona
+    rewriting — the lint output is structured JSON, not voice-shaped
+    prose.
+    """
+    character = load_character(settings.character_path)
+    if character.name not in _ATC_FAMILY_NAMES:
+        # Lint pipeline is JO 7110.65-specific. Other characters can be
+        # added once their corpus is loaded — but the prompt and the
+        # cite-grounding rules are atc-shaped, so we gate explicitly
+        # rather than silently retrieving against unrelated seeds.
+        raise typer.BadParameter(
+            f"phraseology lint expects an atc-family character "
+            f"(got {character.name!r}). Set HARNESS_CHARACTER_NAME=airton_c1."
+        )
+
+    adapter = _resolve_adapter(
+        model,
+        persona=False,
+        character=character,
+        model_repo=model_repo,
+        lora_path=lora_path,
+        draft_repo=draft_repo,
+    )
+    memory_store = _open_episodic_store(character, ingest=False)
+    if memory_store is None:
+        raise typer.BadParameter(
+            "phraseology lint needs the episodic store — install with "
+            "`uv sync --extra retrieval` and run `harness memory ingest`."
+        )
+
+    try:
+        from harness.tools.phraseology_lint import lint_utterance
+
+        verdict = lint_utterance(
+            utterance,
+            adapter=adapter,
+            episodic_store=memory_store,
+            scenario_hint=scenario_hint,
+            user_id=None,  # rulebook seeds are shared (user_id IS NULL)
+            k=k,
+            temperature=temperature,
+        )
+    finally:
+        memory_store.close()
+
+    payload = {
+        "utterance": utterance,
+        "scenario_hint": scenario_hint,
+        "verdict": verdict.verdict,
+        "expected_section": verdict.expected_section,
+        "expected_phraseology": verdict.expected_phraseology,
+        "mismatch": verdict.mismatch,
+        "citation_quote": verdict.citation_quote,
+    }
+    if as_json:
+        console.print_json(json.dumps(payload))
+        return
+
+    verdict_color = {
+        "ok": "green",
+        "wrong": "red",
+        "incomplete": "yellow",
+        "out_of_scope": "dim",
+    }[verdict.verdict]
+    console.print(f"[bold]utterance[/bold]  {utterance}")
+    if scenario_hint:
+        console.print(f"[bold]scenario [/bold]  {scenario_hint}")
+    console.print(f"[bold]verdict  [/bold]  [{verdict_color}]{verdict.verdict}[/{verdict_color}]")
+    if verdict.expected_section:
+        console.print(f"[bold]section  [/bold]  §{verdict.expected_section}")
+    if verdict.expected_phraseology:
+        console.print(f"[bold]canonical[/bold]  {verdict.expected_phraseology}")
+    if verdict.mismatch:
+        console.print(f"[bold]mismatch [/bold]  [yellow]{verdict.mismatch}[/yellow]")
+    if verdict.citation_quote:
+        console.print(f"[bold]quote    [/bold]  [dim]{verdict.citation_quote}[/dim]")
 
 
 @app.command()

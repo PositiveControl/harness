@@ -45,9 +45,9 @@ rulebook. The cite-or-silent guarantee from airton_c1's hardened stack
 
 | # | Bead | Status | Owner | Summary |
 |---|---|---|---|---|
-| 1 | [`harness-h2iz`](#) | **in_progress** | Mark | Build `phraseology_eval.yaml` (~40 cases, ≥10 per scenario class). Locks eval contract. |
-| 2 | [`harness-q35t`](#) | open (blocked on #1) | — | `src/harness/tools/phraseology_lint.py` ToolSpec. Cite-or-silent. New `phraseology` tool profile. CLI subcommand `harness phraseology lint <utterance>`. Gate ≥80% combined accuracy on fixture. |
-| 3 | [`harness-15dy`](#) | open (blocked on #2) | — | `harness eval phraseology` Typer subcommand + per-scenario breakdown + `--compare-baseline` against `phraseology_baseline.json` + pre-push hook gating regressions on tool / fixture / corpus paths. |
+| 1 | [`harness-h2iz`](#) | **closed** | Mark | Build `phraseology_eval.yaml` (40 cases, ≥10 per scenario class). Locks eval contract. |
+| 2 | [`harness-q35t`](#) | **in_progress** | Mark | `src/harness/tools/phraseology_lint.py` ToolSpec. Cite-or-silent. New `phraseology` tool profile. CLI subcommand `harness phraseology lint <utterance>`. Gate ≥80% combined accuracy on fixture (gate-validation requires harness-15dy). |
+| 3 | [`harness-15dy`](#) | open (now unblocked) | — | `harness eval phraseology` Typer subcommand + per-scenario breakdown + `--compare-baseline` against `phraseology_baseline.json` + pre-push hook gating regressions on tool / fixture / corpus paths. |
 
 ### Phase 2 — voice (deferred until Phase 1 ships)
 
@@ -77,10 +77,13 @@ land.
 
 | Item | State | Notes |
 |---|---|---|
-| Phase-1 fixture | drafted (40/40) | `character/airton_c1/phraseology_eval.yaml`, awaiting tool to score against |
-| Phase-1 tool | not started | blocked on fixture sign-off |
-| Phase-1 eval subcommand | not started | blocked on tool |
-| Phase-1 baseline JSON | not started | snapshot once tool MVP lands |
+| Phase-1 fixture | shipped (40/40) | `character/airton_c1/phraseology_eval.yaml`, sanity-checked against seed store |
+| Phase-1 tool | shipped | `src/harness/tools/phraseology_lint.py`, `PhraseologyLintTool` + `lint_utterance()`, 14 unit tests |
+| Phase-1 CLI subcommand | shipped | `harness phraseology lint <utterance>` (and `--json`); echo-adapter smoke confirms cite-or-silent gate fires |
+| Phase-1 tool profile | shipped | `phraseology` profile in `tools/profiles.py`; inherits atc's rulebook-first `search_memory` framing |
+| Phase-1 gate validation | not run | needs harness-15dy (eval subcommand) for ≥80% measurement against fixture |
+| Phase-1 eval subcommand | not started | now unblocked; harness-15dy ready to claim |
+| Phase-1 baseline JSON | not started | snapshot once 15dy lands and gate clears |
 | Phase-1 pre-push gate | not started | mirrors `harness-zxqs` pattern |
 | Phase-2 STT | deferred | gated on Phase-1 ship |
 | Phase-2 streaming | deferred | gated on Phase-1 ship |
@@ -88,6 +91,79 @@ land.
 ---
 
 ## Log (newest first)
+
+### 2026-04-27 — tool + CLI subcommand (harness-q35t, in_progress)
+
+**What landed.**
+
+- `src/harness/tools/phraseology_lint.py` — Phase-1 tool surface:
+  - `PhraseologyVerdict` dataclass — five-field structured output
+    matching the fixture row shape.
+  - `lint_utterance(utterance, *, adapter, episodic_store, ...)` —
+    pure function the CLI subcommand and (future) eval harness call
+    directly. Two cite-or-silent gates (pre-model on empty retrieval,
+    post-model on ungrounded citation).
+  - `PhraseologyLintTool` — chat-tier wrapper. JSON-encoded verdict in
+    `output`, the section in `citations_grounded`, one `ToolHit` so
+    the audit log can read the verdict without reparsing.
+- `src/harness/tools/profiles.py` — new `phraseology` profile pairing
+  `phraseology_lint` with `search_memory` + `introspect`. Inherits the
+  atc rulebook-first `search_memory` description override.
+- `src/harness/cli.py` — new `phraseology` Typer sub-app + `lint`
+  command. Gates non-atc-family characters at the entry point so the
+  prompt and grounding rules don't drift onto unrelated corpora.
+- `tests/test_phraseology_lint.py` — 14 unit tests covering: pre-model
+  cite-or-silent gate (empty store ⇒ no model call), happy-path ok /
+  wrong / incomplete verdicts, post-model cite-grounding gate
+  (ungrounded section ⇒ downgrade to oos), unparseable model output ⇒
+  diagnostic oos, OOS verdict normalization (null citation fields),
+  scenario hint plumbing, tool wrapper contract.
+
+**Design decisions** (the open questions from yesterday's log):
+
+1. *Single-verdict output vs. top-K candidates.* Single verdict +
+   structured five-field payload. Top-K candidates are an implementation
+   detail of the prompt; the model sees the top-3 chunks (cap 800
+   chars each) as labeled candidates and picks one section.
+2. *Template form vs. quoted PHRASEOLOGY block.* Both. Tool emits
+   `expected_phraseology` (template with `(slot)` placeholders, mirrors
+   fixture) AND `citation_quote` (verbatim chunk excerpt). Fixture
+   scoring uses the template form; the quote is for human-readable
+   output.
+3. *OOS decision.* Pre-model gate handles `len(hits) == 0` (no
+   candidate sections). Post-model gate handles model-picks-an-
+   ungrounded-section. Cosine-floor / `OutOfScopeHook` (harness-8dop)
+   is a Phase-1.6 hardening lane, not blocking Phase-1; the tool's
+   two gates already enforce cite-or-silent on the substrate it has.
+
+**Cite-or-silent verified.** Smoke run with the echo adapter (which
+returns the prompt verbatim, never JSON) on a real airton_c1 store:
+
+```
+$ HARNESS_CHARACTER_NAME=airton_c1 uv run harness phraseology lint \\
+    --model echo --json "RUNWAY TWO SEVEN, CLEARED FOR TAKEOFF."
+{"verdict": "out_of_scope", "expected_section": null, ...,
+ "mismatch": "model output unparseable"}
+```
+
+Refused without claiming a section — exactly the cite-or-silent
+discipline.
+
+**Quality gates.** `ruff check`, `ruff format`, `mypy src tests`,
+`pytest` (1,655 passed) all green. Updated CLI command pin
+(`tests/test_cli_introspect.py`) to include `phraseology lint`.
+
+**Gate-validation status.** The bead's "≥80% combined accuracy on the
+fixture" gate is not yet run — that requires harness-15dy (the eval
+subcommand) so the loop is built once, not twice. Bead stays
+`in_progress`. Tool + CLI + tests are the substantial deliverable;
+gate-clear is one `eval phraseology` run away once 15dy lands.
+
+**Next.** Pick up harness-15dy: `harness eval phraseology` subcommand
+modeled on `harness eval atc`, loops fixture cases through
+`lint_utterance()`, scores `verdict_accuracy` + `citation_accuracy` +
+`combined`, emits `--json` envelope, supports `--compare-baseline`.
+Snapshot baseline + wire pre-push hook once gate clears.
 
 ### 2026-04-26 — fixture drafted (harness-h2iz, in_progress)
 
