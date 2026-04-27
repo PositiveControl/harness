@@ -82,53 +82,88 @@ def _body_of(row: dict[str, object]) -> str:
     return str(row.get("body", "")).strip()
 
 
-# Phase-1 CFR scope filter (harness-74n). atc's corpus spans CFR Title
-# 14 Vol 1 + Vol 2 — but most of Title 14 is out of PPL/IFR scope
-# (airworthiness standards, UAS, ultralights, parachuting, commercial
-# operations, fractional ownership). Baseline run 1 showed those
-# competing for retrieval slots against Part 91 on queries where
-# pilot-facing sections should win — e.g. §103.23 (ultralight "Flight
-# visibility and cloud clearance requirements") ranked higher than
-# §91.155 for "VFR cloud clearance" because its title was a closer
-# BM25 match. Scoping CFR at ingest prevents the dilution.
+# CFR scope filter (originally harness-74n; broadened 2026-04-27). atc's
+# corpus spans CFR Title 14 Vol 1 + Vol 2. The scope filter drops parts
+# that are out of audience scope so they don't compete for retrieval
+# slots — the original baseline showed §103.23 (ultralight VFR cloud
+# clearance) outranking §91.155 (the actual pilot rule) on BM25 because
+# its title was a closer string match. Scope-filtering at ingest
+# prevents the dilution.
+#
+# Audiences atc serves (set by character/airton_c/core.yaml premise):
+#   - PPL / IFR students (the original Phase-1 audience)
+#   - Commercial pilots
+#   - UAS operators (Part 107, Part 89 Remote ID)
+#   - A&P students (airframe + powerplant mechanics)
+#
+# Out of scope (still dropped): FAA-internal admin (Parts 11/13/16/17),
+# noise + emissions standards (34/36), niche cert pathways (31 free
+# balloons, 60 simulators, 63 historical airmen, 73 special use,
+# 77 obstruction marking, 99 ADIZ, 101 moored balloons / kites,
+# 103 ultralights, 105 parachute ops). Add a part here when the
+# audience widens; rerun `scripts/atc_ingest.py` to land the rows.
 _CFR_ALLOW_PARTS: frozenset[str] = frozenset(
     {
+        # Definitions, general, certification procedures
         "1",  # Definitions and abbreviations
         "3",  # General requirements
-        "61",  # Airman certification
+        "21",  # Certification procedures for products and articles
+        # Airworthiness standards (A&P)
+        "23",  # Normal-category airplanes
+        "25",  # Transport-category airplanes
+        "27",  # Normal-category rotorcraft
+        "29",  # Transport-category rotorcraft
+        "33",  # Aircraft engines
+        "35",  # Propellers
+        "39",  # Airworthiness directives
+        "43",  # Maintenance, preventive maintenance, rebuilding, alteration
+        "45",  # Identification and registration marking
+        # Airmen certification
+        "61",  # Pilots, flight instructors, ground instructors
+        "65",  # Airmen other than pilots (mechanics, dispatchers)
         "67",  # Medical standards
-        "71",  # Airspace designations
-        "91",  # General operating and flight rules (filtered below)
+        "68",  # BasicMed — alternative pilot medical
+        # Airspace + operating rules
+        "71",  # Airspace designations and reporting points
+        "89",  # Remote ID for UAS
+        "91",  # General operating and flight rules (Subparts A-N, no cap)
         "93",  # Special air traffic rules
         "95",  # IFR altitudes
         "97",  # Standard instrument approach procedures
+        # UAS
+        "107",  # Small unmanned aircraft systems
+        # Commercial operations
+        "119",  # Certification — air carriers and commercial operators
+        "121",  # Scheduled air carriers (airlines)
+        "125",  # Large airplane operations (>=20 seats / >=6,000 lb payload)
+        "133",  # External-load helicopter operations
+        "135",  # Commuter, charter, and on-demand operations
+        "136",  # Commercial air tours
+        "137",  # Agricultural aircraft operations
+        # Training + maintenance organizations
+        "141",  # Pilot schools
+        "142",  # Training centers
+        "145",  # Repair stations
+        "147",  # Aviation Maintenance Technician schools
+        "183",  # Representatives of the Administrator (DERs)
     }
 )
 
 
 def _cfr_in_scope(section: str) -> bool:
-    """Return True if `section` (e.g. '91.155', '103.23', '91.1031')
-    is in atc's Phase-1 pilot-facing scope. Parts outside the
-    allowlist drop. Part 91 is kept through Subpart J (§91.999);
-    Subpart K (fractional ownership, §§91.1001-91.1099) and Subpart L
-    (continued airworthiness, §91.1101+) are commercial/fractional-
-    specific and drop."""
+    """Return True if `section` (e.g. '91.155', '107.51', '43.13') is in
+    atc's audience scope. Parts outside `_CFR_ALLOW_PARTS` drop.
+
+    No per-part sub-section caps — the previous Subpart K/L cap on Part
+    91 (§§91.1001+) was removed when commercial pilots joined the
+    audience set, since fractional ownership ops (Subpart K) and
+    continued airworthiness (Subpart L) are squarely commercial-pilot
+    territory.
+    """
     if not section:
         return False
-    part, _, suffix = section.partition(".")
-    if part not in _CFR_ALLOW_PARTS:
-        return False
-    if part == "91":
-        # Extract the leading numeric run of the suffix (handles things
-        # like "155", "1031", "1001a"). A suffix ≥ 1000 is Subpart K or
-        # later — out of scope.
-        digits = "".join(ch for ch in suffix if ch.isdigit())
-        try:
-            if digits and int(digits) >= 1000:
-                return False
-        except ValueError:
-            pass
-    return True
+    part = section.partition(".")[0]
+    return part in _CFR_ALLOW_PARTS
 
 
 def is_noise(row: dict[str, object]) -> bool:
