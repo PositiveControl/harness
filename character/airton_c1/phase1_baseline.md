@@ -815,3 +815,123 @@ Reproduced post-Phase-1.5:
 HARNESS_CHARACTER_NAME=airton_c1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   uv run harness eval atc --model mlx --json > character/airton_c1/atc_baseline.json
 ```
+
+---
+
+## Run 12 — Lane F-prime cite-grounding catcher, detect-only (2026-04-26)
+
+Phase-1.6 lane F-prime (`harness-11ha`) ships as detect-only. Module
+`src/harness/persona/cite_grounding.py` extracts every `§X-Y-Z` from a
+generated reply, runs hybrid retrieval on the question, and asks
+whether the cited section appears in the question's top-K anchors.
+Cites outside top-K are flagged ungrounded with a suggested top-1
+replacement. CLI flag `--cite-ground` (with `--cite-ground-k=10`
+default) opts in on `harness eval atc`. Caller-side detect-only —
+the catcher does NOT mutate replies or scoring; it logs to the JSON
+envelope and surfaces in the human-readable table.
+
+### Why rank-based instead of cosine-threshold
+
+Empirical dense BGE-small cosines on the airton_c1 JO 7110.65 corpus
+run 0.016 - 0.033 (probed under harness-rhto). No absolute cosine
+threshold separates grounded from ungrounded reliably — 0.5 (the
+episodic min_score floor) is unreachable in practice, 0.02 lets every
+near-miss through. Rank-based check ("does the cited section appear
+in question's top-K?") sidesteps the problem entirely.
+
+### Module + tests
+
+- `cite_grounding.py` — public API: `check_cite_groundedness(question,
+  reply, *, episodic_store, k=10, user_id=None) → CiteGroundingResult`.
+  `_extract_anchor` strips the `JO 7110.65` version prefix before
+  pulling the section number so the dotted-form regex doesn't latch
+  onto `7110.65` as a CFR-shaped anchor.
+- `tests/test_cite_grounding.py` — 14 tests; lexical-token deterministic
+  embedder seeds three §-form chunks and exercises grounded /
+  ungrounded / multi-cite / dedup / suggested-replacement edge cases.
+
+### Catcher firing data on Run 11 baseline (cite-ground k=10)
+
+5 of 29 cases flagged ungrounded. Breakdown:
+
+**True positives (2)** — real-but-wrong-section fabs caught:
+
+| case                                  | cite      | suggested |
+| ------------------------------------- | --------- | --------- |
+| `controller_same_runway_arrival_lay_time` | §3-10-4   | §3-7-2 (also Taxi/Ground — detection ✓, suggestion weak) |
+| `controller_hijack_squawk`            | §10-2-5   | **§10-2-6** (exact right anchor ✓) |
+
+**Out-of-scope (1)** — caught but not the right tool for it:
+
+- `controller_omit_holding_instructions` — §4-6-4 is grounded
+  (rank 1). The case fails on keyword rubric, not cite fabrication.
+  F-prime correctly leaves this alone.
+
+**False positives (3)** — voice-sample-anchored lay variants:
+
+| case                                  | cite      | suggested | note |
+| ------------------------------------- | --------- | --------- | ---- |
+| `controller_wake_turbulence_concern_lay` | §2-1-19   | §6-1-5    | fixture accepts §2-1-19; carried by `wake_turbulence_application` voice sample |
+| `controller_missed_approach_lay`      | §5-10-11  | §6-7-7    | carried by `missed_approach_specific_procedure_advance` voice sample |
+| `controller_handoff_lay`              | §5-4-5    | §3-9-3    | carried by `handoff_pre_change_coordination` voice sample |
+
+All three FPs share a shape: the model cites the right section (per
+fixture + per voice sample's gold), but hybrid retrieval surfaces a
+different section in top-K because the LAY phrasing has different
+tokens than the section's title/principle. Voice samples carry the
+cite via memorization (Run 6's pattern); the catcher's retrieval-
+ranking check doesn't see that authority signal.
+
+### Acceptance check
+
+Bead criteria from harness-11ha:
+
+- ≥ 2 of 3 known-wrong-cite cases — **✓** (2/2 actual wrong-cite fabs
+  caught; omit_holding was a keyword-rubric failure not a cite-fab).
+- Zero false positives on the 26 passing cases — **✗** (3 FPs, all
+  voice-sample-anchored).
+
+Partial accept. The detection signal is real and useful; the FP
+budget is too high for hard auto-replacement. Detect-only ships and
+auto-replacement is filed for Phase-1.6 follow-up.
+
+### Why not voice-anchored escape hatch
+
+Considered: skip the rank check when the cited section appears in any
+canonical voice sample's gold (treat voice as a separate authority
+layer). Effect on the 6 flagged cases:
+
+- All 3 FPs would clear (their cites ARE voice-anchored).
+- BUT `controller_hijack_squawk` (§10-2-5) would also clear — the new
+  `emergency_declaration_authority` voice sample cites §10-2-5, and
+  the model's hijack reply imitated that sample's cite. The bleed
+  would no longer be detected.
+
+Net: 1 TP, 0 FP. Loses the most valuable catch (the hijack cross-
+bleed is exactly the structural problem F-prime was built for).
+Voice-anchored-as-gating is the wrong abstraction; voice-anchored-
+as-evidence (with prompt-similarity check) is closer to right but
+out of scope for the MVP.
+
+### What this enables
+
+- **Surface in JSON / human output** — every eval atc run with
+  `--cite-ground` annotates each case's cites with grounded/ungrounded
+  + suggested replacement. Useful for human-in-loop review of new
+  fixture cases.
+- **Phase-1.6 auto-replacement strategy** — once the catcher's
+  signal is logged across N runs, a tuner can pick a strategy:
+  cosine sanity check, voice-anchored evidence weighting, k-tuning,
+  or per-section-class threshold. Detect-only ships first to
+  establish the baseline.
+
+Reproduced:
+
+```bash
+HARNESS_CHARACTER_NAME=airton_c1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  uv run harness eval atc --model mlx --cite-ground --json > /tmp/atc_cite_ground.json
+```
+
+The eval atc runtime is unchanged (per-case cite-grounding adds one
+hybrid retrieval per case, ~5 ms each — noise relative to MLX
+generation).

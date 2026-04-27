@@ -2610,6 +2610,29 @@ def eval_atc(
             "without mutating voice/ablation.yaml."
         ),
     ),
+    cite_ground: bool = typer.Option(
+        False,
+        "--cite-ground",
+        help=(
+            "Run the lane-F-prime cite-grounding catcher (harness-11ha) "
+            "on every case's reply. For each citation in the reply, "
+            "checks whether the cited section appears in the question's "
+            "top-K hybrid retrieval. Detect-only — does NOT mutate the "
+            "reply or scoring; results land in the JSON envelope under "
+            "`cite_grounding` and surface in the human-readable output. "
+            "Use to measure how often the model emits real-but-wrong-"
+            "section fabrications + suggest replacement cites."
+        ),
+    ),
+    cite_ground_k: int = typer.Option(
+        10,
+        "--cite-ground-k",
+        help=(
+            "Top-K for the cite-grounding catcher's question retrieval. "
+            "Smaller K is stricter (more false-positive ungrounded flags); "
+            "larger K is looser. Default 10 balances both for atc."
+        ),
+    ),
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
 ) -> None:
     """Run atc's domain eval: replay PPL/IFR Q&A cases through the full
@@ -2720,6 +2743,34 @@ def eval_atc(
 
     try:
         result = _atc_run(fixture, run_turn)
+
+        # Lane F-prime — cite-grounding catcher. Detect-only: per case,
+        # check whether each cited §X-Y-Z appears in the question's
+        # top-K hybrid retrieval. Ungrounded cites are real-but-wrong-
+        # section fabs; the catcher suggests the top-1 retrieved
+        # section as a candidate replacement (caller decides what to
+        # do with it). Memory store must outlive this pass.
+        cite_ground_per_case: dict[str, list[dict[str, object]]] = {}
+        if cite_ground and memory_store is not None:
+            from harness.persona.cite_grounding import check_cite_groundedness
+
+            for c in result.cases:
+                cg = check_cite_groundedness(
+                    c.question,
+                    c.actual_reply,
+                    episodic_store=memory_store,
+                    k=cite_ground_k,
+                )
+                cite_ground_per_case[c.id] = [
+                    {
+                        "cite": chk.cite,
+                        "section": chk.section,
+                        "grounded": chk.grounded,
+                        "rank": chk.rank,
+                        "suggested": chk.suggested,
+                    }
+                    for chk in cg.checks
+                ]
     finally:
         if memory_store is not None:
             memory_store.close()
@@ -2727,27 +2778,41 @@ def eval_atc(
             semantic_store.close()
 
     if as_json:
-        payload = {
+        cases_json: list[dict[str, object]] = []
+        for c in result.cases:
+            entry: dict[str, object] = {
+                "id": c.id,
+                "audience": c.audience,
+                "passed": c.passed,
+                "citations_pass": c.citations_pass,
+                "keywords_pass": c.keywords_pass,
+                "missing_citations": list(c.missing_citations),
+                "matched_keywords": list(c.matched_keywords),
+                "keyword_hits": c.keyword_hits,
+                "min_keyword_hits": c.min_keyword_hits,
+                "reply": c.actual_reply,
+            }
+            if cite_ground:
+                entry["cite_grounding"] = cite_ground_per_case.get(c.id, [])
+            cases_json.append(entry)
+        payload: dict[str, object] = {
             "character": character.name,
             "adapter": adapter.id,
             "pass_rate": result.pass_rate,
             "pass_rate_by_audience": result.pass_rate_by_audience(),
-            "cases": [
-                {
-                    "id": c.id,
-                    "audience": c.audience,
-                    "passed": c.passed,
-                    "citations_pass": c.citations_pass,
-                    "keywords_pass": c.keywords_pass,
-                    "missing_citations": list(c.missing_citations),
-                    "matched_keywords": list(c.matched_keywords),
-                    "keyword_hits": c.keyword_hits,
-                    "min_keyword_hits": c.min_keyword_hits,
-                    "reply": c.actual_reply,
-                }
-                for c in result.cases
-            ],
+            "cases": cases_json,
         }
+        if cite_ground:
+            ungrounded_count = sum(
+                1
+                for cid, checks in cite_ground_per_case.items()
+                if any(not c["grounded"] for c in checks)
+            )
+            payload["cite_grounding_summary"] = {
+                "ungrounded_cases": ungrounded_count,
+                "total_cases": len(result.cases),
+                "k": cite_ground_k,
+            }
         console.print_json(json.dumps(payload))
         return
 
@@ -2758,12 +2823,26 @@ def eval_atc(
     table.add_column("cite", style="cyan")
     table.add_column("kw hits", style="cyan")
     table.add_column("missing citations", style="yellow")
+    if cite_ground:
+        table.add_column("cite-ground", style="magenta")
     for c in result.cases:
         mark = "[green]✓[/green]" if c.passed else "[red]✗[/red]"
         cite = "[green]✓[/green]" if c.citations_pass else "[red]✗[/red]"
         kw = f"{c.keyword_hits}/{c.min_keyword_hits}"
         missing = ", ".join(c.missing_citations) if c.missing_citations else ""
-        table.add_row(mark, c.id, c.audience, cite, kw, missing)
+        if cite_ground:
+            checks = cite_ground_per_case.get(c.id, [])
+            ungrounded_bits = [
+                f"§{chk['section']}→§{chk['suggested']}"
+                if chk["suggested"]
+                else f"§{chk['section']}?"
+                for chk in checks
+                if not chk["grounded"]
+            ]
+            cg_cell = ", ".join(ungrounded_bits) if ungrounded_bits else "[green]✓[/green]"
+            table.add_row(mark, c.id, c.audience, cite, kw, missing, cg_cell)
+        else:
+            table.add_row(mark, c.id, c.audience, cite, kw, missing)
     console.print(table)
     passed = sum(1 for c in result.cases if c.passed)
     console.print(
@@ -2773,6 +2852,16 @@ def eval_atc(
     if len(rates) > 1:
         detail = " · ".join(f"{aud}: {r * 100:.1f}%" for aud, r in sorted(rates.items()))
         console.print(f"[dim]by audience — {detail}[/dim]")
+    if cite_ground:
+        ungrounded_cases = sum(
+            1
+            for cid, checks in cite_ground_per_case.items()
+            if any(not c["grounded"] for c in checks)
+        )
+        console.print(
+            f"[dim]cite-grounding (k={cite_ground_k}) — "
+            f"{ungrounded_cases}/{len(result.cases)} cases have ≥1 ungrounded cite[/dim]"
+        )
 
 
 @eval_app.command("atc-retrieval")
