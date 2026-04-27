@@ -255,6 +255,22 @@ def test_atc_description_overrides_declared() -> None:
     assert "search_facts" in TOOL_PROFILE_DESCRIPTIONS["atc"]
 
 
+def test_atc_search_memory_carves_out_banter_signal() -> None:
+    """atc search_memory override must explicitly tell the router that
+    empty-signal / banter prompts are NOT rule-shaped — otherwise the
+    'Use for ANY rule-shaped question' clause pulls 'test' / 'ping' /
+    blank-page into search_memory and the model fabricates a JO 7110.65
+    chunk from thin retrieval (Run 12 failure mode; epic harness-jjm9)."""
+    desc = TOOL_PROFILE_DESCRIPTIONS["atc"]["search_memory"]
+    lowered = desc.lower()
+    # Must mention the null path AND name at least one banter pattern
+    # so the router has a concrete contrast vs. rule-shaped questions.
+    assert "null" in lowered
+    assert "test" in lowered
+    assert "ping" in lowered
+    assert "intentionally left blank" in lowered
+
+
 def test_atc_allows_scoped_write_subagent_but_excludes_shell_and_git() -> None:
     """atc can write into its workspace (edit_file / write_file,
     sandboxed to character/airton_c/workspace/ by --workspace) and

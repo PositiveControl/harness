@@ -189,7 +189,11 @@ TOOL_PROFILE_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "('can ground clear takeoff', 'who issues go-arounds'). "
             "Search-first beats guess-and-answer; pre-retrieved context "
             "is not guaranteed to carry the needed chunk. NOT for "
-            "user-relationship facts — use search_facts for those."
+            "user-relationship facts — use search_facts for those. "
+            "Empty-signal prompts ('test', 'ping', 'this page "
+            "intentionally left blank', 'are you alive', repeat-char "
+            "mash, lorem ipsum) are NOT rule-shaped — return null and "
+            "let the banter intercept handle them."
         ),
         "search_facts": (
             "Search atomic facts about the user (study plans, exam "

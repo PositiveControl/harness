@@ -291,3 +291,24 @@ def test_canonical_fixture_loads_and_covers_tool_mix() -> None:
     # over-routing regressions.
     null_count = sum(1 for r in rows if r[1] is None)
     assert null_count >= 5
+
+
+def test_airton_c1_fixture_pins_banter_to_null() -> None:
+    """airton_c1's router fixture must include banter / empty-signal
+    prompts mapped to null (harness-q7ff). Pre-retrieval on the
+    JO 7110.65 corpus is unreliable; routing 'test' / 'ping' /
+    'this page intentionally left blank' to search_memory makes the
+    model fabricate a chunk from the top-1 hit at cosine 0.02."""
+    path = default_fixture_path(Path(__file__).parent.parent / "character" / "airton_c1")
+    rows = load_fixture(path)
+    by_prompt = {prompt: expected for prompt, expected, _, _ in rows}
+    # Spot-check the banter pin set.
+    assert by_prompt.get("this page intentionally left blank") is None
+    assert by_prompt.get("test") is None
+    assert by_prompt.get("ping") is None
+    assert by_prompt.get("are you alive") is None
+    assert by_prompt.get("aaaa") is None
+    assert by_prompt.get("lorem ipsum dolor sit amet") is None
+    # Negative boundary — a §-anchor must still route to search_memory
+    # so a future router-prompt tweak that over-broadens 'null' fails.
+    assert by_prompt.get("§4-5-1") == "search_memory"

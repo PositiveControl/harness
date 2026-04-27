@@ -116,6 +116,52 @@
 - prompt: "thanks, that makes sense"
   expected_tool: null
 
+# ----- banter / empty signal → null (epic harness-jjm9, child harness-q7ff) -----
+# These prompts carry no rule-shape and no domain anchor — fabricating a
+# JO 7110.65 chunk from thin retrieval is the failure mode (Run 12). The
+# router's only job here is to NOT route to search_memory; the joke /
+# redirect reply is composed by the tool-loop pre-model intercept
+# (harness-vadq) using harness.persona.banter primitives.
+
+- prompt: "this page intentionally left blank"
+  expected_tool: null
+
+- prompt: "this page is intentionally left blank."
+  expected_tool: null
+
+- prompt: "test"
+  expected_tool: null
+
+- prompt: "ping"
+  expected_tool: null
+
+- prompt: "are you there"
+  expected_tool: null
+
+- prompt: "are you alive"
+  expected_tool: null
+
+- prompt: "lorem ipsum dolor sit amet"
+  expected_tool: null
+
+- prompt: "aaaa"
+  expected_tool: null
+
+- prompt: "ok cool whatever"
+  expected_tool: null
+
+# ----- negative banter cases — short OR domain-flavored, must NOT
+# route to null. Pin the boundary so a future router-prompt tweak that
+# over-broadens 'null' immediately fails the eval.
+
+- prompt: "§4-5-1"
+  expected_tool: search_memory
+  expected_args: [query]
+
+- prompt: "wake turbulence minima for heavy followed by small"
+  expected_tool: search_memory
+  expected_args: [query]
+
 # ----- remember a study fact → remember_fact -----
 
 - prompt: "remember that I'm prepping for the CTO exam in six weeks"
