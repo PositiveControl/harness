@@ -9,6 +9,61 @@ acceptance criteria stay in beads.
 
 ---
 
+## Picking up next session — TL;DR
+
+**Where we are.** Phase-1 infra ships at **35% combined accuracy** (14/40 on
+the eval fixture). Tool, eval subcommand, baseline JSON, pre-push gate
+all wired. The 80% product gate (q35t) is ~45pp away. Cheap angles
+exhausted: rubric tightening (+5pp shipped via kl0w) and query-side
+rewrites (kure: both attempts regressed, reverted).
+
+**Two unexplored levers, in order of land-it-first ordering:**
+
+1. **`harness-rwx3` — k bump from 8 → 12-16 with cite-grounding
+   gate filtering**. Cluster #3 failures land their target § at
+   rank 2-4 instead of rank 0; bumping K and letting the
+   cite-grounding hook filter ungrounded picks should pull them
+   in without shifting the dense embedding signal. One-line
+   change in `lint_utterance`. Land first — the lift signal
+   tells you whether the more involved re-rank work is needed.
+
+2. **`harness-ptya` — per-section keyword anchor map** (blocked
+   on rwx3 outcome). Build a small `verb_anchors.yaml` mapping
+   section-distinctive verbs/codes to their target §. `SQUAWK` →
+   §10-2-6, `7500` → §10-2-6, `MAYDAY` → §10-1-1, `REDUCE SPEED`
+   → §5-7-2, `CONTACT` → §2-1-17, `LINE UP AND WAIT` → §3-9-4,
+   `CLEARED FOR TAKEOFF` → §3-9-10, `CLEARED TO LAND` → §3-10-5,
+   `LOW ALTITUDE ALERT` → §2-1-6, `TRAFFIC ALERT` → §2-1-6,
+   `TRAFFIC, (clock position)` → §2-1-21. Use as a re-rank signal
+   — boost candidate sections whose anchor verbs appear in the
+   utterance. Surgical; doesn't break the dense embedding match
+   the canonical cases already use.
+
+**Two paths NOT to retry (kure log):**
+
+- Strip phonetic-digit tokens from the retrieval query: -5pp.
+- Augment original + stripped: -7.5pp (verdict crashed on slate
+  shift).
+
+**Three failure clusters from baseline** (analysis below). Cluster
+#1 (phonetic slots read as missing) and #2 (lenient single-word
+swaps) partially addressed by kl0w. Cluster #3 (retrieval
+misroutes for short numeric utterances) is the dominant remaining
+blocker.
+
+**Larger-model fallback.** If structural retrieval fixes don't
+clear 80%, swap the 7B Qwen for the 32B (`--model-repo
+mlx-community/Qwen2.5-32B-Instruct-4bit`). Already supported via
+the existing `--model-repo` flag; no code change needed. Slower
+per-case but the rubric/section-disambiguation precision should
+lift substantially.
+
+**State.** Tree clean. 3 commits ahead of origin (run `git push`
+when ready). Lint pipeline at the kl0w state — same code that
+generated the 35% baseline.
+
+---
+
 ## Goal
 
 Take an ATC transmission utterance (text in Phase 1, audio later) and
@@ -46,8 +101,12 @@ rulebook. The cite-or-silent guarantee from airton_c1's hardened stack
 | # | Bead | Status | Owner | Summary |
 |---|---|---|---|---|
 | 1 | [`harness-h2iz`](#) | **closed** | Mark | Build `phraseology_eval.yaml` (40 cases, ≥10 per scenario class). Locks eval contract. |
-| 2 | [`harness-q35t`](#) | **in_progress** | Mark | `src/harness/tools/phraseology_lint.py` ToolSpec. Cite-or-silent. New `phraseology` tool profile. CLI subcommand `harness phraseology lint <utterance>`. Gate ≥80% combined accuracy on fixture (gate-validation requires harness-15dy). |
-| 3 | [`harness-15dy`](#) | **in_progress** | Mark | `harness eval phraseology` Typer subcommand + per-scenario breakdown + `--compare-baseline` against `phraseology_baseline.json` + pre-push hook gating regressions on tool / fixture / corpus paths. |
+| 2 | [`harness-q35t`](#) | **in_progress** | Mark | `src/harness/tools/phraseology_lint.py` ToolSpec. Cite-or-silent. New `phraseology` tool profile. CLI subcommand `harness phraseology lint <utterance>`. Gate ≥80% combined accuracy on fixture — currently at 35% (14/40). |
+| 3 | [`harness-15dy`](#) | **closed** | Mark | `harness eval phraseology` Typer subcommand + per-scenario breakdown + `--compare-baseline` against `phraseology_baseline.json` + pre-push hook gating regressions on tool / fixture / corpus paths. |
+| 4 | [`harness-kl0w`](#) | **closed** | Mark | Rubric tightening: phonetic-slot clarification in lint prompt. +5pp combined (30% → 35%). |
+| 5 | [`harness-kure`](#) | **closed** (no improvement) | — | Cluster #3 retrieval investigation. Both query-side approaches regressed; reverted. Future angles documented. |
+| 6 | [`harness-rwx3`](#) | **open** | — | Bump retrieval k from 8 to 12-16 with cite-grounding filter. Cheap one-line test for cluster #3. Should land first to inform whether re-rank work is needed. |
+| 7 | [`harness-ptya`](#) | **open** (blocked on rwx3) | — | Per-section verb-anchor re-rank. `verb_anchors.yaml` mapping distinctive verbs/codes to target §; boost matching sections in retrieval slate. Surgical fix for cluster #3 if k-bump alone isn't enough. |
 
 ### Phase 2 — voice (deferred until Phase 1 ships)
 
