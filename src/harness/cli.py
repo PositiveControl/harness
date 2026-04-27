@@ -3340,6 +3340,294 @@ def eval_atc_retrieval(
         console.print("[bold green]✓ no regressions[/bold green]")
 
 
+@eval_app.command("phraseology")
+def eval_phraseology(
+    fixture_path: Path | None = typer.Option(
+        None,
+        "--fixture",
+        help=(
+            "Path to a phraseology eval YAML. Defaults to `character/<name>/phraseology_eval.yaml`."
+        ),
+    ),
+    model: str = typer.Option("mlx", help="Adapter: echo | mlx | ollama"),
+    model_repo: str | None = typer.Option(None, "--model-repo"),
+    lora_path: str | None = typer.Option(None, "--lora-path"),
+    draft_repo: str | None = typer.Option(None, "--draft-repo"),
+    temperature: float = typer.Option(
+        0.0,
+        help=(
+            "Sampling temperature for the lint pipeline. Default 0 "
+            "(greedy) so verdict pass-rate is stable run-to-run."
+        ),
+    ),
+    k: int = typer.Option(
+        8,
+        help=(
+            "Top-K hybrid retrieval per case. The candidate-anchor set "
+            "the lint pipeline gates against is built from this slate."
+        ),
+    ),
+    scenario: str | None = typer.Option(
+        None,
+        "--scenario",
+        help=(
+            "Filter fixture to one scenario class "
+            "(departure | arrival | handoff | emergency). "
+            "Default: all classes."
+        ),
+    ),
+    save_baseline: bool = typer.Option(
+        False,
+        "--save-baseline",
+        help=(
+            "Write the run to character/<name>/phraseology_baseline.json. "
+            "Snapshot the current verdict + citation accuracy as the "
+            "frozen contract future runs diff against."
+        ),
+    ),
+    compare_baseline: bool = typer.Option(
+        False,
+        "--compare-baseline",
+        help=(
+            "Diff this run against character/<name>/phraseology_baseline.json "
+            "(or --baseline-path). Exits non-zero on regression: aggregate "
+            "accuracy drop OR per-case verdict/citation pass flip past "
+            "--regression-budget. The gate that turns the baseline JSON "
+            "into a contract for the pre-push hook."
+        ),
+    ),
+    baseline_path: Path | None = typer.Option(
+        None,
+        "--baseline-path",
+        help=(
+            "Override the baseline file location for --save-baseline / "
+            "--compare-baseline. Defaults to "
+            "character/<name>/phraseology_baseline.json."
+        ),
+    ),
+    regression_budget: int = typer.Option(
+        0,
+        "--regression-budget",
+        min=0,
+        help=(
+            "Per-case regression allowance for --compare-baseline. "
+            "Aggregate accuracy regressions ALWAYS fail the gate; "
+            "individual case flips up to N are tolerated when "
+            "aggregate accuracy holds."
+        ),
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+) -> None:
+    """Replay phraseology_eval.yaml through the lint pipeline and score
+    verdict + citation accuracy.
+
+    Phase-1 ship gate: combined_accuracy ≥ 0.80. Below the gate the
+    lint tool is not ready for product launch — fixture growth or
+    retrieval hardening lands first.
+    """
+    from harness.evals.phraseology import (
+        compare_baselines as _phraseology_compare,
+    )
+    from harness.evals.phraseology import (
+        default_baseline_path as _phraseology_baseline_path,
+    )
+    from harness.evals.phraseology import (
+        default_fixture_path as _phraseology_fixture_path,
+    )
+    from harness.evals.phraseology import (
+        load_baseline as _phraseology_load_baseline,
+    )
+    from harness.evals.phraseology import (
+        load_fixture as _phraseology_load_fixture,
+    )
+    from harness.evals.phraseology import (
+        run_phraseology_eval as _phraseology_run,
+    )
+    from harness.tools.phraseology_lint import lint_utterance
+
+    character = load_character(settings.character_path)
+    if character.name not in _ATC_FAMILY_NAMES:
+        raise typer.BadParameter(
+            f"phraseology eval expects an atc-family character "
+            f"(got {character.name!r}). Set HARNESS_CHARACTER_NAME=airton_c1."
+        )
+    path = fixture_path or _phraseology_fixture_path(settings.character_path)
+    if not path.exists():
+        raise typer.BadParameter(f"phraseology eval fixture not found: {path}")
+    fixture = _phraseology_load_fixture(path)
+    if scenario is not None:
+        fixture = tuple(row for row in fixture if row.scenario == scenario)
+    if not fixture:
+        console.print("[yellow](no cases in fixture after filter — nothing to score)[/yellow]")
+        raise typer.Exit(code=0)
+
+    adapter = _resolve_adapter(
+        model,
+        persona=False,
+        character=character,
+        model_repo=model_repo,
+        lora_path=lora_path,
+        draft_repo=draft_repo,
+    )
+    memory_store = _open_episodic_store(character, ingest=False)
+    if memory_store is None:
+        raise typer.BadParameter(
+            "phraseology eval needs the episodic store — install with "
+            "`uv sync --extra retrieval` and run `harness memory ingest`."
+        )
+
+    try:
+
+        def _lint_one(utterance: str, scenario_hint: str | None) -> object:
+            return lint_utterance(
+                utterance,
+                adapter=adapter,
+                episodic_store=memory_store,
+                scenario_hint=scenario_hint,
+                user_id=None,
+                k=k,
+                temperature=temperature,
+            )
+
+        result = _phraseology_run(fixture, _lint_one)  # type: ignore[arg-type]
+    finally:
+        memory_store.close()
+
+    # JSON envelope (pre-baseline-side-effects so --save-baseline writes
+    # the same payload we render).
+    cases_json: list[dict[str, object]] = []
+    for c in result.cases:
+        cases_json.append(
+            {
+                "id": c.row.id,
+                "scenario": c.row.scenario,
+                "utterance": c.row.utterance,
+                "expected_verdict": c.row.expected_verdict,
+                "expected_section": c.row.expected_section,
+                "actual_verdict": c.actual.verdict,
+                "actual_section": c.actual.expected_section,
+                "actual_phraseology": c.actual.expected_phraseology,
+                "actual_mismatch": c.actual.mismatch,
+                "verdict_pass": c.verdict_pass,
+                "citation_pass": c.citation_pass,
+                "passed": c.passed,
+            }
+        )
+    # Render the fixture path relative to the repo root when possible,
+    # so a baseline written on one machine compares cleanly on another
+    # (the pre-push gate runs on every developer's clone, where the
+    # absolute path is different).
+    try:
+        rel_fixture = str(path.relative_to(settings.root))
+    except ValueError:
+        rel_fixture = str(path)
+
+    payload: dict[str, object] = {
+        "character": character.name,
+        "adapter": adapter.id,
+        "fixture": rel_fixture,
+        "case_count": len(result.cases),
+        "verdict_accuracy": result.verdict_accuracy,
+        "citation_accuracy": result.citation_accuracy,
+        "combined_accuracy": result.combined_accuracy,
+        "by_scenario": result.by_scenario(),
+        "cases": cases_json,
+    }
+
+    if save_baseline:
+        out_path = baseline_path or _phraseology_baseline_path(settings.character_path)
+        out_path.write_text(json.dumps(payload, indent=2) + "\n")
+        console.print(f"[green]saved baseline[/green] → {out_path}")
+
+    if as_json:
+        console.print_json(json.dumps(payload))
+    else:
+        table = Table(
+            title=f"phraseology eval — {character.name} · {adapter.id}",
+            show_lines=False,
+        )
+        table.add_column("✓", style="bold", width=2)
+        table.add_column("id")
+        table.add_column("scen.", width=9)
+        table.add_column("verdict", width=12)
+        table.add_column("§ exp.", width=8)
+        table.add_column("§ got", width=8)
+        for c in result.cases:
+            mark = "[green]✓[/green]" if c.passed else "[red]✗[/red]"
+            verdict_cell: str = c.actual.verdict
+            if not c.verdict_pass:
+                verdict_cell = f"[red]{c.actual.verdict}[/red] (≠{c.row.expected_verdict})"
+            sec_exp = c.row.expected_section or "—"
+            sec_got = c.actual.expected_section or "—"
+            if not c.citation_pass:
+                sec_got = f"[red]{sec_got}[/red]"
+            table.add_row(mark, c.row.id, c.row.scenario, verdict_cell, sec_exp, sec_got)
+        console.print(table)
+        passed = sum(1 for c in result.cases if c.passed)
+        console.print(
+            f"[bold]{passed}/{len(result.cases)} passed · "
+            f"combined {result.combined_accuracy * 100:.1f}% · "
+            f"verdict {result.verdict_accuracy * 100:.1f}% · "
+            f"citation {result.citation_accuracy * 100:.1f}%[/bold]"
+        )
+        per_scenario = result.by_scenario()
+        if len(per_scenario) > 1:
+            details = " · ".join(
+                f"{scen}: {m['combined_accuracy'] * 100:.0f}% ({int(m['count'])})"
+                for scen, m in sorted(per_scenario.items())
+            )
+            console.print(f"[dim]by scenario — {details}[/dim]")
+
+    if compare_baseline:
+        in_path = baseline_path or _phraseology_baseline_path(settings.character_path)
+        if not in_path.exists():
+            console.print(
+                f"[yellow]no baseline at {in_path} — run with --save-baseline first[/yellow]"
+            )
+            raise typer.Exit(code=2)
+        comparison = _phraseology_compare(_phraseology_load_baseline(in_path), result)
+
+        if not as_json:
+            console.print(f"\n[bold]baseline diff[/bold] (vs {in_path})")
+            for d in comparison.aggregate_deltas:
+                arrow = "→" if abs(d.new - d.old) > 1e-9 else "="
+                color = "green" if d.new >= d.old else "red"
+                console.print(
+                    f"  [{color}]{d.metric}[/{color}]: "
+                    f"{d.old * 100:.1f}% {arrow} {d.new * 100:.1f}%"
+                )
+            if comparison.case_regressions:
+                bits = [
+                    f"{d.id} (verdict {d.old_verdict_pass}→{d.new_verdict_pass}, "
+                    f"cite {d.old_citation_pass}→{d.new_citation_pass})"
+                    for d in comparison.case_regressions
+                ]
+                console.print(f"[red]case regressions:[/red] {'; '.join(bits)}")
+            if comparison.case_improvements:
+                console.print(
+                    f"[green]case improvements:[/green] "
+                    f"{', '.join(d.id for d in comparison.case_improvements)}"
+                )
+            if comparison.new_cases:
+                console.print(
+                    f"[dim]new cases (not in baseline): {', '.join(comparison.new_cases)}[/dim]"
+                )
+            if comparison.dropped_cases:
+                console.print(
+                    f"[dim]dropped cases (in baseline, not in run): "
+                    f"{', '.join(comparison.dropped_cases)}[/dim]"
+                )
+
+        if comparison.has_regression(regression_budget=regression_budget):
+            if not as_json:
+                console.print(
+                    f"[bold red]✗ regression detected[/bold red] (budget={regression_budget})"
+                )
+            raise typer.Exit(code=1)
+        if not as_json:
+            console.print("[bold green]✓ no regressions[/bold green]")
+
+
 @eval_app.command("tool-loop")
 def eval_tool_loop(
     fixture_path: Path | None = typer.Option(

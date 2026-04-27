@@ -50,6 +50,20 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
+      # Phraseology lint gate (harness-15dy): blocks pushes that touch
+      # the lint tool, the eval scorer, or the fixture from regressing
+      # verdict / citation accuracy. Corpus paths are already gated by
+      # atc-retrieval above. Bypass: re-snapshot with `harness eval
+      # phraseology --save-baseline` once the new state is intentional,
+      # then re-push.
+      - id: phraseology-lint-gate
+        name: phraseology lint gate (--compare-baseline)
+        entry: scripts/phraseology_gate.sh
+        language: system
+        files: ^(src/harness/tools/phraseology_lint\.py|src/harness/evals/phraseology\.py|character/airton_c1/phraseology_eval\.yaml)
+        pass_filenames: false
+        stages: [pre-push]
+
       # Voice ablation manifest gate (harness-wrzz, plan #8). Runs on
       # any push that touches voice/canonical.yaml or voice/ablation.
       # yaml — fast structural check that ablation entries still

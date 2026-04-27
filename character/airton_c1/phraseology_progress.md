@@ -47,7 +47,7 @@ rulebook. The cite-or-silent guarantee from airton_c1's hardened stack
 |---|---|---|---|---|
 | 1 | [`harness-h2iz`](#) | **closed** | Mark | Build `phraseology_eval.yaml` (40 cases, ≥10 per scenario class). Locks eval contract. |
 | 2 | [`harness-q35t`](#) | **in_progress** | Mark | `src/harness/tools/phraseology_lint.py` ToolSpec. Cite-or-silent. New `phraseology` tool profile. CLI subcommand `harness phraseology lint <utterance>`. Gate ≥80% combined accuracy on fixture (gate-validation requires harness-15dy). |
-| 3 | [`harness-15dy`](#) | open (now unblocked) | — | `harness eval phraseology` Typer subcommand + per-scenario breakdown + `--compare-baseline` against `phraseology_baseline.json` + pre-push hook gating regressions on tool / fixture / corpus paths. |
+| 3 | [`harness-15dy`](#) | **in_progress** | Mark | `harness eval phraseology` Typer subcommand + per-scenario breakdown + `--compare-baseline` against `phraseology_baseline.json` + pre-push hook gating regressions on tool / fixture / corpus paths. |
 
 ### Phase 2 — voice (deferred until Phase 1 ships)
 
@@ -79,18 +79,106 @@ land.
 |---|---|---|
 | Phase-1 fixture | shipped (40/40) | `character/airton_c1/phraseology_eval.yaml`, sanity-checked against seed store |
 | Phase-1 tool | shipped | `src/harness/tools/phraseology_lint.py`, `PhraseologyLintTool` + `lint_utterance()`, 14 unit tests |
-| Phase-1 CLI subcommand | shipped | `harness phraseology lint <utterance>` (and `--json`); echo-adapter smoke confirms cite-or-silent gate fires |
+| Phase-1 CLI subcommand (lint) | shipped | `harness phraseology lint <utterance>` (and `--json`); echo-adapter smoke confirms cite-or-silent gate fires |
 | Phase-1 tool profile | shipped | `phraseology` profile in `tools/profiles.py`; inherits atc's rulebook-first `search_memory` framing |
-| Phase-1 gate validation | not run | needs harness-15dy (eval subcommand) for ≥80% measurement against fixture |
-| Phase-1 eval subcommand | not started | now unblocked; harness-15dy ready to claim |
-| Phase-1 baseline JSON | not started | snapshot once 15dy lands and gate clears |
-| Phase-1 pre-push gate | not started | mirrors `harness-zxqs` pattern |
+| Phase-1 eval subcommand | shipped | `harness eval phraseology` with `--scenario` / `--save-baseline` / `--compare-baseline` / `--regression-budget`; 22 unit tests on `evals/phraseology.py` |
+| Phase-1 baseline JSON | shipped | `character/airton_c1/phraseology_baseline.json` snapshotted at 12/40 = 30% combined; relative-path-portable |
+| Phase-1 pre-push gate | shipped | `scripts/phraseology_gate.sh` + `.pre-commit-config.yaml` entry; fires on changes to lint tool, eval scorer, or fixture |
+| Phase-1 product gate (≥80%) | **not cleared** | current run 30% — rubric / retrieval gaps documented under "Failure analysis" below; q35t stays in_progress until rubric/retrieval lift the bar |
 | Phase-2 STT | deferred | gated on Phase-1 ship |
 | Phase-2 streaming | deferred | gated on Phase-1 ship |
 
 ---
 
+## Failure analysis (Phase-1 baseline run, 2026-04-27)
+
+Combined accuracy 30% on 40 cases (verdict 40%, citation 65%). Per-
+scenario: departure 50% · arrival 20% · emergency 30% · handoff 20%.
+Three failure clusters that explain ~all of the gap:
+
+1. **Phonetic-spelled slot values read as missing.** When the utterance
+   spells the slot value ("RUNWAY TWO SEVEN, LINE UP AND WAIT") the
+   model frequently calls it `incomplete` ("missing runway number")
+   even though the slot is filled. Hits canonical-form cases like
+   `dep_luaw_canonical`, `dep_luaw_intersection_canonical`,
+   `arr_landing_change_runway_canonical`. Fix surface: tighten the
+   lint prompt (explicit examples that "TWO SEVEN" is a runway number,
+   "JULIETT" is a taxiway designator), or post-rewrite the utterance
+   to the digit form before retrieval.
+
+2. **Single-word swaps too lenient.** Wrong-predicate variants like
+   "CLEARED TO TAKEOFF" pass as `ok` instead of flagging `wrong`.
+   Same for "REDUCE SPEED TO 250 MPH" (should be `wrong` for unit
+   error, comes back `ok`). Fix surface: lint prompt rules need to
+   explicitly forbid preposition / unit / verb substitutions.
+
+3. **Retrieval misroutes some short transmissions.** "SQUAWK SEVEN
+   FIVE ZERO ZERO" retrieves §2-4-17 (Numbers Usage — keyword overlap
+   on the spelled digits) instead of §10-2-6 (Hijacked Aircraft).
+   "REDUCE SPEED TO TWO FIVE ZERO" retrieves §2-4-17 instead of
+   §5-7-2. Fix surface: use the `scenario_hint` more aggressively in
+   the retrieval query (right now it appends as bracket text — could
+   be a re-rank signal), or query expansion that maps phrase → §
+   class. Adjacent to harness-7wju Phase-1.6 hardening lanes.
+
+These belong to harness-q35t (rubric / retrieval) and harness-7wju
+(Phase-1.6 hardening) — not 15dy. The 15dy infrastructure ships at
+30%; future improvements ratchet the baseline up.
+
 ## Log (newest first)
+
+### 2026-04-27 — eval subcommand + baseline + pre-push gate (harness-15dy, in_progress)
+
+**What landed.**
+
+- `src/harness/evals/phraseology.py` — fixture loader, scorer, baseline
+  comparator. Mirrors `evals/atc_retrieval.py` shape: `LintFn`
+  protocol, `PhraseologyEvalResult` with `verdict_accuracy` /
+  `citation_accuracy` / `combined_accuracy` aggregates, per-scenario
+  breakdown, `BaselineComparison` with per-case pass-flip detection +
+  aggregate-accuracy regression.
+- `src/harness/cli.py` — new `eval phraseology` subcommand. Flags:
+  `--scenario` filter, `--save-baseline` / `--compare-baseline`,
+  `--baseline-path`, `--regression-budget`, `--json`. Renders per-case
+  human table + per-scenario summary; `--json` envelope is what
+  `--save-baseline` snapshots. Fixture path serialized relative to
+  repo root for portability across machines.
+- `tests/test_eval_phraseology.py` — 22 unit tests across fixture
+  loader (oos null-citation invariant, scalar field validation,
+  expected_verdict enum check), pure scoring, per-scenario breakdown,
+  baseline comparator (per-case pass flips, aggregate regressions,
+  regression budget tolerance, new/dropped cases, missing-aggregate
+  field tolerance).
+- `tests/test_cli_introspect.py` — pin updated for `eval phraseology`.
+- `scripts/phraseology_gate.sh` + `.pre-commit-config.yaml` —
+  pre-push gate fires on changes to lint tool, eval scorer, or
+  fixture YAML. Exit 0 when no baseline (brand-new clones); exit 1
+  when comparator detects regression.
+- `character/airton_c1/phraseology_baseline.json` — first snapshot.
+  Combined 30% (12/40), verdict 40%, citation 65%. Below the 80%
+  q35t product gate; future work ratchets it up.
+
+**Gate verification.** Pre-push hook config validated. Real run
+against the same fixture deferred (3-4 min on MLX) — comparator unit
+tests cover the no-regression / per-case-flip / aggregate-drop paths
+with deterministic fixtures.
+
+**Quality gates.** ruff, ruff format, mypy (197 source files), pytest
+(1,676 + 22 = 1,698 passing) all green.
+
+**Bead status.** `harness-15dy` substantial work landed:
+✓ subcommand exists, ✓ baseline JSON committed, ✓ comparator + tests,
+✓ pre-push gate wired. Live `--compare-baseline` real-MLX verification
+is the one remaining check — leave bead `in_progress` until that run
+goes green.
+
+**Next.**
+1. (15dy close) Run `harness eval phraseology --compare-baseline` against
+   the just-snapshotted baseline to confirm self-comparison clears.
+2. (q35t close) Lift combined accuracy past 80% via the three failure
+   clusters above (rubric + retrieval). Hand off to harness-7wju
+   children where they overlap (cite-grounding actuator, OutOfScopeHook,
+   query expansion).
 
 ### 2026-04-27 — tool + CLI subcommand (harness-q35t, in_progress)
 
