@@ -18,6 +18,7 @@ _EXPECTED_COMMANDS: tuple[str, ...] = (
     "chat",
     "describe",
     "eval atc",
+    "eval atc-audio",
     "eval atc-retrieval",
     "eval phraseology",
     "eval router",
