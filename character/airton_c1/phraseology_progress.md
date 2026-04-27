@@ -82,9 +82,10 @@ land.
 | Phase-1 CLI subcommand (lint) | shipped | `harness phraseology lint <utterance>` (and `--json`); echo-adapter smoke confirms cite-or-silent gate fires |
 | Phase-1 tool profile | shipped | `phraseology` profile in `tools/profiles.py`; inherits atc's rulebook-first `search_memory` framing |
 | Phase-1 eval subcommand | shipped | `harness eval phraseology` with `--scenario` / `--save-baseline` / `--compare-baseline` / `--regression-budget`; 22 unit tests on `evals/phraseology.py` |
-| Phase-1 baseline JSON | shipped | `character/airton_c1/phraseology_baseline.json` snapshotted at 12/40 = 30% combined; relative-path-portable |
+| Phase-1 baseline JSON | shipped | `character/airton_c1/phraseology_baseline.json` re-snapshotted at 14/40 = 35% combined post-rubric (was 30%); relative-path-portable |
 | Phase-1 pre-push gate | shipped | `scripts/phraseology_gate.sh` + `.pre-commit-config.yaml` entry; fires on changes to lint tool, eval scorer, or fixture |
-| Phase-1 product gate (≥80%) | **not cleared** | current run 30% — rubric / retrieval gaps documented under "Failure analysis" below; q35t stays in_progress until rubric/retrieval lift the bar |
+| Phase-1 rubric work | shipped (kl0w) | minimal phonetic-slot clarification in lint prompt; +5pp combined |
+| Phase-1 product gate (≥80%) | **not cleared** | current run 35% — retrieval misroutes (cluster #3) dominate the remaining gap; q35t stays in_progress |
 | Phase-2 STT | deferred | gated on Phase-1 ship |
 | Phase-2 streaming | deferred | gated on Phase-1 ship |
 
@@ -92,8 +93,14 @@ land.
 
 ## Failure analysis (Phase-1 baseline run, 2026-04-27)
 
-Combined accuracy 30% on 40 cases (verdict 40%, citation 65%). Per-
-scenario: departure 50% · arrival 20% · emergency 30% · handoff 20%.
+**Updated baseline (post-rubric work, harness-kl0w): 14/40 = 35%
+combined · verdict 45% · citation 65%. Per-scenario: arrival 40% ·
+departure 50% · emergency 30% · handoff 20%. Lift: +5pp combined,
++5pp verdict, citation flat.**
+
+Original baseline (pre-rubric): 12/40 = 30% combined (verdict 40%,
+citation 65%). Per-scenario: departure 50% · arrival 20% · emergency
+30% · handoff 20%.
 Three failure clusters that explain ~all of the gap:
 
 1. **Phonetic-spelled slot values read as missing.** When the utterance
@@ -126,6 +133,87 @@ These belong to harness-q35t (rubric / retrieval) and harness-7wju
 30%; future improvements ratchet the baseline up.
 
 ## Log (newest first)
+
+### 2026-04-27 — rubric tightening: phonetic-slot clarification (harness-kl0w, closed)
+
+**Goal.** Lift the lint pipeline's combined accuracy by addressing
+failure clusters #1 and #2 from the baseline failure analysis (false
+"missing runway number" on phonetic-spelled slots; lenient
+single-word swaps).
+
+**Iteration log.**
+
+1. *First attempt — verbose rubric.* Added a long ATC-conventions
+   block (digits + NATO + call signs), expanded `wrong` verdict
+   description with five concrete substitution examples, added a
+   wrong-vs-incomplete decision flow, plus a user-message reminder.
+   Result: 30% → 22.5% combined. Regressed. The model over-applied
+   `wrong` to canonical-form cases (`arr_landing_lahso_canonical`,
+   `emerg_low_altitude_alert_canonical` etc.) — too many `wrong`
+   examples primed it to label more things wrong. Reverted.
+
+2. *Second attempt — leaner.* Same conventions block but slimmer;
+   still kept the wrong-vs-incomplete decision flow. Result: 30% →
+   32.5% combined. 7 improvements, 7 regressions; net +1 case.
+   Citation -5pp on retrieval flips. Marginal, kept iterating.
+
+3. *Third attempt — minimal* (shipped). Original prompt + ONE
+   single-paragraph note on phonetic slot values. No decision flow.
+   No example expansion. Result: **30% → 35% combined** (verdict
+   +5pp, citation flat). 4 improvements, 2 regressions. Aggregate
+   accuracy strictly non-regressive on combined + verdict + citation.
+
+**Why minimal won.** The 7B model treats verbose rubric expansions
+as priming signals for whichever verdict the examples illustrate.
+Long lists of `wrong` examples nudge it toward `wrong`; long
+decision flows describing how to pick `wrong` over `incomplete`
+nudge it the same direction. The minimal note targets the specific
+mis-classification (phonetic slot as "missing") without rebalancing
+verdict probabilities elsewhere.
+
+**Per-case wins** (case ids that flipped pass after the minimal
+prompt landed):
+
+- `arr_landing_continue_canonical` — model now reads "RUNWAY TWO
+  SEVEN, CONTINUE" as ok with the runway slot filled.
+- `arr_landing_wrong_surface_label` — "TAXIWAY ONE EIGHT, CLEARED
+  TO LAND" correctly tagged `wrong` (noun-class swap).
+- `arr_pilot_oos` — pilot final report ("ON FINAL FOR ONE EIGHT")
+  correctly tagged out_of_scope.
+- `han_speed_maintain_canonical` — "MAINTAIN TWO EIGHT ZERO KNOTS"
+  no longer mis-cited.
+
+**Per-case losses** (regressions both on §2-1-17 frequency-handoff
+canonicals):
+
+- `han_change_to_my_freq_canonical` — model now flips verdict on
+  the canonical "(Identification) CHANGE TO MY FREQUENCY ..." form.
+- `han_remain_freq_canonical` — bare "REMAIN THIS FREQUENCY"
+  citation flipped.
+
+These are likely retrieval flips (citation channel) interacting with
+prompt sensitivity; same scenarios as the cluster #3 retrieval gap.
+
+**New baseline.** `character/airton_c1/phraseology_baseline.json`
+re-snapshotted at 35% combined. The pre-push gate now ratchets
+against this; future rubric / retrieval work compares against the
+new bar.
+
+**What still blocks the 80% product gate.** ~45pp shy. The remaining
+gap is dominated by:
+
+1. *Retrieval misroutes* (cluster #3): "SQUAWK SEVEN FIVE ZERO
+   ZERO" pulls §2-4-17 (Numbers Usage) instead of §10-2-6 (Hijack);
+   "REDUCE SPEED TO TWO FIVE ZERO" hits §2-4-17 instead of §5-7-2.
+   Short numeric utterances confuse hybrid retrieval. Candidate fix:
+   scenario_hint as re-rank weight, query expansion, or per-section
+   keyword anchors.
+2. *§-class brittleness on emergency handoff* (handoff 20% / emergency 30%).
+   Some §10-2-6 hijack cases lose to §2-4-17 keyword overlap; some
+   §2-1-6 alerts get OOS'd because the phrasing is short.
+
+These belong to harness-q35t (still in_progress for the gate) and
+harness-7wju (Phase-1.6 hardening), not to kl0w.
 
 ### 2026-04-27 — eval subcommand + baseline + pre-push gate (harness-15dy, in_progress)
 
