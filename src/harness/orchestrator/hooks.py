@@ -972,9 +972,17 @@ _AVIATION_VOCAB_RE = re.compile(
 # almost never in a JO 7110.65 question.'
 _CLEARLY_NON_AVIATION_RE = re.compile(
     r"\b(?:"
-    # Biology / animals (farm + common pets)
+    # Biology / animals (farm + common pets). 'bird' is intentionally
+    # NOT here: bird strikes / bird hazards / bird activity / bird
+    # ingestion are real AIM §7-5 + 14 CFR §25.631/29.631/33.76/35.36
+    # + JO 7110.65 §2-1-23 topics, and any thorough reply names
+    # 'bird' too many times in too many shapes to mask cleanly. Joke
+    # shapes ('why did the bird cross the road', 'if a bird, a fish,
+    # and a horse') are caught structurally by `_JOKE_FRAME_RE`, not
+    # by the bird token, so dropping it costs no joke-detection
+    # power.
     r"rooster|chicken|hen|egg|eggs|cow|pig|horse|goat|sheep|dog|cat|fish|"
-    r"bird|plant|tree|flower|fungus|bacteria|virus|cell|"
+    r"plant|tree|flower|fungus|bacteria|virus|cell|"
     # More animals — wildlife / exotic, common in jokes & riddles
     r"turtle|tortoise|rabbit|bunny|mouse|rat|snake|lizard|frog|toad|"
     r"elephant|monkey|giraffe|lion|tiger|bear|wolf|fox|deer|moose|"

@@ -1879,6 +1879,113 @@ def test_scope_redirect_expanded_vocab_catches_household_and_supernatural() -> N
         )
 
 
+def test_scope_redirect_passes_bird_strike_question() -> None:
+    """Session 2026-04-28 false positive: 'In what publication and
+    section can I find information on bird strikes?' tripped the
+    `bird` token in `_CLEARLY_NON_AVIATION_RE` even though bird
+    strikes are documented in AIM §7-5-1..4, 14 CFR §25.631 / §29.631
+    / §33.76 / §35.36, and JO 7110.65 §2-1-23.'bird' was dropped
+    from the non-aviation vocab so this in-scope hazard question
+    lands silently."""
+    outcome = ScopeRedirectHook().check(
+        _scope_ctx(
+            "In what publication and section can I find information on bird strikes?",
+            "Bird-strike risks are covered in AIM §7-5-2 (Reducing Bird "
+            "Strike Risks) and JO 7110.65 §2-1-23 (bird-activity "
+            "advisories).",
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_scope_redirect_passes_full_bird_strike_section_dump() -> None:
+    """Session 2026-04-28 follow-up: a thorough answer recites every
+    relevant AIM / 14 CFR / JO 7110.65 section, naming 'bird' in many
+    shapes — 'Bird Strike Risks', 'Bird and Other Wildlife
+    Activities', '8-pound bird', 'bird species', 'bird migration',
+    'bird type', 'bird or other wildlife', 'bird concentration'. No
+    collocation list catches them all. With 'bird' out of the
+    non-aviation vocab, every shape lands silently."""
+    outcome = ScopeRedirectHook().check(
+        _scope_ctx(
+            "What publications, chapters and sections relate to bird strikes?",
+            "The publications, chapters, and sections related to bird "
+            "strikes include:\n"
+            "1. AIM §7-5-2: Reducing Bird Strike Risks\n"
+            "  - The most serious strikes are those involving ingestion "
+            "into an engine or windshield strikes.\n"
+            "  - Avoid overflight of known areas of bird concentration "
+            "and flying at low altitudes during bird migration.\n"
+            "2. AIM §7-5-3: Reporting Bird Strikes\n"
+            "  - Pilots are urged to report any bird or other wildlife "
+            "strike using FAA Form 5200-7.\n"
+            "3. AIM §7-5-1: Migratory Bird Activity\n"
+            "  - Bird strike risk increases during migration months.\n"
+            "  - Altitudes of migrating birds vary with environmental "
+            "variables.\n"
+            "4. AIM §7-5-4: Bird Hazards and Flight Over National "
+            "Refuges\n"
+            "  - Report geographic location, bird type, numbers, and "
+            "altitude to airport management.\n"
+            "5. 14 CFR §25.631: Bird Strike Damage\n"
+            "  - Empennage structure must be designed for continued "
+            "safe flight after impact with an 8-pound bird.\n"
+            "6. 14 CFR §29.631: Bird Strike for Rotorcraft\n"
+            "  - Rotorcraft must withstand impact with a 2.2-lb bird.\n"
+            "7. 14 CFR §35.36: Bird Impact\n"
+            "  - Propeller must withstand impact of a 4-pound bird.\n"
+            "8. 14 CFR §33.76: Bird Ingestion\n"
+            "  - Compliance with large bird ingestion tests for "
+            "engines.\n"
+            "9. JO 7110.65 §2-1-23: Issue Advisory Information on "
+            "Pilot-Reported Bird Activity\n"
+            "  - Issue advisory information on pilot-reported bird "
+            "activity.\n"
+            "10. AIM §11-8-6: Some bird species may attack UAS.\n",
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_scope_redirect_passes_bird_hazard_and_activity_collocations() -> None:
+    """Variant phrasings for bird hazards / activity / ingestion all
+    pass — 'bird' is no longer a non-aviation vocab token, so any
+    aviation-context bird question lands silently regardless of
+    head-noun shape."""
+    for prompt in (
+        "What does the AIM say about bird hazards on final approach?",
+        "How should controllers issue bird activity advisories?",
+        "Where is bird ingestion certification documented for engines?",
+        "What's the procedure for reporting a bird strike to ATC?",
+    ):
+        outcome = ScopeRedirectHook().check(
+            _scope_ctx(
+                prompt,
+                "Per AIM §7-5-2, bird hazards near airports are mitigated "
+                "by pilot reports and tower-issued advisories.",
+            )
+        )
+        assert isinstance(outcome, Continue), f"false positive on {prompt!r}"
+
+
+def test_scope_redirect_fires_on_bird_joke_via_joke_frame() -> None:
+    """Dropping 'bird' from the non-aviation vocab does not lose
+    joke detection — `_JOKE_FRAME_RE` catches structural shapes
+    ('why did the bird cross the road', 'if a bird, a fish, and a
+    horse...') regardless of which animal noun appears."""
+    for prompt in (
+        "Why did the bird cross the road in front of the runway?",
+        "If a bird, a fish, and a horse all walked into a control tower",
+    ):
+        outcome = ScopeRedirectHook().check(
+            _scope_ctx(
+                prompt,
+                "The bird crossed because it heard the chicken did it first.",
+            )
+        )
+        assert isinstance(outcome, Nudge), f"joke-frame missed on {prompt!r}"
+
+
 def test_scope_redirect_respects_disabled_toggle() -> None:
     """Attribution eval disables catchers by name."""
     pipe = default_hook_pipeline(catchers=("scope_redirect",))

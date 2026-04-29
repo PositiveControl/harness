@@ -58,3 +58,15 @@ scratch/**/*
 
 # Benchmark artifacts — regenerable via scripts/bench_*.py and `harness eval *`
 bench_results/
+
+# IDE local config
+.idea/
+
+# Stray local auto-memory dir (canonical path is
+# ~/.claude/projects/.../memory/ — a copy lands here if the harness
+# is launched with HOME pointed at the repo root).
+memory/
+
+# One-off bd graph exports + unrelated top-level scratch
+beads-export.jsonl
+battista_comparison.md
