@@ -9,6 +9,8 @@ from pathlib import Path
 import frontmatter
 import yaml
 
+from harness.citation import CitationGrammar, load_citation_grammar
+
 
 @dataclass(frozen=True)
 class Value:
@@ -145,6 +147,14 @@ class Character:
     # list so the tutoring surface stays bounded; non-corpus
     # characters leave it empty.
     fetch_url_allowed_hosts: tuple[str, ...] = ()
+    # Citation grammar (harness-jaqe). Compiled regex set + nudge-text
+    # tokens for the corpus this character speaks against. None when
+    # the character has no citation discipline (Airton, ab, echo);
+    # citation-aware functions in persona/rewriter, persona/
+    # cite_grounding, and orchestrator/hooks short-circuit when
+    # absent. Loaded from `core.yaml: citation_grammar:` via
+    # persona/citation.py:load_citation_grammar.
+    citation_grammar: CitationGrammar | None = None
 
     def system_prompt(
         self,
@@ -362,6 +372,7 @@ def load_character(path: Path) -> Character:
             path,
             "fetch_url.allowed_hosts",
         ),
+        citation_grammar=load_citation_grammar(core.get("citation_grammar"), path),
     )
 
 

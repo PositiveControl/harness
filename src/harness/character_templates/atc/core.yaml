@@ -89,3 +89,19 @@ fetch_url:
     - www.1800wxbrief.com
     - faa.gov
     - www.faa.gov
+
+# Citation grammar (harness-jaqe). The atc archetype targets the FAA
+# pilot-facing + controller-facing documentation. New variants of
+# this template inherit the regex set; trim or extend per-variant
+# (e.g. a CFR-only variant could drop AIM / JO entries).
+citation_grammar:
+  surface_patterns:
+    - 'AIM\s+\d+(?:[-−]\d+){1,2}'
+    - '(?:14\s+CFR\s+)?§\s*\d+\.\d+[a-z]*'
+    - 'JO\s+7110\.65[A-Z]*\s+§?\s*\d+(?:[-−]\d+){1,2}'
+    - 'AC\s+\d+[-−]\d+[A-Z]*'
+  strip_prefix: 'JO[_ ]7110\.65[A-Z]*'
+  anchor_pattern: '§?\s*(\d+(?:[-−]\d+){1,2}|\d+\.\d+[a-z]*)'
+  document_reference: '\b(?:FAA\s+Order\s+)?JO\s*7110\.65\b'
+  document_name: 'JO 7110.65'
+  example_anchor: '§1-1-1'

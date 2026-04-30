@@ -4,6 +4,7 @@ import re
 from collections.abc import Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING
 
+from harness.citation import CitationGrammar
 from harness.model.adapter import ChatMessage
 from harness.model.adapter import count_tokens as _count_tokens
 
@@ -12,33 +13,14 @@ if TYPE_CHECKING:
     from harness.model.adapter import ModelAdapter
 
 
-# Citation patterns the post-rewrite fixup tracks (harness-cco). The
-# rewriter prompt tells the model to preserve these verbatim, but the
-# style pass still sometimes compresses them out — especially
-# parentheticals like "(Pilot Responsibility upon Clearance Issuance)"
-# trailing an `AIM N-N-N` reference. Regex match here is narrow so we
-# don't false-positive on generic numeric phrases: "chapter 5" doesn't
-# match; "AIM 5-3-8" does. Case-insensitive because the model
-# sometimes lowercases "aim" mid-sentence.
-#
-# Accept both ASCII hyphen (normalised chunker output) and U+2212
-# (unicode minus the corpus source used). `_normalise_cite` below
-# folds both to ASCII for equality checks, so "AIM 4-4-7" and
-# "AIM 4−4−7" count as the same citation in the deduplication step.
-_CITATION_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # AIM paragraph: "AIM 4-4-7" / "AIM 3-2". Allow 1-2 trailing
-    # `-NNN` segments; require at least one so plain "AIM 4" doesn't
-    # match.
-    re.compile(r"AIM\s+\d+(?:[-−]\d+){1,2}", re.IGNORECASE),
-    # CFR: "14 CFR §91.155" / "§ 91.103" / "§91.103a". The `14 CFR`
-    # prefix is optional because the model drops it about half the
-    # time — the section number alone is the canonical anchor.
-    re.compile(r"(?:14\s+CFR\s+)?§\s*\d+\.\d+[a-z]*", re.IGNORECASE),
-    # JO 7110.65: "JO 7110.65BB §2-6-4" / "JO 7110.65 2-6-4".
-    re.compile(r"JO\s+7110\.65[A-Z]*\s+§?\s*\d+(?:[-−]\d+){1,2}", re.IGNORECASE),
-    # Advisory Circulars: "AC 90-66B".
-    re.compile(r"AC\s+\d+[-−]\d+[A-Z]*", re.IGNORECASE),
-)
+# Citation extraction is grammar-driven (harness-jaqe). The
+# `_CITATION_PATTERNS` constant that used to live here (FAA: AIM /
+# CFR / JO 7110.65 / AC) moved to `character/airton_c{,1}/core.yaml`
+# under the `citation_grammar` block — every citation function below
+# now takes a `grammar: CitationGrammar | None` argument and
+# short-circuits when None. Characters without citation discipline
+# (Airton, ab, echo) leave grammar None and the rewriter / preserve-
+# citations / lead-with-citation passes silently no-op.
 
 
 def _normalise_cite(cite: str) -> str:
@@ -47,14 +29,20 @@ def _normalise_cite(cite: str) -> str:
     return cite.lower().replace("−", "-").replace(" ", "")
 
 
-def extract_citations(text: str) -> list[str]:
+def extract_citations(text: str, grammar: CitationGrammar | None = None) -> list[str]:
     """Return every citation-shaped substring in `text` in appearance
     order, preserving surface form (model's actual casing, dash
     variant). Duplicates preserved — callers dedup via `_normalise_cite`
     as needed. Narrow patterns: won't match 'chapter 5' or '91' alone
-    or 'airman 4-7'."""
+    or 'airman 4-7'.
+
+    `grammar` is the active character's citation grammar (loaded from
+    core.yaml). When None, returns []  — characters without a
+    citation grammar can't have citations to extract."""
+    if grammar is None:
+        return []
     out: list[str] = []
-    for pattern in _CITATION_PATTERNS:
+    for pattern in grammar.surface_patterns:
         out.extend(match.group(0) for match in pattern.finditer(text))
     return out
 
@@ -67,12 +55,15 @@ def extract_citations(text: str) -> list[str]:
 _LEAD_OPENING_BUDGET = 20
 
 
-def _first_citation_match(text: str) -> re.Match[str] | None:
-    """Earliest citation match in `text` across all citation patterns,
+def _first_citation_match(text: str, grammar: CitationGrammar | None) -> re.Match[str] | None:
+    """Earliest citation match in `text` across all surface patterns,
     sorted by text-position (NOT pattern order — `extract_citations`
-    iterates patterns first which doesn't preserve textual ordering)."""
+    iterates patterns first which doesn't preserve textual ordering).
+    Returns None when grammar is None — no patterns to match."""
+    if grammar is None:
+        return None
     earliest: re.Match[str] | None = None
-    for pattern in _CITATION_PATTERNS:
+    for pattern in grammar.surface_patterns:
         match = pattern.search(text)
         if match is None:
             continue
@@ -81,7 +72,7 @@ def _first_citation_match(text: str) -> re.Match[str] | None:
     return earliest
 
 
-def lead_with_citation(text: str) -> str:
+def lead_with_citation(text: str, grammar: CitationGrammar | None = None) -> str:
     """Forward citation-discipline pass (mirror of `preserve_citations`).
 
     Scans `text` for citation-shaped substrings (the same patterns
@@ -116,7 +107,7 @@ def lead_with_citation(text: str) -> str:
     citation that starts at char 0)."""
     if not text:
         return text
-    first = _first_citation_match(text)
+    first = _first_citation_match(text, grammar)
     if first is None:
         return text
     if first.start() < _LEAD_OPENING_BUDGET:
@@ -127,7 +118,7 @@ def lead_with_citation(text: str) -> str:
     return f"{first.group(0)} — {body}"
 
 
-def preserve_citations(draft: str, rewritten: str) -> str:
+def preserve_citations(draft: str, rewritten: str, grammar: CitationGrammar | None = None) -> str:
     """Append citations that survived pass-1 but disappeared in the
     rewrite, so `ppl_readback_basics`-style failures where the style
     pass compresses away `AIM 4-4-7` stop happening.
@@ -139,8 +130,11 @@ def preserve_citations(draft: str, rewritten: str) -> str:
     restructured.
 
     First occurrence's surface form from the draft wins — preserves
-    the model's actual phrasing rather than reconstructing it."""
-    draft_cites = extract_citations(draft)
+    the model's actual phrasing rather than reconstructing it.
+
+    `grammar` drives extraction. None → no citations to track →
+    `rewritten` returned untouched."""
+    draft_cites = extract_citations(draft, grammar)
     if not draft_cites:
         return rewritten
     rewritten_lower = _normalise_cite(rewritten)
@@ -342,7 +336,7 @@ class PersonaAdapter:
         # rewriter then preserves it; preserve_citations re-appends
         # if the rewriter still drops it.
         if getattr(self.character, "lead_with_citation", False):
-            draft = lead_with_citation(draft)
+            draft = lead_with_citation(draft, self.character.citation_grammar)
         rewrite_cap = self.rewriter_max_tokens if self.rewriter_max_tokens else max_tokens
 
         style_msgs = build_rewriter_messages(self.character, draft, focus="style")
@@ -356,7 +350,7 @@ class PersonaAdapter:
             # Pass-1 draft is the source of truth for what citations
             # should be in the reply; the rewriter is only supposed to
             # change style.
-            return preserve_citations(draft, styled)
+            return preserve_citations(draft, styled, self.character.citation_grammar)
 
         concrete_msgs = build_rewriter_messages(self.character, styled, focus="concrete")
         concrete = self.base.complete(
@@ -366,7 +360,7 @@ class PersonaAdapter:
         )
         # Same fixup after pass-3 — measure against the original draft
         # so a citation dropped in pass-2 AND pass-3 still gets back.
-        return preserve_citations(draft, concrete)
+        return preserve_citations(draft, concrete, self.character.citation_grammar)
 
     def stream(
         self,
@@ -405,7 +399,7 @@ class PersonaAdapter:
         # the canonical form and the final reply (post-rewriter +
         # preserve_citations) is the citation-first one.
         if getattr(self.character, "lead_with_citation", False):
-            draft = lead_with_citation(draft)
+            draft = lead_with_citation(draft, self.character.citation_grammar)
 
         yield "\n\n*— voice pass —*\n\n"
 

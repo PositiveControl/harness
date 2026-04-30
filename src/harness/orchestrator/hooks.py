@@ -31,6 +31,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from harness.citation import CitationGrammar
 from harness.model.adapter import ChatMessage
 from harness.tools.base import ModelReply, ToolCall, ToolResult, ToolSpec
 
@@ -763,17 +764,10 @@ class ToolIntentHook:
         return Continue()
 
 
-# Reply-side regex for "this is in-scope for the cited document" signal.
-# airton_c1 scope is JO 7110.65 only; matches the most common ways the
-# model refers to it ('JO 7110.65', 'FAA Order JO 7110.65'). Narrow on
-# purpose — we don't want this hook to fire on generic prose that
-# happens to contain the word 'order'. Airton / airton_b / other
-# non-citation-scoped characters simply never produce replies that
-# match this pattern, so the hook is self-gating for them.
-_ORDER_REFERENCE_RE = re.compile(
-    r"\b(?:FAA\s+Order\s+)?JO\s*7110\.65\b",
-    re.IGNORECASE,
-)
+# Replaced by `CitationGrammar.document_reference` per character
+# (harness-jaqe) — `_ORDER_REFERENCE_RE` removed; the
+# MissingCitationHook now reads its document-reference regex from the
+# active character's grammar.
 
 
 # Secondary in-scope signal: JO-normative phraseology. The order
@@ -863,14 +857,14 @@ _CLARIFYING_QUESTION_RE = re.compile(
 )
 
 
-_MISSING_CITATION_NUDGE = (
-    "Your reply references JO 7110.65 but does not include a specific "
-    "section citation (e.g. `§1-1-1`, `§13-1-2(a)`). The airton_c1 "
-    "constitution requires a citation on every substantive answer, "
-    "and the tool output you just read contains explicit section "
-    "anchors. Re-answer with the citation inline — 'per JO 7110.65 "
-    "§N-N-N' — or, if the question is out of scope for JO 7110.65, "
-    "say so plainly without the reference."
+_MISSING_CITATION_NUDGE_TEMPLATE = (
+    "Your reply references {document_name} but does not include a "
+    "specific section citation (e.g. `{example_anchor}`). The character's "
+    "constitution requires a citation on every substantive answer, and "
+    "the tool output you just read contains explicit section anchors. "
+    "Re-answer with the citation inline — 'per {document_name} <§>' — or, "
+    "if the question is out of scope for {document_name}, say so plainly "
+    "without the reference."
 )
 
 
@@ -1505,32 +1499,34 @@ class ListCountMismatchHook:
 
 @dataclass(frozen=True)
 class MissingCitationHook:
-    """Nudge a reply that references JO 7110.65 substantively but
-    doesn't include a specific `§N-N-N` / `TBL N-N-N` citation. Mirror
-    image of `UngroundedCitationHook` — that one catches citation
-    without grounding; this one catches grounding without citation.
+    """Nudge a reply that references the corpus document substantively
+    but doesn't include a specific `§N-N-N` / `TBL N-N-N` citation.
+    Mirror image of `UngroundedCitationHook` — that one catches
+    citation without grounding; this one catches grounding without
+    citation.
 
-    Failure mode this catches: airton_c1's constitution says 'Always
-    cite at least one JO 7110.65 section when answering.' A grounding
-    tool ran, the tool output surfaced a section, the reply paraphrases
-    from that section correctly, but the model omits the §-anchor.
-    Session 2026-04-24 reproducers: 'What is the purpose of 7110.65?'
-    -> correct summary of §1-1-1, no citation. 'What document is
-    required for jointly applied procedures?' -> correct summary of
-    §1-1-10, no citation. Both leave the student without a way to
-    verify or locate the source.
+    Failure mode this catches: a citation-disciplined character's
+    constitution says 'Always cite at least one section when
+    answering.' A grounding tool ran, the tool output surfaced a
+    section, the reply paraphrases from that section correctly, but
+    the model omits the §-anchor. Session 2026-04-24 reproducers
+    (airton_c1 / JO 7110.65): 'What is the purpose of 7110.65?' →
+    correct summary of §1-1-1, no citation. Both leave the student
+    without a way to verify or locate the source.
 
     Trigger conditions (ALL must hold):
+      0. The character ships a `citation_grammar` (harness-jaqe).
+         Non-corpus characters auto-skip — there's no grammar to
+         demand citations against.
       1. A grounding tool ran this turn (`ctx.tools_ran` intersects
          `_GROUNDING_TOOLS`). Without one there's nothing to cite
          from — that's `ungrounded_citation`'s domain.
-      2. The reply contains EITHER a JO 7110.65 reference
-         (`_ORDER_REFERENCE_RE`) OR a JO-normative phraseology
-         marker (`_JO_PHRASEOLOGY_MARKERS_RE`) — all-caps
-         controller phraseology like 'RADAR SERVICE TERMINATED' or
-         'SQUAWK VFR' that makes the reply a JO claim even without
-         naming the order. Non-airton_c1 characters never hit
-         either signal, so the hook is naturally character-scoped.
+      2. The reply contains EITHER a corpus-document reference
+         (`grammar.document_reference`) OR a JO-normative phraseology
+         marker (`_JO_PHRASEOLOGY_MARKERS_RE`) — domain vocabulary
+         that makes the reply a corpus claim even without naming the
+         document. (The phraseology-marker regex stays FAA-shaped
+         pending the qvwq domain-catcher refactor.)
       3. The reply is substantive (>= 80 chars). Short replies are
          usually refusals or scope-redirects that don't need a cite.
       4. The reply does NOT contain a `§N-N-N` / `TBL N-N-N` anchor.
@@ -1546,15 +1542,18 @@ class MissingCitationHook:
     first, so a fabricated-looking reply gets the fabrication-specific
     nudge rather than this one. Compliance comes after correctness."""
 
+    grammar: CitationGrammar | None = None
     name: str = "missing_citation"
 
     def check(self, ctx: BailContext) -> BailOutcome:
+        if self.grammar is None:
+            return Continue()
         if not (ctx.tools_ran & _GROUNDING_TOOLS):
             return Continue()
         content = ctx.reply.content
         if len(content) < 80:
             return Continue()
-        in_scope = bool(_ORDER_REFERENCE_RE.search(content)) or bool(
+        in_scope = bool(self.grammar.document_reference.search(content)) or bool(
             _JO_PHRASEOLOGY_MARKERS_RE.search(content)
         )
         if not in_scope:
@@ -1574,7 +1573,12 @@ class MissingCitationHook:
         # (harness-5uq follow-up).
         if _CLARIFYING_QUESTION_RE.search(content):
             return Continue()
-        return Nudge(_MISSING_CITATION_NUDGE)
+        return Nudge(
+            _MISSING_CITATION_NUDGE_TEMPLATE.format(
+                document_name=self.grammar.document_name,
+                example_anchor=self.grammar.example_anchor,
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -2419,6 +2423,7 @@ class HookPipeline:
 def default_hook_pipeline(
     *,
     valid_section_anchors: frozenset[str] = frozenset(),
+    citation_grammar: CitationGrammar | None = None,
 ) -> HookPipeline:
     """Build the shipping pipeline. Order mirrors the pre-refactor
     `_diagnose_bail` branch order so first-match semantics stay
@@ -2434,7 +2439,12 @@ def default_hook_pipeline(
     the FabricatedSectionHook (harness-aise). Empty (the default)
     leaves the hook silent — non-corpus characters never trip it.
     Built by `section_index.collect_valid_anchors` at startup from
-    the chunks JSONL."""
+    the chunks JSONL.
+
+    `citation_grammar` is the active character's CitationGrammar
+    (harness-jaqe). Non-citation-disciplined characters pass None;
+    the citation hooks (MissingCitationHook today; more later)
+    silently no-op."""
     return HookPipeline(
         bail=[
             TruncatedHook(),
@@ -2450,7 +2460,7 @@ def default_hook_pipeline(
             # above all get first pass at a malformed reply. Only a
             # reply that survived every fabrication gate gets asked
             # the compliance question 'did you cite your source?'.
-            MissingCitationHook(),
+            MissingCitationHook(grammar=citation_grammar),
             # Structural existence check on whatever §-anchors the
             # reply DID cite (harness-aise). Runs immediately after
             # MissingCitationHook so the no-citation case is handled

@@ -8,6 +8,9 @@ attribution eval (`tests/test_tool_loop_eval.py`).
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from harness.character import load_character
 from harness.orchestrator.hooks import (
     TABLE_FABRICATION_FALLBACK,
     UNGROUNDED_CITATION_FALLBACK,
@@ -47,6 +50,12 @@ from harness.orchestrator.hooks import (
     default_hook_pipeline,
 )
 from harness.tools.base import ModelReply, ToolCall
+
+# FAA citation grammar for MissingCitationHook tests — non-citation
+# characters skip the hook entirely (grammar=None).
+_REPO = Path(__file__).resolve().parents[1]
+_GRAMMAR = load_character(_REPO / "character" / "airton_c1").citation_grammar
+assert _GRAMMAR is not None
 
 
 def _reply(content: str = "", **kw: object) -> ModelReply:
@@ -1064,7 +1073,7 @@ def test_missing_citation_fires_on_jo_reference_without_section() -> None:
         "provide a safe, orderly, and expeditious flow of air traffic, "
         "and support national security and homeland defense missions."
     )
-    outcome = MissingCitationHook().check(
+    outcome = MissingCitationHook(grammar=_GRAMMAR).check(
         BailContext(
             reply=_reply(reply_text),
             tools_ran_this_turn=True,
@@ -1087,7 +1096,7 @@ def test_missing_citation_fires_on_according_to_jo_without_section() -> None:
         "this order and any minima they specify must not be less than "
         "that specified in the order."
     )
-    outcome = MissingCitationHook().check(
+    outcome = MissingCitationHook(grammar=_GRAMMAR).check(
         BailContext(
             reply=_reply(reply_text),
             tools_ran_this_turn=True,
@@ -1101,7 +1110,7 @@ def test_missing_citation_passes_when_section_anchor_present() -> None:
     """Truthful counterfactual: same reply with an inline §-anchor must
     NOT fire. Guards against the catcher drifting into demanding a
     specific citation FORM."""
-    outcome = MissingCitationHook().check(
+    outcome = MissingCitationHook(grammar=_GRAMMAR).check(
         BailContext(
             reply=_reply(
                 "Per JO 7110.65 §1-1-1, the purpose of the order is to "
@@ -1119,7 +1128,7 @@ def test_missing_citation_passes_when_table_anchor_present() -> None:
     section-scoped in the JO, so 'TBL 4-1-2' unambiguously points at
     §4-1-1's second table."""
     for anchor in ("TBL 4-1-2", "Table 4-1-2", "FIG 3-9-1", "Figure 3-9-1"):
-        outcome = MissingCitationHook().check(
+        outcome = MissingCitationHook(grammar=_GRAMMAR).check(
             BailContext(
                 reply=_reply(
                     f"Per JO 7110.65 {anchor}, usable radius distances for "
@@ -1139,7 +1148,7 @@ def test_missing_citation_silent_without_grounding_tool() -> None:
     referencing JO 7110.65 with no §-anchor AND no grounding is
     ungrounded-citation territory (if it also has a §) or just
     a parametric answer (if it doesn't)."""
-    outcome = MissingCitationHook().check(
+    outcome = MissingCitationHook(grammar=_GRAMMAR).check(
         BailContext(
             reply=_reply(
                 "FAA Order JO 7110.65 governs air traffic control operations "
@@ -1168,7 +1177,7 @@ def test_missing_citation_fires_on_jo_phraseology_without_citation() -> None:
         "RADAR SERVICE TERMINATED, SQUAWK ONE TWO ZERO ZERO.\n\n"
         "Do not assign the code as a routine phraseology."
     )
-    outcome = MissingCitationHook().check(
+    outcome = MissingCitationHook(grammar=_GRAMMAR).check(
         BailContext(
             reply=_reply(reply_text),
             tools_ran_this_turn=True,
@@ -1186,7 +1195,7 @@ def test_missing_citation_phraseology_signal_passes_on_prose_without_markers() -
         "The ATC IFR VFR and FAA are common acronyms in aviation. "
         "Their meanings cover a wide range of procedures and services."
     )
-    outcome = MissingCitationHook().check(
+    outcome = MissingCitationHook(grammar=_GRAMMAR).check(
         BailContext(
             reply=_reply(reply_text),
             tools_ran_this_turn=True,
@@ -1208,7 +1217,7 @@ def test_missing_citation_silent_on_clarifying_question_reply() -> None:
         "an unmanned free balloon or a manned balloon? This will help me "
         "provide the correct answer."
     )
-    outcome = MissingCitationHook().check(
+    outcome = MissingCitationHook(grammar=_GRAMMAR).check(
         BailContext(
             reply=_reply(reply_text),
             tools_ran_this_turn=True,
@@ -1225,7 +1234,7 @@ def test_missing_citation_silent_on_do_you_mean_clarifier() -> None:
         "mean an unmanned free balloon or a manned balloon? The rules "
         "differ substantially, so the answer depends on which you intend."
     )
-    outcome = MissingCitationHook().check(
+    outcome = MissingCitationHook(grammar=_GRAMMAR).check(
         BailContext(
             reply=_reply(reply_text),
             tools_ran_this_turn=True,
@@ -1238,7 +1247,7 @@ def test_missing_citation_silent_on_do_you_mean_clarifier() -> None:
 def test_missing_citation_silent_on_short_reply() -> None:
     """Sub-80-char replies are usually refusals or scope-redirects
     that don't need a citation — Continue."""
-    outcome = MissingCitationHook().check(
+    outcome = MissingCitationHook(grammar=_GRAMMAR).check(
         BailContext(
             reply=_reply("I don't have that indexed from JO 7110.65."),
             tools_ran_this_turn=True,
@@ -1251,7 +1260,7 @@ def test_missing_citation_silent_on_short_reply() -> None:
 def test_missing_citation_silent_when_order_not_referenced() -> None:
     """Reply doesn't mention JO 7110.65 — hook must not demand a
     citation. Non-airton_c1 characters naturally fall into this path."""
-    outcome = MissingCitationHook().check(
+    outcome = MissingCitationHook(grammar=_GRAMMAR).check(
         BailContext(
             reply=_reply(
                 "The user asked about Python dict merging. The answer: "
@@ -1268,7 +1277,7 @@ def test_missing_citation_silent_when_order_not_referenced() -> None:
 def test_missing_citation_respects_disabled_toggle() -> None:
     """Attribution eval disables catchers by name. Pipeline must honor
     'missing_citation' in the disabled frozenset."""
-    pipe = default_hook_pipeline()
+    pipe = default_hook_pipeline(citation_grammar=_GRAMMAR)
     reply_text = (
         "According to JO 7110.65, when procedures are applied jointly "
         "they must be documented in a Procedural Letter of Agreement. "

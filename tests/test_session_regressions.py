@@ -200,6 +200,7 @@ def test_purpose_of_order_uncited_reply_gets_nudged() -> None:
     result = _run_scenario(
         {
             "id": "_purpose_of_order_uncited",
+            "citation_grammar": "atc",
             "registry": [{"name": "search_memory", "output": _PURPOSE_1_1_1_TOOL_OUTPUT}],
             "messages": [
                 {
@@ -256,6 +257,7 @@ def test_loa_uncited_reply_gets_nudged() -> None:
     result = _run_scenario(
         {
             "id": "_loa_uncited",
+            "citation_grammar": "atc",
             "registry": [{"name": "search_memory", "output": _LOA_1_1_10_TOOL_OUTPUT}],
             "messages": [
                 {
@@ -668,6 +670,7 @@ def test_phraseology_retry_without_citation_gets_nudged() -> None:
     result = _run_scenario(
         {
             "id": "_phraseology_mixed_case_no_cite",
+            "citation_grammar": "atc",
             "registry": [
                 {
                     "name": "search_memory",
@@ -804,6 +807,7 @@ def test_missing_citation_fires_on_uppercase_phraseology_without_order_name() ->
     result = _run_scenario(
         {
             "id": "_phraseology_without_citation",
+            "citation_grammar": "atc",
             "registry": [
                 {
                     "name": "search_memory",

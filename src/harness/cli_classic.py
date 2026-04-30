@@ -84,6 +84,7 @@ def _build_hook_pipeline(
     router_repo: str,
     console: Console,
     character_path: Path,
+    character: Character,
 ) -> HookPipeline | None:
     """Build a HookPipeline override when the character has a corpus
     chunks dir (so FabricatedSectionHook gets its anchor index) OR
@@ -103,7 +104,8 @@ def _build_hook_pipeline(
     from harness.orchestrator.section_index import collect_valid_anchors
 
     valid_anchors = collect_valid_anchors(character_path / "corpus" / "chunks")
-    if not summarize_tool_results and not valid_anchors:
+    grammar = character.citation_grammar
+    if not summarize_tool_results and not valid_anchors and grammar is None:
         return None
 
     from harness.orchestrator.hooks import (
@@ -111,7 +113,7 @@ def _build_hook_pipeline(
         default_hook_pipeline,
     )
 
-    pipeline = default_hook_pipeline(valid_section_anchors=valid_anchors)
+    pipeline = default_hook_pipeline(valid_section_anchors=valid_anchors, citation_grammar=grammar)
 
     if not summarize_tool_results:
         return pipeline
@@ -307,7 +309,9 @@ def build_classic_registry(
             SpawnSubagentTool(
                 adapter=adapter,  # type: ignore[arg-type]  # narrower _ToolCapableAdapter, checked at runtime
                 registry=registry,
-                hooks=default_hook_pipeline(),
+                hooks=default_hook_pipeline(
+                    citation_grammar=character.citation_grammar,
+                ),
                 router=router,
             )
         )
@@ -794,6 +798,7 @@ def run_classic_chat(
         router_repo=router_repo,
         console=console,
         character_path=settings.character_path,
+        character=character,
     )
 
     banter_tracker = load_default_tracker(settings.character_path)

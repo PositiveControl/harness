@@ -12,6 +12,11 @@ from harness.persona import PersonaAdapter, build_rewriter_messages
 
 REPO = Path(__file__).resolve().parents[1]
 AIRTON = REPO / "character" / "airton"
+AIRTON_C1 = REPO / "character" / "airton_c1"
+
+# Citation tests need an FAA-shaped grammar; airton_c1 ships one.
+_GRAMMAR = load_character(AIRTON_C1).citation_grammar
+assert _GRAMMAR is not None
 
 
 @dataclass
@@ -271,29 +276,29 @@ def test_persona_adapter_stream_falls_back_without_base_stream() -> None:
 def test_extract_citations_catches_aim_paragraph() -> None:
     from harness.persona.rewriter import extract_citations
 
-    assert "AIM 4-4-7" in extract_citations("per AIM 4-4-7, you must read back.")
+    assert "AIM 4-4-7" in extract_citations("per AIM 4-4-7, you must read back.", _GRAMMAR)
 
 
 def test_extract_citations_catches_cfr_section() -> None:
     from harness.persona.rewriter import extract_citations
 
-    assert "14 CFR §91.155" in extract_citations("See 14 CFR §91.155 for the table.")
+    assert "14 CFR §91.155" in extract_citations("See 14 CFR §91.155 for the table.", _GRAMMAR)
     # Bare-section form (CFR prefix optional) also matches.
-    assert "§ 91.103" in extract_citations("Per § 91.103, preflight…")
+    assert "§ 91.103" in extract_citations("Per § 91.103, preflight…", _GRAMMAR)
 
 
 def test_extract_citations_catches_jo_7110_65() -> None:
     from harness.persona.rewriter import extract_citations
 
     assert "JO 7110.65BB §2-6-4" in extract_citations(
-        "Controllers follow JO 7110.65BB §2-6-4 for chaff areas."
+        "Controllers follow JO 7110.65BB §2-6-4 for chaff areas.", _GRAMMAR
     )
 
 
 def test_extract_citations_catches_advisory_circulars() -> None:
     from harness.persona.rewriter import extract_citations
 
-    assert "AC 90-66B" in extract_citations("See AC 90-66B for the guidance.")
+    assert "AC 90-66B" in extract_citations("See AC 90-66B for the guidance.", _GRAMMAR)
 
 
 def test_extract_citations_ignores_generic_numbers() -> None:
@@ -301,9 +306,17 @@ def test_extract_citations_ignores_generic_numbers() -> None:
     — only well-formed citation shapes."""
     from harness.persona.rewriter import extract_citations
 
-    assert extract_citations("See chapter 5 of the AIM.") == []
-    assert extract_citations("The value is 4-7 depending on altitude.") == []
-    assert extract_citations("AIM 4") == []  # must have at least one -N segment
+    assert extract_citations("See chapter 5 of the AIM.", _GRAMMAR) == []
+    assert extract_citations("The value is 4-7 depending on altitude.", _GRAMMAR) == []
+    assert extract_citations("AIM 4", _GRAMMAR) == []  # must have at least one -N segment
+
+
+def test_extract_citations_noop_without_grammar() -> None:
+    """Non-citation-disciplined characters (Airton, ab) pass grammar=None
+    — extractor returns []."""
+    from harness.persona.rewriter import extract_citations
+
+    assert extract_citations("per AIM 4-4-7, you must read back.") == []
 
 
 def test_preserve_citations_noop_when_rewrite_kept_everything() -> None:
@@ -313,7 +326,7 @@ def test_preserve_citations_noop_when_rewrite_kept_everything() -> None:
 
     draft = "Per AIM 4-4-7 and 14 CFR §91.155, the rule is…"
     rewritten = "AIM 4-4-7 requires the readback; 14 CFR §91.155 governs weather."
-    assert preserve_citations(draft, rewritten) == rewritten
+    assert preserve_citations(draft, rewritten, _GRAMMAR) == rewritten
 
 
 def test_preserve_citations_appends_missing_single_cite() -> None:
@@ -323,7 +336,7 @@ def test_preserve_citations_appends_missing_single_cite() -> None:
 
     draft = "Per AIM 4-4-7 (Pilot Responsibility), you must read back altitudes."
     rewritten = "You must read back altitudes."
-    out = preserve_citations(draft, rewritten)
+    out = preserve_citations(draft, rewritten, _GRAMMAR)
     assert out.startswith("You must read back altitudes.")
     assert "AIM 4-4-7" in out
 
@@ -336,7 +349,7 @@ def test_preserve_citations_only_reinjects_what_was_dropped() -> None:
 
     draft = "Per AIM 4-4-7 and 14 CFR §91.155, you must read back…"
     rewritten = "Per 14 CFR §91.155, you must read back altitudes."
-    out = preserve_citations(draft, rewritten)
+    out = preserve_citations(draft, rewritten, _GRAMMAR)
     assert out.count("14 CFR §91.155") == 1  # not duplicated
     assert "AIM 4-4-7" in out
 
@@ -349,7 +362,7 @@ def test_preserve_citations_folds_ascii_hyphen_and_unicode_minus() -> None:
 
     draft = "per AIM 4-4-7 (ASCII hyphen)"
     rewritten = "per AIM 4−4−7 (unicode minus)"
-    assert preserve_citations(draft, rewritten) == rewritten
+    assert preserve_citations(draft, rewritten, _GRAMMAR) == rewritten
 
 
 def test_preserve_citations_noop_when_draft_had_no_cites() -> None:
@@ -359,14 +372,18 @@ def test_preserve_citations_noop_when_draft_had_no_cites() -> None:
 
     draft = "I'd check the log first. Then I'd run the test."
     rewritten = "Check the log. Run the test."
-    assert preserve_citations(draft, rewritten) == rewritten
+    assert preserve_citations(draft, rewritten, _GRAMMAR) == rewritten
 
 
 def test_persona_adapter_reinjects_citation_dropped_by_rewriter() -> None:
     """End-to-end: PersonaAdapter.complete wraps the fixup. When the
     base adapter's 'rewriter' pass drops a citation the draft had,
-    the final reply still contains it."""
-    character = load_character(AIRTON)
+    the final reply still contains it.
+
+    Uses airton_c1 because the citation-discipline fixup is gated on
+    `character.citation_grammar` (harness-jaqe). airton ships no
+    grammar, so its rewriter no-ops on citations by design."""
+    character = load_character(AIRTON_C1)
 
     @dataclass
     class _Drafter:
@@ -405,7 +422,7 @@ def test_lead_with_citation_passthrough_when_already_cited() -> None:
         "JO 7110.65 §5-10-11 — Before final descent, issue the missed "
         "approach procedure. Phraseology: YOUR MISSED APPROACH..."
     )
-    assert lead_with_citation(text) == text
+    assert lead_with_citation(text, _GRAMMAR) == text
 
 
 def test_lead_with_citation_hoists_first_citation_to_front() -> None:
@@ -416,7 +433,7 @@ def test_lead_with_citation_hoists_first_citation_to_front() -> None:
         "Issue the missed approach procedure before the aircraft starts "
         "final descent. The relevant section is JO 7110.65 §5-10-11."
     )
-    out = lead_with_citation(text)
+    out = lead_with_citation(text, _GRAMMAR)
     assert out.startswith("JO 7110.65 §5-10-11 — ")
     # Original body is preserved after the dash.
     assert "Issue the missed approach procedure" in out
@@ -428,13 +445,13 @@ def test_lead_with_citation_passthrough_when_no_citation() -> None:
     from harness.persona.rewriter import lead_with_citation
 
     text = "I'm not sure which section covers this — try search_memory."
-    assert lead_with_citation(text) == text
+    assert lead_with_citation(text, _GRAMMAR) == text
 
 
 def test_lead_with_citation_handles_empty_string() -> None:
     from harness.persona.rewriter import lead_with_citation
 
-    assert lead_with_citation("") == ""
+    assert lead_with_citation("", _GRAMMAR) == ""
 
 
 def test_lead_with_citation_uses_first_when_draft_has_multiple() -> None:
@@ -448,7 +465,7 @@ def test_lead_with_citation_uses_first_when_draft_has_multiple() -> None:
         "See JO 7110.65 §5-5-4 for radar minima and §3-9-6 for "
         "same-runway timing."
     )
-    out = lead_with_citation(text)
+    out = lead_with_citation(text, _GRAMMAR)
     assert out.startswith("JO 7110.65 §5-5-4 — ")
     # Both still present — only the first was hoisted.
     assert "§3-9-6" in out
@@ -461,8 +478,8 @@ def test_lead_with_citation_recognises_aim_and_cfr_styles() -> None:
 
     aim_text = "Pilot must read back altitude. See AIM 4-4-7 for the rule."
     cfr_text = "Cloud clearance varies by airspace. 14 CFR §91.155 has the table."
-    assert lead_with_citation(aim_text).startswith("AIM 4-4-7 — ")
-    assert lead_with_citation(cfr_text).startswith("14 CFR §91.155 — ")
+    assert lead_with_citation(aim_text, _GRAMMAR).startswith("AIM 4-4-7 — ")
+    assert lead_with_citation(cfr_text, _GRAMMAR).startswith("14 CFR §91.155 — ")
 
 
 def test_lead_with_citation_preserves_dash_variant_in_check() -> None:
@@ -475,7 +492,7 @@ def test_lead_with_citation_preserves_dash_variant_in_check() -> None:
     minus = "−"  # unicode-minus is the test premise
     text = f"JO 7110.65 §5{minus}10{minus}11 — Before final descent."
     # Should be detected as already-leading and returned unchanged.
-    assert lead_with_citation(text) == text
+    assert lead_with_citation(text, _GRAMMAR) == text
 
 
 def test_persona_adapter_skips_lead_with_citation_when_flag_off() -> None:

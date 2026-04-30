@@ -30,40 +30,33 @@ both for the airton_c1 atc fixture.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
+from harness.citation import CitationGrammar
 from harness.persona.rewriter import extract_citations
 from harness.store.episodic import EpisodicStore
 
-# Strip the JO version-number prefix before pulling section anchors —
-# otherwise the section regex matches '7110.65' (the document version)
-# instead of the section that follows it. Handles 'JO 7110.65',
-# 'JO_7110.65' (corpus principle form), 'JO 7110.65BB' (versioned).
-_JO_PREFIX_RE = re.compile(r"JO[_ ]7110\.65[A-Z]*", re.IGNORECASE)
-# `−` (U+2212, unicode minus) is intentional — the corpus source uses  # noqa: RUF003
-# it interchangeably with ASCII hyphen in section anchors.
-_SECTION_RE = re.compile(r"§?\s*(\d+(?:[-−]\d+){1,2}|\d+\.\d+[a-z]*)")  # noqa: RUF001
 
+def _extract_anchor(text: str, grammar: CitationGrammar | None) -> str:
+    """Pull the section number out of a citation or principle string,
+    using the active character's citation grammar (harness-jaqe).
 
-def _extract_anchor(text: str) -> str:
-    """Pull the section number out of a citation or principle string.
-
-    'JO 7110.65 §10-2-5' → '10-2-5'
-    'JO_7110.65 §10-2-5 (Emergency Assistance — EMERGENCY SITUATIONS)' → '10-2-5'
+    'JO 7110.65 §10-2-5' → '10-2-5' (with the JO grammar's strip_prefix)
     'AIM 5-3-8' → '5-3-8'
     '14 CFR §91.155' → '91.155'
 
-    Returns '' when no section anchor matches. Folds U+2212 (unicode
-    minus) to ASCII hyphen so cite forms from corpus + model agree.
+    Returns '' when grammar is None (character has no citation
+    discipline), when text is empty, or when no anchor matches. Folds
+    U+2212 (unicode minus) to ASCII hyphen so cite forms from corpus
+    + model agree.
 
-    Strips JO version-number prefix first so '7110.65' isn't mistaken
-    for a section anchor (the dotted form is also CFR-shaped — but the
-    JO prefix disambiguates)."""
-    if not text:
+    The optional strip_prefix scrub runs first so the document-version
+    number (e.g. JO '7110.65') isn't mistaken for a section anchor in
+    grammars where the dotted form is also a valid section shape."""
+    if not text or grammar is None:
         return ""
-    cleaned = _JO_PREFIX_RE.sub("", text)
-    match = _SECTION_RE.search(cleaned)
+    cleaned = grammar.strip_prefix.sub("", text) if grammar.strip_prefix is not None else text
+    match = grammar.anchor_pattern.search(cleaned)
     if match is None:
         return ""
     return match.group(1).replace("−", "-")  # noqa: RUF001
@@ -107,6 +100,7 @@ def check_cite_groundedness(
     reply: str,
     *,
     episodic_store: EpisodicStore,
+    grammar: CitationGrammar | None,
     k: int = 10,
     user_id: str | None = None,
 ) -> CiteGroundingResult:
@@ -121,11 +115,17 @@ def check_cite_groundedness(
     Detect-only — does not mutate `reply`. Caller decides whether to
     drop, replace, or re-roll on the result.
 
+    `grammar` is the active character's citation grammar — drives
+    both the surface-form citation extractor and the section-anchor
+    extractor. None ⇒ empty result, no work to do.
+
     `user_id` scopes retrieval the same way the chat path does:
     `user_id=None` is the owner view; otherwise filters to shared +
     that user's rows. Should match the user_id the model saw when
     generating the reply."""
-    cites = extract_citations(reply)
+    if grammar is None:
+        return CiteGroundingResult(checks=())
+    cites = extract_citations(reply, grammar)
     if not cites:
         return CiteGroundingResult(checks=())
 
@@ -134,7 +134,7 @@ def check_cite_groundedness(
     # wins on duplicates (multiple chunks under one section).
     retrieved_ranks: dict[str, int] = {}
     for idx, (rec, _score) in enumerate(hits):
-        anchor = _extract_anchor(rec.principle or "")
+        anchor = _extract_anchor(rec.principle or "", grammar)
         if anchor and anchor not in retrieved_ranks:
             retrieved_ranks[anchor] = idx
     suggested_top1: str | None = next(iter(retrieved_ranks), None)
@@ -142,7 +142,7 @@ def check_cite_groundedness(
     seen: set[str] = set()
     checks: list[CiteCheck] = []
     for cite in cites:
-        anchor = _extract_anchor(cite)
+        anchor = _extract_anchor(cite, grammar)
         if not anchor or anchor in seen:
             continue
         seen.add(anchor)

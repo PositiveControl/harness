@@ -1366,7 +1366,12 @@ def _build_tool_registry_for_tui(
             TranscriptIngestTool(store=memory_store) if memory_store is not None else None
         ),
         "phraseology_lint": lambda: (
-            PhraseologyLintTool(adapter=adapter, store=memory_store, user_id=speaker)
+            PhraseologyLintTool(
+                adapter=adapter,
+                store=memory_store,
+                grammar=character.citation_grammar if character is not None else None,
+                user_id=speaker,
+            )
             if (memory_store is not None and adapter is not None)
             else None
         ),
@@ -1440,7 +1445,11 @@ def _build_tool_registry_for_tui(
                 SpawnSubagentTool(
                     adapter=adapter,  # type: ignore[arg-type]  # narrower _ToolCapableAdapter, checked at runtime
                     registry=registry,
-                    hooks=default_hook_pipeline(),
+                    hooks=default_hook_pipeline(
+                        citation_grammar=character.citation_grammar
+                        if character is not None
+                        else None,
+                    ),
                     router=router,
                 )
             )
@@ -2194,6 +2203,7 @@ def phraseology_lint_cmd(
             utterance,
             adapter=adapter,
             episodic_store=memory_store,
+            grammar=character.citation_grammar,
             scenario_hint=scenario_hint,
             user_id=None,  # rulebook seeds are shared (user_id IS NULL)
             k=k,
@@ -2866,6 +2876,7 @@ def eval_atc(
                     c.question,
                     c.actual_reply,
                     episodic_store=memory_store,
+                    grammar=character.citation_grammar,
                     k=cite_ground_k,
                 )
                 cite_ground_per_case[c.id] = [
@@ -3470,6 +3481,7 @@ def eval_phraseology(
                 utterance,
                 adapter=adapter,
                 episodic_store=memory_store,
+                grammar=character.citation_grammar,
                 scenario_hint=scenario_hint,
                 user_id=None,
                 k=k,

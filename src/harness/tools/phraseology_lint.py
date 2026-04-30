@@ -43,6 +43,7 @@ from harness.persona.cite_grounding import _extract_anchor
 from harness.tools.base import ToolHit, ToolResult, ToolSpec
 
 if TYPE_CHECKING:
+    from harness.citation import CitationGrammar
     from harness.model.adapter import ChatMessage, ModelAdapter
     from harness.store.episodic import EpisodicRecord, EpisodicStore
 
@@ -88,6 +89,7 @@ def lint_utterance(
     *,
     adapter: ModelAdapter,
     episodic_store: EpisodicStore,
+    grammar: CitationGrammar | None,
     scenario_hint: str | None = None,
     user_id: str | None = None,
     k: int = _DEFAULT_K,
@@ -125,12 +127,12 @@ def lint_utterance(
     candidate_anchors: list[str] = []
     seen: set[str] = set()
     for rec, _score in hits:
-        anchor = _extract_anchor(rec.principle or "")
+        anchor = _extract_anchor(rec.principle or "", grammar)
         if anchor and anchor not in seen:
             seen.add(anchor)
             candidate_anchors.append(anchor)
 
-    prompt_messages = _build_lint_messages(utterance, scenario_hint, hits)
+    prompt_messages = _build_lint_messages(utterance, scenario_hint, hits, grammar)
     raw = adapter.complete(prompt_messages, temperature=temperature, max_tokens=512)
     parsed = _parse_verdict_json(raw)
 
@@ -178,6 +180,7 @@ def _build_lint_messages(
     utterance: str,
     scenario_hint: str | None,
     hits: Sequence[tuple[EpisodicRecord, float]],
+    grammar: CitationGrammar | None,
 ) -> list[ChatMessage]:
     """Render the lint prompt. System message states the rules and the
     JSON schema; user message carries the utterance + candidate
@@ -221,7 +224,7 @@ def _build_lint_messages(
 
     candidates: list[str] = []
     for idx, (rec, _score) in enumerate(hits[:_PROMPT_CANDIDATES], start=1):
-        anchor = _extract_anchor(getattr(rec, "principle", "") or "")
+        anchor = _extract_anchor(getattr(rec, "principle", "") or "", grammar)
         title = getattr(rec, "title", "")
         body = getattr(rec, "body", "") or ""
         excerpt = body[:_CANDIDATE_BODY_CAP]
@@ -305,6 +308,7 @@ class PhraseologyLintTool:
 
     adapter: ModelAdapter
     store: EpisodicStore
+    grammar: CitationGrammar | None = None
     user_id: str | None = None
     k: int = _DEFAULT_K
 
@@ -350,6 +354,7 @@ class PhraseologyLintTool:
             utterance,
             adapter=self.adapter,
             episodic_store=self.store,
+            grammar=self.grammar,
             scenario_hint=scenario_hint,
             user_id=self.user_id,
             k=self.k,

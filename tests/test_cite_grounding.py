@@ -8,12 +8,19 @@ from pathlib import Path
 
 import numpy as np
 
+from harness.character import load_character
 from harness.persona.cite_grounding import (
     CiteGroundingResult,
     _extract_anchor,
     check_cite_groundedness,
 )
 from harness.store.episodic import EpisodicStore
+
+# Reuse airton_c1's FAA grammar for these tests — that's the
+# character whose corpus the seeded chunks model.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_GRAMMAR = load_character(_REPO_ROOT / "character" / "airton_c1").citation_grammar
+assert _GRAMMAR is not None  # airton_c1 ships citation_grammar
 
 
 @dataclass
@@ -74,29 +81,29 @@ def _seed_atc_corpus(store: EpisodicStore) -> None:
 
 
 def test_extract_anchor_strips_jo_prefix() -> None:
-    assert _extract_anchor("JO 7110.65 §10-2-5") == "10-2-5"
+    assert _extract_anchor("JO 7110.65 §10-2-5", _GRAMMAR) == "10-2-5"
 
 
 def test_extract_anchor_strips_principle_form() -> None:
     principle = "JO_7110.65 §3-10-3 (Air Traffic Control — SAME RUNWAY SEPARATION)"
-    assert _extract_anchor(principle) == "3-10-3"
+    assert _extract_anchor(principle, _GRAMMAR) == "3-10-3"
 
 
 def test_extract_anchor_handles_aim() -> None:
-    assert _extract_anchor("AIM 5-3-8") == "5-3-8"
+    assert _extract_anchor("AIM 5-3-8", _GRAMMAR) == "5-3-8"
 
 
 def test_extract_anchor_handles_cfr() -> None:
-    assert _extract_anchor("14 CFR §91.155") == "91.155"
+    assert _extract_anchor("14 CFR §91.155", _GRAMMAR) == "91.155"
 
 
 def test_extract_anchor_unicode_minus() -> None:
-    assert _extract_anchor("§10−2−5") == "10-2-5"  # noqa: RUF001
+    assert _extract_anchor("§10−2−5", _GRAMMAR) == "10-2-5"  # noqa: RUF001
 
 
 def test_extract_anchor_empty_on_no_match() -> None:
-    assert _extract_anchor("no citation here") == ""
-    assert _extract_anchor("") == ""
+    assert _extract_anchor("no citation here", _GRAMMAR) == ""
+    assert _extract_anchor("", _GRAMMAR) == ""
 
 
 # ---------- check_cite_groundedness ----------
@@ -113,6 +120,7 @@ def test_grounded_when_cite_in_top_k(tmp_path: Path) -> None:
             reply="JO 7110.65 §3-10-3 — once the preceding aircraft is clear "
             "of the runway, the next can cross the threshold.",
             episodic_store=store,
+            grammar=_GRAMMAR,
         )
         assert len(result.checks) == 1
         assert result.checks[0].section == "3-10-3"
@@ -134,6 +142,7 @@ def test_ungrounded_when_cite_not_in_top_k(tmp_path: Path) -> None:
             question="How soon after a plane lands can the next cross the threshold?",
             reply="JO 7110.65 §3-10-4 — taxi the next aircraft to the threshold.",
             episodic_store=store,
+            grammar=_GRAMMAR,
             k=1,  # tight K: only top-1 grounds; §3-10-4 isn't top-1 here
         )
         assert len(result.checks) == 1
@@ -154,6 +163,7 @@ def test_no_citations_returns_empty(tmp_path: Path) -> None:
             question="generic question",
             reply="reply with no citation pattern at all.",
             episodic_store=store,
+            grammar=_GRAMMAR,
         )
         assert result.checks == ()
         assert result.has_ungrounded is False
@@ -171,6 +181,7 @@ def test_dedup_by_anchor(tmp_path: Path) -> None:
             question="hijack squawk question",
             reply="JO 7110.65 §10-2-6 covers it. Per §10-2-6 verify the squawk.",
             episodic_store=store,
+            grammar=_GRAMMAR,
         )
         # Two surface mentions of §10-2-6 → one check entry
         sections = [c.section for c in result.checks]
@@ -189,6 +200,7 @@ def test_suggested_none_when_grounded(tmp_path: Path) -> None:
             question="hijacked aircraft squawk seven five zero zero",
             reply="JO 7110.65 §10-2-6 — verify the squawk.",
             episodic_store=store,
+            grammar=_GRAMMAR,
             k=10,
         )
         check = result.checks[0]
@@ -210,6 +222,7 @@ def test_suggested_omitted_when_top1_equals_cite(tmp_path: Path) -> None:
             question="hijacked aircraft squawk seven five zero zero",
             reply="JO 7110.65 §10-2-6 — verify the squawk.",
             episodic_store=store,
+            grammar=_GRAMMAR,
             k=0,  # nothing retrieved → no top-1 candidate
         )
         check = result.checks[0]
@@ -228,6 +241,7 @@ def test_cite_grounding_result_helpers(tmp_path: Path) -> None:
             question="threshold landing question",
             reply="JO 7110.65 §3-10-4 ground movement. Also JO 7110.65 §3-10-3 same runway.",
             episodic_store=store,
+            grammar=_GRAMMAR,
             k=1,
         )
         # §3-10-3 grounded (top-1), §3-10-4 not in top-1 → ungrounded

@@ -22,6 +22,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from harness.character import load_character
 from harness.model.adapter import ChatMessage
 from harness.store.episodic import EpisodicStore
 from harness.tools.phraseology_lint import (
@@ -30,6 +31,12 @@ from harness.tools.phraseology_lint import (
     _parse_verdict_json,
     lint_utterance,
 )
+
+# Reuse airton_c1's FAA grammar — that's the character whose corpus
+# the seeded chunks model.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_GRAMMAR = load_character(_REPO_ROOT / "character" / "airton_c1").citation_grammar
+assert _GRAMMAR is not None
 
 
 @dataclass
@@ -171,6 +178,7 @@ def test_empty_store_short_circuits_to_out_of_scope(tmp_path: Path) -> None:
             "RUNWAY TWO SEVEN, CLEARED FOR TAKEOFF.",
             adapter=adapter,
             episodic_store=store,
+            grammar=_GRAMMAR,
         )
     finally:
         store.close()
@@ -200,6 +208,7 @@ def test_happy_path_ok_verdict(tmp_path: Path) -> None:
             "RUNWAY TWO SEVEN, CLEARED FOR TAKEOFF.",
             adapter=adapter,
             episodic_store=store,
+            grammar=_GRAMMAR,
         )
     finally:
         store.close()
@@ -227,6 +236,7 @@ def test_wrong_verdict_with_grounded_section(tmp_path: Path) -> None:
             "RUNWAY TWO SEVEN, CLEARED TO TAKEOFF.",
             adapter=adapter,
             episodic_store=store,
+            grammar=_GRAMMAR,
         )
     finally:
         store.close()
@@ -257,6 +267,7 @@ def test_cite_grounding_gate_downgrades_ungrounded(tmp_path: Path) -> None:
             "RUNWAY TWO SEVEN, CLEARED FOR TAKEOFF.",
             adapter=adapter,
             episodic_store=store,
+            grammar=_GRAMMAR,
         )
     finally:
         store.close()
@@ -275,6 +286,7 @@ def test_unparseable_model_output_returns_oos(tmp_path: Path) -> None:
             "RUNWAY TWO SEVEN, CLEARED FOR TAKEOFF.",
             adapter=adapter,
             episodic_store=store,
+            grammar=_GRAMMAR,
         )
     finally:
         store.close()
@@ -303,6 +315,7 @@ def test_oos_verdict_nulls_citation_fields(tmp_path: Path) -> None:
             "REQUEST IFR CLEARANCE TO BOSTON.",
             adapter=adapter,
             episodic_store=store,
+            grammar=_GRAMMAR,
         )
     finally:
         store.close()
@@ -331,6 +344,7 @@ def test_scenario_hint_gets_into_prompt(tmp_path: Path) -> None:
             "RUNWAY TWO SEVEN, CLEARED FOR TAKEOFF.",
             adapter=adapter,
             episodic_store=store,
+            grammar=_GRAMMAR,
             scenario_hint="departure",
         )
     finally:
@@ -356,7 +370,7 @@ def test_tool_wraps_lint_pipeline(tmp_path: Path) -> None:
         }
     )
     adapter = _ScriptedAdapter(replies=[reply])
-    tool = PhraseologyLintTool(adapter=adapter, store=store)
+    tool = PhraseologyLintTool(adapter=adapter, store=store, grammar=_GRAMMAR)
     try:
         result = tool.call(utterance="RUNWAY ONE EIGHT, CLEARED FOR LAND.")
     finally:

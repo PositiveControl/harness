@@ -278,11 +278,25 @@ def _run_scenario(scenario: dict[str, Any]) -> ToolLoopCase:
     # default (empty anchor set) keeps the hook silent.
     raw_anchors = scenario.get("valid_section_anchors") or ()
     valid_section_anchors = frozenset(str(a) for a in raw_anchors)
-    if valid_section_anchors:
+    # Optional CitationGrammar override (harness-jaqe). Scenarios that
+    # exercise MissingCitationHook need a grammar; without one the
+    # hook silently no-ops. Pass a CitationGrammar instance under the
+    # `citation_grammar` key (or the convenience string "atc" to load
+    # airton_c1's FAA grammar).
+    citation_grammar = scenario.get("citation_grammar")
+    if isinstance(citation_grammar, str) and citation_grammar == "atc":
+        from harness.character import load_character
+        from harness.config import settings
+
+        citation_grammar = load_character(
+            settings.root / "character" / "airton_c1"
+        ).citation_grammar
+    if valid_section_anchors or citation_grammar is not None:
         from harness.orchestrator.hooks import default_hook_pipeline as _build_pipeline
 
         hooks_override: HookPipeline | None = _build_pipeline(
             valid_section_anchors=valid_section_anchors,
+            citation_grammar=citation_grammar,
         )
     else:
         hooks_override = None

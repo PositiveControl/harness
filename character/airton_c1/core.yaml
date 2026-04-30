@@ -105,3 +105,23 @@ fetch_url:
     - www.1800wxbrief.com
     - faa.gov
     - www.faa.gov
+
+# Citation grammar (harness-jaqe). FAA documentation set: AIM
+# paragraphs, 14 CFR sections, JO 7110.65 sections, and Advisory
+# Circulars. The patterns are lifted verbatim from the historical
+# `persona/rewriter.py:_CITATION_PATTERNS` and
+# `persona/cite_grounding.py:_JO_PREFIX_RE / _SECTION_RE` so the
+# rewriter / cite-grounding / missing-citation behavior stays
+# byte-identical. Strip-prefix scrubs the JO version-number
+# ('7110.65') so it isn't mistaken for a section anchor.
+citation_grammar:
+  surface_patterns:
+    - 'AIM\s+\d+(?:[-−]\d+){1,2}'
+    - '(?:14\s+CFR\s+)?§\s*\d+\.\d+[a-z]*'
+    - 'JO\s+7110\.65[A-Z]*\s+§?\s*\d+(?:[-−]\d+){1,2}'
+    - 'AC\s+\d+[-−]\d+[A-Z]*'
+  strip_prefix: 'JO[_ ]7110\.65[A-Z]*'
+  anchor_pattern: '§?\s*(\d+(?:[-−]\d+){1,2}|\d+\.\d+[a-z]*)'
+  document_reference: '\b(?:FAA\s+Order\s+)?JO\s*7110\.65\b'
+  document_name: 'JO 7110.65'
+  example_anchor: '§1-1-1'

@@ -80,3 +80,18 @@ fetch_url:
     - www.1800wxbrief.com
     - faa.gov
     - www.faa.gov
+
+# Citation grammar (harness-jaqe). Same FAA documentation set as
+# airton_c1; this character covers the broader pilot-facing surface
+# (AIM, CFR, AC) plus the controller-rule subset (JO 7110.65).
+citation_grammar:
+  surface_patterns:
+    - 'AIM\s+\d+(?:[-−]\d+){1,2}'
+    - '(?:14\s+CFR\s+)?§\s*\d+\.\d+[a-z]*'
+    - 'JO\s+7110\.65[A-Z]*\s+§?\s*\d+(?:[-−]\d+){1,2}'
+    - 'AC\s+\d+[-−]\d+[A-Z]*'
+  strip_prefix: 'JO[_ ]7110\.65[A-Z]*'
+  anchor_pattern: '§?\s*(\d+(?:[-−]\d+){1,2}|\d+\.\d+[a-z]*)'
+  document_reference: '\b(?:FAA\s+Order\s+)?JO\s*7110\.65\b'
+  document_name: 'JO 7110.65'
+  example_anchor: '§1-1-1'

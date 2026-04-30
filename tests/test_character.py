@@ -255,6 +255,55 @@ def test_fetch_url_allowed_hosts_on_atc_family() -> None:
     assert load_character(AIRTON_B).fetch_url_allowed_hosts == ()
 
 
+def test_citation_grammar_loaded_on_atc_family() -> None:
+    """airton_c + airton_c1 ship a citation_grammar block; airton +
+    airton_b leave it None (harness-jaqe)."""
+    c1 = load_character(AIRTON_C1)
+    assert c1.citation_grammar is not None
+    assert c1.citation_grammar.document_name == "JO 7110.65"
+    assert c1.citation_grammar.example_anchor == "§1-1-1"
+    # The four FAA surface patterns compiled and load-bearing.
+    assert len(c1.citation_grammar.surface_patterns) == 4
+    # AIM, CFR, JO, AC — at least one of each shape matches.
+    text = "Per AIM 4-4-7, 14 CFR §91.155, JO 7110.65 §2-6-4, and AC 90-66B."
+    matches = [p for p in c1.citation_grammar.surface_patterns if p.search(text)]
+    assert len(matches) == 4
+
+    c = load_character(AIRTON_C)
+    assert c.citation_grammar is not None
+    assert c.citation_grammar.document_name == "JO 7110.65"
+
+
+def test_citation_grammar_absent_for_airton_and_ab() -> None:
+    """Non-citation-disciplined characters report None — citation
+    hooks short-circuit, rewriter no-ops."""
+    assert load_character(AIRTON).citation_grammar is None
+    assert load_character(AIRTON_B).citation_grammar is None
+
+
+def test_citation_grammar_rejects_invalid_regex(tmp_path: Path) -> None:
+    """Malformed regex in core.yaml citation_grammar surfaces at load
+    time with a path-anchored error rather than crashing later."""
+    import shutil
+
+    import pytest
+
+    char_dir = tmp_path / "broken"
+    shutil.copytree(AIRTON, char_dir)
+    core_path = char_dir / "core.yaml"
+    core_path.write_text(
+        core_path.read_text()
+        + "\ncitation_grammar:\n"
+        + "  surface_patterns: ['['] \n"  # unbalanced bracket
+        + "  anchor_pattern: '\\d+'\n"
+        + "  document_reference: 'foo'\n"
+        + "  document_name: 'Foo'\n"
+        + "  example_anchor: '§1'\n"
+    )
+    with pytest.raises(ValueError, match="surface_patterns"):
+        load_character(char_dir)
+
+
 def test_voice_rewriter_rejects_unknown_value(tmp_path: Path) -> None:
     """An unknown rewriter value in core.yaml raises rather than
     silently defaulting — typos surface immediately."""

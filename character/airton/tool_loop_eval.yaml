@@ -434,6 +434,7 @@
   expected_events_contain: [bail_retry]
 
 - id: missing_citation_purpose_of_order
+  citation_grammar: atc
   label: missing_citation
   description: Session 2026-04-24 repro. User asked 'What is the purpose
     of 7110.65 as it pertains to ATC?'. search_memory surfaced §1-1-1.
