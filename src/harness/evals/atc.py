@@ -22,7 +22,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
+from harness.evals._corpus import load_yaml_cases, str_field
 
 # A pluggable "run one turn" callable. Takes the user question, returns
 # atc's final reply string. Wiring lives in the CLI; tests pass a
@@ -137,22 +137,12 @@ def load_fixture(path: Path) -> tuple[AtcFixtureRow, ...]:
     or 'ifr'), question (str), expected_citations (list of str, may
     be empty). Optional: expected_keywords (list of str, default []),
     min_keyword_hits (int, default 0)."""
-    raw = yaml.safe_load(path.read_text())
-    if raw is None:
-        return ()
-    # Top-level can be a list of cases or a mapping with a `cases` key
-    # (matches the stub shape atc-1 scaffolded in).
-    if isinstance(raw, dict):
-        raw = raw.get("cases") or []
-    if not isinstance(raw, list):
-        raise ValueError(f"atc eval fixture {path} is not a list (or {{cases: [...]}})")
+    cases = load_yaml_cases(path, "atc")
     rows: list[AtcFixtureRow] = []
-    for idx, entry in enumerate(raw):
-        if not isinstance(entry, dict):
-            raise ValueError(f"{path}[{idx}] is not a mapping")
-        case_id = _str_field(entry, "id", path, idx)
-        audience = _str_field(entry, "audience", path, idx)
-        question = _str_field(entry, "question", path, idx)
+    for idx, entry in enumerate(cases):
+        case_id = str_field(entry, "id", path, idx)
+        audience = str_field(entry, "audience", path, idx)
+        question = str_field(entry, "question", path, idx)
         citations = _load_alternates(
             entry.get("expected_citations") or [], path, idx, field="expected_citations"
         )
@@ -182,13 +172,6 @@ def load_fixture(path: Path) -> tuple[AtcFixtureRow, ...]:
             )
         )
     return tuple(rows)
-
-
-def _str_field(entry: dict[str, object], key: str, path: Path, idx: int) -> str:
-    value = entry.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{path}[{idx}] missing or empty {key!r}")
-    return value.strip()
 
 
 def _load_alternates(

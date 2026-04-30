@@ -22,8 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from harness.evals._corpus import load_yaml_cases, opt_str_field, str_field
 from harness.tools.phraseology_lint import PhraseologyVerdict
 
 # (utterance, scenario_hint) → PhraseologyVerdict.
@@ -152,34 +151,25 @@ def load_fixture(path: Path) -> tuple[PhraseologyFixtureRow, ...]:
     and that out_of_scope rows have null section + null phraseology.
     Other shape errors raise ValueError pointing at the offending row.
     """
-    raw = yaml.safe_load(path.read_text())
-    if raw is None:
-        return ()
-    if isinstance(raw, dict):
-        raw = raw.get("cases") or []
-    if not isinstance(raw, list):
-        raise ValueError(f"phraseology eval fixture {path} is not a list (or {{cases: [...]}})")
-
+    cases = load_yaml_cases(path, "phraseology")
     valid_verdicts = {"ok", "wrong", "incomplete", "out_of_scope"}
     rows: list[PhraseologyFixtureRow] = []
-    for idx, entry in enumerate(raw):
-        if not isinstance(entry, dict):
-            raise ValueError(f"{path}[{idx}] is not a mapping")
-        case_id = _str_field(entry, "id", path, idx)
-        scenario = _str_field(entry, "scenario", path, idx)
-        utterance = _str_field(entry, "utterance", path, idx)
-        verdict = _str_field(entry, "expected_verdict", path, idx)
+    for idx, entry in enumerate(cases):
+        case_id = str_field(entry, "id", path, idx)
+        scenario = str_field(entry, "scenario", path, idx)
+        utterance = str_field(entry, "utterance", path, idx)
+        verdict = str_field(entry, "expected_verdict", path, idx)
         if verdict not in valid_verdicts:
             raise ValueError(
                 f"{path}[{idx}] expected_verdict {verdict!r} not in {sorted(valid_verdicts)}"
             )
-        section = _opt_str_field(entry, "expected_section")
+        section = opt_str_field(entry, "expected_section")
         if section is not None:
             # Tolerate "§3-9-10" surface form in YAML; normalize.
             section = section.lstrip("§").strip().replace("−", "-")  # noqa: RUF001
-        phraseology = _opt_str_field(entry, "expected_phraseology")
-        mismatch = _opt_str_field(entry, "mismatch")
-        notes = _opt_str_field(entry, "notes")
+        phraseology = opt_str_field(entry, "expected_phraseology")
+        mismatch = opt_str_field(entry, "mismatch")
+        notes = opt_str_field(entry, "notes")
 
         # Out-of-scope rows must null the citation fields. The fixture
         # author can document `mismatch` as a reason but a real cite
@@ -206,23 +196,6 @@ def load_fixture(path: Path) -> tuple[PhraseologyFixtureRow, ...]:
             )
         )
     return tuple(rows)
-
-
-def _str_field(entry: Mapping[str, Any], key: str, path: Path, idx: int) -> str:
-    value = entry.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{path}[{idx}] missing or empty {key!r}")
-    return value.strip()
-
-
-def _opt_str_field(entry: Mapping[str, Any], key: str) -> str | None:
-    value = entry.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        return None
-    stripped = value.strip()
-    return stripped or None
 
 
 def run_phraseology_eval(
