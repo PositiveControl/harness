@@ -129,13 +129,13 @@ def test_cfr_in_scope_accepts_part_91_standard_sections(ingest: object) -> None:
         assert ingest._cfr_in_scope(section), section  # type: ignore[attr-defined]
 
 
-def test_cfr_in_scope_rejects_part_91_subpart_k(ingest: object) -> None:
-    """Part 91 Subpart K (fractional ownership, §§91.1001-91.1099) is
-    commercial-specific — must drop. The baseline run 1 showed
-    §91.1031 diluting 'preflight action' retrieval against the real
-    §91.103."""
+def test_cfr_in_scope_accepts_part_91_subpart_k(ingest: object) -> None:
+    """Part 91 Subpart K (fractional ownership, §§91.1001-91.1099) and
+    Subpart L (continued airworthiness, §§91.1101+) re-entered scope
+    when commercial pilots joined the audience set (2026-04-27 broaden).
+    Pinning here so a future scope shrink doesn't quietly drop them."""
     for section in ("91.1001", "91.1031", "91.1039", "91.1099", "91.1101"):
-        assert not ingest._cfr_in_scope(section), section  # type: ignore[attr-defined]
+        assert ingest._cfr_in_scope(section), section  # type: ignore[attr-defined]
 
 
 def test_cfr_in_scope_accepts_pilot_certification(ingest: object) -> None:
@@ -145,11 +145,49 @@ def test_cfr_in_scope_accepts_pilot_certification(ingest: object) -> None:
         assert ingest._cfr_in_scope(section), section  # type: ignore[attr-defined]
 
 
+def test_cfr_in_scope_accepts_audience_parts(ingest: object) -> None:
+    """Parts that joined the allowlist when commercial / UAS / A&P
+    audiences were added (2026-04-27 broaden). Airworthiness (23/25/39),
+    UAS (107/89), commercial ops (121/135), maintenance (43/65/145),
+    BasicMed (68) — pin them as in-scope so a future shrink is loud."""
+    for section in (
+        "23.1",
+        "25.101",
+        "39.11",
+        "43.13",
+        "65.81",
+        "68.7",
+        "89.110",
+        "107.1",
+        "121.365",
+        "135.1",
+        "145.51",
+    ):
+        assert ingest._cfr_in_scope(section), section  # type: ignore[attr-defined]
+
+
 def test_cfr_in_scope_rejects_out_of_scope_parts(ingest: object) -> None:
-    """Parts outside the Phase-1 PPL/IFR allowlist drop — airworthiness
-    standards (Parts 23/25/39), UAS (Part 107), ultralights (103),
-    parachuting (105), commercial ops (121/135)."""
-    for section in ("23.1", "25.101", "39.11", "103.23", "105.3", "107.1", "121.365", "135.1"):
+    """Parts deliberately kept out of scope across all current audiences:
+    ultralights (103) and parachuting (105) — separate cert pathways;
+    free balloons (31) — niche; FAA-internal admin (11/13/16/17);
+    noise/emissions design standards (34/36); historical / niche cert
+    pathways (60/63/77/99/101)."""
+    for section in (
+        "11.1",
+        "13.5",
+        "16.10",
+        "17.5",
+        "31.1",
+        "34.20",
+        "36.7",
+        "60.1",
+        "63.13",
+        "77.9",
+        "99.7",
+        "101.1",
+        "103.23",
+        "105.3",
+    ):
         assert not ingest._cfr_in_scope(section), section  # type: ignore[attr-defined]
 
 

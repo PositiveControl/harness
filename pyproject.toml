@@ -52,6 +52,15 @@ atc = [
     # to the default runtime.
     "pymupdf4llm>=0.0.17",
 ]
+asr = [
+    # mlx-whisper drives the ATC audio transcribe pipeline (harness-xko1).
+    # Local STT on Apple Silicon — keeps the corpus on-box per the
+    # local-first invariant. Pulls numba + tiktoken transitively (~50 MB),
+    # so gated behind its own extra rather than added to default runtime.
+    # Default model id is `mlx-community/whisper-large-v3-mlx`; override
+    # with --model on the script CLI.
+    "mlx-whisper>=0.4",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -110,6 +119,7 @@ ignore = [
 "tests/**" = ["PLR2004"]           # magic numbers are fine in tests
 "tests/test_tui_*.py" = ["PLR2004", "RUF001", "RUF002", "RUF003"]  # same rationale as src/harness/tui/
 "tests/test_atc_chunk.py" = ["RUF001", "RUF002", "RUF003"]  # U+2212 is the point — exercising the normaliser
+"tests/test_eval_atc_audio.py" = ["RUF002"]  # U+2212 in section-normalization test docstring
 
 [tool.ruff.lint.flake8-bugbear]
 # typer builds arg defaults via Option/Argument calls — that's the whole API.
@@ -160,4 +170,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["pymupdf4llm", "pymupdf4llm.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["mlx_whisper", "mlx_whisper.*"]
 ignore_missing_imports = true

@@ -1,0 +1,70 @@
+# Per-section verb-anchor map for the phraseology lint pipeline (harness-ptya).
+#
+# When a controller utterance contains one of these distinctive verbs / code
+# phrases, hits to the mapped section are promoted to the front of the
+# retrieval slate (stable partition — original order preserved within each
+# bucket). The cite-grounding gate downstream still rejects ungrounded picks,
+# so a wrong anchor can only fail to help, never fabricate.
+#
+# Discipline (per harness-ptya design):
+#
+#   1. Anchors must be SECTION-DISTINCTIVE — only appear in utterances
+#      governed by that section. Generic verbs that recur across many
+#      sections (LAND, MAINTAIN, CLEARED) are riskier; prefer multi-word
+#      phrases or section-bound codes.
+#   2. Match is case-insensitive, word-boundary. Multi-word anchors
+#      ("LINE UP AND WAIT") use re.escape so spaces are literal.
+#   3. Numeric codes work as anchors when they're section-bound. "7500"
+#      anchors §10-2-6 (Hijack); "7700" anchors §10-2-7 (Emergency
+#      transponder). Numeric codes that recur (e.g. plain "121.5") should
+#      not be used as anchors.
+#
+# Cluster #3 failures these anchors target:
+#
+#   - SQUAWK / 7500 utterances retrieving §2-4-17 (Numbers Usage) instead
+#     of §10-2-6 (Hijack)
+#   - REDUCE SPEED utterances retrieving §2-4-17 instead of §5-7-2 (Speed
+#     adjustment)
+
+# Speed adjustment (REDUCE / INCREASE / RESUME — §5-7-2 prescribes them all)
+"5-7-2":
+  - REDUCE SPEED
+  - INCREASE SPEED
+  - RESUME NORMAL SPEED
+  - SAY SPEED
+
+# Frequency handoff (CONTACT is the canonical directive verb)
+"2-1-17":
+  - CONTACT
+
+# Low altitude / safety alerts
+"2-1-6":
+  - LOW ALTITUDE ALERT
+  - TRAFFIC ALERT
+
+# Traffic advisories with clock position
+"2-1-21":
+  - TRAFFIC
+
+# Departure clearances
+"3-9-4":
+  - LINE UP AND WAIT
+
+"3-9-10":
+  - CLEARED FOR TAKEOFF
+
+# Arrival clearances
+"3-10-5":
+  - CLEARED TO LAND
+
+# Hijack — §10-2-6 owns the SQUAWK 7500 directive + the verify variant
+"10-2-6":
+  - SQUAWK SEVEN FIVE ZERO ZERO
+  - VERIFY SQUAWKING SEVEN FIVE ZERO ZERO
+  - "7500"
+
+# Emergency assistance — pilot MAYDAY is OOS for the lint tool (controllers
+# don't say MAYDAY) but DECLARE EMERGENCY does anchor §10-1-1
+"10-1-1":
+  - DECLARE EMERGENCY
+  - DECLARING EMERGENCY

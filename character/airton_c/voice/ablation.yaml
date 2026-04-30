@@ -1,0 +1,42 @@
+version: 2
+purpose: |
+  Ablation-exclusion manifest for airton_c (generalist NAS reference).
+  Mirrors the airton_c1 mechanism (originally harness-w49p) — the YAML
+  is read by Character.ablated_voice_samples and consumed by
+  `eval atc --ablate` to drop these IDs from the VoiceRetriever pool
+  AT EVAL TIME. Runtime retrieval is unaffected.
+
+  EXCLUSION LIST, not a move-out. Each sample here ALSO appears in
+  voice/canonical.yaml so production chat keeps the full set.
+
+  Sample selection (preliminary, 2026-04-27):
+    vfr_cloud_clearance_above_10k — picked by STRUCTURAL HEURISTIC
+    rather than measurement (the c1 selection was data-driven via
+    a run-2 verbatim-leak audit). Rationale:
+      * The gold contains the rule's exact numbers verbatim
+        ("1,000 feet below, 1,000 feet above, 1 statute mile
+        horizontal; 5 statute miles visibility"). Highly templated.
+      * Tight single-citation answer (§91.155(a)). Few alternate
+        derivation paths if the canonical sample is in retrieval.
+      * The rule's source rows (§91.155 in cfr_14_vol2.jsonl)
+        are ingested in airton_c's corpus, so a generalization-
+        capable model should still produce the numbers when this
+        sample is excluded — that's the signal.
+
+  Validation TODO (not yet run): round-robin per-sample probe via
+  `eval atc --ablate-ids <one_id>` for every canonical ID, score
+  delta vs. the baseline `eval atc` (no flag). The sample with the
+  largest delta is the actual top memorization candidate; replace
+  this entry if the round-robin disagrees with the heuristic pick.
+
+samples:
+  - id: vfr_cloud_clearance_above_10k
+    prompt: "What's the VFR cloud clearance above 10,000 MSL?"
+    gold: |
+      Above 10,000 MSL (and more than 1,200 AGL), in Class E airspace
+      under VFR: 1,000 feet below, 1,000 feet above, 1 statute mile
+      horizontal; 5 statute miles visibility. The rule is
+      14 CFR §91.155(a) — the table. The thresholds step up at
+      10,000 MSL because jet traffic above that altitude closes faster;
+      the pilot-facing framing is in the AIM's weather-minimums
+      discussion.

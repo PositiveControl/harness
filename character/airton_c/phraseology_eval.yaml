@@ -1,0 +1,446 @@
+version: 1
+purpose: |
+  Phraseology lint eval fixture for airton_c1 (JO 7110.65 specialist).
+  Phase-1 (text-mode) gate for the cite-grounded ATC transmission verifier
+  (epic harness-0pte). Each case is one controller utterance; the linter
+  must return a verdict + JO 7110.65 § citation and, when wrong/incomplete,
+  the canonical phraseology and the specific mismatch.
+
+  Sourced from JO 7110.65BB phraseology blocks (the "PHRASEOLOGY−" header
+  blocks in the ingested corpus). Wrong cases are single-edit mutations
+  (one swapped word against canonical); incomplete cases drop one
+  rule-required element. Out-of-scope cases are pilot transmissions or
+  non-rule chitchat — the linter must refuse rather than guess a section.
+
+  Verdicts:
+    ok           — utterance matches canonical phraseology for the
+                   scenario, allowing for required-fillable slots
+                   (call sign, runway number, frequency, etc.).
+    wrong        — utterance has a substantive mismatch against canonical
+                   (wrong verb, wrong code, wrong unit, wrong noun class).
+    incomplete   — utterance is missing a JO 7110.65-required element
+                   (e.g. takeoff clearance without runway number,
+                   low-altitude alert without call sign).
+    out_of_scope — utterance is not controller-issued phraseology under
+                   the JO 7110.65 rule surface (pilot transmission,
+                   chitchat, or non-rule content). Citation = null.
+
+  Field shape (each case):
+    id:                   stable slug, '{scenario}_{topic}_{variant}'.
+    scenario:             one of departure | arrival | handoff | emergency.
+                          Names the operational class; orthogonal to verdict.
+    utterance:            verbatim ATC transmission text, ALL CAPS.
+    expected_verdict:     ok | wrong | incomplete | out_of_scope.
+    expected_section:     '<chapter>-<section>-<para>' (e.g. '3-9-10') or
+                          null for out_of_scope.
+    expected_phraseology: canonical form template (verbatim from JO 7110.65
+                          block) for ok / wrong / incomplete; null for oos.
+    mismatch:             short reason string for wrong / incomplete; null
+                          otherwise. Used for diagnostic-grade scoring.
+    notes:                rationale linking the case to the cited paragraph.
+
+  Scoring (per `harness eval phraseology`, sibling task harness-15dy):
+    verdict_accuracy   = mean(1 if predicted_verdict == expected_verdict else 0)
+    citation_accuracy  = mean(1 if expected_section in predicted_citations else 0)
+                         (skipped for out_of_scope cases — citation = None)
+    combined           = mean(1 if verdict_pass AND citation_pass else 0)
+    per_scenario       = same metrics, broken out by `scenario` field.
+
+  Phase-1 ship gate: combined accuracy ≥ 80% on this fixture.
+
+  Coverage by scenario (≥10 each, per harness-h2iz spec):
+    departure: 10 (takeoff clearance §3-9-10, line up and wait §3-9-4)
+    arrival:   10 (landing clearance §3-10-5)
+    handoff:   10 (radio comms §2-1-17, speed adjustment §5-7-2)
+    emergency: 10 (safety alert §2-1-6, hijack §10-2-6, traffic advisory
+                   §2-1-21, distress/urgency §10-1-1)
+
+cases:
+
+  # ===== Departure (10) =====
+  # Takeoff clearance §3-9-10 mandates: state runway number FIRST,
+  # followed by the takeoff clearance. "CLEARED FOR TAKEOFF" is the
+  # canonical predicate; "CLEARED TO TAKEOFF" is a known wrong variant.
+  # LUAW §3-9-4 mandates "(RUNWAY number), LINE UP AND WAIT" — "HOLD"
+  # is a real-world misuse the section explicitly avoids (LAHSO uses
+  # "HOLD SHORT" — distinct procedure).
+
+  - id: dep_takeoff_canonical
+    scenario: departure
+    utterance: "RUNWAY TWO SEVEN, CLEARED FOR TAKEOFF."
+    expected_verdict: ok
+    expected_section: "3-9-10"
+    expected_phraseology: "RUNWAY (number), CLEARED FOR TAKEOFF."
+    mismatch: null
+    notes: "§3-9-10a verbatim example: 'RUNWAY TWO SEVEN, CLEARED FOR TAKEOFF.'"
+
+  - id: dep_takeoff_intersection_canonical
+    scenario: departure
+    utterance: "RUNWAY ONE EIGHT AT BRAVO, CLEARED FOR TAKEOFF."
+    expected_verdict: ok
+    expected_section: "3-9-10"
+    expected_phraseology: "RUNWAY (number) AT (taxiway designator) CLEARED FOR TAKEOFF."
+    mismatch: null
+    notes: "§3-9-10b intersection takeoff template."
+
+  - id: dep_takeoff_full_length_canonical
+    scenario: departure
+    utterance: "AMERICAN FOUR EIGHTY TWO, RUNWAY THREE ZERO FULL LENGTH, CLEARED FOR TAKEOFF."
+    expected_verdict: ok
+    expected_section: "3-9-10"
+    expected_phraseology: "RUNWAY (number), FULL LENGTH, CLEARED FOR TAKEOFF."
+    mismatch: null
+    notes: "§3-9-10c full-length-vs-intersection disambiguation example, verbatim from corpus."
+
+  - id: dep_takeoff_shortened_canonical
+    scenario: departure
+    utterance: "RUNWAY TWO SEVEN SHORTENED, CLEARED FOR TAKEOFF."
+    expected_verdict: ok
+    expected_section: "3-9-10"
+    expected_phraseology: "RUNWAY (number) SHORTENED, CLEARED FOR TAKEOFF."
+    mismatch: null
+    notes: "§3-9-10g — 'shortened' must follow runway number when length temporarily/permanently reduced."
+
+  - id: dep_takeoff_missing_runway
+    scenario: departure
+    utterance: "CLEARED FOR TAKEOFF."
+    expected_verdict: incomplete
+    expected_section: "3-9-10"
+    expected_phraseology: "RUNWAY (number), CLEARED FOR TAKEOFF."
+    mismatch: "missing runway number — §3-9-10a requires runway stated first"
+    notes: "§3-9-10a: 'first state the runway number followed by the takeoff clearance.' Bare clearance without runway is non-conforming."
+
+  - id: dep_takeoff_wrong_predicate
+    scenario: departure
+    utterance: "RUNWAY TWO SEVEN, CLEARED TO TAKEOFF."
+    expected_verdict: wrong
+    expected_section: "3-9-10"
+    expected_phraseology: "RUNWAY (number), CLEARED FOR TAKEOFF."
+    mismatch: "wrong preposition: 'TO TAKEOFF' should be 'FOR TAKEOFF'"
+    notes: "Single-word swap on §3-9-10a canonical. Common pilot-side misreport but not a controller-side conforming form."
+
+  - id: dep_luaw_canonical
+    scenario: departure
+    utterance: "RUNWAY TWO SEVEN, LINE UP AND WAIT."
+    expected_verdict: ok
+    expected_section: "3-9-4"
+    expected_phraseology: "RUNWAY (number), LINE UP AND WAIT."
+    mismatch: null
+    notes: "§3-9-4 base LUAW template."
+
+  - id: dep_luaw_intersection_canonical
+    scenario: departure
+    utterance: "RUNWAY TWO SEVEN AT JULIETT, LINE UP AND WAIT."
+    expected_verdict: ok
+    expected_section: "3-9-4"
+    expected_phraseology: "RUNWAY (number) AT (taxiway designator), LINE UP AND WAIT."
+    mismatch: null
+    notes: "§3-9-4 intersection LUAW variant."
+
+  - id: dep_luaw_missing_runway
+    scenario: departure
+    utterance: "LINE UP AND WAIT."
+    expected_verdict: incomplete
+    expected_section: "3-9-4"
+    expected_phraseology: "RUNWAY (number), LINE UP AND WAIT."
+    mismatch: "missing runway number — §3-9-4 LUAW template requires runway"
+    notes: "Bare LUAW without runway designator is non-conforming."
+
+  - id: dep_luaw_wrong_verb
+    scenario: departure
+    utterance: "RUNWAY TWO SEVEN, LINE UP AND HOLD."
+    expected_verdict: wrong
+    expected_section: "3-9-4"
+    expected_phraseology: "RUNWAY (number), LINE UP AND WAIT."
+    mismatch: "wrong terminal verb: 'HOLD' should be 'WAIT'"
+    notes: "ICAO/legacy 'LINE UP AND HOLD' was retired; FAA standard is 'LINE UP AND WAIT'. Single-word mutation of §3-9-4 canonical."
+
+  # ===== Arrival (10) =====
+  # Landing clearance §3-10-5 mandates runway number FIRST, then
+  # "CLEARED TO LAND" predicate. LAHSO subpara b adds the hold-short
+  # element with required identifier (taxiway / runway / point /
+  # approach-or-departure path).
+
+  - id: arr_landing_canonical
+    scenario: arrival
+    utterance: "RUNWAY ONE EIGHT, CLEARED TO LAND."
+    expected_verdict: ok
+    expected_section: "3-10-5"
+    expected_phraseology: "RUNWAY (number) CLEARED TO LAND."
+    mismatch: null
+    notes: "§3-10-5a base landing template."
+
+  - id: arr_landing_lahso_canonical
+    scenario: arrival
+    utterance: "RUNWAY SEVEN LEFT, CLEARED TO LAND, HOLD SHORT OF TAXIWAY WHISKEY, TRAFFIC CROSSING DOWNFIELD."
+    expected_verdict: ok
+    expected_section: "3-10-5"
+    expected_phraseology: "RUNWAY (number) CLEARED TO LAND, HOLD SHORT OF (taxiway/runway/path/point), (traffic info)."
+    mismatch: null
+    notes: "§3-10-5b LAHSO example #1 verbatim from corpus."
+
+  - id: arr_landing_change_runway_canonical
+    scenario: arrival
+    utterance: "CHANGE TO RUNWAY ONE EIGHT, RUNWAY ONE EIGHT CLEARED TO LAND."
+    expected_verdict: ok
+    expected_section: "3-10-5"
+    expected_phraseology: "CHANGE TO RUNWAY (number), RUNWAY (number) CLEARED TO LAND."
+    mismatch: null
+    notes: "§3-10-5c runway-change template — purpose is to emphasize the new runway via restated number."
+
+  - id: arr_landing_shortened_canonical
+    scenario: arrival
+    utterance: "RUNWAY TWO SEVEN SHORTENED, CLEARED TO LAND."
+    expected_verdict: ok
+    expected_section: "3-10-5"
+    expected_phraseology: "RUNWAY (number) SHORTENED, CLEARED TO LAND."
+    mismatch: null
+    notes: "§3-10-5h shortened-runway landing template."
+
+  - id: arr_landing_missing_runway
+    scenario: arrival
+    utterance: "CLEARED TO LAND."
+    expected_verdict: incomplete
+    expected_section: "3-10-5"
+    expected_phraseology: "RUNWAY (number) CLEARED TO LAND."
+    mismatch: "missing runway number — §3-10-5a requires runway stated first"
+    notes: "§3-10-5a: 'first state the runway number followed by the landing clearance.'"
+
+  - id: arr_landing_wrong_preposition
+    scenario: arrival
+    utterance: "RUNWAY ONE EIGHT, CLEARED FOR LAND."
+    expected_verdict: wrong
+    expected_section: "3-10-5"
+    expected_phraseology: "RUNWAY (number) CLEARED TO LAND."
+    mismatch: "wrong preposition: 'FOR LAND' should be 'TO LAND'"
+    notes: "Mirror of takeoff swap (TO/FOR). Single-word mutation of §3-10-5a canonical."
+
+  - id: arr_landing_wrong_surface_label
+    scenario: arrival
+    utterance: "TAXIWAY ONE EIGHT, CLEARED TO LAND."
+    expected_verdict: wrong
+    expected_section: "3-10-5"
+    expected_phraseology: "RUNWAY (number) CLEARED TO LAND."
+    mismatch: "wrong surface designator: 'TAXIWAY' should be 'RUNWAY'"
+    notes: "Surface-class confusion variant — flagged because §3-10-5a canonical takes a runway designator only."
+
+  - id: arr_landing_lahso_missing_target
+    scenario: arrival
+    utterance: "RUNWAY SEVEN LEFT, CLEARED TO LAND, HOLD SHORT."
+    expected_verdict: incomplete
+    expected_section: "3-10-5"
+    expected_phraseology: "RUNWAY (number) CLEARED TO LAND, HOLD SHORT OF (taxiway/runway/path/point)."
+    mismatch: "missing hold-short target identifier — §3-10-5b template requires the taxiway/runway/path/point"
+    notes: "§3-10-5b: hold-short element must name what to hold short of. Bare 'HOLD SHORT' is ambiguous."
+
+  - id: arr_landing_continue_canonical
+    scenario: arrival
+    utterance: "RUNWAY TWO SEVEN, CONTINUE."
+    expected_verdict: ok
+    expected_section: "3-10-5"
+    expected_phraseology: "RUNWAY (number), CONTINUE."
+    mismatch: null
+    notes: "§3-10-5i — 'continue' phraseology when landing clearance is temporarily withheld."
+
+  - id: arr_pilot_oos
+    scenario: arrival
+    utterance: "ON FINAL FOR ONE EIGHT, GEAR DOWN AND LOCKED."
+    expected_verdict: out_of_scope
+    expected_section: null
+    expected_phraseology: null
+    mismatch: "pilot transmission — JO 7110.65 governs controller-side phraseology only"
+    notes: "Pilot-side report. JO 7110.65 prescribes controller phraseology; pilot transmissions live in AIM and the P/CG."
+
+  # ===== Handoff (10) =====
+  # Radio communications §2-1-17 covers contact-frequency and intra-
+  # facility frequency-change phraseology. Speed adjustment methods
+  # §5-7-2 covers MAINTAIN/REDUCE/INCREASE templates. Both are issued
+  # at sector boundaries during handoff.
+
+  - id: han_contact_canonical
+    scenario: handoff
+    utterance: "CONTACT DEPARTURE ONE TWO THREE POINT FOUR."
+    expected_verdict: ok
+    expected_section: "2-1-17"
+    expected_phraseology: "CONTACT (facility name or location name and terminal function), (frequency)."
+    mismatch: null
+    notes: "§2-1-17 canonical contact-frequency template, matches corpus example 'Contact Departure.'"
+
+  - id: han_change_to_my_freq_canonical
+    scenario: handoff
+    utterance: "UNITED TWO TWENTY TWO, CHANGE TO MY FREQUENCY ONE TWO THREE POINT FOUR."
+    expected_verdict: ok
+    expected_section: "2-1-17"
+    expected_phraseology: "(Identification) CHANGE TO MY FREQUENCY (state frequency)."
+    mismatch: null
+    notes: "§2-1-17f intra-sector frequency change. Corpus example verbatim."
+
+  - id: han_remain_freq_canonical
+    scenario: handoff
+    utterance: "REMAIN THIS FREQUENCY."
+    expected_verdict: ok
+    expected_section: "2-1-17"
+    expected_phraseology: "REMAIN THIS FREQUENCY."
+    mismatch: null
+    notes: "§2-1-17h — used when controller does not want pilot to change frequency."
+
+  - id: han_contact_missing_facility
+    scenario: handoff
+    utterance: "CONTACT ONE TWO THREE POINT FOUR."
+    expected_verdict: incomplete
+    expected_section: "2-1-17"
+    expected_phraseology: "CONTACT (facility name or location name and terminal function), (frequency)."
+    mismatch: "missing facility name — §2-1-17 template requires facility before frequency"
+    notes: "Bare frequency lacks the facility-identification element §2-1-17 mandates."
+
+  - id: han_contact_wrong_verb
+    scenario: handoff
+    utterance: "SWITCH TO DEPARTURE ONE TWO THREE POINT FOUR."
+    expected_verdict: wrong
+    expected_section: "2-1-17"
+    expected_phraseology: "CONTACT (facility name and terminal function), (frequency)."
+    mismatch: "wrong directive verb: 'SWITCH TO' should be 'CONTACT'"
+    notes: "'SWITCH' is colloquial; §2-1-17 prescribes 'CONTACT' for handoff. Single-word mutation."
+
+  - id: han_speed_reduce_canonical
+    scenario: handoff
+    utterance: "REDUCE SPEED TO TWO FIVE ZERO."
+    expected_verdict: ok
+    expected_section: "5-7-2"
+    expected_phraseology: "REDUCE SPEED TO (specified speed in knots)."
+    mismatch: null
+    notes: "§5-7-2a4 corpus example: 'Reduce speed to two five zero.'"
+
+  - id: han_speed_maintain_canonical
+    scenario: handoff
+    utterance: "MAINTAIN TWO EIGHT ZERO KNOTS."
+    expected_verdict: ok
+    expected_section: "5-7-2"
+    expected_phraseology: "MAINTAIN (specific speed) KNOTS."
+    mismatch: null
+    notes: "§5-7-2a2 verbatim template + corpus example."
+
+  - id: han_speed_missing_value
+    scenario: handoff
+    utterance: "REDUCE SPEED."
+    expected_verdict: incomplete
+    expected_section: "5-7-2"
+    expected_phraseology: "REDUCE SPEED TO (specified speed in knots)."
+    mismatch: "missing speed value — §5-7-2a4 requires a target speed"
+    notes: "§5-7-2 templates all bind a speed value (in knots, Mach, or knot-delta)."
+
+  - id: han_speed_wrong_unit
+    scenario: handoff
+    utterance: "REDUCE SPEED TO TWO FIVE ZERO MILES PER HOUR."
+    expected_verdict: wrong
+    expected_section: "5-7-2"
+    expected_phraseology: "REDUCE SPEED TO (specified speed in knots)."
+    mismatch: "wrong unit: 'MILES PER HOUR' should be 'KNOTS' or 'MACH'"
+    notes: "§5-7-2 prescribes knots or Mach. MPH is not an ATC speed unit."
+
+  - id: han_pilot_freq_oos
+    scenario: handoff
+    utterance: "GOING DOWN TO ONE TWO ZERO POINT EIGHT."
+    expected_verdict: out_of_scope
+    expected_section: null
+    expected_phraseology: null
+    mismatch: "pilot transmission — controller-side phraseology only"
+    notes: "Pilot leaving frequency. Not a §2-1-17 controller transmission."
+
+  # ===== Emergency (10) =====
+  # §2-1-6 SAFETY ALERT (terrain alert + traffic alert variants).
+  # §2-1-21 TRAFFIC ADVISORIES (separate from §2-1-6 alerts).
+  # §10-2-6 HIJACKED AIRCRAFT — squawk 7500 and verify-7500 templates.
+  # §10-1-1 EMERGENCY DETERMINATIONS — Mayday/Pan-Pan are pilot-side
+  # phraseology by definition (subpara b), so they're out_of_scope for
+  # a controller-utterance linter.
+
+  - id: emerg_low_altitude_alert_canonical
+    scenario: emergency
+    utterance: "LOW ALTITUDE ALERT, AMERICAN ONE TWENTY THREE, CHECK YOUR ALTITUDE IMMEDIATELY."
+    expected_verdict: ok
+    expected_section: "2-1-6"
+    expected_phraseology: "LOW ALTITUDE ALERT (call sign), CHECK YOUR ALTITUDE IMMEDIATELY."
+    mismatch: null
+    notes: "§2-1-6a terrain/obstruction alert template, verbatim with required call sign."
+
+  - id: emerg_traffic_alert_canonical
+    scenario: emergency
+    utterance: "TRAFFIC ALERT, AMERICAN ONE TWENTY THREE, TWELVE O'CLOCK FIVE MILES, ADVISE YOU TURN LEFT HEADING ONE EIGHT ZERO."
+    expected_verdict: ok
+    expected_section: "2-1-6"
+    expected_phraseology: "TRAFFIC ALERT (call sign) (position of aircraft) ADVISE YOU TURN LEFT/RIGHT (heading)."
+    mismatch: null
+    notes: "§2-1-6b aircraft-conflict alert template, verbatim from corpus."
+
+  - id: emerg_hijack_squawk_canonical
+    scenario: emergency
+    utterance: "AMERICAN ONE TWENTY THREE, SQUAWK SEVEN FIVE ZERO ZERO."
+    expected_verdict: ok
+    expected_section: "10-2-6"
+    expected_phraseology: "(Identification) SQUAWK SEVEN FIVE ZERO ZERO."
+    mismatch: null
+    notes: "§10-2-6a: assign 7500 when pilot verbally reports hijack."
+
+  - id: emerg_hijack_verify_canonical
+    scenario: emergency
+    utterance: "AMERICAN ONE TWENTY THREE, NEW YORK CENTER, VERIFY SQUAWKING SEVEN FIVE ZERO ZERO."
+    expected_verdict: ok
+    expected_section: "10-2-6"
+    expected_phraseology: "(Identification)(name of facility) VERIFY SQUAWKING SEVEN FIVE ZERO ZERO."
+    mismatch: null
+    notes: "§10-2-6b verify-7500 template — used when pilot squawked 7500 without verbal report."
+
+  - id: emerg_hijack_wrong_code
+    scenario: emergency
+    utterance: "AMERICAN ONE TWENTY THREE, SQUAWK SEVEN SEVEN ZERO ZERO."
+    expected_verdict: wrong
+    expected_section: "10-2-6"
+    expected_phraseology: "(Identification) SQUAWK SEVEN FIVE ZERO ZERO."
+    mismatch: "wrong squawk code: 7700 is generic emergency; §10-2-6 mandates 7500 for hijack"
+    notes: "Code-class swap (7700 emergency vs 7500 hijack). 7700 belongs to general emergency handling, not §10-2-6."
+
+  - id: emerg_low_altitude_alert_missing_callsign
+    scenario: emergency
+    utterance: "LOW ALTITUDE ALERT, CHECK YOUR ALTITUDE IMMEDIATELY."
+    expected_verdict: incomplete
+    expected_section: "2-1-6"
+    expected_phraseology: "LOW ALTITUDE ALERT (call sign), CHECK YOUR ALTITUDE IMMEDIATELY."
+    mismatch: "missing call sign — §2-1-6a template requires (call sign) slot"
+    notes: "§2-1-6a binds the alert to a specific aircraft via call sign. Bare alert is non-conforming."
+
+  - id: emerg_traffic_alert_missing_position
+    scenario: emergency
+    utterance: "TRAFFIC ALERT, AMERICAN ONE TWENTY THREE, ADVISE YOU TURN LEFT HEADING ONE EIGHT ZERO."
+    expected_verdict: incomplete
+    expected_section: "2-1-6"
+    expected_phraseology: "TRAFFIC ALERT (call sign) (position of aircraft) ADVISE YOU TURN LEFT/RIGHT (heading)."
+    mismatch: "missing position of aircraft — §2-1-6b template requires (position of aircraft) slot"
+    notes: "§2-1-6b mandates aircraft position (clock + range) before the avoidance instruction."
+
+  - id: emerg_traffic_advisory_canonical
+    scenario: emergency
+    utterance: "TRAFFIC, TWO O'CLOCK, FIVE MILES, BOEING SEVEN THREE SEVEN, EAST BOUND, FLIGHT LEVEL TWO FIVE ZERO."
+    expected_verdict: ok
+    expected_section: "2-1-21"
+    expected_phraseology: "TRAFFIC, (clock position), (distance), (direction of flight), (type aircraft), (altitude)."
+    mismatch: null
+    notes: "§2-1-21 traffic-advisory template (workload-permitting traffic call). Distinct from §2-1-6 alerts."
+
+  - id: emerg_pilot_mayday_oos
+    scenario: emergency
+    utterance: "MAYDAY MAYDAY MAYDAY, AMERICAN ONE TWENTY THREE, ENGINE FAILURE, REQUEST IMMEDIATE LANDING."
+    expected_verdict: out_of_scope
+    expected_section: null
+    expected_phraseology: null
+    mismatch: "pilot distress declaration per §10-1-1b — controller-side linter does not score pilot phraseology"
+    notes: "§10-1-1b: 'A pilot who encounters a Distress condition should declare an emergency by beginning the initial communication with the word \"Mayday\"...' Pilot-side, not controller."
+
+  - id: emerg_chitchat_oos
+    scenario: emergency
+    utterance: "BUSY DAY UP HERE."
+    expected_verdict: out_of_scope
+    expected_section: null
+    expected_phraseology: null
+    mismatch: "non-rule chitchat — no JO 7110.65 phraseology applies"
+    notes: "Out-of-band controller comment. Not governed by any §; linter must refuse rather than guess."

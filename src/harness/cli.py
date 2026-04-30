@@ -109,6 +109,18 @@ _EXIT_COMMANDS = frozenset({"/exit", "/quit", "exit", "quit", ":q", ":quit"})
 _EDIT_COMMANDS = frozenset({"/edit", "/capture"})
 _RETRO_COMMANDS = frozenset({"/retro"})
 
+# Source identifier the phraseology lint pipeline filters its
+# retrieval slate against. Matches the principle prefix the
+# `scripts/atc_ingest.py` script writes for JO 7110.65 rows
+# ("JO_7110.65 §<section>"). Applied to keep the JO-only lint
+# contract intact when the active character has a multi-source
+# corpus (airton_c carries JO + AIM + 14 CFR + PCG + PHAK; airton_c1
+# is JO-only and the filter is a no-op there). Every lint call site
+# applies it conditional on `"phraseology" in character.tool_descriptions`
+# — which is the data-driven equivalent of the old "atc-family"
+# membership check (harness-a2sa).
+_ATC_LINT_SOURCE_FILTER: str = "JO_7110.65"
+
 # Sentinel used to encode structured tool_calls onto an assistant turn's
 # content when persisting to the transcript. Two-line format: human-readable
 # content, then the sentinel, then a single JSON line with the tool_calls.
@@ -1323,6 +1335,16 @@ def _build_tool_registry_for_tui(
         query_only_path=default_query_only_synonyms_path(settings.character_path),
     )
 
+    # Verb-anchor map for the phraseology lint tool (harness-ptya).
+    # Empty mapping when the file is absent so non-atc characters get
+    # the unmodified pipeline.
+    from harness.tools.phraseology_lint import (
+        default_verb_anchors_path,
+        load_verb_anchors,
+    )
+
+    phraseology_verb_anchors = load_verb_anchors(default_verb_anchors_path(settings.character_path))
+
     builders: dict[str, Callable[[], Tool | None]] = {
         "read_file": lambda: ReadFileTool(root=workspace_path),
         "edit_file": lambda: EditFileTool(root=workspace_path),
@@ -1371,6 +1393,12 @@ def _build_tool_registry_for_tui(
                 store=memory_store,
                 grammar=character.citation_grammar if character is not None else None,
                 user_id=speaker,
+                verb_anchors=phraseology_verb_anchors or None,
+                source_filter=(
+                    _ATC_LINT_SOURCE_FILTER
+                    if character is not None and "phraseology" in character.tool_descriptions
+                    else None
+                ),
             )
             if (memory_store is not None and adapter is not None)
             else None
@@ -2198,8 +2226,13 @@ def phraseology_lint_cmd(
         )
 
     try:
-        from harness.tools.phraseology_lint import lint_utterance
+        from harness.tools.phraseology_lint import (
+            default_verb_anchors_path,
+            lint_utterance,
+            load_verb_anchors,
+        )
 
+        verb_anchors = load_verb_anchors(default_verb_anchors_path(settings.character_path))
         verdict = lint_utterance(
             utterance,
             adapter=adapter,
@@ -2209,6 +2242,8 @@ def phraseology_lint_cmd(
             user_id=None,  # rulebook seeds are shared (user_id IS NULL)
             k=k,
             temperature=temperature,
+            verb_anchors=verb_anchors or None,
+            source_filter=_ATC_LINT_SOURCE_FILTER,
         )
     finally:
         memory_store.close()
@@ -3441,7 +3476,11 @@ def eval_phraseology(
     from harness.evals.phraseology import (
         run_phraseology_eval as _phraseology_run,
     )
-    from harness.tools.phraseology_lint import lint_utterance
+    from harness.tools.phraseology_lint import (
+        default_verb_anchors_path,
+        lint_utterance,
+        load_verb_anchors,
+    )
 
     character = load_character(settings.character_path)
     if "phraseology" not in character.tool_descriptions:
@@ -3475,6 +3514,8 @@ def eval_phraseology(
             "`uv sync --extra retrieval` and run `harness memory ingest`."
         )
 
+    verb_anchors = load_verb_anchors(default_verb_anchors_path(settings.character_path))
+
     try:
 
         def _lint_one(utterance: str, scenario_hint: str | None) -> object:
@@ -3487,6 +3528,8 @@ def eval_phraseology(
                 user_id=None,
                 k=k,
                 temperature=temperature,
+                verb_anchors=verb_anchors or None,
+                source_filter=_ATC_LINT_SOURCE_FILTER,
             )
 
         result = _phraseology_run(fixture, _lint_one)  # type: ignore[arg-type]
@@ -3618,6 +3661,340 @@ def eval_phraseology(
                     f"{', '.join(comparison.dropped_cases)}[/dim]"
                 )
 
+        if comparison.has_regression(regression_budget=regression_budget):
+            if not as_json:
+                console.print(
+                    f"[bold red]✗ regression detected[/bold red] (budget={regression_budget})"
+                )
+            raise typer.Exit(code=1)
+        if not as_json:
+            console.print("[bold green]✓ no regressions[/bold green]")
+
+
+@eval_app.command("atc-audio")
+def eval_atc_audio(
+    target: Path | None = typer.Option(
+        None,
+        "--target",
+        help=(
+            "atc_audio dir under the active character. Defaults to "
+            "`character/<name>/atc_audio` — the same path the ingest, "
+            "transcribe, and label scripts write into."
+        ),
+    ),
+    only_clip: list[str] | None = typer.Option(
+        None,
+        "--only",
+        help=(
+            "Restrict the eval to these clip ids. Useful for the small-N "
+            "pre-push gate subset; defaults to every utt/*.jsonl row."
+        ),
+    ),
+    include_unverified: bool = typer.Option(
+        False,
+        "--include-unverified",
+        help=(
+            "Score rows even when human_verified is false. Off by "
+            "default — unsigned labels aren't ground truth."
+        ),
+    ),
+    skip_noisy: bool = typer.Option(
+        False,
+        "--skip-noisy",
+        help=(
+            "Run only the clean (human transcript) lint pass. Halves "
+            "model load when iterating on the lint pipeline; the noisy "
+            "pass + WER columns come back zero. The pre-push gate runs "
+            "both passes — only use this for inner-loop iteration."
+        ),
+    ),
+    model: str = typer.Option("mlx", help="Adapter: echo | mlx | ollama"),
+    model_repo: str | None = typer.Option(None, "--model-repo"),
+    lora_path: str | None = typer.Option(None, "--lora-path"),
+    draft_repo: str | None = typer.Option(None, "--draft-repo"),
+    temperature: float = typer.Option(
+        0.0,
+        help=(
+            "Sampling temperature for the lint pipeline. Default 0 "
+            "(greedy) so verdict pass-rate is stable run-to-run."
+        ),
+    ),
+    k: int = typer.Option(
+        8,
+        help=(
+            "Top-K hybrid retrieval per case. Same default as the "
+            "phraseology eval so audio-mode and text-mode share the "
+            "candidate-anchor budget."
+        ),
+    ),
+    save_baseline: bool = typer.Option(
+        False,
+        "--save-baseline",
+        help=(
+            "Write the run to character/<name>/atc_audio_baseline.json. "
+            "Snapshot the current verdict + citation accuracy + WER as "
+            "the frozen contract future runs diff against."
+        ),
+    ),
+    compare_baseline: bool = typer.Option(
+        False,
+        "--compare-baseline",
+        help=(
+            "Diff this run against character/<name>/atc_audio_baseline.json "
+            "(or --baseline-path). Exits non-zero on regression: aggregate "
+            "accuracy drop, WER rise, OR per-case verdict/citation pass "
+            "flip past --regression-budget. Pre-push gate's hook target."
+        ),
+    ),
+    baseline_path: Path | None = typer.Option(
+        None,
+        "--baseline-path",
+        help=(
+            "Override the baseline file location for --save-baseline / "
+            "--compare-baseline. Defaults to "
+            "character/<name>/atc_audio_baseline.json."
+        ),
+    ),
+    regression_budget: int = typer.Option(
+        0,
+        "--regression-budget",
+        min=0,
+        help=(
+            "Per-case regression allowance for --compare-baseline. "
+            "Aggregate accuracy / WER regressions ALWAYS fail the gate; "
+            "individual case flips up to N are tolerated when "
+            "aggregate metrics hold."
+        ),
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+) -> None:
+    """Score the cite-grounded ATC lint pipeline on real LiveATC
+    utterances. Two passes per row — clean human transcript and noisy
+    whisper seed — measure how much accuracy the audio-mode pipeline
+    loses to STT vs to the lint tool itself.
+    """
+    from harness.evals.atc_audio import (
+        compare_baselines as _audio_compare,
+    )
+    from harness.evals.atc_audio import (
+        default_baseline_path as _audio_baseline_path,
+    )
+    from harness.evals.atc_audio import (
+        default_target_dir as _audio_default_target,
+    )
+    from harness.evals.atc_audio import (
+        load_baseline as _audio_load_baseline,
+    )
+    from harness.evals.atc_audio import (
+        load_fixture as _audio_load_fixture,
+    )
+    from harness.evals.atc_audio import (
+        run_audio_eval as _audio_run,
+    )
+    from harness.tools.phraseology_lint import (
+        PhraseologyVerdict,
+        lint_utterance,
+    )
+
+    character = load_character(settings.character_path)
+    # Gate on phraseology-profile ownership rather than hard-coded
+    # family list (harness-a2sa). atc-audio eval routes its
+    # transcribed utterances through the phraseology lint pipeline,
+    # so any character that ships a `phraseology` profile in
+    # tool_descriptions.yaml is a valid target.
+    if "phraseology" not in character.tool_descriptions:
+        raise typer.BadParameter(
+            f"atc-audio eval requires a character that declares the "
+            f"`phraseology` profile in tool_descriptions.yaml "
+            f"(got {character.name!r}). Set HARNESS_CHARACTER_NAME=airton_c1."
+        )
+    target_dir = target or _audio_default_target(settings.character_path)
+    only_clip_ids = tuple(only_clip) if only_clip else None
+    fixture = _audio_load_fixture(
+        target_dir,
+        only_verified=not include_unverified,
+        only_clip_ids=only_clip_ids,
+    )
+    if not fixture:
+        msg = (
+            f"no labelled utterances under {target_dir}/utt — run scripts/atc_audio_label.py first"
+        )
+        if as_json:
+            console.print_json(
+                json.dumps({"target": str(target_dir), "case_count": 0, "hint": msg})
+            )
+        else:
+            console.print(f"[yellow]{msg}[/yellow]")
+        raise typer.Exit(code=0)
+
+    adapter = _resolve_adapter(
+        model,
+        persona=False,
+        character=character,
+        model_repo=model_repo,
+        lora_path=lora_path,
+        draft_repo=draft_repo,
+    )
+    memory_store = _open_episodic_store(character, ingest=False)
+    if memory_store is None:
+        raise typer.BadParameter(
+            "atc-audio eval needs the episodic store — install with "
+            "`uv sync --extra retrieval` and run `harness memory ingest`."
+        )
+
+    try:
+
+        def _lint_one(utterance: str, scenario_hint: str | None) -> PhraseologyVerdict:
+            return lint_utterance(
+                utterance,
+                adapter=adapter,
+                episodic_store=memory_store,
+                grammar=character.citation_grammar,
+                scenario_hint=scenario_hint,
+                user_id=None,
+                k=k,
+                temperature=temperature,
+                source_filter=_ATC_LINT_SOURCE_FILTER,
+            )
+
+        result = _audio_run(fixture, _lint_one, skip_noisy=skip_noisy)
+    finally:
+        memory_store.close()
+
+    cases_json: list[dict[str, object]] = []
+    for c in result.cases:
+        cases_json.append(
+            {
+                "case_id": c.row.case_id,
+                "clip_id": c.row.clip_id,
+                "utt_index": c.row.utt_index,
+                "event_tag": c.row.event_tag,
+                "speaker_role": c.row.speaker_role,
+                "expected_verdict": c.row.expected_verdict,
+                "expected_section": c.row.expected_section,
+                "transcript_text": c.row.transcript_text,
+                "transcript_seed": c.row.transcript_seed,
+                "wer": c.wer,
+                "clean_verdict": c.clean_actual.verdict,
+                "clean_section": c.clean_actual.expected_section,
+                "noisy_verdict": c.noisy_actual.verdict,
+                "noisy_section": c.noisy_actual.expected_section,
+                "clean_verdict_pass": c.clean_verdict_pass,
+                "clean_citation_pass": c.clean_citation_pass,
+                "clean_passed": c.clean_passed,
+                "noisy_verdict_pass": c.noisy_verdict_pass,
+                "noisy_citation_pass": c.noisy_citation_pass,
+                "noisy_passed": c.noisy_passed,
+                "verdict_shift": c.verdict_shift,
+            }
+        )
+
+    payload: dict[str, object] = {
+        "character": character.name,
+        "adapter": adapter.id,
+        "target": str(target_dir),
+        "case_count": result.case_count,
+        "mean_wer": result.mean_wer,
+        "clean_verdict_accuracy": result.clean_verdict_accuracy,
+        "noisy_verdict_accuracy": result.noisy_verdict_accuracy,
+        "clean_citation_accuracy": result.clean_citation_accuracy,
+        "noisy_citation_accuracy": result.noisy_citation_accuracy,
+        "clean_combined_accuracy": result.clean_combined_accuracy,
+        "noisy_combined_accuracy": result.noisy_combined_accuracy,
+        "verdict_shift_rate": result.verdict_shift_rate,
+        "by_event_tag": result.by_event_tag(),
+        "cases": cases_json,
+    }
+
+    if save_baseline:
+        out_path = baseline_path or _audio_baseline_path(settings.character_path)
+        out_path.write_text(json.dumps(payload, indent=2) + "\n")
+        console.print(f"[green]saved baseline[/green] → {out_path}")
+
+    if as_json:
+        console.print_json(json.dumps(payload))
+    else:
+        table = Table(
+            title=f"atc-audio eval — {character.name} · {adapter.id} · {result.case_count} utts",
+            show_lines=False,
+        )
+        table.add_column("✓", style="bold", width=2)
+        table.add_column("case", width=22)
+        table.add_column("event", width=12)
+        table.add_column("verdict (clean→noisy)")
+        table.add_column("§ exp", width=7)
+        table.add_column("§ got (clean)", width=10)
+        table.add_column("WER", width=5, justify="right")
+        for c in result.cases:
+            mark = "[green]✓[/green]" if c.clean_passed and c.noisy_passed else "[red]✗[/red]"
+            verdict_cell = (
+                f"{c.clean_actual.verdict} → {c.noisy_actual.verdict}"
+                if not skip_noisy
+                else c.clean_actual.verdict
+            )
+            if not c.clean_verdict_pass:
+                verdict_cell = f"[red]{verdict_cell}[/red] (≠{c.row.expected_verdict})"
+            elif c.verdict_shift:
+                verdict_cell = f"[yellow]{verdict_cell}[/yellow] (shifted)"
+            sec_exp = c.row.expected_section or "—"
+            sec_got = c.clean_actual.expected_section or "—"
+            if not c.clean_citation_pass:
+                sec_got = f"[red]{sec_got}[/red]"
+            table.add_row(
+                mark,
+                c.row.case_id,
+                c.row.event_tag or "(none)",
+                verdict_cell,
+                sec_exp,
+                sec_got,
+                f"{c.wer:.2f}",
+            )
+        console.print(table)
+        console.print(
+            f"[bold]clean[/bold]: verdict {result.clean_verdict_accuracy * 100:.1f}% · "
+            f"citation {result.clean_citation_accuracy * 100:.1f}% · "
+            f"combined {result.clean_combined_accuracy * 100:.1f}%"
+        )
+        if not skip_noisy:
+            console.print(
+                f"[bold]noisy[/bold]: verdict {result.noisy_verdict_accuracy * 100:.1f}% · "
+                f"citation {result.noisy_citation_accuracy * 100:.1f}% · "
+                f"combined {result.noisy_combined_accuracy * 100:.1f}% · "
+                f"WER {result.mean_wer:.2f} · "
+                f"shift-rate {result.verdict_shift_rate * 100:.1f}%"
+            )
+
+    if compare_baseline:
+        in_path = baseline_path or _audio_baseline_path(settings.character_path)
+        if not in_path.exists():
+            console.print(
+                f"[yellow]no baseline at {in_path} — run with --save-baseline first[/yellow]"
+            )
+            raise typer.Exit(code=2)
+        comparison = _audio_compare(_audio_load_baseline(in_path), result)
+        if not as_json:
+            console.print(f"\n[bold]baseline diff[/bold] (vs {in_path})")
+            for d in comparison.aggregate_deltas:
+                arrow = "→" if abs(d.new - d.old) > 1e-9 else "="
+                color = "red" if d.is_regression else "green"
+                console.print(f"  [{color}]{d.metric}[/{color}]: {d.old:.4f} {arrow} {d.new:.4f}")
+            if comparison.case_regressions:
+                bits = [d.case_id for d in comparison.case_regressions]
+                console.print(f"[red]case regressions:[/red] {', '.join(bits)}")
+            if comparison.case_improvements:
+                console.print(
+                    f"[green]case improvements:[/green] "
+                    f"{', '.join(d.case_id for d in comparison.case_improvements)}"
+                )
+            if comparison.new_cases:
+                console.print(
+                    f"[dim]new cases (not in baseline): {', '.join(comparison.new_cases)}[/dim]"
+                )
+            if comparison.dropped_cases:
+                console.print(
+                    f"[dim]dropped cases (in baseline, not in run): "
+                    f"{', '.join(comparison.dropped_cases)}[/dim]"
+                )
         if comparison.has_regression(regression_budget=regression_budget):
             if not as_json:
                 console.print(

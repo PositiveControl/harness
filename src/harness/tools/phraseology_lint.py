@@ -35,8 +35,9 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from harness.persona.cite_grounding import _extract_anchor
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
     from harness.citation import CitationGrammar
     from harness.model.adapter import ChatMessage, ModelAdapter
     from harness.store.episodic import EpisodicRecord, EpisodicStore
+
+VerbAnchorMap = Mapping[str, tuple[str, ...]]
 
 
 Verdict = Literal["ok", "wrong", "incomplete", "out_of_scope"]
@@ -69,6 +72,203 @@ _DEFAULT_K = 8
 # tail; the cite-grounding gate still uses the full top-K anchor set
 # so the model can't pick a section we never showed it.
 _PROMPT_CANDIDATES = 3
+
+
+def default_verb_anchors_path(character_path: Path) -> Path:
+    """Conventional location under `character/<name>/corpus/`. Mirrors
+    `default_synonyms_path` in retrieval.query_expander — keeps every
+    consumer (CLI, tool, eval) reading from the same place."""
+    return character_path / "corpus" / "verb_anchors.yaml"
+
+
+def load_verb_anchors(path: Path) -> VerbAnchorMap:
+    """Load a section → distinctive-verb-anchor map (harness-ptya).
+
+    File format::
+
+        "10-2-6":          # JO § anchor — section number string
+          - SQUAWK         # one verb / code phrase per list entry
+          - "7500"
+        "5-7-2":
+          - REDUCE SPEED
+          - INCREASE SPEED
+
+    Returns an empty mapping when the file is missing or malformed —
+    the lint pipeline still works, just without verb-anchor re-rank.
+    Anchors are uppercased on load so match-time comparison is case
+    insensitive without per-call string ops.
+    """
+    if not path.is_file():
+        return {}
+    try:
+        import yaml
+
+        with path.open(encoding="utf-8") as fp:
+            data = yaml.safe_load(fp) or {}
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, tuple[str, ...]] = {}
+    for raw_section, raw_verbs in data.items():
+        if not isinstance(raw_section, str) or not isinstance(raw_verbs, list):
+            continue
+        section = raw_section.strip().lstrip("§").strip()
+        if not section:
+            continue
+        verbs = tuple(
+            str(v).strip().upper() for v in raw_verbs if isinstance(v, str) and str(v).strip()
+        )
+        if verbs:
+            out[section] = verbs
+    return out
+
+
+def _matched_anchor_sections(utterance: str, verb_anchors: VerbAnchorMap) -> set[str]:
+    """Sections whose verb-anchor map fires on this utterance. Word-
+    boundary match against the uppercased utterance so 'CONTACT' matches
+    'CONTACT DEPARTURE' but not 'TRANSCATHETER'. Multi-word anchors
+    ('LINE UP AND WAIT') also work — we re.escape the literal."""
+    if not verb_anchors:
+        return set()
+    upper = utterance.upper()
+    matched: set[str] = set()
+    for section, verbs in verb_anchors.items():
+        for verb in verbs:
+            if re.search(rf"\b{re.escape(verb)}\b", upper):
+                matched.add(section)
+                break
+    return matched
+
+
+def _verb_anchor_rerank(
+    hits: Sequence[tuple[EpisodicRecord, float]],
+    matched_sections: set[str],
+    grammar: CitationGrammar | None,
+) -> list[tuple[EpisodicRecord, float]]:
+    """Stable partition: hits whose §-anchor is in `matched_sections`
+    move to the front, retaining their relative retrieval order. Hits
+    in unmatched sections keep their relative order in the back. When
+    `matched_sections` is empty (no verb fired), pass through unchanged.
+
+    The cite-grounding gate already filters ungrounded picks, so
+    promoting matched-§ hits can only help — but if the matched § isn't
+    in the slate at all, rerank is a no-op. Pair with
+    `_inject_missing_anchored_sections` to fix that case.
+
+    `grammar` (harness-jaqe) drives anchor extraction. When None,
+    no rows have extractable anchors so the partition is a no-op."""
+    if not matched_sections:
+        return list(hits)
+    front: list[tuple[EpisodicRecord, float]] = []
+    back: list[tuple[EpisodicRecord, float]] = []
+    for rec, score in hits:
+        anchor = _extract_anchor(rec.principle or "", grammar)
+        if anchor and anchor in matched_sections:
+            front.append((rec, score))
+        else:
+            back.append((rec, score))
+    return front + back
+
+
+# Sentinel score for virtually-injected hits. Below the BGE-small dense
+# cosine floor so it doesn't disrupt other rank ordering, but non-zero
+# so log lines can distinguish "absent" from "present-but-low".
+_INJECTED_HIT_SCORE = 0.001
+
+
+def _principle_source(principle: str) -> str:
+    """First whitespace-bounded token of a principle string. The atc
+    ingest convention is `<SOURCE> §<section> (<title>)` for JO and
+    `<SOURCE> §<section>` for AIM/CFR/PCG/PHAK, so the leading token
+    is the publication identifier. Returns '' on empty input."""
+    return principle.split(maxsplit=1)[0] if principle else ""
+
+
+def _filter_by_source(
+    hits: Sequence[tuple[EpisodicRecord, float]],
+    source_filter: str | None,
+) -> list[tuple[EpisodicRecord, float]]:
+    """Drop hits whose principle prefix doesn't match `source_filter`.
+    No-op when `source_filter` is None. Used to keep the JO-only lint
+    contract intact when the active character has a multi-source corpus
+    (e.g. airton_c carries JO + AIM + 14 CFR + PCG + PHAK; airton_c1 is
+    JO-only and the filter is a no-op there)."""
+    if source_filter is None:
+        return list(hits)
+    return [
+        (rec, score)
+        for rec, score in hits
+        if _principle_source(rec.principle or "") == source_filter
+    ]
+
+
+def _inject_missing_anchored_sections(
+    hits: Sequence[tuple[EpisodicRecord, float]],
+    matched_sections: set[str],
+    episodic_store: EpisodicStore,
+    user_id: str | None,
+    grammar: CitationGrammar | None,
+    source_filter: str | None = None,
+) -> list[tuple[EpisodicRecord, float]]:
+    """Virtual-hit injection. When a verb anchor fires for a section
+    that hybrid retrieval didn't surface in the slate, do a text-mode
+    FTS5 probe for that section number and prepend one matching row.
+    The follow-up rerank then promotes it to rank 0.
+
+    Why this is safe:
+
+    - The cite-grounding gate downstream still requires the model's
+      pick to land on a section actually present in the slate; injection
+      makes the right § *available* but doesn't fabricate a verdict.
+    - Text-mode search for a literal section anchor (e.g. ``10-2-6``)
+      lands deterministic FTS5 hits because the anchor lives in
+      `principle` which is in the FTS5 sidecar.
+    - When the section has no rows in the corpus at all, injection is
+      silently a no-op (the FTS5 probe returns empty).
+
+    `user_id` flows through so injected rows respect the same
+    user-scoping as the primary retrieval call.
+    """
+    if not matched_sections:
+        return list(hits)
+    sections_in_slate: set[str] = set()
+    for rec, _ in hits:
+        anchor = _extract_anchor(rec.principle or "", grammar)
+        if anchor:
+            sections_in_slate.add(anchor)
+    missing = matched_sections - sections_in_slate
+    if not missing:
+        return list(hits)
+
+    extended: list[tuple[EpisodicRecord, float]] = list(hits)
+    seen_external: set[str | None] = {rec.external_id for rec, _ in hits}
+    # Sort for deterministic injection order — lets tests pin a stable
+    # output and keeps multi-anchor utterances reproducible. k=5 because
+    # text-mode FTS5 on a bare section number can return cross-section
+    # hits ahead of the target — e.g. '10-2-6' as a query also matches
+    # §5-2-5 ("HIJACK/UNLAWFUL INTERFERENCE", string match on the term)
+    # and §13-2-6 (lexicographically similar number). The anchor-equality
+    # filter below picks the right row from a slightly wider FTS slate.
+    for section in sorted(missing):
+        # Widen the FTS slate when source-filtering: the §-anchor lives
+        # in the principle of every source's row, so a bare section number
+        # query matches across publications. We need enough headroom to
+        # find the JO-shaped row past any AIM/CFR rows that share the
+        # numeric section id (collision keys: 10-1-1, 2-1-6, 5-4-5).
+        fetch_k = 5 if source_filter is None else 12
+        section_hits = episodic_store.search(section, k=fetch_k, mode="text", user_id=user_id)
+        section_hits = _filter_by_source(section_hits, source_filter)
+        for rec, _score in section_hits:
+            anchor = _extract_anchor(rec.principle or "", grammar)
+            if anchor != section:
+                continue
+            if rec.external_id in seen_external:
+                continue
+            extended.append((rec, _INJECTED_HIT_SCORE))
+            seen_external.add(rec.external_id)
+            break
+    return extended
 
 
 @dataclass(frozen=True)
@@ -145,6 +345,8 @@ def lint_against_corpus(
     user_id: str | None = None,
     k: int = _DEFAULT_K,
     temperature: float = 0.0,
+    verb_anchors: VerbAnchorMap | None = None,
+    source_filter: str | None = None,
 ) -> PhraseologyVerdict:
     """Generic corpus-conformance lint pipeline (harness-d2k5).
 
@@ -165,13 +367,48 @@ def lint_against_corpus(
     rewriting would compress / paraphrase the canonical template
     and break the eval comparison.
 
-    `temperature=0.0` is the eval default — verdict stability
-    matters more than sampling variance. Raise it only when probing
-    for consensus across rolls.
+    `temperature=0.0` is the eval default — verdict stability matters
+    more than sampling variance. Raise it only when probing for
+    consensus across rolls.
+
+    `source_filter` keeps the JO-only lint contract intact when the
+    active character has a multi-source corpus. Set to "JO_7110.65"
+    for any character that ships the `phraseology` profile in its
+    `tool_descriptions.yaml` (the data-driven equivalent of the old
+    `_ATC_FAMILY_NAMES` membership check, harness-a2sa). None disables
+    the filter (correct for JO-only corpora like airton_c1 where the
+    filter would be a no-op anyway). When set, hybrid retrieval is
+    requested at 4x the target K to give the post-filter enough
+    headroom on corpora where JO is a minority share (airton_c is ~23%
+    JO; controller-shaped queries skew higher but a wider initial slate
+    keeps the post-filter from starving the prompt).
     """
 
     query = utterance if not scenario_hint else f"{utterance}\n[scenario: {scenario_hint}]"
-    hits = episodic_store.search(query, k=k, mode="hybrid", user_id=user_id)
+    fetch_k = k if source_filter is None else k * 4
+    raw_hits = episodic_store.search(query, k=fetch_k, mode="hybrid", user_id=user_id)
+    raw_hits = _filter_by_source(raw_hits, source_filter)[:k]
+    # Verb-anchor pipeline (harness-ptya). Two stages:
+    #   1. Virtual-hit injection: when a verb fires for a § the embedding
+    #      didn't surface, text-mode-fetch one row so it enters the slate.
+    #      Cluster #3 (SQUAWK / hijack) needs this — §10-2-6 is dominated
+    #      by §2-4-17 (Numbers Usage) on the dense embedding and never
+    #      enters the K=8 slate without help.
+    #   2. Rerank: matched-§ hits move to the front (stable partition).
+    # When no verb fires, both stages are no-ops.
+    matched_sections = _matched_anchor_sections(utterance, verb_anchors) if verb_anchors else set()
+    if matched_sections:
+        injected = _inject_missing_anchored_sections(
+            raw_hits,
+            matched_sections,
+            episodic_store,
+            user_id,
+            grammar,
+            source_filter=source_filter,
+        )
+        hits = _verb_anchor_rerank(injected, matched_sections, grammar)
+    else:
+        hits = list(raw_hits)
     if not hits:
         return PhraseologyVerdict(
             verdict="out_of_scope",
@@ -284,6 +521,8 @@ def lint_utterance(
     user_id: str | None = None,
     k: int = _DEFAULT_K,
     temperature: float = 0.0,
+    verb_anchors: VerbAnchorMap | None = None,
+    source_filter: str | None = None,
 ) -> PhraseologyVerdict:
     """Lint one ATC utterance against JO 7110.65 — thin wrapper around
     `lint_against_corpus()` carrying the FAA-shaped config.
@@ -291,6 +530,9 @@ def lint_utterance(
     Kept as a stable name so the eval / CLI / chat-tool surfaces don't
     re-import. New domain lints should call `lint_against_corpus()`
     directly with their own `CorpusLintConfig`.
+
+    `verb_anchors` (harness-ptya) and `source_filter` (multi-source
+    corpus support) pass straight through to the generic pipeline.
     """
     return lint_against_corpus(
         utterance,
@@ -302,6 +544,8 @@ def lint_utterance(
         user_id=user_id,
         k=k,
         temperature=temperature,
+        verb_anchors=verb_anchors,
+        source_filter=source_filter,
     )
 
 
@@ -414,6 +658,8 @@ class PhraseologyLintTool:
     grammar: CitationGrammar | None = None
     user_id: str | None = None
     k: int = _DEFAULT_K
+    verb_anchors: VerbAnchorMap | None = None
+    source_filter: str | None = None
 
     @property
     def spec(self) -> ToolSpec:
@@ -461,6 +707,8 @@ class PhraseologyLintTool:
             scenario_hint=scenario_hint,
             user_id=self.user_id,
             k=self.k,
+            verb_anchors=self.verb_anchors,
+            source_filter=self.source_filter,
         )
         payload = {
             "verdict": verdict.verdict,

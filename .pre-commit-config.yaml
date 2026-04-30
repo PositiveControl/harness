@@ -64,6 +64,23 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
+      # ATC audio gate (harness-gy5z): blocks pushes that touch the
+      # audio-mode eval scorer, the labelled utterance corpus, or the
+      # ingest/transcribe/label scripts from regressing clean / noisy
+      # verdict accuracy or driving up WER. Skips cleanly when (a) no
+      # baseline file is present OR (b) no labelled utterances exist
+      # yet — both are valid initial states, not regressions.
+      # Bypass: re-snapshot with `harness eval atc-audio
+      # --save-baseline` once the new state is intentional, then
+      # re-push.
+      - id: atc-audio-gate
+        name: atc audio gate (--compare-baseline)
+        entry: scripts/atc_audio_gate.sh
+        language: system
+        files: ^(src/harness/evals/atc_audio\.py|character/airton_c1/atc_audio/utt/|character/airton_c1/atc_audio_baseline\.json|scripts/atc_audio_(ingest|transcribe|label)\.py)
+        pass_filenames: false
+        stages: [pre-push]
+
       # Voice ablation manifest gate (harness-wrzz, plan #8). Runs on
       # any push that touches voice/canonical.yaml or voice/ablation.
       # yaml — fast structural check that ablation entries still
