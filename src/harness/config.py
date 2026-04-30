@@ -141,7 +141,15 @@ class Settings(BaseSettings):
         live in their own graph even though assignee filtering
         could keep them readable. The siloed dir needs a one-time
         `bd init` during character scaffolding; after that every
-        bd op routes through the per-character adapter."""
+        bd op routes through the per-character adapter.
+
+        Note (harness-a2sa): the airton / airton_b name-based
+        branches below are intentionally NOT lifted into core.yaml.
+        They exist for back-compat with on-disk data laid down
+        before the auto-silo path landed. Migrating to the
+        per-character path would move the existing project bd dir
+        on disk, which is destructive — left as a follow-up bead
+        with a migration script."""
         if character_name == "airton_b" and self.ab_bd_dir is not None:
             return self.ab_bd_dir
         if character_name in ("airton", "airton_b"):
@@ -158,7 +166,12 @@ class Settings(BaseSettings):
         `character/<name>/data/` — keeps per-persona corpora (e.g.
         atc's FAA docs) from polluting retrieval across personas.
         Parent directories are created eagerly for isolated
-        characters; airton's default is managed by `data_path`."""
+        characters; airton's default is managed by `data_path`.
+
+        Same back-compat caveat as `bd_dir_for` (harness-a2sa):
+        airton + airton_b stay name-keyed because their on-disk
+        memory DBs predate the auto-silo path. Lifting them
+        requires a migration script."""
         if character_name == "airton_b":
             memory_dir = self.ab_memory_dir_resolved
             memory_dir.mkdir(parents=True, exist_ok=True)

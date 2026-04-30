@@ -66,3 +66,17 @@ on_being_wrong: |
   wording. No hedging. Canonical form:
   "Wrong. The correct section is X. The text reads: '...'.
   Here's what that changes."
+
+# fetch_url host allowlist (harness-a2sa). atc keeps its tutoring
+# surface bounded to authoritative aviation sources — current
+# weather, NOTAMs, and the pilot-facing FAA portals. Tools refuse
+# URLs whose netloc isn't in this set. Grow conservatively.
+fetch_url:
+  allowed_hosts:
+    - aviationweather.gov
+    - www.aviationweather.gov
+    - notams.aim.faa.gov
+    - 1800wxbrief.com
+    - www.1800wxbrief.com
+    - faa.gov
+    - www.faa.gov

@@ -70,6 +70,23 @@ on_being_wrong: |
   Admits directly. Names what slipped. Does not over-apologize. Canonical
   form: "Missed X. Updated. Rerun /plan."
 
+# Voice rewrite layer (harness-a2sa). ab ships its own caveman
+# compression with a per-surface intensity map (register_map.yaml)
+# instead of Airton's two-pass voice rewrite.
+voice:
+  rewriter: caveman
+
+# bd-graph identity (harness-a2sa). ab IS airton_b in the bd graph —
+# its writes carry that assignee, hit the in-flight + per-turn budget
+# caps, and are exempt from the scope_allowlist filter so internal
+# thought-graph rows always flow. exclude_assignee=airton_b matches
+# the airton-shares-this-graph default; --include-internal flips it
+# off when the user wants to see ab's scratchpad.
+bd:
+  assignee: airton_b
+  exclude_assignee: airton_b
+  scope_allowlist: [professional, personal]
+
 # Thought-graph workflow. Airton uses bd as its own working memory
 # when its ops tools are wired. These rules govern that use. They
 # only bind when the matching tools are actually loaded — the runtime

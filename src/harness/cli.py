@@ -109,32 +109,6 @@ _EXIT_COMMANDS = frozenset({"/exit", "/quit", "exit", "quit", ":q", ":quit"})
 _EDIT_COMMANDS = frozenset({"/edit", "/capture"})
 _RETRO_COMMANDS = frozenset({"/retro"})
 
-# atc-family fetch_url host allowlist (harness-xbk.3). Applied when the
-# active character is any atc-archetype persona (airton_c and its
-# narrower variants airton_c1, airton_c2, …). Keeps the tutoring
-# surface to authoritative aviation sources (current weather, NOTAMs,
-# the pilot-facing FAA portals). Non-atc characters pass None and
-# fetch_url stays unrestricted. Hostnames are lowercased, netloc-only
-# (no scheme, no path). Grow this list as atc's research needs widen;
-# keep it conservative by default.
-_ATC_FETCH_URL_ALLOWED_HOSTS: frozenset[str] = frozenset(
-    {
-        "aviationweather.gov",
-        "www.aviationweather.gov",
-        "notams.aim.faa.gov",
-        "1800wxbrief.com",
-        "www.1800wxbrief.com",
-        "faa.gov",
-        "www.faa.gov",
-    }
-)
-
-# Characters that inherit the atc archetype (generalist + narrower
-# document-scoped variants) all get the aviation allowlist. Extend
-# here when you spin up a new airton_c* persona; scripts/character_
-# from_template.py handles the on-disk scaffold.
-_ATC_FAMILY_NAMES: frozenset[str] = frozenset({"airton_c", "airton_c1"})
-
 # Sentinel used to encode structured tool_calls onto an assistant turn's
 # content when persisting to the transcript. Two-line format: human-readable
 # content, then the sentinel, then a single JSON line with the tool_calls.
@@ -402,17 +376,17 @@ def _maybe_bd_adapter(
     no-op for characters with no airton_b-assigned beads; keeping it
     uniform avoids branching on character name here."""
     bd_dir = settings.bd_dir_for(character.name)
-    exclude = None if include_internal else "airton_b"
-    # airton_b shares the project bd dir (Path 2, harness-55y) so the
-    # adapter sees every bead in the graph. Restrict ab's read surface
-    # to items scoped to its domain (professional/personal) — dev /
-    # maintenance beads never carry those labels and so fall out
-    # (harness-j7y). Other characters stay unconstrained.
-    scope_allowlist = ("professional", "personal") if character.name == "airton_b" else None
+    # bd-graph identity comes from core.yaml (harness-a2sa). The
+    # exclude assignee is suppressed when --include-internal is set;
+    # the scope_allowlist + ab_assignee come straight from the loaded
+    # character. Empty scope_allowlist becomes None so the adapter's
+    # "no filter" path runs.
+    exclude = None if include_internal else character.bd_exclude_assignee
+    scope_allowlist = character.bd_scope_allowlist or None
     adapter = BeadsAdapter(
         bd_dir,
         default_exclude_assignee=exclude,
-        ab_assignee="airton_b",
+        ab_assignee=character.bd_assignee,
         default_scope_allowlist=scope_allowlist,
         turn_cap=settings.ab_turn_cap,
         inflight_cap=settings.ab_inflight_cap,
@@ -1373,8 +1347,8 @@ def _build_tool_registry_for_tui(
         "search_web": lambda: SearchWebTool(),
         "fetch_url": lambda: FetchUrlTool(
             allowed_hosts=(
-                _ATC_FETCH_URL_ALLOWED_HOSTS
-                if character is not None and character.name in _ATC_FAMILY_NAMES
+                frozenset(character.fetch_url_allowed_hosts)
+                if character is not None and character.fetch_url_allowed_hosts
                 else None
             )
         ),
@@ -1753,13 +1727,17 @@ def _resolve_adapter(
     if persona:
         if character is None:
             raise typer.BadParameter("persona=True requires a character")
-        if character.name == "airton_b":
-            # ab ships its own voice layer — caveman compression with a
-            # per-surface intensity map — instead of Airton's style
-            # rewrite. The register_map lives next to the character so
-            # it ships and evolves with the persona data.
+        # voice_rewriter is declared in core.yaml (harness-a2sa).
+        # "caveman" wraps in CavemanRewriter (ab's per-surface intensity
+        # map); "persona" wraps in PersonaAdapter (Airton's two-pass
+        # voice rewrite); "none" leaves the adapter unwrapped — useful
+        # when --persona was set but the character doesn't actually
+        # ship a rewriter.
+        if character.voice_rewriter == "caveman":
+            # CavemanRewriter ships with the character data so the
+            # register map evolves alongside the persona.
             register_map = load_register_map(
-                settings.root / "character" / "airton_b" / "register_map.yaml"
+                settings.root / "character" / character.name / "register_map.yaml"
             )
             adapter = CavemanRewriter(
                 adapter,
@@ -1767,11 +1745,12 @@ def _resolve_adapter(
                 register_map=register_map,
                 rewrite_on_tools=settings.ab_rewrite_on_tools,
             )
-        else:
+        elif character.voice_rewriter == "persona":
             persona_kwargs: dict[str, object] = {"chain_rewrites": chain_rewrites}
             if rewriter_temperature is not None:
                 persona_kwargs["rewriter_temperature"] = rewriter_temperature
             adapter = PersonaAdapter(adapter, character, **persona_kwargs)  # type: ignore[arg-type]
+        # voice_rewriter == "none": leave adapter unwrapped.
 
     # Honor an optional eager `.load()` method without making it part of
     # the ModelAdapter Protocol — only some adapters need it.
@@ -2180,13 +2159,16 @@ def phraseology_lint_cmd(
     prose.
     """
     character = load_character(settings.character_path)
-    if character.name not in _ATC_FAMILY_NAMES:
-        # Lint pipeline is JO 7110.65-specific. Other characters can be
-        # added once their corpus is loaded — but the prompt and the
-        # cite-grounding rules are atc-shaped, so we gate explicitly
-        # rather than silently retrieving against unrelated seeds.
+    # Gate on character ownership of the phraseology profile rather
+    # than hard-coding the family list (harness-a2sa). If a character
+    # declares phraseology overrides in tool_descriptions.yaml, it
+    # owns the lint pipeline; otherwise the prompt + cite-grounding
+    # rules don't fit and we refuse rather than silently retrieve
+    # against unrelated seeds.
+    if "phraseology" not in character.tool_descriptions:
         raise typer.BadParameter(
-            f"phraseology lint expects an atc-family character "
+            f"phraseology lint requires a character that declares the "
+            f"`phraseology` profile in tool_descriptions.yaml "
             f"(got {character.name!r}). Set HARNESS_CHARACTER_NAME=airton_c1."
         )
 
@@ -3450,9 +3432,10 @@ def eval_phraseology(
     from harness.tools.phraseology_lint import lint_utterance
 
     character = load_character(settings.character_path)
-    if character.name not in _ATC_FAMILY_NAMES:
+    if "phraseology" not in character.tool_descriptions:
         raise typer.BadParameter(
-            f"phraseology eval expects an atc-family character "
+            f"phraseology eval requires a character that declares the "
+            f"`phraseology` profile in tool_descriptions.yaml "
             f"(got {character.name!r}). Set HARNESS_CHARACTER_NAME=airton_c1."
         )
     path = fixture_path or _phraseology_fixture_path(settings.character_path)

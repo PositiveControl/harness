@@ -76,3 +76,16 @@ on_being_wrong: |
   wording. No hedging. Canonical form:
   "Wrong. The correct section is X. The text reads: '...'.
   Here's what that changes."
+
+# fetch_url host allowlist (harness-a2sa). The atc archetype targets
+# the FAA tutoring surface; new variants of this template inherit
+# the curated aviation-source set. Trim or extend per-variant.
+fetch_url:
+  allowed_hosts:
+    - aviationweather.gov
+    - www.aviationweather.gov
+    - notams.aim.faa.gov
+    - 1800wxbrief.com
+    - www.1800wxbrief.com
+    - faa.gov
+    - www.faa.gov

@@ -61,3 +61,12 @@ on_being_wrong: |
   Admits directly. Names what it missed. Updates the working model.
   Does not over-apologize. Canonical form:
   "I was wrong because X. Updated. Here's what changes downstream."
+
+# bd-graph identity (harness-a2sa). airton shares the project bd dir
+# with airton_b — exclude_assignee hides ab's thought-graph rows from
+# default views (override with --include-internal). assignee is also
+# "airton_b" because budget caps target ab-owned writes; airton's own
+# project work doesn't carry that assignee so the caps never fire.
+bd:
+  assignee: airton_b
+  exclude_assignee: airton_b

@@ -108,6 +108,43 @@ class Character:
     # Lets a corpus-grounded persona reframe its own search tool
     # without editing src/harness/tools/profiles.py.
     tool_descriptions: dict[str, dict[str, str]] = field(default_factory=dict)
+    # ---- harness-a2sa: data-driven replacements for name-based branches ----
+    # Voice rewrite layer. "persona" wraps the model adapter in
+    # PersonaAdapter (Airton's two-pass voice rewrite); "caveman" wraps
+    # in CavemanRewriter (ab's per-surface intensity map); "none" leaves
+    # the adapter unwrapped (echo / dev). Default "persona" matches
+    # the long-standing default for every character but airton_b.
+    voice_rewriter: str = "persona"
+    # bd-graph identity. When set, the BeadsAdapter constructed for
+    # this character treats `assignee=<value>` as its own writes — the
+    # in-flight + per-turn budget caps fire on creates with that
+    # assignee, and `default_scope_allowlist` exempts this assignee
+    # from scope filtering so internal thought-graph rows aren't
+    # collateral-filtered. None = no budget enforcement (the default
+    # for personas without an ops plane).
+    bd_assignee: str | None = None
+    # Default-exclude assignee for bd reads. When the active CLI run
+    # has --include-internal off (the default), beads with this
+    # assignee are filtered from list/plan/drift/search results so
+    # the user isn't buried under another character's scratchpad.
+    # Today airton + airton_b both set this to "airton_b" because they
+    # share the project bd dir; airton_c characters that own a
+    # private bd dir leave it None.
+    bd_exclude_assignee: str | None = None
+    # bd read-side scope allowlist. When non-empty, default reads
+    # narrow to beads carrying any `scope:<value>` label in this
+    # tuple (plus any beads owned by `bd_assignee` — those are
+    # exempt from scope filtering so internal rows always flow).
+    # ab uses ("professional", "personal") so dev/maintenance beads
+    # are filtered out of its plan/list views. Empty = no filter.
+    bd_scope_allowlist: tuple[str, ...] = ()
+    # fetch_url host allowlist for the FetchUrlTool. When non-empty,
+    # the tool refuses URLs whose netloc isn't in this set. Empty =
+    # unrestricted (the default; matches FetchUrlTool's pre-existing
+    # behaviour). atc-family characters ship a curated aviation-source
+    # list so the tutoring surface stays bounded; non-corpus
+    # characters leave it empty.
+    fetch_url_allowed_hosts: tuple[str, ...] = ()
 
     def system_prompt(
         self,
@@ -312,4 +349,77 @@ def load_character(path: Path) -> Character:
         require_search_memory=bool(core.get("require_search_memory", False)),
         lead_with_citation=bool(core.get("lead_with_citation", False)),
         tool_descriptions=tool_descriptions,
+        voice_rewriter=_load_voice_rewriter(core, path),
+        bd_assignee=_opt_str(core.get("bd"), "assignee", path=path),
+        bd_exclude_assignee=_opt_str(core.get("bd"), "exclude_assignee", path=path),
+        bd_scope_allowlist=_load_str_tuple(
+            (core.get("bd") or {}).get("scope_allowlist"),
+            path,
+            "bd.scope_allowlist",
+        ),
+        fetch_url_allowed_hosts=_load_str_tuple(
+            (core.get("fetch_url") or {}).get("allowed_hosts"),
+            path,
+            "fetch_url.allowed_hosts",
+        ),
     )
+
+
+# ---- harness-a2sa: helpers for the new core.yaml fields ----
+
+_VOICE_REWRITERS = frozenset({"persona", "caveman", "none"})
+
+
+def _load_voice_rewriter(core: dict[str, object], path: Path) -> str:
+    """Read core['voice']['rewriter'] (or top-level 'voice_rewriter')
+    and validate against the allowed set. Default 'persona' when
+    absent so existing core.yaml files keep their current behavior."""
+    voice = core.get("voice")
+    raw: object | None = None
+    if isinstance(voice, dict):
+        raw = voice.get("rewriter")
+    if raw is None:
+        raw = core.get("voice_rewriter")
+    if raw is None:
+        return "persona"
+    if not isinstance(raw, str) or raw not in _VOICE_REWRITERS:
+        raise ValueError(
+            f"{path}/core.yaml: voice.rewriter must be one of "
+            f"{sorted(_VOICE_REWRITERS)}; got {raw!r}"
+        )
+    return raw
+
+
+def _opt_str(parent: object, key: str, *, path: Path, parent_name: str = "bd") -> str | None:
+    """Pull a string value from an optional nested mapping. Returns
+    None when parent is missing/None/non-mapping or the key is absent
+    or null. Used for the optional bd.* fields."""
+    if not isinstance(parent, dict):
+        return None
+    value = parent.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(
+            f"{path}/core.yaml: {parent_name}.{key} must be a string or null; "
+            f"got {type(value).__name__}"
+        )
+    return value
+
+
+def _load_str_tuple(raw: object, path: Path, field_name: str) -> tuple[str, ...]:
+    """Validate an optional list-of-strings core.yaml field. Missing /
+    null → empty tuple (no filter). Wrong type or non-string entries
+    raise with the field name so a fixture author can find it."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError(f"{path}/core.yaml: {field_name} must be a list; got {type(raw).__name__}")
+    out: list[str] = []
+    for idx, item in enumerate(raw):
+        if not isinstance(item, str):
+            raise ValueError(
+                f"{path}/core.yaml: {field_name}[{idx}] must be a string; got {type(item).__name__}"
+            )
+        out.append(item)
+    return tuple(out)

@@ -92,3 +92,16 @@ on_being_wrong: |
   actual wording. No hedging. Canonical form:
   "Wrong. The correct section is JO 7110.65 §X-Y-Z. The text reads:
   '...'. Here's what that changes."
+
+# fetch_url host allowlist (harness-a2sa). Inherits airton_c's
+# aviation-only surface — same JO 7110.65 corpus, same tutoring
+# remit, no widening for the narrower variant.
+fetch_url:
+  allowed_hosts:
+    - aviationweather.gov
+    - www.aviationweather.gov
+    - notams.aim.faa.gov
+    - 1800wxbrief.com
+    - www.1800wxbrief.com
+    - faa.gov
+    - www.faa.gov

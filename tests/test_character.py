@@ -7,6 +7,7 @@ from harness.character import load_character
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AIRTON = REPO_ROOT / "character" / "airton"
 AIRTON_B = REPO_ROOT / "character" / "airton_b"
+AIRTON_C = REPO_ROOT / "character" / "airton_c"
 AIRTON_C1 = REPO_ROOT / "character" / "airton_c1"
 
 
@@ -198,6 +199,75 @@ def test_require_search_memory_true_on_airton_c1() -> None:
     sites."""
     airton_c1 = load_character(AIRTON_C1)
     assert airton_c1.require_search_memory is True
+
+
+# ---------- harness-a2sa: data-driven branch fields ----------
+
+
+def test_voice_rewriter_default_persona() -> None:
+    """Characters without an explicit voice.rewriter declaration
+    default to 'persona' (Airton's two-pass voice rewrite)."""
+    assert load_character(AIRTON).voice_rewriter == "persona"
+    assert load_character(AIRTON_C1).voice_rewriter == "persona"
+
+
+def test_voice_rewriter_caveman_on_airton_b() -> None:
+    """ab declares voice.rewriter=caveman in core.yaml so the CLI
+    wraps its adapter in CavemanRewriter instead of PersonaAdapter."""
+    assert load_character(AIRTON_B).voice_rewriter == "caveman"
+
+
+def test_bd_assignee_loaded_from_core() -> None:
+    """airton + airton_b both ship `bd.assignee: airton_b` in core.yaml
+    because they share the project bd dir; the assignee tags ab-owned
+    writes for budget caps. atc-family characters omit bd: → None."""
+    assert load_character(AIRTON).bd_assignee == "airton_b"
+    assert load_character(AIRTON_B).bd_assignee == "airton_b"
+    assert load_character(AIRTON_C1).bd_assignee is None
+
+
+def test_bd_exclude_assignee_loaded_from_core() -> None:
+    """The same shared-dir characters set exclude_assignee=airton_b
+    so default bd reads hide ab's thought-graph rows. atc-family
+    characters that own a private bd dir leave it None."""
+    assert load_character(AIRTON).bd_exclude_assignee == "airton_b"
+    assert load_character(AIRTON_B).bd_exclude_assignee == "airton_b"
+    assert load_character(AIRTON_C1).bd_exclude_assignee is None
+
+
+def test_bd_scope_allowlist_only_on_airton_b() -> None:
+    """airton_b narrows reads to professional/personal scopes; every
+    other character leaves the allowlist empty (no filter)."""
+    assert load_character(AIRTON_B).bd_scope_allowlist == ("professional", "personal")
+    assert load_character(AIRTON).bd_scope_allowlist == ()
+    assert load_character(AIRTON_C1).bd_scope_allowlist == ()
+
+
+def test_fetch_url_allowed_hosts_on_atc_family() -> None:
+    """airton_c + airton_c1 both ship the same aviation-source
+    allowlist; airton + airton_b leave it empty (FetchUrlTool
+    unrestricted)."""
+    hosts = load_character(AIRTON_C).fetch_url_allowed_hosts
+    assert "aviationweather.gov" in hosts
+    assert "faa.gov" in hosts
+    assert load_character(AIRTON_C1).fetch_url_allowed_hosts == hosts
+    assert load_character(AIRTON).fetch_url_allowed_hosts == ()
+    assert load_character(AIRTON_B).fetch_url_allowed_hosts == ()
+
+
+def test_voice_rewriter_rejects_unknown_value(tmp_path: Path) -> None:
+    """An unknown rewriter value in core.yaml raises rather than
+    silently defaulting — typos surface immediately."""
+    import shutil
+
+    import pytest
+
+    char_dir = tmp_path / "broken"
+    shutil.copytree(AIRTON, char_dir)
+    core_path = char_dir / "core.yaml"
+    core_path.write_text(core_path.read_text() + "\nvoice:\n  rewriter: nonsense\n")
+    with pytest.raises(ValueError, match=r"voice.rewriter must be one of"):
+        load_character(char_dir)
 
 
 def test_system_prompt_excludes_named_voice_examples() -> None:
