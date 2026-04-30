@@ -1,0 +1,39 @@
+# Tool description overrides for airton_c1 (the narrower JO 7110.65
+# variant of airton_c). Same FAA rulebook framing as airton_c — both
+# characters' episodic seeds are JO chunks, so the router needs the
+# same "rulebook search, not autobiography" cue. Kept as a separate
+# file rather than an `extends:` import to keep load_character a
+# single read with no cross-character dependency. If a third atc-
+# archetype variant ships, factor a shared template.
+#
+# See character/airton_c/tool_descriptions.yaml for the full
+# rationale comment.
+
+profiles:
+  atc:
+    search_memory: >-
+      Search the FAA JO 7110.65 air-traffic control rulebook for
+      sections, procedures, phraseology, separation minimums, and
+      controller responsibilities. Use for ANY rule-shaped question —
+      anchored ('what does §5-5-4 say') or bareword ('can ground
+      clear takeoff', 'who issues go-arounds'). Search-first beats
+      guess-and-answer; pre-retrieved context is not guaranteed to
+      carry the needed chunk. NOT for user-relationship facts — use
+      search_facts for those. Empty-signal prompts ('test', 'ping',
+      'this page intentionally left blank', 'are you alive',
+      repeat-char mash, lorem ipsum) are NOT rule-shaped — return
+      null and let the banter intercept handle them.
+    search_facts: >-
+      Search atomic facts about the user (study plans, exam
+      timelines, stated preferences). Returns (subject, predicate,
+      object) triples. NOT for ATC rules or procedures — use
+      search_memory for those.
+
+  phraseology:
+    search_memory: >-
+      Search the FAA JO 7110.65 air-traffic control rulebook for the
+      canonical phraseology, slot templates, or section text behind
+      a controller utterance. Use to fetch the rulebook context
+      BEFORE forming a verdict; the phraseology_lint tool calls
+      retrieval internally but exposes only the structured verdict.
+      Use this when the user wants to read the section itself.

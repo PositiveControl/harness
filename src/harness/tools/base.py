@@ -150,10 +150,12 @@ class ToolRegistry:
         # Per-registration description overrides. Applied at specs()
         # emission so every downstream consumer (router, model schema,
         # introspect) sees the override without wrapping Tool instances.
-        # Populated via override_description(), typically from a
-        # profile-level map like TOOL_PROFILE_DESCRIPTIONS (profiles.py)
-        # so a character-specific profile can reframe generic tools
-        # (e.g. atc's search_memory targets a rulebook, not "past events").
+        # Populated via override_description(), typically from
+        # apply_profile_descriptions() in tools/profiles.py — which
+        # layers BUILTIN_PROFILE_DESCRIPTIONS with the active
+        # character's per-profile overrides loaded from
+        # `character/<name>/tool_descriptions.yaml` (e.g. atc's
+        # search_memory targets a rulebook, not "past events").
         self._description_overrides: dict[str, str] = {}
 
     def register(self, tool: Tool) -> None:

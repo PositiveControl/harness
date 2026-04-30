@@ -1476,7 +1476,7 @@ def _build_tool_registry_for_tui(
 
     from harness.tools.profiles import apply_profile_descriptions
 
-    apply_profile_descriptions(registry, tool_set)
+    apply_profile_descriptions(registry, tool_set, character=character)
     return registry
 
 
@@ -2526,13 +2526,17 @@ def eval_router(
 
     # Apply profile-scoped description overrides so the router sees the
     # same reframed specs it would see in a live chat session (e.g. atc's
-    # search_memory → rulebook framing). Without this the eval scores
-    # the router against the wrong descriptions.
+    # search_memory → rulebook framing from character/<name>/
+    # tool_descriptions.yaml). Without this the eval scores the router
+    # against the wrong descriptions. Layered builtin → character;
+    # character wins on key collision.
     from dataclasses import replace as _replace
 
-    from harness.tools.profiles import TOOL_PROFILE_DESCRIPTIONS
+    from harness.tools.profiles import BUILTIN_PROFILE_DESCRIPTIONS
 
-    _overrides = TOOL_PROFILE_DESCRIPTIONS.get(tool_set, {})
+    _overrides: dict[str, str] = {}
+    _overrides.update(BUILTIN_PROFILE_DESCRIPTIONS.get(tool_set, {}))
+    _overrides.update(character.tool_descriptions.get(tool_set, {}))
     if _overrides:
         tool_specs = [
             _replace(spec, description=_overrides[spec.name]) if spec.name in _overrides else spec

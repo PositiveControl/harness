@@ -317,7 +317,7 @@ def build_classic_registry(
 
     from harness.tools.profiles import apply_profile_descriptions
 
-    apply_profile_descriptions(registry, tool_set)
+    apply_profile_descriptions(registry, tool_set, character=character)
     return registry
 
 

@@ -13,6 +13,11 @@ dilutes the model's tool-picking and wastes every turn's context."""
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from harness.character import Character
+
 TOOL_PROFILES: dict[str, tuple[str, ...]] = {
     "minimal": (),
     # Explicit web-research set — search_web is the new member. Not in
@@ -175,71 +180,44 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
 DEFAULT_PROFILE = "core"
 
 
-# Profile-scoped description overrides. Reframes a generic tool for a
-# character whose episodic / semantic substrate is domain-specific and
-# whose router-tier intent distribution differs from the default chat
-# use case. Applied via ToolRegistry.override_description() at build
-# time; missing tools are ignored so a profile can list overrides for
-# tools that may or may not make the final cut after --tools-drop.
-#
-# atc rationale: episodic seeds ARE the FAA JO 7110.65 rulebook chunks
-# (tier=seed, loaded from character/<name>/seed_memories/). Generic
-# description "past events and lessons" reads as autobiographical,
-# which pushes the small-model router toward search_facts on rule
-# questions (observed hallucination where "can a ground controller
-# clear takeoff" misrouted to search_facts → empty store → fabricated
-# affirmative). The rewording names the rulebook explicitly so the
-# router picks search_memory when it must go hunt a section, and —
-# more importantly — stops picking search_facts for rule-shaped
-# questions that should have been answered from pre-retrieved context.
-TOOL_PROFILE_DESCRIPTIONS: dict[str, dict[str, str]] = {
-    "atc": {
-        "search_memory": (
-            "Search the FAA JO 7110.65 air-traffic control rulebook for "
-            "sections, procedures, phraseology, separation minimums, and "
-            "controller responsibilities. Use for ANY rule-shaped "
-            "question — anchored ('what does §5-5-4 say') or bareword "
-            "('can ground clear takeoff', 'who issues go-arounds'). "
-            "Search-first beats guess-and-answer; pre-retrieved context "
-            "is not guaranteed to carry the needed chunk. NOT for "
-            "user-relationship facts — use search_facts for those. "
-            "Empty-signal prompts ('test', 'ping', 'this page "
-            "intentionally left blank', 'are you alive', repeat-char "
-            "mash, lorem ipsum) are NOT rule-shaped — return null and "
-            "let the banter intercept handle them."
-        ),
-        "search_facts": (
-            "Search atomic facts about the user (study plans, exam "
-            "timelines, stated preferences). Returns (subject, "
-            "predicate, object) triples. NOT for ATC rules or "
-            "procedures — use search_memory for those."
-        ),
-    },
-    # Phraseology profile inherits atc's rulebook-first search_memory
-    # framing — the lint tool's pre-model retrieval and the model's
-    # cross-check both target JO 7110.65, not autobiographical memory.
-    "phraseology": {
-        "search_memory": (
-            "Search the FAA JO 7110.65 air-traffic control rulebook for "
-            "the canonical phraseology, slot templates, or section text "
-            "behind a controller utterance. Use to fetch the rulebook "
-            "context BEFORE forming a verdict; the phraseology_lint tool "
-            "calls retrieval internally but exposes only the structured "
-            "verdict. Use this when the user wants to read the section "
-            "itself."
-        ),
-    },
-}
+# Profile-scoped description overrides shipped with the harness.
+# Currently empty — historical FAA-rulebook reframings for the atc
+# and phraseology profiles moved to character data
+# (`character/airton_c{,1}/tool_descriptions.yaml`, harness-xo7v) so
+# any corpus-grounded persona can ship its own override without
+# editing this module. Kept defined (rather than deleted) as a
+# back-stop: a description universal across every character that
+# uses a given profile would still belong here. Layered with
+# `Character.tool_descriptions[profile]` at registry build time;
+# character entries win on key collision.
+BUILTIN_PROFILE_DESCRIPTIONS: dict[str, dict[str, str]] = {}
 
 
-def apply_profile_descriptions(registry: object, profile: str) -> None:
-    """Apply TOOL_PROFILE_DESCRIPTIONS[profile] to `registry` via its
-    override_description() method. No-op for profiles with no override
-    map; silently skips tools that aren't registered (a profile can
-    name overrides for optional tools). Typed as `object` to avoid an
-    import cycle — the only call is .override_description(name, desc),
-    enforced by duck-typing (and by tests)."""
-    overrides = TOOL_PROFILE_DESCRIPTIONS.get(profile)
+def apply_profile_descriptions(
+    registry: object,
+    profile: str,
+    *,
+    character: Character | None = None,
+) -> None:
+    """Apply description overrides for `profile` to `registry`. Sources
+    layered in order (later wins on key collision):
+
+      1. `BUILTIN_PROFILE_DESCRIPTIONS[profile]` — historical
+         module-level entries; currently empty.
+      2. `character.tool_descriptions[profile]` — per-character file
+         loaded from `character/<name>/tool_descriptions.yaml`.
+
+    No-op when neither layer has an entry for `profile`. Silently
+    skips tools that aren't registered (a layer can name overrides
+    for optional tools that --tools-drop may have removed). Typed as
+    `object` for the registry to avoid an import cycle — the only
+    call is .override_description(name, desc), enforced by duck-typing
+    (and by tests).
+    """
+    overrides: dict[str, str] = {}
+    overrides.update(BUILTIN_PROFILE_DESCRIPTIONS.get(profile, {}))
+    if character is not None:
+        overrides.update(character.tool_descriptions.get(profile, {}))
     if not overrides:
         return
     for name, desc in overrides.items():

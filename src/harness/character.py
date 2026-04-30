@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import textwrap
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -99,6 +99,15 @@ class Character:
     # set true on characters whose directive is "name the section
     # before answering" (currently airton_c1).
     lead_with_citation: bool = False
+    # Profile-scoped tool-description overrides loaded from
+    # `character/<name>/tool_descriptions.yaml` (harness-xo7v). Outer
+    # key is a tool-set name (`atc`, `phraseology`, ...); inner map is
+    # tool-name → reframed description. Layered onto the registry at
+    # build time via `apply_profile_descriptions(registry, profile,
+    # character=...)`; missing file → empty mapping (no override).
+    # Lets a corpus-grounded persona reframe its own search tool
+    # without editing src/harness/tools/profiles.py.
+    tool_descriptions: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def system_prompt(
         self,
@@ -243,6 +252,30 @@ def load_character(path: Path) -> Character:
             )
         )
 
+    # Optional per-character tool-description overrides
+    # (harness-xo7v). Profile-scoped: top-level `profiles:` map, each
+    # value is a tool-name → reframed-description map. Absent file →
+    # empty dict (no override).
+    tool_desc_path = path / "tool_descriptions.yaml"
+    tool_descriptions: dict[str, dict[str, str]] = {}
+    if tool_desc_path.exists():
+        td_doc = yaml.safe_load(tool_desc_path.read_text()) or {}
+        profiles_raw = td_doc.get("profiles") or {}
+        if not isinstance(profiles_raw, dict):
+            raise ValueError(
+                f"{tool_desc_path}: top-level `profiles:` must be a mapping, "
+                f"got {type(profiles_raw).__name__}"
+            )
+        for profile_name, overrides in profiles_raw.items():
+            if not isinstance(overrides, dict):
+                raise ValueError(
+                    f"{tool_desc_path}: profiles.{profile_name} must be a mapping, "
+                    f"got {type(overrides).__name__}"
+                )
+            tool_descriptions[str(profile_name)] = {
+                str(tool): str(desc).strip() for tool, desc in overrides.items()
+            }
+
     values = tuple(Value(id=v["id"], rule=v["rule"]) for v in core["values"])
 
     # Thought-graph block is optional: personas without bd ops tools
@@ -278,4 +311,5 @@ def load_character(path: Path) -> Character:
         seed_memories=tuple(seeds),
         require_search_memory=bool(core.get("require_search_memory", False)),
         lead_with_citation=bool(core.get("lead_with_citation", False)),
+        tool_descriptions=tool_descriptions,
     )

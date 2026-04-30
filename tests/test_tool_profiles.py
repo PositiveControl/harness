@@ -1,15 +1,34 @@
 from __future__ import annotations
 
-import pytest
+from pathlib import Path
 
+import pytest
+import yaml
+
+from harness.character import Character, load_character
 from harness.tools.base import ToolRegistry, ToolSpec
 from harness.tools.profiles import (
+    BUILTIN_PROFILE_DESCRIPTIONS,
     DEFAULT_PROFILE,
-    TOOL_PROFILE_DESCRIPTIONS,
     TOOL_PROFILES,
     apply_profile_descriptions,
     resolve_tool_names,
 )
+
+
+# Character/Path setup helpers for the description-override tests.
+# Builds a stub Character carrying a profile-scoped tool_descriptions
+# map without needing to scaffold a full character on disk.
+def _stub_character_with_overrides(
+    overrides: dict[str, dict[str, str]],
+) -> Character:
+    from dataclasses import replace as dc_replace
+
+    # Borrow airton's loaded shape so every required field is populated;
+    # only `tool_descriptions` is the focus of these tests.
+    repo_root = Path(__file__).resolve().parent.parent
+    base = load_character(repo_root / "character" / "airton")
+    return dc_replace(base, tool_descriptions=overrides)
 
 
 class _StubTool:
@@ -213,11 +232,15 @@ def test_apply_profile_descriptions_atc_reframes_search_tools() -> None:
     → user-facts-only framing. Regression guard for the hallucination
     where 'can a ground controller clear takeoff' misrouted to
     search_facts because the generic descriptions made it look
-    fact-shaped."""
+    fact-shaped. Source-of-truth lives in
+    `character/airton_c/tool_descriptions.yaml`; this test loads
+    airton_c via the standard loader to verify end-to-end wiring."""
+    repo_root = Path(__file__).resolve().parent.parent
+    character = load_character(repo_root / "character" / "airton_c")
     registry = ToolRegistry()
     registry.register(_StubTool("search_memory", "generic episodic search"))
     registry.register(_StubTool("search_facts", "generic fact search"))
-    apply_profile_descriptions(registry, "atc")
+    apply_profile_descriptions(registry, "atc", character=character)
 
     specs = {s.name: s.description for s in registry.specs()}
     assert "JO 7110.65" in specs["search_memory"]
@@ -229,30 +252,73 @@ def test_apply_profile_descriptions_skips_unregistered_tools() -> None:
     """A profile can list overrides for optional tools (--tools-drop may
     have removed them). Missing tools are silently skipped — the
     remaining overrides still apply."""
+    character = _stub_character_with_overrides(
+        {
+            "atc": {
+                "search_memory": "rulebook framing for the JO 7110.65",
+                "search_facts": "user-fact framing",
+            }
+        }
+    )
     registry = ToolRegistry()
     # Only search_memory is registered; search_facts is absent.
     registry.register(_StubTool("search_memory", "generic"))
-    apply_profile_descriptions(registry, "atc")  # must not raise
+    apply_profile_descriptions(registry, "atc", character=character)  # must not raise
 
     [spec] = registry.specs()
     assert "JO 7110.65" in spec.description
 
 
 def test_apply_profile_descriptions_noop_for_profile_without_overrides() -> None:
-    """Profiles not in TOOL_PROFILE_DESCRIPTIONS leave specs untouched."""
+    """Profiles with neither builtin nor character override leave specs
+    untouched."""
+    character = _stub_character_with_overrides({})
     registry = ToolRegistry()
     registry.register(_StubTool("read_file", "read a file"))
-    apply_profile_descriptions(registry, "core")  # no override map
+    apply_profile_descriptions(registry, "core", character=character)
 
     [spec] = registry.specs()
     assert spec.description == "read a file"
 
 
+def test_apply_profile_descriptions_no_character_is_safe() -> None:
+    """`character=None` (the legacy / no-character case) falls back to
+    BUILTIN_PROFILE_DESCRIPTIONS only. Currently empty, so this is
+    effectively a no-op — but the call must not raise."""
+    registry = ToolRegistry()
+    registry.register(_StubTool("read_file", "read a file"))
+    apply_profile_descriptions(registry, "atc")  # no character
+
+    [spec] = registry.specs()
+    assert spec.description == "read a file"
+
+
+def test_apply_profile_descriptions_character_overrides_builtin() -> None:
+    """When both layers define the same tool for a profile, character
+    wins. Verifies the layering contract documented in
+    `apply_profile_descriptions`."""
+    BUILTIN_PROFILE_DESCRIPTIONS["__test_profile__"] = {"search_memory": "builtin desc"}
+    try:
+        character = _stub_character_with_overrides(
+            {"__test_profile__": {"search_memory": "character desc"}}
+        )
+        registry = ToolRegistry()
+        registry.register(_StubTool("search_memory", "generic"))
+        apply_profile_descriptions(registry, "__test_profile__", character=character)
+        [spec] = registry.specs()
+        assert spec.description == "character desc"
+    finally:
+        BUILTIN_PROFILE_DESCRIPTIONS.pop("__test_profile__", None)
+
+
 def test_atc_description_overrides_declared() -> None:
-    """The atc map exists and covers both search tools the router confuses."""
-    assert "atc" in TOOL_PROFILE_DESCRIPTIONS
-    assert "search_memory" in TOOL_PROFILE_DESCRIPTIONS["atc"]
-    assert "search_facts" in TOOL_PROFILE_DESCRIPTIONS["atc"]
+    """airton_c ships profile-scoped overrides for both search tools the
+    router confuses on rule-shaped questions."""
+    repo_root = Path(__file__).resolve().parent.parent
+    character = load_character(repo_root / "character" / "airton_c")
+    assert "atc" in character.tool_descriptions
+    assert "search_memory" in character.tool_descriptions["atc"]
+    assert "search_facts" in character.tool_descriptions["atc"]
 
 
 def test_atc_search_memory_carves_out_banter_signal() -> None:
@@ -260,8 +326,14 @@ def test_atc_search_memory_carves_out_banter_signal() -> None:
     empty-signal / banter prompts are NOT rule-shaped — otherwise the
     'Use for ANY rule-shaped question' clause pulls 'test' / 'ping' /
     blank-page into search_memory and the model fabricates a JO 7110.65
-    chunk from thin retrieval (Run 12 failure mode; epic harness-jjm9)."""
-    desc = TOOL_PROFILE_DESCRIPTIONS["atc"]["search_memory"]
+    chunk from thin retrieval (Run 12 failure mode; epic harness-jjm9).
+
+    Source-of-truth is `character/airton_c/tool_descriptions.yaml`;
+    this test loads it through the character loader so a YAML edit
+    that drops the carve-out is caught."""
+    repo_root = Path(__file__).resolve().parent.parent
+    character = load_character(repo_root / "character" / "airton_c")
+    desc = character.tool_descriptions["atc"]["search_memory"]
     lowered = desc.lower()
     # Must mention the null path AND name at least one banter pattern
     # so the router has a concrete contrast vs. rule-shaped questions.
@@ -269,6 +341,41 @@ def test_atc_search_memory_carves_out_banter_signal() -> None:
     assert "test" in lowered
     assert "ping" in lowered
     assert "intentionally left blank" in lowered
+
+
+def test_phraseology_profile_inherits_atc_rulebook_framing() -> None:
+    """The phraseology profile keeps the JO-rulebook framing on
+    search_memory but adds the lint-tool context. Verifies airton_c1
+    ships both profile overrides so a single character handles both
+    `--tool-set atc` and `--tool-set phraseology` cleanly."""
+    repo_root = Path(__file__).resolve().parent.parent
+    character = load_character(repo_root / "character" / "airton_c1")
+    desc = character.tool_descriptions["phraseology"]["search_memory"]
+    assert "JO 7110.65" in desc
+    assert "phraseology_lint" in desc
+
+
+def test_tool_descriptions_yaml_top_level_must_be_mapping(tmp_path: Path) -> None:
+    """A malformed tool_descriptions.yaml (e.g. top-level list) raises
+    at load time with a path-anchored message rather than crashing
+    later in apply_profile_descriptions."""
+    src = Path(__file__).resolve().parent.parent / "character" / "airton"
+    char_dir = tmp_path / "broken"
+    char_dir.mkdir()
+    # Copy minimum required files from airton.
+    for sub in ("core.yaml", "constitution.md"):
+        (char_dir / sub).write_text((src / sub).read_text())
+    (char_dir / "voice").mkdir()
+    (char_dir / "voice" / "canonical.yaml").write_text(
+        (src / "voice" / "canonical.yaml").read_text()
+    )
+    (char_dir / "seed_memories").mkdir()
+    # Top-level under `profiles:` must be a mapping; a list is not.
+    (char_dir / "tool_descriptions.yaml").write_text(
+        yaml.safe_dump({"profiles": ["this", "is", "wrong"]})
+    )
+    with pytest.raises(ValueError, match=r"profiles.*must be a mapping"):
+        load_character(char_dir)
 
 
 def test_atc_allows_scoped_write_subagent_but_excludes_shell_and_git() -> None:

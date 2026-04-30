@@ -1,0 +1,49 @@
+# Tool description overrides for airton_c. Profile-scoped: each
+# top-level key under `profiles:` is a tool-set name (`atc`,
+# `phraseology`, ...) and its values reframe a generic tool's
+# description for that profile's use case.
+#
+# Rationale (atc / phraseology): airton_c's episodic seeds ARE the
+# FAA JO 7110.65 rulebook chunks (tier=seed). The generic
+# search_memory description ("past events and lessons") reads as
+# autobiographical, which pushes the small-model router toward
+# search_facts on rule questions (observed hallucination where
+# "can a ground controller clear takeoff" misrouted to search_facts
+# → empty store → fabricated affirmative). The reworded descriptions
+# name the rulebook explicitly so the router picks search_memory
+# when it must go hunt a section, and stops picking search_facts
+# for rule-shaped questions that should have been answered from
+# pre-retrieved context.
+#
+# Phraseology profile inherits atc's rulebook-first search_memory
+# framing — the lint tool's pre-model retrieval and the model's
+# cross-check both target JO 7110.65, not autobiographical memory.
+
+profiles:
+  atc:
+    search_memory: >-
+      Search the FAA JO 7110.65 air-traffic control rulebook for
+      sections, procedures, phraseology, separation minimums, and
+      controller responsibilities. Use for ANY rule-shaped question —
+      anchored ('what does §5-5-4 say') or bareword ('can ground
+      clear takeoff', 'who issues go-arounds'). Search-first beats
+      guess-and-answer; pre-retrieved context is not guaranteed to
+      carry the needed chunk. NOT for user-relationship facts — use
+      search_facts for those. Empty-signal prompts ('test', 'ping',
+      'this page intentionally left blank', 'are you alive',
+      repeat-char mash, lorem ipsum) are NOT rule-shaped — return
+      null and let the banter intercept handle them.
+    search_facts: >-
+      Search atomic facts about the user (study plans, exam
+      timelines, stated preferences). Returns (subject, predicate,
+      object) triples. NOT for ATC rules or procedures — use
+      search_memory for those.
+
+  phraseology:
+    search_memory: >-
+      Search the FAA JO 7110.65 air-traffic control rulebook for the
+      canonical phraseology, slot templates, or section text behind
+      a controller utterance. Use to fetch the rulebook context
+      BEFORE forming a verdict; the phraseology_lint tool calls
+      retrieval internally but exposes only the structured verdict.
+      Use this when the user wants to read the section itself.
