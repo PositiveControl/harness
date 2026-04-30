@@ -26,9 +26,12 @@ from harness.character import load_character
 from harness.model.adapter import ChatMessage
 from harness.store.episodic import EpisodicStore
 from harness.tools.phraseology_lint import (
+    PHRASEOLOGY_CONFIG,
+    CorpusLintConfig,
     PhraseologyLintTool,
     PhraseologyVerdict,
     _parse_verdict_json,
+    lint_against_corpus,
     lint_utterance,
 )
 
@@ -420,3 +423,119 @@ def test_verdict_dataclass_immutable() -> None:
     # frozen dataclass — any mutation raises FrozenInstanceError
     with pytest.raises(dataclasses.FrozenInstanceError):
         v.verdict = "wrong"  # type: ignore[misc]
+
+
+# ---------- harness-d2k5: generic corpus-conformance lint ----------
+
+
+def test_phraseology_config_is_corpus_lint_config() -> None:
+    """The shipped FAA config is an instance of the generic
+    CorpusLintConfig — confirms the abstraction is real (not just a
+    rename) and the system_prompt + templates are populated."""
+    assert isinstance(PHRASEOLOGY_CONFIG, CorpusLintConfig)
+    assert "JO 7110.65" in PHRASEOLOGY_CONFIG.system_prompt
+    assert "{utterance}" in PHRASEOLOGY_CONFIG.user_prompt_template
+    assert "{candidates}" in PHRASEOLOGY_CONFIG.user_prompt_template
+    assert "{idx}" in PHRASEOLOGY_CONFIG.candidate_block_format
+    assert "{anchor}" in PHRASEOLOGY_CONFIG.candidate_block_format
+
+
+def test_lint_utterance_delegates_to_lint_against_corpus(tmp_path: Path) -> None:
+    """`lint_utterance` is a thin wrapper around `lint_against_corpus`
+    with PHRASEOLOGY_CONFIG. Both must produce the same verdict on
+    the same scripted adapter + store.
+
+    Asserting equivalence rather than identity — the wrapper is
+    what stabilises the public API while internals can vary."""
+    store = EpisodicStore(tmp_path / "h.sqlite", embedder=_LexicalEmbedder())
+    _seed_phraseology_corpus(store)
+    reply = json.dumps(
+        {
+            "verdict": "ok",
+            "expected_section": "3-9-10",
+            "expected_phraseology": "RUNWAY (number), CLEARED FOR TAKEOFF.",
+            "mismatch": None,
+            "citation_quote": "RUNWAY (number), CLEARED FOR TAKEOFF.",
+        }
+    )
+    try:
+        # Wrapper path.
+        v_wrapper = lint_utterance(
+            "RUNWAY TWO SEVEN, CLEARED FOR TAKEOFF.",
+            adapter=_ScriptedAdapter(replies=[reply]),
+            episodic_store=store,
+            grammar=_GRAMMAR,
+        )
+        # Generic path with the same config.
+        v_generic = lint_against_corpus(
+            "RUNWAY TWO SEVEN, CLEARED FOR TAKEOFF.",
+            adapter=_ScriptedAdapter(replies=[reply]),
+            episodic_store=store,
+            grammar=_GRAMMAR,
+            config=PHRASEOLOGY_CONFIG,
+        )
+    finally:
+        store.close()
+    assert v_wrapper == v_generic
+    assert v_wrapper.verdict == "ok"
+    assert v_wrapper.expected_section == "3-9-10"
+
+
+def test_lint_against_corpus_uses_custom_config(tmp_path: Path) -> None:
+    """A non-FAA CorpusLintConfig drives the same pipeline against
+    arbitrary corpus + prompt language. Proves the abstraction
+    accepts new domain configs without touching pipeline code.
+
+    Uses a synthetic prompt template to confirm the model receives the
+    config's wording (not PHRASEOLOGY_CONFIG's). The verdict shape
+    stays PhraseologyVerdict — generic by design (anchor + canonical
+    template), regardless of domain wording."""
+    store = EpisodicStore(tmp_path / "h.sqlite", embedder=_LexicalEmbedder())
+    _seed_phraseology_corpus(store)
+
+    custom_config = CorpusLintConfig(
+        system_prompt=(
+            "You are a generic corpus-conformance linter. Compare the input "
+            "to the candidates and return a JSON verdict matching this schema:"
+            ' {"verdict": "ok"|"wrong"|"incomplete"|"out_of_scope", '
+            '"expected_section": "<anchor>"|null, '
+            '"expected_phraseology": "<canonical>"|null, '
+            '"mismatch": "<reason>"|null, '
+            '"citation_quote": "<excerpt>"|null}'
+        ),
+        candidate_block_format="<<{idx}>> {anchor} | {title}\n{excerpt}{ellipsis}",
+        user_prompt_template=(
+            "INPUT: {utterance}{scenario_hint_line}\n\nCANDIDATES:\n\n{candidates}"
+        ),
+    )
+    reply = json.dumps(
+        {
+            "verdict": "ok",
+            "expected_section": "3-9-10",
+            "expected_phraseology": "RUNWAY (number), CLEARED FOR TAKEOFF.",
+            "mismatch": None,
+            "citation_quote": None,
+        }
+    )
+    adapter = _ScriptedAdapter(replies=[reply])
+    try:
+        verdict = lint_against_corpus(
+            "RUNWAY TWO SEVEN, CLEARED FOR TAKEOFF.",
+            adapter=adapter,
+            episodic_store=store,
+            grammar=_GRAMMAR,
+            config=custom_config,
+        )
+    finally:
+        store.close()
+
+    assert verdict.verdict == "ok"
+    assert verdict.expected_section == "3-9-10"
+    # The model must have seen our custom system prompt, not the FAA one.
+    [system_msg, user_msg] = adapter.calls[0]
+    assert system_msg.role == "system"
+    assert "generic corpus-conformance linter" in system_msg.content
+    assert "JO 7110.65" not in system_msg.content
+    # And our candidate-block format too.
+    assert "<<1>>" in user_msg.content
+    assert "INPUT: RUNWAY TWO SEVEN" in user_msg.content

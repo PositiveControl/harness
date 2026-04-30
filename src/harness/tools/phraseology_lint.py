@@ -75,7 +75,16 @@ _PROMPT_CANDIDATES = 3
 class PhraseologyVerdict:
     """Structured output of one lint call. Mirrors the
     `phraseology_eval.yaml` row shape so eval scoring is a direct
-    field-by-field comparison."""
+    field-by-field comparison.
+
+    Field names ('expected_section', 'expected_phraseology') are
+    ATC-flavoured but the SHAPE is generic (cited anchor + canonical
+    template). Future corpus-conformance lints (legal citation, RFC
+    compliance, ...) reuse this dataclass — the names map naturally:
+    section ⇒ document anchor, phraseology ⇒ canonical-template
+    excerpt. A consumer that needs different domain-language can
+    define a parallel dataclass with the same shape and adapt.
+    """
 
     verdict: Verdict
     expected_section: str | None
@@ -84,38 +93,86 @@ class PhraseologyVerdict:
     citation_quote: str | None
 
 
-def lint_utterance(
+@dataclass(frozen=True)
+class CorpusLintConfig:
+    """Domain config for the generic corpus-conformance lint pipeline
+    (harness-d2k5).
+
+    The pipeline structure — retrieve top-K candidates, prompt the
+    model with a JSON-shaped verdict schema, cite-check the picked
+    anchor against the question's top-K — is universal. The text
+    that gets baked into the prompt (corpus name, audience role,
+    slot-value norms, out-of-scope examples, candidate-block
+    formatting) is per-corpus. This dataclass holds those bits so
+    `lint_against_corpus()` can drive the loop without knowing the
+    domain.
+
+    Phraseology / JO 7110.65 ships as `PHRASEOLOGY_CONFIG`. New
+    consumers (legal citation, RFC compliance, ...) instantiate
+    their own.
+    """
+
+    # Full system message for the lint pass. Should declare:
+    #   - The audience / domain ("You are a JO 7110.65 linter for ...").
+    #   - The 4 verdicts (ok / wrong / incomplete / out_of_scope) with
+    #     domain-specific examples.
+    #   - The JSON schema the model must emit (verbatim string —
+    #     downstream parsing keys on this shape).
+    #   - Any normalisation notes (e.g. ATC phonetic digits).
+    system_prompt: str
+    # Format string for one candidate-section block. Placeholders:
+    #   {idx}      — 1-based candidate index
+    #   {anchor}   — section anchor extracted via grammar
+    #   {title}    — record title
+    #   {excerpt}  — body excerpt capped at _CANDIDATE_BODY_CAP
+    #   {ellipsis} — "…" when body was truncated, "" otherwise
+    candidate_block_format: str
+    # Format string for the user message body. Placeholders:
+    #   {utterance}         — the utterance under lint
+    #   {scenario_hint_line}— "\nSCENARIO HINT: <hint>" or ""
+    #   {candidates}        — "\n\n"-joined candidate blocks
+    user_prompt_template: str
+
+
+def lint_against_corpus(
     utterance: str,
     *,
     adapter: ModelAdapter,
     episodic_store: EpisodicStore,
     grammar: CitationGrammar | None,
+    config: CorpusLintConfig,
     scenario_hint: str | None = None,
     user_id: str | None = None,
     k: int = _DEFAULT_K,
     temperature: float = 0.0,
 ) -> PhraseologyVerdict:
-    """Lint one ATC utterance against JO 7110.65.
+    """Generic corpus-conformance lint pipeline (harness-d2k5).
 
-    Returns a structured verdict. Cite-or-silent on empty retrieval +
-    on ungrounded model citations (see module docstring).
+    Retrieves top-K corpus chunks for the utterance, prompts the
+    model to compare it against the candidate canonical templates,
+    and cite-grounds the verdict against the question's top-K
+    anchors. Domain wording (corpus name, verdict examples,
+    normalisation notes) comes from `config`.
+
+    Returns a structured PhraseologyVerdict. Cite-or-silent on:
+      - empty hybrid retrieval ⇒ out_of_scope, model never invoked.
+      - unparseable model output ⇒ out_of_scope with diagnostic.
+      - model picked an anchor not in the question's top-K
+        candidate set ⇒ downgrade to out_of_scope.
 
     The model is invoked bare (no PersonaAdapter wrap) — the lint
     output is structured JSON, not voice-shaped prose. Persona
-    rewriting would compress / paraphrase the canonical phraseology
-    string and break the eval comparison.
+    rewriting would compress / paraphrase the canonical template
+    and break the eval comparison.
 
-    `temperature=0.0` is the eval default — verdict stability matters
-    more than sampling variance. Raise it only when probing for
-    consensus across rolls.
+    `temperature=0.0` is the eval default — verdict stability
+    matters more than sampling variance. Raise it only when probing
+    for consensus across rolls.
     """
 
     query = utterance if not scenario_hint else f"{utterance}\n[scenario: {scenario_hint}]"
     hits = episodic_store.search(query, k=k, mode="hybrid", user_id=user_id)
     if not hits:
-        # Pre-model gate: nothing in the corpus matched. Don't ask the
-        # model — refuse outright. Distinguishes a phraseology gap in
-        # the rulebook from a phraseology violation.
         return PhraseologyVerdict(
             verdict="out_of_scope",
             expected_section=None,
@@ -132,13 +189,11 @@ def lint_utterance(
             seen.add(anchor)
             candidate_anchors.append(anchor)
 
-    prompt_messages = _build_lint_messages(utterance, scenario_hint, hits, grammar)
+    prompt_messages = _build_lint_messages(utterance, scenario_hint, hits, grammar, config)
     raw = adapter.complete(prompt_messages, temperature=temperature, max_tokens=512)
     parsed = _parse_verdict_json(raw)
 
     if parsed is None:
-        # Model failed to emit parseable JSON — refuse rather than
-        # invent a verdict. Same cite-or-silent discipline.
         return PhraseologyVerdict(
             verdict="out_of_scope",
             expected_section=None,
@@ -147,10 +202,6 @@ def lint_utterance(
             citation_quote=None,
         )
 
-    # Cite-grounding gate. If the model picked a section that isn't in
-    # the candidate-anchor set, that's a real-but-wrong-section fab on
-    # this query — even if the section exists somewhere in the corpus.
-    # Downgrade to out_of_scope.
     section = parsed.expected_section
     if section is not None and section not in candidate_anchors:
         return PhraseologyVerdict(
@@ -161,9 +212,6 @@ def lint_utterance(
             citation_quote=None,
         )
 
-    # Out-of-scope verdicts must null the citation fields. The model
-    # sometimes parrots a section even when calling the utterance OOS;
-    # normalize so the eval-side comparison is unambiguous.
     if parsed.verdict == "out_of_scope":
         return PhraseologyVerdict(
             verdict="out_of_scope",
@@ -176,18 +224,13 @@ def lint_utterance(
     return parsed
 
 
-def _build_lint_messages(
-    utterance: str,
-    scenario_hint: str | None,
-    hits: Sequence[tuple[EpisodicRecord, float]],
-    grammar: CitationGrammar | None,
-) -> list[ChatMessage]:
-    """Render the lint prompt. System message states the rules and the
-    JSON schema; user message carries the utterance + candidate
-    sections."""
-    from harness.model.adapter import ChatMessage
-
-    system = (
+# ATC / JO 7110.65 phraseology config — the original lint domain.
+# Lifted verbatim from `_build_lint_messages`'s pre-d2k5 prompt
+# strings; verdict definitions, slot-value note, schema, and
+# candidate / user-prompt shapes are preserved byte-for-byte so
+# fixture YAMLs and eval baselines stay green.
+PHRASEOLOGY_CONFIG = CorpusLintConfig(
+    system_prompt=(
         "You are a JO 7110.65 phraseology linter for U.S. air-traffic "
         "controllers. Compare a controller utterance to the canonical "
         "phraseology in the candidate sections below and return a "
@@ -220,7 +263,60 @@ def _build_lint_messages(
         '"expected_phraseology": "<canonical template>"|null, '
         '"mismatch": "<one-line reason>"|null, '
         '"citation_quote": "<verbatim excerpt from candidate body>"|null}'
+    ),
+    candidate_block_format="[{idx}] §{anchor} {title}\n{excerpt}{ellipsis}",
+    user_prompt_template=(
+        "UTTERANCE: {utterance}{scenario_hint_line}\n\n"
+        "CANDIDATE SECTIONS FROM JO 7110.65:\n\n"
+        "{candidates}\n\n"
+        "Return the JSON verdict now."
+    ),
+)
+
+
+def lint_utterance(
+    utterance: str,
+    *,
+    adapter: ModelAdapter,
+    episodic_store: EpisodicStore,
+    grammar: CitationGrammar | None,
+    scenario_hint: str | None = None,
+    user_id: str | None = None,
+    k: int = _DEFAULT_K,
+    temperature: float = 0.0,
+) -> PhraseologyVerdict:
+    """Lint one ATC utterance against JO 7110.65 — thin wrapper around
+    `lint_against_corpus()` carrying the FAA-shaped config.
+
+    Kept as a stable name so the eval / CLI / chat-tool surfaces don't
+    re-import. New domain lints should call `lint_against_corpus()`
+    directly with their own `CorpusLintConfig`.
+    """
+    return lint_against_corpus(
+        utterance,
+        adapter=adapter,
+        episodic_store=episodic_store,
+        grammar=grammar,
+        config=PHRASEOLOGY_CONFIG,
+        scenario_hint=scenario_hint,
+        user_id=user_id,
+        k=k,
+        temperature=temperature,
     )
+
+
+def _build_lint_messages(
+    utterance: str,
+    scenario_hint: str | None,
+    hits: Sequence[tuple[EpisodicRecord, float]],
+    grammar: CitationGrammar | None,
+    config: CorpusLintConfig,
+) -> list[ChatMessage]:
+    """Render the lint prompt from `config`. System message comes
+    verbatim from config.system_prompt; user message templates the
+    utterance + candidate-block list into config.user_prompt_template;
+    each candidate block uses config.candidate_block_format."""
+    from harness.model.adapter import ChatMessage
 
     candidates: list[str] = []
     for idx, (rec, _score) in enumerate(hits[:_PROMPT_CANDIDATES], start=1):
@@ -229,18 +325,25 @@ def _build_lint_messages(
         body = getattr(rec, "body", "") or ""
         excerpt = body[:_CANDIDATE_BODY_CAP]
         ellipsis = "…" if len(body) > _CANDIDATE_BODY_CAP else ""
-        candidates.append(f"[{idx}] §{anchor} {title}\n{excerpt}{ellipsis}".rstrip())
+        candidates.append(
+            config.candidate_block_format.format(
+                idx=idx,
+                anchor=anchor,
+                title=title,
+                excerpt=excerpt,
+                ellipsis=ellipsis,
+            ).rstrip()
+        )
 
-    hint_line = f"\nSCENARIO HINT: {scenario_hint}" if scenario_hint else ""
-    user = (
-        f"UTTERANCE: {utterance}{hint_line}\n\n"
-        f"CANDIDATE SECTIONS FROM JO 7110.65:\n\n"
-        + "\n\n".join(candidates)
-        + "\n\nReturn the JSON verdict now."
+    scenario_hint_line = f"\nSCENARIO HINT: {scenario_hint}" if scenario_hint else ""
+    user = config.user_prompt_template.format(
+        utterance=utterance,
+        scenario_hint_line=scenario_hint_line,
+        candidates="\n\n".join(candidates),
     )
 
     return [
-        ChatMessage(role="system", content=system),
+        ChatMessage(role="system", content=config.system_prompt),
         ChatMessage(role="user", content=user),
     ]
 
