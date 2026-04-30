@@ -95,3 +95,15 @@ citation_grammar:
   document_reference: '\b(?:FAA\s+Order\s+)?JO\s*7110\.65\b'
   document_name: 'JO 7110.65'
   example_anchor: '§1-1-1'
+
+# Domain catcher roster (harness-qvwq). atc-archetype characters opt
+# into three FAA-shape catchers: ambiguous_context (manned vs.
+# unmanned balloon and any future axis), scope_redirect (off-topic
+# prompts get a JO-only refusal instead of a context-bleed answer),
+# and reserved_squawk_code (controllers don't assign 7500/7600/7700
+# in routine phraseology). Each self-gates via regex; opting in makes
+# the persona-coupling explicit.
+catchers:
+  - ambiguous_context
+  - scope_redirect
+  - reserved_squawk_code

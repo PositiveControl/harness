@@ -2420,10 +2420,27 @@ class HookPipeline:
         return Continue()
 
 
+# Domain-specific catchers that ship in code but only register when a
+# character explicitly opts in via `core.yaml: catchers:` (harness-qvwq).
+# Each self-gates via regex anyway, but the opt-in moves the
+# persona-coupling from "non-FAA replies happen never to match" to a
+# declarative "this character runs these checks" — non-target
+# characters provably skip them at construction time.
+_OPT_IN_CATCHERS: frozenset[str] = frozenset(
+    {
+        "ab_fabrication",
+        "ambiguous_context",
+        "scope_redirect",
+        "reserved_squawk_code",
+    }
+)
+
+
 def default_hook_pipeline(
     *,
     valid_section_anchors: frozenset[str] = frozenset(),
     citation_grammar: CitationGrammar | None = None,
+    catchers: tuple[str, ...] = (),
 ) -> HookPipeline:
     """Build the shipping pipeline. Order mirrors the pre-refactor
     `_diagnose_bail` branch order so first-match semantics stay
@@ -2444,56 +2461,82 @@ def default_hook_pipeline(
     `citation_grammar` is the active character's CitationGrammar
     (harness-jaqe). Non-citation-disciplined characters pass None;
     the citation hooks (MissingCitationHook today; more later)
-    silently no-op."""
+    silently no-op.
+
+    `catchers` is the per-character opt-in roster (harness-qvwq).
+    Members must be drawn from `_OPT_IN_CATCHERS`. Each name installs
+    its corresponding hook in the order documented below; absence
+    skips registration entirely. airton_b ships `ab_fabrication`;
+    airton_c{,1} ship `ambiguous_context`, `scope_redirect`,
+    `reserved_squawk_code`. airton (default dev character) ships an
+    empty roster — the codebase doesn't need ATC scope checks.
+
+    Unknown names raise — typos in core.yaml surface immediately
+    rather than silently dropping a catcher."""
+    unknown = set(catchers) - _OPT_IN_CATCHERS
+    if unknown:
+        raise ValueError(
+            f"Unknown opt-in catchers: {sorted(unknown)}. "
+            f"Expected subset of {sorted(_OPT_IN_CATCHERS)}."
+        )
+    catchers_set = frozenset(catchers)
+
+    bail: list[BailHook] = [
+        TruncatedHook(),
+        UnparseableHook(),
+        TeaserHook(),
+        FalseSuccessHook(),
+        MetaConfirmHook(),
+        FabricatedSearchHook(),
+        FabricatedItemizationHook(),
+    ]
+    # ab_fabrication: ab_ops capture/plan/remember imitation shapes.
+    # Self-gates on `tools_ran_this_turn=False`; non-ab characters
+    # never produce these shapes anyway, but opt-in makes that
+    # provable rather than empirical.
+    if "ab_fabrication" in catchers_set:
+        bail.append(AbFabricationHook())
+    bail.append(ToolIntentHook())
+    # Compliance check runs last — fabrication-shape catchers above
+    # all get first pass at a malformed reply. Only a reply that
+    # survived every fabrication gate gets asked the compliance
+    # question 'did you cite your source?'.
+    bail.append(MissingCitationHook(grammar=citation_grammar))
+    # Structural existence check on whatever §-anchors the reply DID
+    # cite (harness-aise). Runs immediately after MissingCitationHook
+    # so the no-citation case is handled by the right catcher: missing
+    # → MissingCitation; invented → FabricatedSection. Silent
+    # (Continue-only) when valid_section_anchors is empty, which is
+    # the default for non-corpus characters.
+    bail.append(FabricatedSectionHook(valid_anchors=valid_section_anchors))
+    # Internal-consistency check: the reply's own count claim vs. its
+    # enumerated list. Runs after missing_citation so a reply that
+    # ADDS a citation on retry doesn't get re-chained into a
+    # count-mismatch nudge from its original pre-citation form.
+    bail.append(ListCountMismatchHook())
+    # reserved_squawk_code: ATC pilot-initiated reserved transponder
+    # codes (7500/7600/7700). Runs after structural fabrication
+    # checks so a reply that fails any earlier gate gets the
+    # shape-specific nudge first; only a reply otherwise structurally
+    # fine but proposing an unsafe code reaches this.
+    if "reserved_squawk_code" in catchers_set:
+        bail.append(ReservedSquawkCodeHook())
+    # scope_redirect: user's question has no aviation vocabulary, but
+    # the reply is talking ATC. Catches context-bleed and
+    # out-of-scope fabrication ('do roosters lay eggs' getting
+    # answered with phraseology content).
+    if "scope_redirect" in catchers_set:
+        bail.append(ScopeRedirectHook())
+    # ambiguous_context: user asked about a term whose JO handling
+    # depends on an unspecified variant ('balloon' = manned vs.
+    # unmanned free), and the reply silently picked a variant.
+    # Placed last — ambiguity is relevant only when the prompt is
+    # otherwise in-scope.
+    if "ambiguous_context" in catchers_set:
+        bail.append(AmbiguousContextHook())
+
     return HookPipeline(
-        bail=[
-            TruncatedHook(),
-            UnparseableHook(),
-            TeaserHook(),
-            FalseSuccessHook(),
-            MetaConfirmHook(),
-            FabricatedSearchHook(),
-            FabricatedItemizationHook(),
-            AbFabricationHook(),
-            ToolIntentHook(),
-            # Compliance check runs last — fabrication-shape catchers
-            # above all get first pass at a malformed reply. Only a
-            # reply that survived every fabrication gate gets asked
-            # the compliance question 'did you cite your source?'.
-            MissingCitationHook(grammar=citation_grammar),
-            # Structural existence check on whatever §-anchors the
-            # reply DID cite (harness-aise). Runs immediately after
-            # MissingCitationHook so the no-citation case is handled
-            # by the right catcher: missing → MissingCitation;
-            # invented → FabricatedSection. Silent (Continue-only)
-            # when valid_section_anchors is empty, which is the
-            # default for non-corpus characters.
-            FabricatedSectionHook(valid_anchors=valid_section_anchors),
-            # Internal-consistency check: the reply's own count claim
-            # vs. its enumerated list. Runs after missing_citation so
-            # a reply that ADDS a citation on retry doesn't get
-            # re-chained into a count-mismatch nudge from its original
-            # pre-citation form.
-            ListCountMismatchHook(),
-            # Domain-safety check: controllers must not assign the
-            # pilot-initiated reserved transponder codes (7500/7600/
-            # 7700) in routine phraseology. Runs last because a reply
-            # that fails any earlier gate should get the shape-specific
-            # nudge first; only a reply otherwise structurally fine
-            # but proposing an unsafe code reaches this.
-            ReservedSquawkCodeHook(),
-            # Scope check: user's question has no aviation vocabulary,
-            # but the reply is talking ATC. Catches context-bleed and
-            # out-of-scope fabrication ('do roosters lay eggs' getting
-            # answered with phraseology content).
-            ScopeRedirectHook(),
-            # Ambiguity check: user asked about a term whose JO handling
-            # depends on an unspecified variant ('balloon' = manned vs.
-            # unmanned free), and the reply silently picked a variant.
-            # Placed last — ambiguity is relevant only when the prompt
-            # is otherwise in-scope.
-            AmbiguousContextHook(),
-        ],
+        bail=bail,
         post_model=[PairedMetaConfirmStripHook()],
         # Order matters inside pre_tool: duplicate_call fires first so
         # a repeat call short-circuits before the grounding check

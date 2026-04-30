@@ -403,6 +403,8 @@ def test_reserved_squawk_7500_gets_nudged() -> None:
     result = _run_scenario(
         {
             "id": "_reserved_squawk_7500",
+            "catchers": "atc",
+            "citation_grammar": "atc",
             "registry": [
                 {
                     "name": "search_memory",
@@ -470,6 +472,8 @@ def test_balloon_ambiguous_assumed_variant_gets_nudged() -> None:
     result = _run_scenario(
         {
             "id": "_balloon_ambiguous",
+            "catchers": "atc",
+            "citation_grammar": "atc",
             "registry": [
                 {
                     "name": "search_memory",
@@ -541,6 +545,8 @@ def test_mixed_rooster_and_faa_prompt_still_nudges_scope_redirect() -> None:
     result = _run_scenario(
         {
             "id": "_mixed_rooster_and_faa",
+            "catchers": "atc",
+            "citation_grammar": "atc",
             "registry": [
                 {
                     "name": "search_memory",
@@ -607,6 +613,8 @@ def test_roosters_out_of_scope_nudges_scope_redirect() -> None:
     result = _run_scenario(
         {
             "id": "_roosters_out_of_scope",
+            "catchers": "atc",
+            "citation_grammar": "atc",
             "registry": [
                 {
                     "name": "search_memory",

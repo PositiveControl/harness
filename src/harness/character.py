@@ -155,6 +155,18 @@ class Character:
     # absent. Loaded from `core.yaml: citation_grammar:` via
     # persona/citation.py:load_citation_grammar.
     citation_grammar: CitationGrammar | None = None
+    # Opt-in domain catchers (harness-qvwq). Names of orchestrator
+    # hooks that ship in `default_hook_pipeline` ONLY when this
+    # character lists them — currently `ab_fabrication`,
+    # `ambiguous_context`, `scope_redirect`, `reserved_squawk_code`.
+    # Each catcher self-gates via regex anyway, but moving the
+    # registration to character data makes the persona-coupling
+    # explicit instead of relying on "non-FAA replies happen never to
+    # match this regex". Empty tuple ⇒ none installed (the default
+    # for non-corpus characters: airton, echo). The catchers' regex
+    # data still lives in hooks.py for now; a follow-up bead will
+    # lift the data into per-character config.
+    catchers: tuple[str, ...] = ()
 
     def system_prompt(
         self,
@@ -373,6 +385,7 @@ def load_character(path: Path) -> Character:
             "fetch_url.allowed_hosts",
         ),
         citation_grammar=load_citation_grammar(core.get("citation_grammar"), path),
+        catchers=_load_str_tuple(core.get("catchers"), path, "catchers"),
     )
 
 

@@ -106,3 +106,12 @@ thought_graph:
     e.g. `thought:hypothesis`, `thought:question`,
     `thought:decision`, `thought:observation`. Not an enum; pick
     a term that names the cognitive step.
+
+# Domain catcher roster (harness-qvwq). ab_fabrication detects ab_ops
+# tool-receipt imitation shapes (Captured. / Remembered: / Bead id: /
+# bare past-tense Updated.) that the model emits without firing a
+# real <tool_call>. Self-gates on `tools_ran=False` so legitimate
+# wrap-ups disarm it; airton's reads also pass through unchanged
+# because dev replies don't produce ab-shaped sentences.
+catchers:
+  - ab_fabrication

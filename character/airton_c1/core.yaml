@@ -125,3 +125,11 @@ citation_grammar:
   document_reference: '\b(?:FAA\s+Order\s+)?JO\s*7110\.65\b'
   document_name: 'JO 7110.65'
   example_anchor: '§1-1-1'
+
+# Domain catcher roster (harness-qvwq). Same three FAA-shape catchers
+# as airton_c — narrower variant inherits the catcher set since the
+# rulebook scope and pilot-vs-controller distinction are identical.
+catchers:
+  - ambiguous_context
+  - scope_redirect
+  - reserved_squawk_code

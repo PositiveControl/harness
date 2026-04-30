@@ -105,7 +105,8 @@ def _build_hook_pipeline(
 
     valid_anchors = collect_valid_anchors(character_path / "corpus" / "chunks")
     grammar = character.citation_grammar
-    if not summarize_tool_results and not valid_anchors and grammar is None:
+    catchers = character.catchers
+    if not summarize_tool_results and not valid_anchors and grammar is None and not catchers:
         return None
 
     from harness.orchestrator.hooks import (
@@ -113,7 +114,11 @@ def _build_hook_pipeline(
         default_hook_pipeline,
     )
 
-    pipeline = default_hook_pipeline(valid_section_anchors=valid_anchors, citation_grammar=grammar)
+    pipeline = default_hook_pipeline(
+        valid_section_anchors=valid_anchors,
+        citation_grammar=grammar,
+        catchers=catchers,
+    )
 
     if not summarize_tool_results:
         return pipeline
@@ -311,6 +316,7 @@ def build_classic_registry(
                 registry=registry,
                 hooks=default_hook_pipeline(
                     citation_grammar=character.citation_grammar,
+                    catchers=character.catchers,
                 ),
                 router=router,
             )

@@ -292,8 +292,19 @@ def test_pipeline_returns_continue_when_nothing_matches() -> None:
 
 
 def test_pipeline_names_match_expected_surface() -> None:
-    """Canonical catcher names, ordered as bail → post_model → pre_tool → finalize."""
-    pipe = default_hook_pipeline()
+    """Canonical catcher names, ordered as bail → post_model → pre_tool → finalize.
+
+    Constructed with the full atc + ab opt-in roster (harness-qvwq) so
+    the catcher-name surface is exhaustive — runtime characters install
+    only the subset they declare in core.yaml."""
+    pipe = default_hook_pipeline(
+        catchers=(
+            "ab_fabrication",
+            "ambiguous_context",
+            "scope_redirect",
+            "reserved_squawk_code",
+        ),
+    )
     assert pipe.names() == (
         "truncated",
         "unparseable",
@@ -319,6 +330,30 @@ def test_pipeline_names_match_expected_surface() -> None:
         "numeric_fabrication",
         "fabrication_fallback",
     )
+
+
+def test_pipeline_default_excludes_opt_in_catchers() -> None:
+    """No-arg pipeline omits the four opt-in catchers (harness-qvwq)
+    — non-corpus characters get a clean default with no FAA / ab
+    domain checks running."""
+    pipe = default_hook_pipeline()
+    names = pipe.names()
+    for opt_in in (
+        "ab_fabrication",
+        "ambiguous_context",
+        "scope_redirect",
+        "reserved_squawk_code",
+    ):
+        assert opt_in not in names
+
+
+def test_pipeline_unknown_catcher_raises() -> None:
+    """Typos in core.yaml `catchers:` surface immediately rather than
+    silently dropping a catcher."""
+    import pytest
+
+    with pytest.raises(ValueError, match=r"Unknown opt-in catchers"):
+        default_hook_pipeline(catchers=("nonsense",))
 
 
 # ---------- post-model hook ----------
@@ -1614,7 +1649,7 @@ def test_reserved_squawk_still_fires_when_model_proposes_different_reserved_form
 
 def test_reserved_squawk_respects_disabled_toggle() -> None:
     """Attribution eval disables catchers by name."""
-    pipe = default_hook_pipeline()
+    pipe = default_hook_pipeline(catchers=("reserved_squawk_code",))
     ctx = _bail_ctx(
         'The correct phraseology is: "Radar service terminated, '
         'squawk seven five hundred." Per JO 7110.65 §7-6-11.'
@@ -1846,7 +1881,7 @@ def test_scope_redirect_expanded_vocab_catches_household_and_supernatural() -> N
 
 def test_scope_redirect_respects_disabled_toggle() -> None:
     """Attribution eval disables catchers by name."""
-    pipe = default_hook_pipeline()
+    pipe = default_hook_pipeline(catchers=("scope_redirect",))
     ctx = _scope_ctx(
         "do roosters lay eggs",
         "Per JO 7110.65 §7-6-11, radar service is terminated when...",
@@ -1981,7 +2016,7 @@ def test_ambiguous_context_silent_without_user_message() -> None:
 
 def test_ambiguous_context_respects_disabled_toggle() -> None:
     """Attribution eval disables catchers by name."""
-    pipe = default_hook_pipeline()
+    pipe = default_hook_pipeline(catchers=("ambiguous_context",))
     ctx = _ambig_ctx(
         "a balloon intersects a VFR aircraft — who has right of way?",
         "Per §9-6-1, unmanned free balloons are handled by traffic advisory.",

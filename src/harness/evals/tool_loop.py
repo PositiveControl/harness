@@ -291,12 +291,29 @@ def _run_scenario(scenario: dict[str, Any]) -> ToolLoopCase:
         citation_grammar = load_character(
             settings.root / "character" / "airton_c1"
         ).citation_grammar
-    if valid_section_anchors or citation_grammar is not None:
+    # Optional opt-in catcher roster (harness-qvwq). Pass a tuple of
+    # catcher names directly, or `"atc"` / `"ab"` shorthands that
+    # expand to the standard rosters those characters ship.
+    catchers_raw = scenario.get("catchers")
+    if catchers_raw == "atc":
+        catchers_tuple: tuple[str, ...] = (
+            "ambiguous_context",
+            "scope_redirect",
+            "reserved_squawk_code",
+        )
+    elif catchers_raw == "ab":
+        catchers_tuple = ("ab_fabrication",)
+    elif catchers_raw is None:
+        catchers_tuple = ()
+    else:
+        catchers_tuple = tuple(str(c) for c in catchers_raw)
+    if valid_section_anchors or citation_grammar is not None or catchers_tuple:
         from harness.orchestrator.hooks import default_hook_pipeline as _build_pipeline
 
         hooks_override: HookPipeline | None = _build_pipeline(
             valid_section_anchors=valid_section_anchors,
             citation_grammar=citation_grammar,
+            catchers=catchers_tuple,
         )
     else:
         hooks_override = None

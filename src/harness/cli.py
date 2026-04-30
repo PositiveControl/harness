@@ -1449,6 +1449,7 @@ def _build_tool_registry_for_tui(
                         citation_grammar=character.citation_grammar
                         if character is not None
                         else None,
+                        catchers=character.catchers if character is not None else (),
                     ),
                     router=router,
                 )

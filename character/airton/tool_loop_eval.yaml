@@ -83,6 +83,7 @@
   expected_events_contain: [bail_retry]
 
 - id: ab_fabrication_capture_colon
+  catchers: ab
   label: ab_fabrication
   description: "Fake ab_ops capture receipt using colon form `Captured: …` (harness-lbh)."
   scripted_replies:
@@ -92,6 +93,7 @@
   expected_fallback: true
 
 - id: ab_fabrication_remembered
+  catchers: ab
   label: ab_fabrication
   description: "Fake RememberTool receipt `Remembered: …` (harness-z734)."
   scripted_replies:
@@ -101,6 +103,7 @@
   expected_fallback: true
 
 - id: ab_fabrication_bead_id
+  catchers: ab
   label: ab_fabrication
   description: "Imaginary bead-id schema `Bead id: harness-xxx` (harness-ce2x)."
   scripted_replies:
@@ -110,6 +113,7 @@
   expected_fallback: true
 
 - id: ab_fabrication_short_scope
+  catchers: ab
   label: ab_fabrication
   description: Abbreviated scope brackets `[prof/…]` — real scopes never abbrev.
   scripted_replies:
@@ -119,6 +123,7 @@
   expected_fallback: true
 
 - id: ab_fabrication_date_header
+  catchers: ab
   label: ab_fabrication
   description: Plan-imitation date header `Today — 2026-04-18` (harness-jj9).
   scripted_replies:
@@ -128,6 +133,7 @@
   expected_fallback: true
 
 - id: ab_fabrication_tier_headers
+  catchers: ab
   label: ab_fabrication
   description: Two+ tier labels (Shall/Should) in one reply — plan imitation.
   scripted_replies:
@@ -137,6 +143,7 @@
   expected_fallback: true
 
 - id: ab_fabrication_bare_claim
+  catchers: ab
   label: ab_fabrication
   description: Bare past-tense success token `Updated.` with no tool call
     (harness-ce2x).
@@ -326,6 +333,7 @@
   expected_not_contains: ["| MH | Under 50 | 50 |"]
 
 - id: ambiguous_context_balloon_variant_repro
+  catchers: atc
   label: ambiguous_context
   description: Session 2026-04-24 repro. User asked about 'a balloon'
     without specifying variant; model assumed 'unmanned free balloon'
@@ -352,6 +360,7 @@
   expected_events_contain: [bail_retry]
 
 - id: scope_redirect_roosters_repro
+  catchers: atc
   label: scope_redirect
   description: Session 2026-04-24 repro. User asked 'do roosters lay
     eggs' (clearly non-aviation). Model bled ATC content into the
@@ -383,6 +392,7 @@
   expected_events_contain: [bail_retry]
 
 - id: reserved_squawk_code_7500_repro
+  catchers: atc
   label: reserved_squawk_code
   description: Session 2026-04-24 repro. User asked to correct the
     phraseology 'Services stopped, squawk seventy five hundred'. Model

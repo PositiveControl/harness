@@ -7,6 +7,7 @@ from pathlib import Path
 from harness.model.adapter import ChatMessage
 from harness.model.mlx import _parse_qwen_tool_calls
 from harness.orchestrator import ToolLoopEvent, run_tool_loop
+from harness.orchestrator.hooks import default_hook_pipeline
 from harness.tools import (
     ModelReply,
     ReadFileTool,
@@ -17,6 +18,12 @@ from harness.tools import (
     ToolRegistry,
     ToolSpec,
 )
+
+# Pipeline carrying ab's domain catcher (harness-qvwq). The default
+# pipeline omits opt-in catchers so non-corpus characters don't run
+# them; tests that exercise AbFabricationHook construct the ab roster
+# explicitly and pass it through `hooks=`.
+_AB_PIPELINE = default_hook_pipeline(catchers=("ab_fabrication",))
 
 
 @dataclass
@@ -1263,6 +1270,7 @@ def test_loop_catches_fabricated_ab_capture_receipt() -> None:
         adapter,
         [ChatMessage(role="user", content="I need to trim the bushes in the backyard")],
         ToolRegistry(),
+        hooks=_AB_PIPELINE,
     )
     nudges = [
         m for m in result.messages if m.role == "user" and "fabricated tool output" in m.content
@@ -1297,6 +1305,7 @@ def test_loop_catches_fabricated_ab_plan_output() -> None:
         adapter,
         [ChatMessage(role="user", content="plan")],
         ToolRegistry(),
+        hooks=_AB_PIPELINE,
     )
     nudges = [
         m for m in result.messages if m.role == "user" and "fabricated tool output" in m.content
@@ -1356,6 +1365,7 @@ def test_loop_catches_fabrication_after_errored_tool_call() -> None:
         adapter,
         [ChatMessage(role="user", content="tell me about our current tasks")],
         registry,
+        hooks=_AB_PIPELINE,
     )
     nudges = [
         m for m in result.messages if m.role == "user" and "fabricated tool output" in m.content
@@ -1562,6 +1572,7 @@ def test_loop_second_round_remembered_fabrication_caught() -> None:
         [ChatMessage(role="user", content="remember dad steve's birthday is Oct 8th")],
         ToolRegistry(),
         max_rounds=6,
+        hooks=_AB_PIPELINE,
     )
     bail_events = [e for e in result.events if e.kind == "bail_retry"]
     assert len(bail_events) == 2, (
@@ -1592,6 +1603,7 @@ def test_loop_catches_capture_fabrication_end_to_end() -> None:
         [ChatMessage(role="user", content="/plan clean up dog poop")],
         ToolRegistry(),
         max_rounds=4,
+        hooks=_AB_PIPELINE,
     )
     nudges = [
         m for m in result.messages if m.role == "user" and "fabricated tool output" in m.content
@@ -1641,6 +1653,7 @@ def test_loop_bail_retry_event_fires_for_fabrication() -> None:
         [ChatMessage(role="user", content="what is the date?")],
         ToolRegistry(),
         max_rounds=4,
+        hooks=_AB_PIPELINE,
     )
     kinds = [e.kind for e in result.events]
     # bail_retry must appear exactly once (first round fabricated,
@@ -1671,6 +1684,7 @@ def test_loop_exhausted_fabrication_replaced_with_fallback() -> None:
         [ChatMessage(role="user", content="what is the date?")],
         ToolRegistry(),
         max_rounds=8,
+        hooks=_AB_PIPELINE,
     )
     assert result.content == _EXHAUSTED_FABRICATION_FALLBACK
     # Substitution doesn't swallow the original — events trace shows

@@ -304,6 +304,37 @@ def test_citation_grammar_rejects_invalid_regex(tmp_path: Path) -> None:
         load_character(char_dir)
 
 
+# ---------- harness-qvwq: opt-in domain catchers ----------
+
+
+def test_catchers_default_empty_for_airton() -> None:
+    """Default dev character carries no opt-in catchers — non-corpus
+    replies don't need ATC scope checks or ab fabrication detectors."""
+    assert load_character(AIRTON).catchers == ()
+
+
+def test_catchers_ab_fabrication_on_airton_b() -> None:
+    """ab opts into ab_fabrication so its ops-receipt imitation
+    shapes (Captured. / Remembered: / Bead id:) get caught even
+    though they self-gate on tools_ran=False."""
+    assert load_character(AIRTON_B).catchers == ("ab_fabrication",)
+
+
+def test_catchers_atc_roster_on_atc_family() -> None:
+    """airton_c + airton_c1 ship the three FAA-shape catchers:
+    ambiguous_context, scope_redirect, reserved_squawk_code."""
+    assert load_character(AIRTON_C).catchers == (
+        "ambiguous_context",
+        "scope_redirect",
+        "reserved_squawk_code",
+    )
+    assert load_character(AIRTON_C1).catchers == (
+        "ambiguous_context",
+        "scope_redirect",
+        "reserved_squawk_code",
+    )
+
+
 def test_voice_rewriter_rejects_unknown_value(tmp_path: Path) -> None:
     """An unknown rewriter value in core.yaml raises rather than
     silently defaulting — typos surface immediately."""

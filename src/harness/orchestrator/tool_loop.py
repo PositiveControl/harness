@@ -53,7 +53,18 @@ from harness.tools.base import (
 # code never mutates `_DISABLED_CATCHERS`; only `harness.evals.tool_loop`
 # does (via its `disable_catchers` context manager).
 _DEFAULT_PIPELINE: HookPipeline = default_hook_pipeline()
-_CATCHER_NAMES: tuple[str, ...] = _DEFAULT_PIPELINE.names()
+# Full catcher surface includes the opt-in domain catchers
+# (harness-qvwq) — runtime characters install only the subset they
+# declare in core.yaml, but the attribution eval + fixture validator
+# need to see every nameable catcher.
+_CATCHER_NAMES: tuple[str, ...] = default_hook_pipeline(
+    catchers=(
+        "ab_fabrication",
+        "ambiguous_context",
+        "scope_redirect",
+        "reserved_squawk_code",
+    ),
+).names()
 _DISABLED_CATCHERS: set[str] = set()
 
 
