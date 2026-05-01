@@ -1,9 +1,9 @@
 {
   "character": "airton_c1",
-  "fixture": "/Users/m7s/dev/harness/character/airton_c1/atc_eval.yaml",
+  "fixture": "/Users/mevans/dev/ideas/harness/character/airton_c1/atc_eval.yaml",
   "k": 10,
-  "recall_at_1": 0.7586206896551724,
-  "recall_at_3": 0.9655172413793104,
+  "recall_at_1": 0.7931034482758621,
+  "recall_at_3": 0.896551724137931,
   "recall_at_5": 1.0,
   "recall_at_k": 1.0,
   "median_rank": 0.0,
@@ -27,7 +27,7 @@
         "2-1-19"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03200204813108039,
+      "score_of_first_expected": 0.031754032258064516,
       "found": true
     },
     {
@@ -38,7 +38,7 @@
         "3-9-6"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.029726775956284153,
+      "score_of_first_expected": 0.03009207275993712,
       "found": true
     },
     {
@@ -49,7 +49,7 @@
         "3-10-3"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03278688524590164,
+      "score_of_first_expected": 0.03252247488101534,
       "found": true
     },
     {
@@ -60,7 +60,7 @@
         "3-10-3"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03278688524590164,
+      "score_of_first_expected": 0.03252247488101534,
       "found": true
     },
     {
@@ -93,7 +93,7 @@
         "5-5-4"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03252247488101534,
+      "score_of_first_expected": 0.03278688524590164,
       "found": true
     },
     {
@@ -159,7 +159,7 @@
         "10-2-5"
       ],
       "rank_of_first_expected": 1,
-      "score_of_first_expected": 0.03131881575727918,
+      "score_of_first_expected": 0.031099324975891997,
       "found": true
     },
     {
@@ -170,7 +170,7 @@
         "4-6-4"
       ],
       "rank_of_first_expected": 1,
-      "score_of_first_expected": 0.030158730158730156,
+      "score_of_first_expected": 0.030679156908665108,
       "found": true
     },
     {
@@ -181,8 +181,8 @@
         "2-1-19",
         "2-1-20"
       ],
-      "rank_of_first_expected": 2,
-      "score_of_first_expected": 0.02832415420928403,
+      "rank_of_first_expected": 4,
+      "score_of_first_expected": 0.028177225029148854,
       "found": true
     },
     {
@@ -193,7 +193,7 @@
         "3-10-3"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03278688524590164,
+      "score_of_first_expected": 0.03252247488101534,
       "found": true
     },
     {
@@ -214,8 +214,8 @@
       "expected_anchors": [
         "4-1-1"
       ],
-      "rank_of_first_expected": 1,
-      "score_of_first_expected": 0.032266458495966696,
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03252247488101534,
       "found": true
     },
     {
@@ -248,7 +248,7 @@
         "2-1-21"
       ],
       "rank_of_first_expected": 1,
-      "score_of_first_expected": 0.029418126757516764,
+      "score_of_first_expected": 0.02919863597612958,
       "found": true
     },
     {
@@ -269,7 +269,7 @@
       "expected_anchors": [
         "2-4-3"
       ],
-      "rank_of_first_expected": 3,
+      "rank_of_first_expected": 4,
       "score_of_first_expected": 0.01639344262295082,
       "found": true
     },
@@ -280,8 +280,8 @@
       "expected_anchors": [
         "4-5-1"
       ],
-      "rank_of_first_expected": 2,
-      "score_of_first_expected": 0.02128623188405797,
+      "rank_of_first_expected": 4,
+      "score_of_first_expected": 0.022616917965755177,
       "found": true
     },
     {
@@ -303,7 +303,7 @@
         "5-4-5"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.032018442622950824,
+      "score_of_first_expected": 0.031544957774465976,
       "found": true
     },
     {
@@ -314,7 +314,7 @@
         "10-2-6"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.032018442622950824,
+      "score_of_first_expected": 0.03278688524590164,
       "found": true
     },
     {

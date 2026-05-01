@@ -60,6 +60,54 @@ def test_iter_blocks_separates_by_heading(chunker: object) -> None:
     assert "Weather and chaff areas body text" in joined
 
 
+def test_iter_blocks_skips_page_break_headings(chunker: object) -> None:
+    """pymupdf4llm wraps per-page running headers as ``## ...`` mid-
+    document, splitting real sections in half (harness-wkom: §91.155(a)
+    table truncated to the Class A/B/C row only). _iter_blocks must
+    silently merge those phantom headings back into the parent
+    section's body so the section anchor stays attached to all of its
+    content."""
+    md = (
+        "## **§ 91.155 Basic VFR weather minimums.**\n"
+        "\n"
+        "(a) ... corresponding altitude and class of airspace in the following table:\n"
+        "\n"
+        "|Class A|Not Applicable|Not Applicable.|\n"
+        "\n"
+        "## 14 CFR Ch. I (1-1-25 Edition)\n"
+        "\n"
+        "|Class E (>=10,000 MSL)|5 SM|1,000 below; 1,000 above; 1 SM horizontal.|\n"
+        "\n"
+        "## **§ 91.157 Special VFR weather minimums.**\n"
+        "\n"
+        "Special VFR body.\n"
+    )
+    blocks = list(chunker._iter_blocks(md))  # type: ignore[attr-defined]
+    headings = [b.heading for b in blocks]
+    # Page-break heading is dropped, not emitted as its own block.
+    assert headings == [
+        "§ 91.155 Basic VFR weather minimums.",
+        "§ 91.157 Special VFR weather minimums.",
+    ]
+    # The post-page-break body lands under §91.155, not a phantom block.
+    body_91_155 = "\n".join(blocks[0].body_lines)
+    assert "Class A" in body_91_155
+    assert "Class E (>=10,000 MSL)" in body_91_155
+    assert "1 SM horizontal" in body_91_155
+
+
+def test_is_page_break_heading_recognizes_running_headers(chunker: object) -> None:
+    is_pb = chunker._is_page_break_heading  # type: ignore[attr-defined]
+    assert is_pb("14 CFR Ch. I (1-1-25 Edition)")
+    assert is_pb("Pilot/Controller Glossary")
+    assert is_pb("Aeronautical Information Manual")
+    assert is_pb("AIM")
+    # Real section headings are NOT page breaks.
+    assert not is_pb("§ 91.155 Basic VFR weather minimums.")
+    assert not is_pb("2-6-4. ISSUING WEATHER AND CHAFF AREAS")
+    assert not is_pb("Chapter 2. General Control")
+
+
 def test_strip_wrappers_cleans_markdown_emphasis(chunker: object) -> None:
     assert chunker._strip_wrappers("**BOLD**") == "BOLD"  # type: ignore[attr-defined]
     assert chunker._strip_wrappers("_**ITALIC BOLD**_") == "ITALIC BOLD"  # type: ignore[attr-defined]

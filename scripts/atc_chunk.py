@@ -230,18 +230,40 @@ class _Block:
     body_lines: tuple[str, ...]
 
 
+def _is_page_break_heading(text: str) -> bool:
+    """True when a markdown heading matches one of the per-page running-
+    header patterns pymupdf4llm wraps as ``## …`` mid-document (e.g.
+    ``## 14 CFR Ch. I (1-1-25 Edition)`` between rows of a CFR table,
+    ``## Pilot/Controller Glossary`` between PCG terms). These split
+    real sections in half — left side keeps the heading, right side
+    becomes a phantom section with no anchor — so retrieval misses
+    chunks that span a page boundary (harness-wkom: §91.155(a) table
+    truncated to the Class A/B/C row only)."""
+    return any(pat.match(text) for pat in _NOISE_LINES)
+
+
 def _iter_blocks(md: str) -> Iterator[_Block]:
     """Walk the markdown linewise and emit (heading, body) pairs. Body
-    is every non-heading line between this heading and the next."""
+    is every non-heading line between this heading and the next.
+
+    Page-break headings (``## 14 CFR Ch. I…``, etc.) are detected and
+    silently merged into the current block's body so a real section
+    that straddles a page break stays intact."""
     current_heading: str | None = None
     current_level = 0
     buffer: list[str] = []
     for line in md.splitlines():
         m = _HEADING_LINE.match(line)
         if m is not None:
+            heading_text = _strip_wrappers(m.group(2))
+            if _is_page_break_heading(heading_text):
+                # Drop the page-break heading entirely — accumulating
+                # its text would only inject the running-header string
+                # into the body, which the noise filter scrubs anyway.
+                continue
             if current_heading is not None:
                 yield _Block(current_level, current_heading, tuple(buffer))
-            current_heading = _strip_wrappers(m.group(2))
+            current_heading = heading_text
             current_level = len(m.group(1))
             buffer = []
         else:
