@@ -133,3 +133,50 @@ catchers:
   - ambiguous_context
   - scope_redirect
   - reserved_squawk_code
+
+# Scope gate via the Hermes router (harness-8dop). The router prompt
+# picks up `scope_hint` and emits an "in" / "out" / "unsure" verdict
+# alongside its tool intent. On "out", the orchestrator short-circuits
+# to `scope_redirect_template` — no main-model call, no fabricated
+# citation. Cosine-floor approach was prototyped first and rejected
+# (BGE-small clusters aviation language too tightly to separate
+# pilot-side from controller-side; see scripts/scope_calibration.py
+# receipts on the bead).
+scope_hint: |
+  This persona is airton_c1 — a controller-side specialist that ONLY
+  answers from FAA Order JO 7110.65 (the controller's handbook). It
+  does NOT answer pilot-side questions: rules from 14 CFR, pilot
+  procedures from the AIM, glossary terms from the PCG, or general
+  pilot knowledge.
+
+  Classify the user's question's scope:
+
+  - "in" — controller-side question, answerable from JO 7110.65.
+    Examples: "What's the wake-turbulence separation behind a heavy?",
+    "Phraseology for a Class B clearance from the tower", "When does
+    MSAW alert fire?", "Required separation between two arrivals to
+    parallel runways", "Hand-off procedure between TRACON and tower",
+    "What's the reserved squawk code for hijack?", "How does ATC clear
+    a CPDLC oceanic flight?"
+
+  - "out" — pilot-side question (14 CFR / AIM / PCG content), pilot-
+    asking-pilot-question framing, or off-topic entirely. Examples:
+    "What VFR cloud clearance do I need above 10,000 MSL?", "Can I
+    cancel IFR in IMC?", "What is VFR-on-top and when can I request
+    it?", "What's a steep flightpath indicator?", "Is there a TFR
+    over KPAO?", "Help me write some Python", "Do roosters lay eggs".
+    Cue verbs that almost always signal pilot-side: "can I…", "may I…",
+    "do I need…", "should I…" (the user is asking what they as a
+    pilot must do).
+
+  - "unsure" — overlaps both sides, genuinely ambiguous, or the
+    persona could plausibly answer it. Conservative default. Examples:
+    "Difference between Class B and Class C airspace" (pilot wants
+    rules, controller wants phraseology — both legitimate), "Explain
+    clearance limit", "What's a hold-short instruction".
+
+scope_redirect_template: |
+  That's a pilot-side question — outside JO 7110.65, which is the
+  controller's handbook. airton_c is the generalist that answers from
+  14 CFR, the AIM, and the PCG. Same person; different reference
+  shelf.

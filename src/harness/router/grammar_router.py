@@ -38,14 +38,24 @@ def build_router_schema(tool_specs: Sequence[ToolSpec]) -> dict[str, Any]:
     """Build the JSON schema that constrains the router output.
 
     Shape:
-        {"tool": <enum of tool_names + null>, "arguments": <any object>}
+        {
+          "tool": <enum of tool_names + null>,
+          "arguments": <any object>,
+          "scope": <enum: "in" | "out" | "unsure">
+        }
 
     Tool names are exposed as a string enum; `null` is included via a
     `["string", "null"]` type union so the small model can confidently
     express 'no tool needed' without having to invent a sentinel name.
     `arguments` stays free-form here — we let the model write whatever
     shape it wants and post-validate required keys in the orchestrator
-    (or in the args-schema extension later)."""
+    (or in the args-schema extension later).
+
+    `scope` (harness-8dop) is unconditionally required — the field is
+    cheap and characters that don't bound their scope simply receive
+    `"unsure"` for every turn (handled in the orchestrator as a
+    fall-through). Always-required keeps the schema stable across
+    persona configs and avoids a per-turn schema rebuild."""
     tool_names = [s.name for s in tool_specs]
     if tool_names:
         tool_field: dict[str, Any] = {
@@ -62,8 +72,9 @@ def build_router_schema(tool_specs: Sequence[ToolSpec]) -> dict[str, Any]:
         "properties": {
             "tool": tool_field,
             "arguments": {"type": "object"},
+            "scope": {"type": "string", "enum": ["in", "out", "unsure"]},
         },
-        "required": ["tool", "arguments"],
+        "required": ["tool", "arguments", "scope"],
         "additionalProperties": False,
     }
 
@@ -72,11 +83,17 @@ def build_router_schema(tool_specs: Sequence[ToolSpec]) -> dict[str, Any]:
 class GrammarRouter:
     """A Router backed by a grammar-capable adapter. The adapter must
     expose `complete_grammar(messages, schema, ...)`. If it doesn't,
-    construction raises — callers should pick ModelRouter instead."""
+    construction raises — callers should pick ModelRouter instead.
+
+    `persona_scope_hint` mirrors `ModelRouter.persona_scope_hint` —
+    when set, the system prompt picks up the scope-classification
+    block so the grammar-constrained `scope` field gets a meaningful
+    value rather than the model's blind guess."""
 
     adapter: Any  # structurally typed; see GrammarCapableAdapter Protocol
     max_tokens: int = 256
     temperature: float = 0.0
+    persona_scope_hint: str | None = None
     _warned: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -93,7 +110,10 @@ class GrammarRouter:
         tool_specs: Sequence[ToolSpec],
     ) -> RouterIntent | None:
         schema = build_router_schema(tool_specs)
-        system = ChatMessage(role="system", content=_build_system_prompt(tool_specs))
+        system = ChatMessage(
+            role="system",
+            content=_build_system_prompt(tool_specs, persona_scope_hint=self.persona_scope_hint),
+        )
         user = ChatMessage(role="user", content=user_message)
         try:
             raw = self.adapter.complete_grammar(

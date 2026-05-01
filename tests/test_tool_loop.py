@@ -2002,6 +2002,127 @@ def test_router_unknown_tool_falls_through() -> None:
     assert not any(e.kind == "router_intent" for e in result.events)
 
 
+# ---------- Scope-gate short-circuit (harness-8dop) ----------
+
+
+def test_scope_redirect_short_circuits_when_scope_out_and_template_set() -> None:
+    """Router classifies the turn `scope=out` AND the persona supplied a
+    redirect template → orchestrator returns the template directly,
+    rounds=0, no main-model call."""
+    from harness.router.intent import RouterIntent
+
+    registry = ToolRegistry()
+    adapter = _ScriptedAdapter(
+        replies=[ModelReply(content="MAIN MODEL FABRICATED — should not be reached")]
+    )
+    router = _ScriptedRouter(intents=[RouterIntent(tool_name=None, arguments={}, scope="out")])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="What VFR cloud clearance do I need?")],
+        registry,
+        router=router,  # type: ignore[arg-type]
+        scope_redirect_template="Outside JO 7110.65 — ask airton_c.",
+    )
+    assert result.content == "Outside JO 7110.65 — ask airton_c."
+    assert result.rounds == 0
+    # Main model was NEVER called — adapter scripted reply is untouched.
+    assert adapter.calls_seen == []
+    # scope_redirected event is what observers (CLI / TUI) read to
+    # render an inline marker instead of a normal turn.
+    redirects = [e for e in result.events if e.kind == "scope_redirected"]
+    assert len(redirects) == 1
+
+
+def test_scope_in_does_not_short_circuit() -> None:
+    """`in` is the normal flow — router intent (if any) routes a tool,
+    main model handles wrap-up. Template is irrelevant unless scope=out."""
+    from harness.router.intent import RouterIntent
+
+    registry = ToolRegistry()
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="real answer")])
+    router = _ScriptedRouter(intents=[RouterIntent(tool_name=None, arguments={}, scope="in")])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="What's wake-turbulence separation?")],
+        registry,
+        router=router,  # type: ignore[arg-type]
+        scope_redirect_template="should not appear",
+    )
+    assert result.content == "real answer"
+    assert not any(e.kind == "scope_redirected" for e in result.events)
+
+
+def test_scope_unsure_does_not_short_circuit() -> None:
+    """`unsure` is the conservative default — fall through to the normal
+    flow so a router misclassification can't false-block a legitimate
+    in-scope question."""
+    from harness.router.intent import RouterIntent
+
+    registry = ToolRegistry()
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="real answer")])
+    router = _ScriptedRouter(intents=[RouterIntent(tool_name=None, arguments={}, scope="unsure")])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="ambiguous question")],
+        registry,
+        router=router,  # type: ignore[arg-type]
+        scope_redirect_template="should not appear",
+    )
+    assert result.content == "real answer"
+    assert not any(e.kind == "scope_redirected" for e in result.events)
+
+
+def test_scope_out_without_template_does_not_short_circuit() -> None:
+    """Without a redirect template the gate is disabled — `scope=out`
+    falls through. This is how every persona except airton_c1 stays
+    unaffected by the scope gate."""
+    from harness.router.intent import RouterIntent
+
+    registry = ToolRegistry()
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="main model answer")])
+    router = _ScriptedRouter(intents=[RouterIntent(tool_name=None, arguments={}, scope="out")])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="anything")],
+        registry,
+        router=router,  # type: ignore[arg-type]
+        # scope_redirect_template not set
+    )
+    assert result.content == "main model answer"
+    assert not any(e.kind == "scope_redirected" for e in result.events)
+
+
+def test_scope_out_classifier_still_runs_tool_routing() -> None:
+    """Edge case: a router emitting both a tool_name AND scope=out is
+    still gated as out (template wins). The redirect template is the
+    authored answer; the tool that would have run is irrelevant."""
+    from harness.router.intent import RouterIntent
+
+    registry = ToolRegistry()
+    registry.register(_ReadTool(name="search_web"))
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="should not appear")])
+    router = _ScriptedRouter(
+        intents=[
+            RouterIntent(
+                tool_name="search_web",
+                arguments={"query": "x"},
+                scope="out",
+            )
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="VFR cloud clearance question")],
+        registry,
+        router=router,  # type: ignore[arg-type]
+        scope_redirect_template="redirect text",
+    )
+    assert result.content == "redirect text"
+    # Tool was NOT executed — scope check ran before _router_prelude.
+    assert not any(m.role == "tool" for m in result.messages)
+    assert not any(e.kind == "tool_call_start" for e in result.events)
+
+
 def test_router_missing_required_arg_falls_through() -> None:
     """Required `query` arg not present → skip routing, fall through."""
     from harness.router.intent import RouterIntent

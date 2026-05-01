@@ -2589,6 +2589,8 @@ def eval_router(
             "fixture": str(path),
             "accuracy": result.accuracy,
             "tool_accuracy": result.tool_accuracy,
+            "scope_accuracy": result.scope_accuracy,
+            "scope_case_count": result.scope_case_count,
             "cases": [
                 {
                     "prompt": c.prompt,
@@ -2596,9 +2598,12 @@ def eval_router(
                     "actual_tool": c.actual_tool,
                     "expected_args": list(c.expected_args),
                     "actual_args": c.actual_args,
+                    "expected_scope": c.expected_scope,
+                    "actual_scope": c.actual_scope,
                     "passed": c.passed,
                     "tool_correct": c.tool_correct,
                     "args_correct": c.args_correct,
+                    "scope_correct": c.scope_correct,
                 }
                 for c in result.cases
             ],
@@ -2617,24 +2622,41 @@ def _print_router_eval_table(
     table.add_column("prompt")
     table.add_column("expected", style="green")
     table.add_column("actual", style="yellow")
+    table.add_column("scope", style="cyan")
     table.add_column("args", style="dim")
     for c in result.cases:
         mark = "[green]✓[/green]" if c.passed else "[red]✗[/red]"
         exp = c.expected_tool if c.expected_tool is not None else "[dim]null[/dim]"
         act = c.actual_tool if c.actual_tool is not None else "[dim]null[/dim]"
+        if c.expected_scope is None:
+            scope_note = "[dim]—[/dim]"
+        elif c.scope_correct:
+            scope_note = c.actual_scope
+        else:
+            scope_note = f"[red]{c.actual_scope}[/red] (want {c.expected_scope})"
         if c.args_correct:
             args_note = ""
         else:
             missing = sorted(set(c.expected_args) - c.actual_args.keys())
             args_note = f"missing {missing}"
-        table.add_row(mark, c.prompt, exp, act, args_note)
+        table.add_row(mark, c.prompt, exp, act, scope_note, args_note)
     console.print(table)
     passed = sum(1 for c in result.cases if c.passed)
-    console.print(
+    summary = (
         f"[bold]{passed}/{len(result.cases)} passed · "
         f"{result.accuracy * 100:.1f}% full · "
-        f"{result.tool_accuracy * 100:.1f}% tool-only[/bold]"
+        f"{result.tool_accuracy * 100:.1f}% tool-only"
     )
+    if result.scope_case_count > 0:
+        scope_passed = sum(
+            1 for c in result.cases if c.expected_scope is not None and c.scope_correct
+        )
+        summary += (
+            f" · {result.scope_accuracy * 100:.1f}% scope "
+            f"({scope_passed}/{result.scope_case_count})"
+        )
+    summary += "[/bold]"
+    console.print(summary)
 
 
 @eval_app.command("session-resume")

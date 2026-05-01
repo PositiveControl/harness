@@ -166,3 +166,87 @@
 
 - prompt: "remember that I'm prepping for the CTO exam in six weeks"
   expected_tool: remember_fact
+
+# ----- scope classification (harness-8dop) -----
+# Hermes router emits a `scope: in | out | unsure` verdict alongside
+# its tool intent; on `out` the orchestrator short-circuits to
+# core.yaml's scope_redirect_template instead of calling the main
+# model. These rows pin the scope-classifier accuracy independently
+# of tool selection — `expected_scope` is checked even when the
+# row's `expected_tool` matches.
+#
+# Coverage strategy:
+#   - controller-side rule lookups → in
+#   - pilot-side rule lookups (14 CFR / AIM / PCG) → out
+#   - off-topic / non-aviation → out
+#   - genuinely ambiguous overlaps → unsure
+#
+# Every row keeps its tool expectation so a scope misclass doesn't
+# silently mask a tool regression.
+
+# in-scope: controller-side procedures
+- prompt: "what's the wake-turbulence separation behind a heavy?"
+  expected_tool: search_memory
+  expected_args: [query]
+  expected_scope: in
+
+- prompt: "phraseology for a Class B clearance from the tower"
+  expected_tool: search_memory
+  expected_args: [query]
+  expected_scope: in
+
+- prompt: "when does MSAW alert fire?"
+  expected_tool: search_memory
+  expected_args: [query]
+  expected_scope: in
+
+- prompt: "what's the reserved squawk code for hijack?"
+  expected_tool: search_memory
+  expected_args: [query]
+  expected_scope: in
+
+- prompt: "JO 7110.65 §5-5-4 wake separation"
+  expected_tool: search_memory
+  expected_args: [query]
+  expected_scope: in
+
+# out-of-scope: pilot-side rules (14 CFR / AIM)
+- prompt: "what VFR cloud clearance do I need above 10,000 MSL?"
+  expected_tool: null
+  expected_scope: out
+
+- prompt: "what is VFR-on-top and when can I request it?"
+  expected_tool: null
+  expected_scope: out
+
+- prompt: "can I cancel IFR in IMC?"
+  expected_tool: null
+  expected_scope: out
+
+- prompt: "what's a steep flightpath indicator for wake turbulence avoidance?"
+  expected_tool: null
+  expected_scope: out
+
+- prompt: "what are the requirements to enter Class B as a VFR pilot?"
+  expected_tool: null
+  expected_scope: out
+
+# out-of-scope: completely off-topic
+- prompt: "help me write a Python function"
+  expected_tool: null
+  expected_scope: out
+
+- prompt: "what's the weather in San Francisco"
+  expected_tool: null
+  expected_scope: out
+
+# unsure: genuinely ambiguous overlaps
+- prompt: "what's the difference between Class B and Class C airspace?"
+  expected_tool: search_memory
+  expected_args: [query]
+  expected_scope: unsure
+
+- prompt: "explain what a clearance limit is"
+  expected_tool: search_memory
+  expected_args: [query]
+  expected_scope: unsure

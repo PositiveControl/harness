@@ -1035,6 +1035,7 @@ class ChatApp(App[None]):
                     hooks=self._hooks,  # type: ignore[arg-type]  # typed `object` to skip import
                     memory_block_attached=bool(recalled),
                     force_search_memory=self._character.require_search_memory,
+                    scope_redirect_template=self._character.scope_redirect_template,
                 )
                 if self._state.turn_seq != seq:
                     return  # interrupted; drop partial reply + skip persistence

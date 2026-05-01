@@ -17,11 +17,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from harness.model.adapter import ChatMessage
-from harness.router.intent import RouterIntent
+from harness.router.intent import RouterIntent, RouterScope
 
 if TYPE_CHECKING:
     from harness.model.adapter import ModelAdapter
     from harness.tools.base import ToolSpec
+
+_VALID_SCOPES: frozenset[RouterScope] = frozenset(("in", "out", "unsure"))
 
 
 _SYSTEM_TEMPLATE = """\
@@ -31,7 +33,7 @@ and if so, which tool and with what arguments.
 
 Return STRICT JSON only — no prose, no markdown fences — in exactly
 this shape:
-{{"tool": "<tool_name>" or null, "arguments": {{...}}}}
+{{"tool": "<tool_name>" or null, "arguments": {{...}}, "scope": "in"|"out"|"unsure"}}
 
 CRITICAL: when the user's message names a specific entity — a domain
 (`stackoverflow`, `example.com`), URL, filename, path, subject, or
@@ -214,12 +216,47 @@ def _format_spec(spec: ToolSpec) -> str:
     return head
 
 
-def _build_system_prompt(tool_specs: Sequence[ToolSpec]) -> str:
+_SCOPE_CLASSIFIER_BLOCK = """
+
+Scope classification (the `scope` JSON field): commit to a verdict.
+Read the persona-scope rules below, then classify the user's question:
+
+{scope_hint}
+
+Three rules for the `scope` field:
+1. If the question matches the "in" criteria above, return "in".
+2. If the question matches the "out" criteria above, return "out".
+3. If neither pattern fits or you can't tell, return "unsure".
+
+Do NOT put "in" / "out" / "unsure" in the `tool` field — those are
+ONLY valid in the `scope` field. The `tool` field carries a tool
+name from the list above, or null.
+
+Use "unsure" sparingly — only when neither in nor out clearly fits.
+The persona's scope rules above describe both sides concretely;
+match against those rules, not your default uncertainty."""
+
+
+_SCOPE_DEFAULT_BLOCK = """
+
+Scope classification (the `scope` JSON field): no scope rules apply
+for this persona. Always return `"scope": "unsure"`. Do NOT put
+"unsure" in the `tool` field — it goes in `scope` only."""
+
+
+def _build_system_prompt(
+    tool_specs: Sequence[ToolSpec],
+    *,
+    persona_scope_hint: str | None = None,
+) -> str:
     if tool_specs:
         tool_list = "\n".join(_format_spec(s) for s in tool_specs)
     else:
         tool_list = '(no tools available — always return {"tool": null})'
-    return _SYSTEM_TEMPLATE.format(tool_list=tool_list)
+    base = _SYSTEM_TEMPLATE.format(tool_list=tool_list)
+    if persona_scope_hint and persona_scope_hint.strip():
+        return base + _SCOPE_CLASSIFIER_BLOCK.format(scope_hint=persona_scope_hint.strip())
+    return base + _SCOPE_DEFAULT_BLOCK
 
 
 def _strip_fences(raw: str) -> str:
@@ -244,7 +281,12 @@ def _coerce_intent(data: Any) -> RouterIntent | None:
 
     The string forms `"null"` / `"none"` (case-insensitive) are folded
     to Python None — Hermes-3-3B and other tuned-for-JSON models will
-    sometimes emit the literal word instead of real JSON null."""
+    sometimes emit the literal word instead of real JSON null.
+
+    `scope` (harness-8dop) is fully optional: missing key, wrong type,
+    or unrecognized value all default to `"unsure"`. Characters that
+    don't consume scope ignore the field; characters that do treat
+    `"unsure"` as fall-through, so a parse miss can never false-block."""
     if not isinstance(data, dict):
         return None
     tool = data.get("tool", ...)
@@ -258,7 +300,13 @@ def _coerce_intent(data: Any) -> RouterIntent | None:
     arguments = data.get("arguments", {})
     if not isinstance(arguments, dict):
         return None
-    return RouterIntent(tool_name=tool, arguments=dict(arguments))
+    raw_scope = data.get("scope")
+    scope: RouterScope = "unsure"
+    if isinstance(raw_scope, str):
+        normalized = raw_scope.strip().lower()
+        if normalized in _VALID_SCOPES:
+            scope = normalized  # narrowed to RouterScope by membership
+    return RouterIntent(tool_name=tool, arguments=dict(arguments), scope=scope)
 
 
 def parse_router_output(raw: str) -> RouterIntent | None:
@@ -291,18 +339,28 @@ def parse_router_output(raw: str) -> RouterIntent | None:
 class ModelRouter:
     """A Router backed by a ModelAdapter. Low temperature by default so
     JSON output is deterministic; `max_tokens` is sized for a one-line
-    verdict, not prose."""
+    verdict, not prose.
+
+    `persona_scope_hint` (harness-8dop) is the authored scope-rule
+    text for a bounded persona (e.g. airton_c1 = JO 7110.65 only).
+    When set, the system prompt picks up a scope-classification
+    block so Hermes can label each turn `in` / `out` / `unsure`.
+    Unset → prompt tells the router to always answer `unsure`."""
 
     adapter: ModelAdapter
     max_tokens: int = 256
     temperature: float = 0.0
+    persona_scope_hint: str | None = None
 
     def classify(
         self,
         user_message: str,
         tool_specs: Sequence[ToolSpec],
     ) -> RouterIntent | None:
-        system = ChatMessage(role="system", content=_build_system_prompt(tool_specs))
+        system = ChatMessage(
+            role="system",
+            content=_build_system_prompt(tool_specs, persona_scope_hint=self.persona_scope_hint),
+        )
         user = ChatMessage(role="user", content=user_message)
         try:
             raw = self.adapter.complete(

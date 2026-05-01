@@ -530,6 +530,7 @@ class ClassicChatSession:
                 memory_block_attached=bool(recalled),
                 force_search_memory=self.character.require_search_memory,
                 banter_tracker=self.banter_tracker,
+                scope_redirect_template=self.character.scope_redirect_template,
             )
             streamed = True
             _persist_tool_exchange(
@@ -702,9 +703,9 @@ def run_classic_chat(
 
         router_adapter: Any = MLXAdapter(repo=router_repo)
         router = (
-            GrammarRouter(adapter=router_adapter)
+            GrammarRouter(adapter=router_adapter, persona_scope_hint=character.scope_hint)
             if router_mode == "grammar"
-            else ModelRouter(adapter=router_adapter)
+            else ModelRouter(adapter=router_adapter, persona_scope_hint=character.scope_hint)
         )
 
     retriever = _maybe_retriever(character, top_k)

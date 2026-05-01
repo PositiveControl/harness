@@ -135,6 +135,42 @@ def test_parse_returns_none_on_non_dict_arguments() -> None:
     assert parse_router_output('{"tool": "search_web", "arguments": "not a dict"}') is None
 
 
+# --- scope-field parsing (harness-8dop) ---
+
+
+def test_parse_scope_in_out_unsure_round_trip() -> None:
+    for verdict in ("in", "out", "unsure"):
+        raw = f'{{"tool": null, "arguments": {{}}, "scope": "{verdict}"}}'
+        intent = parse_router_output(raw)
+        assert intent is not None
+        assert intent.scope == verdict
+
+
+def test_parse_scope_defaults_to_unsure_when_missing() -> None:
+    """Legacy router output (pre-harness-8dop) has no `scope` field.
+    The parser must default to 'unsure' so the orchestrator's
+    short-circuit never triggers on accident."""
+    intent = parse_router_output('{"tool": null, "arguments": {}}')
+    assert intent is not None
+    assert intent.scope == "unsure"
+
+
+def test_parse_scope_unrecognized_value_falls_back_to_unsure() -> None:
+    """A small model emitting a non-enum value (typo, capitalization)
+    must not false-block: `unsure` is always safe."""
+    raw = '{"tool": null, "arguments": {}, "scope": "in_scope"}'
+    intent = parse_router_output(raw)
+    assert intent is not None
+    assert intent.scope == "unsure"
+
+
+def test_parse_scope_normalizes_case() -> None:
+    raw = '{"tool": null, "arguments": {}, "scope": "  OUT  "}'
+    intent = parse_router_output(raw)
+    assert intent is not None
+    assert intent.scope == "out"
+
+
 def test_parse_returns_none_on_top_level_list() -> None:
     assert parse_router_output('[{"tool": "search_web"}]') is None
 
@@ -235,6 +271,33 @@ def test_build_system_prompt_lists_tools() -> None:
 def test_build_system_prompt_handles_empty_specs() -> None:
     prompt = _build_system_prompt([])
     assert "no tools available" in prompt
+
+
+# --- scope-hint plumbing (harness-8dop) ---
+
+
+def test_build_system_prompt_appends_scope_hint_when_provided() -> None:
+    hint = "This persona only answers JO 7110.65 questions; pilot rules are out."
+    prompt = _build_system_prompt([_spec()], persona_scope_hint=hint)
+    assert hint in prompt
+    assert "Scope classification" in prompt
+    # The hint-block boilerplate (in/out/unsure rules) lands in the prompt:
+    assert 'matches the "in" criteria' in prompt
+    # Default-block boilerplate should NOT appear when a hint was given.
+    assert "no scope rules apply" not in prompt
+
+
+def test_build_system_prompt_uses_default_block_without_hint() -> None:
+    prompt = _build_system_prompt([_spec()])
+    # Always-unsure boilerplate keeps Hermes from guessing scope when
+    # no rules apply — output stays well-typed but never short-circuits.
+    assert "no scope rules apply" in prompt
+    assert '"scope": "unsure"' in prompt
+
+
+def test_build_system_prompt_treats_blank_hint_as_no_hint() -> None:
+    prompt = _build_system_prompt([_spec()], persona_scope_hint="   \n   ")
+    assert "no scope rules apply" in prompt
 
 
 def test_build_system_prompt_has_tool_vs_null_rubric() -> None:

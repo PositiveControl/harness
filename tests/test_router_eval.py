@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from harness.evals.router import (
+    FixtureRow,
     RouterEvalCase,
     default_fixture_path,
     load_fixture,
@@ -59,8 +60,8 @@ def test_load_fixture_parses_basic_entries(tmp_path: Path) -> None:
     )
     rows = load_fixture(f)
     assert len(rows) == 2
-    assert rows[0] == ("search for bbq", "search_web", ("query",), ())
-    assert rows[1] == ("hey", None, (), ())
+    assert rows[0] == ("search for bbq", "search_web", ("query",), (), None)
+    assert rows[1] == ("hey", None, (), (), None)
 
 
 def test_load_fixture_rejects_non_list(tmp_path: Path) -> None:
@@ -98,7 +99,7 @@ def test_eval_scores_exact_tool_and_args_match() -> None:
     router = _ScriptedRouter(
         intents=[RouterIntent(tool_name="search_web", arguments={"query": "bbq"})]
     )
-    fixture = (("search for bbq", "search_web", ("query",), ()),)
+    fixture = (("search for bbq", "search_web", ("query",), (), None),)
     result = run_router_eval(router, [_spec("search_web")], fixture)
     assert result.accuracy == 1.0
     assert result.cases[0].passed
@@ -106,7 +107,7 @@ def test_eval_scores_exact_tool_and_args_match() -> None:
 
 def test_eval_marks_wrong_tool_as_fail() -> None:
     router = _ScriptedRouter(intents=[RouterIntent(tool_name="read_file", arguments={"path": "x"})])
-    fixture = (("search for bbq", "search_web", ("query",), ()),)
+    fixture = (("search for bbq", "search_web", ("query",), (), None),)
     result = run_router_eval(router, [_spec("search_web"), _spec("read_file", ("path",))], fixture)
     assert result.accuracy == 0.0
     case = result.cases[0]
@@ -118,7 +119,7 @@ def test_eval_marks_missing_arg_as_args_fail() -> None:
     """Tool right, required arg missing → tool_correct but not
     args_correct; overall fails."""
     router = _ScriptedRouter(intents=[RouterIntent(tool_name="search_web", arguments={})])
-    fixture = (("search for bbq", "search_web", ("query",), ()),)
+    fixture = (("search for bbq", "search_web", ("query",), (), None),)
     result = run_router_eval(router, [_spec("search_web")], fixture)
     case = result.cases[0]
     assert case.tool_correct
@@ -137,7 +138,7 @@ def test_eval_accepts_null_match() -> None:
             None,  # router gave up → also treated as null-match
         ]
     )
-    fixture = (("hey", None, (), ()), ("good morning", None, (), ()))
+    fixture = (("hey", None, (), (), None), ("good morning", None, (), (), None))
     result = run_router_eval(router, [_spec("search_web")], fixture)
     assert result.accuracy == 1.0
 
@@ -152,9 +153,9 @@ def test_eval_partial_correct_tool_wrong_arg_reporting() -> None:
         ]
     )
     fixture = (
-        ("search one", "search_web", ("query",), ()),
-        ("search two", "search_web", ("query",), ()),
-        ("hey", None, (), ()),
+        ("search one", "search_web", ("query",), (), None),
+        ("search two", "search_web", ("query",), (), None),
+        ("hey", None, (), (), None),
     )
     result = run_router_eval(router, [_spec("search_web")], fixture)
     assert result.tool_accuracy == 1.0  # all three tool-correct
@@ -176,7 +177,13 @@ def test_load_fixture_parses_expected_arg_values(tmp_path: Path) -> None:
         "    url: stackoverflow\n"
     )
     rows = load_fixture(f)
-    assert rows[0] == ("go to stackoverflow", "fetch_url", ("url",), (("url", "stackoverflow"),))
+    assert rows[0] == (
+        "go to stackoverflow",
+        "fetch_url",
+        ("url",),
+        (("url", "stackoverflow"),),
+        None,
+    )
 
 
 def test_load_fixture_rejects_non_mapping_arg_values(tmp_path: Path) -> None:
@@ -207,6 +214,7 @@ def test_eval_flags_value_mismatch_as_fail() -> None:
             "fetch_url",
             ("url",),
             (("url", "stackoverflow"),),
+            None,
         ),
     )
     result = run_router_eval(router, [_spec("fetch_url", ("url",))], fixture)
@@ -233,6 +241,7 @@ def test_eval_accepts_matching_arg_value_substring() -> None:
             "fetch_url",
             ("url",),
             (("url", "stackoverflow"),),
+            None,
         ),
     )
     result = run_router_eval(router, [_spec("fetch_url", ("url",))], fixture)
@@ -250,6 +259,7 @@ def test_eval_skips_value_check_when_tool_wrong() -> None:
             "fetch_url",
             ("url",),
             (("url", "stackoverflow"),),
+            None,
         ),
     )
     result = run_router_eval(
@@ -262,11 +272,118 @@ def test_eval_skips_value_check_when_tool_wrong() -> None:
 
 def test_eval_case_exposes_actual_args_for_debugging() -> None:
     router = _ScriptedRouter(intents=[RouterIntent(tool_name="search_web", arguments={"q": "bbq"})])
-    fixture = (("search", "search_web", ("query",), ()),)
+    fixture = (("search", "search_web", ("query",), (), None),)
     result = run_router_eval(router, [_spec("search_web")], fixture)
     case: RouterEvalCase = result.cases[0]
     # Actual args preserved so the CLI can show 'model used "q" instead of "query"'.
     assert case.actual_args == {"q": "bbq"}
+
+
+# ---------- scope scoring (harness-8dop) ----------
+
+
+def test_eval_scope_correct_when_match() -> None:
+    router = _ScriptedRouter(
+        intents=[RouterIntent(tool_name="search_memory", arguments={"query": "x"}, scope="in")]
+    )
+    fixture: tuple[FixtureRow, ...] = (("rule lookup", "search_memory", ("query",), (), "in"),)
+    result = run_router_eval(router, [_spec("search_memory")], fixture)
+    assert result.cases[0].scope_correct
+    assert result.cases[0].passed
+    assert result.scope_accuracy == 1.0
+    assert result.scope_case_count == 1
+
+
+def test_eval_scope_incorrect_when_mismatch_fails_case() -> None:
+    """Scope mismatch alone fails the case even when tool + args are right."""
+    router = _ScriptedRouter(
+        intents=[RouterIntent(tool_name="search_memory", arguments={"query": "x"}, scope="in")]
+    )
+    fixture: tuple[FixtureRow, ...] = (("pilot question", "search_memory", ("query",), (), "out"),)
+    result = run_router_eval(router, [_spec("search_memory")], fixture)
+    case = result.cases[0]
+    assert case.tool_correct
+    assert not case.scope_correct
+    assert not case.passed
+
+
+def test_eval_scope_skipped_when_no_expected_scope() -> None:
+    """Rows without `expected_scope` (legacy fixtures) treat scope as
+    a pass — they don't get penalized for unknown scope behavior."""
+    router = _ScriptedRouter(
+        intents=[RouterIntent(tool_name="search_web", arguments={"query": "x"}, scope="out")]
+    )
+    fixture = (("search", "search_web", ("query",), (), None),)
+    result = run_router_eval(router, [_spec("search_web")], fixture)
+    assert result.cases[0].scope_correct
+    assert result.cases[0].passed
+    # No scope rows → scope_case_count is 0; accuracy is 0.0 by convention.
+    assert result.scope_case_count == 0
+    assert result.scope_accuracy == 0.0
+
+
+def test_eval_scope_accuracy_excludes_unscoped_rows() -> None:
+    """Mixed fixture: scope_accuracy is over the scope-pinned rows only."""
+    router = _ScriptedRouter(
+        intents=[
+            RouterIntent(tool_name="search_memory", arguments={"query": "x"}, scope="in"),
+            RouterIntent(tool_name="search_memory", arguments={"query": "y"}, scope="out"),
+            RouterIntent(tool_name="search_memory", arguments={"query": "z"}, scope="in"),
+        ]
+    )
+    fixture: tuple[FixtureRow, ...] = (
+        ("scope row 1 (correct)", "search_memory", ("query",), (), "in"),
+        ("scope row 2 (wrong)", "search_memory", ("query",), (), "in"),
+        ("legacy row, no scope", "search_memory", ("query",), (), None),
+    )
+    result = run_router_eval(router, [_spec("search_memory")], fixture)
+    # 2 scope rows pinned, 1 correct → 50%.
+    assert result.scope_case_count == 2
+    assert result.scope_accuracy == 0.5
+    # Tool accuracy stays at 100% — every row picked search_memory.
+    assert result.tool_accuracy == 1.0
+
+
+def test_load_fixture_parses_expected_scope() -> None:
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(
+            "- prompt: pilot question\n"
+            "  expected_tool: null\n"
+            "  expected_scope: out\n"
+            "- prompt: controller question\n"
+            "  expected_tool: search_memory\n"
+            "  expected_args: [query]\n"
+            "  expected_scope: in\n"
+            "- prompt: legacy row\n"
+            "  expected_tool: null\n"
+        )
+        path = Path(f.name)
+
+    rows = load_fixture(path)
+    assert rows[0][4] == "out"
+    assert rows[1][4] == "in"
+    assert rows[2][4] is None  # legacy row, no scope
+
+
+def test_load_fixture_rejects_invalid_scope() -> None:
+    import tempfile
+    from pathlib import Path
+
+    import pytest
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write(
+            "- prompt: bogus\n"
+            "  expected_tool: null\n"
+            "  expected_scope: maybe\n"  # not in {in, out, unsure}
+        )
+        path = Path(f.name)
+
+    with pytest.raises(ValueError, match="expected_scope"):
+        load_fixture(path)
 
 
 # ---------- canonical fixture ----------
@@ -301,7 +418,7 @@ def test_airton_c1_fixture_pins_banter_to_null() -> None:
     model fabricate a chunk from the top-1 hit at cosine 0.02."""
     path = default_fixture_path(Path(__file__).parent.parent / "character" / "airton_c1")
     rows = load_fixture(path)
-    by_prompt = {prompt: expected for prompt, expected, _, _ in rows}
+    by_prompt = {prompt: expected for prompt, expected, _, _, _ in rows}
     # Spot-check the banter pin set.
     assert by_prompt.get("this page intentionally left blank") is None
     assert by_prompt.get("test") is None

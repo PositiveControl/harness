@@ -39,11 +39,16 @@ def test_schema_exposes_tool_enum_of_names_plus_null() -> None:
     assert tool_field["enum"] == ["search_web", "read_file", None]
 
 
-def test_schema_requires_tool_and_arguments() -> None:
+def test_schema_requires_tool_arguments_and_scope() -> None:
     schema = build_router_schema([_spec()])
-    assert schema["required"] == ["tool", "arguments"]
+    # `scope` (harness-8dop) is unconditionally required — characters
+    # without a scope hint receive `unsure` for every turn (handled
+    # in the orchestrator as a fall-through), but the schema stays
+    # stable so the FSM doesn't rebuild per-character.
+    assert schema["required"] == ["tool", "arguments", "scope"]
+    assert schema["properties"]["scope"]["enum"] == ["in", "out", "unsure"]
     # Guard against accidental schema laxness — the router contract is
-    # that these two keys always appear.
+    # that these three keys always appear.
     assert schema["additionalProperties"] is False
 
 

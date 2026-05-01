@@ -127,7 +127,7 @@ __all__ = [
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from harness.router.intent import Router
+    from harness.router.intent import Router, RouterIntent
     from harness.tools.base import StreamChunk, ToolSpec
 
 
@@ -176,7 +176,14 @@ class ToolLoopEvent:
     print inline status. Kind is one of: router_intent, round_start,
     model_call_start, token_delta, model_call_end, tool_call_start,
     tool_call_end, tool_call_failed, tool_call_declined,
-    tool_call_deduped, truncated_retry, bail_retry, round_complete.
+    tool_call_deduped, truncated_retry, bail_retry, round_complete,
+    scope_redirected.
+
+    `scope_redirected` (harness-8dop) fires at most once per turn,
+    before round 0, when the Router pre-pass classified the turn
+    `scope=out` AND the persona supplied a redirect template — the
+    orchestrator returns the template directly with rounds=0; no
+    main-model call.
 
     `truncated_retry` fires when a wrap-up round stopped mid-stream at
     the token cap and the orchestrator is about to re-run it with a
@@ -286,7 +293,7 @@ def _last_user_message(messages: Iterable[ChatMessage]) -> str | None:
 
 
 def _router_prelude(
-    router: Router,
+    intent: RouterIntent | None,
     working: list[ChatMessage],
     registry: ToolRegistry,
     confirm: ConfirmFn | None,
@@ -296,16 +303,21 @@ def _router_prelude(
     user_message: str | None,
     succeeded_tools: set[str],
 ) -> tuple[bool, bool]:
-    """Classify the last user turn and, on a usable intent, append a
-    synthetic assistant tool-call turn + the tool result to `working`
-    in place. Returns (routed, succeeded) — `routed` is True if routing
-    produced a tool execution (main model enters wrap-up mode directly),
-    `succeeded` is True iff that tool returned ToolResult.success=True.
-    The main loop needs both signals: routed-but-failed still counts as
+    """On a usable router intent, append a synthetic assistant tool-
+    call turn + the tool result to `working` in place. Returns
+    (routed, succeeded) — `routed` is True if routing produced a tool
+    execution (main model enters wrap-up mode directly), `succeeded`
+    is True iff that tool returned ToolResult.success=True. The main
+    loop needs both signals: routed-but-failed still counts as
     "tool executed" for the wrap-up token cap but NOT for disarming
     fabrication catchers (see harness-a0y). On success, `succeeded_tools`
     gains the router-executed tool name so downstream narrow gates can
     see it.
+
+    Caller pre-classifies (harness-8dop) so the scope verdict on the
+    same intent can be inspected before tool dispatch — `intent=None`
+    here means classify() returned None or the caller has chosen not
+    to run a prelude.
 
     Conservative guards: read-tier tools only (write-tier needs the
     main model's richer context + its own confirmation UX), intent
@@ -329,7 +341,6 @@ def _router_prelude(
 
     if user_message is None:
         return (False, False)
-    intent = router.classify(user_message, registry.specs())
     if intent is None or intent.tool_name is None:
         return (False, False)
     if intent.tool_name not in registry:
@@ -654,6 +665,7 @@ def run_tool_loop(
     memory_block_attached: bool = False,
     force_search_memory: bool = False,
     banter_tracker: BanterStreakTracker | None = None,
+    scope_redirect_template: str | None = None,
 ) -> ToolLoopResult:
     """Drive a model + tool registry until the model emits a text-only
     reply or `max_rounds` rounds are spent.
@@ -776,9 +788,36 @@ def run_tool_loop(
         )
         any_tool_succeeded = any_tool_succeeded or forced_ran
 
+    # Router pre-pass: classify ONCE so both the scope short-circuit
+    # (harness-8dop) and the tool-routing prelude consume the same
+    # verdict — no duplicate Hermes call. classify() returns None on
+    # parse / adapter failure; downstream guards already tolerate it.
+    router_intent: RouterIntent | None = None
+    if router is not None and turn_user_message is not None:
+        router_intent = router.classify(turn_user_message, registry.specs())
+
+    # Scope short-circuit. When the router confidently classifies the
+    # turn as `out` AND the persona supplies a redirect template,
+    # bail with the canned reply — no main-model call, no fabricated
+    # citation. `unsure` and `in` both fall through to the normal
+    # flow; an absent template is treated as "scope gate disabled."
+    if (
+        router_intent is not None
+        and router_intent.scope == "out"
+        and scope_redirect_template is not None
+        and scope_redirect_template.strip()
+    ):
+        emit(ToolLoopEvent(kind="scope_redirected", round_index=0))
+        return ToolLoopResult(
+            content=scope_redirect_template.strip(),
+            messages=working,
+            rounds=0,
+            events=events,
+        )
+
     if router is not None:
         _, router_success = _router_prelude(
-            router,
+            router_intent,
             working,
             registry,
             confirm,

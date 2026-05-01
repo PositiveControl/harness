@@ -167,6 +167,18 @@ class Character:
     # data still lives in hooks.py for now; a follow-up bead will
     # lift the data into per-character config.
     catchers: tuple[str, ...] = ()
+    # Scope-gate (harness-8dop). When BOTH fields are set, the Hermes
+    # router classifies each turn `in` / `out` / `unsure`; on `out` the
+    # orchestrator short-circuits to `scope_redirect_template` instead
+    # of calling the main model. `scope_hint` is the authored scope-
+    # rule text injected into the router prompt — it tells the router
+    # what's in/out for THIS persona (the router prompt is otherwise
+    # persona-agnostic). `scope_redirect_template` is the canned reply
+    # emitted on `out`. Both default None: characters without a
+    # bounded corpus (airton, airton_b, airton_c) inherit the
+    # always-`unsure` router prompt and never get short-circuited.
+    scope_hint: str | None = None
+    scope_redirect_template: str | None = None
 
     def system_prompt(
         self,
@@ -386,6 +398,10 @@ def load_character(path: Path) -> Character:
         ),
         citation_grammar=load_citation_grammar(core.get("citation_grammar"), path),
         catchers=_load_str_tuple(core.get("catchers"), path, "catchers"),
+        scope_hint=_opt_str(core, "scope_hint", path=path, parent_name="core"),
+        scope_redirect_template=_opt_str(
+            core, "scope_redirect_template", path=path, parent_name="core"
+        ),
     )
 
 

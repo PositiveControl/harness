@@ -113,9 +113,9 @@ def run_tui(
 
         router_adapter = MLXAdapter(repo=router_repo)
         router = (
-            GrammarRouter(adapter=router_adapter)
+            GrammarRouter(adapter=router_adapter, persona_scope_hint=character.scope_hint)
             if router_mode == "grammar"
-            else ModelRouter(adapter=router_adapter)
+            else ModelRouter(adapter=router_adapter, persona_scope_hint=character.scope_hint)
         )
 
     registry_warnings: list[str] = []
