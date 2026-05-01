@@ -33,7 +33,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from harness.citation import CitationGrammar
-from harness.persona.rewriter import extract_citations
 from harness.store.episodic import EpisodicStore
 
 
@@ -125,6 +124,13 @@ def check_cite_groundedness(
     generating the reply."""
     if grammar is None:
         return CiteGroundingResult(checks=())
+    # Lazy import: persona.rewriter pulls in model.adapter which can
+    # cycle back through tools.__init__ → tools.phraseology_lint →
+    # persona.cite_grounding when imports start from the model side
+    # (e.g. the ablation_validate gate). Local import here breaks the
+    # cycle without changing the public call signature.
+    from harness.persona.rewriter import extract_citations
+
     cites = extract_citations(reply, grammar)
     if not cites:
         return CiteGroundingResult(checks=())
