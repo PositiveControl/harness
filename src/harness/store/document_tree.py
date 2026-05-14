@@ -513,10 +513,11 @@ def build_document_tree_store_for_character(
     runtime keeps the cycle clean — each spec needs `.name`,
     `.description`, `.source_path`, `.source_format`.
 
-    JSONL specs are deferred (the per-corpus config — depth_fields,
-    heading_prefixes — isn't on the spec yet). For now they raise a
-    clear error; characters with JSONL corpora keep using
-    `scripts/atc_ingest_tree.py` until the spec grows the config.
+    JSONL specs dispatch to `iter_jsonl_nodes` with the per-corpus
+    config carried on the spec (`jsonl_depth_fields`, etc.). The
+    parser at `_load_document_trees` validates that `depth_fields` is
+    present when format=jsonl, so by the time we reach here the spec
+    is well-formed.
     """
     if not document_trees:
         return None
@@ -526,6 +527,7 @@ def build_document_tree_store_for_character(
     # ingest module imports the store types).
     from harness.store.document_tree_ingest import (
         ingest_blueprints,
+        iter_jsonl_nodes,
         iter_markdown_nodes,
     )
 
@@ -538,10 +540,18 @@ def build_document_tree_store_for_character(
                 blueprints=iter_markdown_nodes(spec.source_path),
             )
         elif spec.source_format == "jsonl":
-            raise NotImplementedError(
-                f"document_trees[{spec.name!r}]: jsonl source_format is "
-                "declared but not yet wired through the character spec — "
-                "use scripts/atc_ingest_tree.py for JSONL corpora today."
+            ingest_blueprints(
+                store,
+                document_name=spec.name,
+                source_uri=str(spec.source_path),
+                blueprints=iter_jsonl_nodes(
+                    spec.source_path,
+                    depth_fields=spec.jsonl_depth_fields,
+                    heading_prefixes=spec.jsonl_heading_prefixes,
+                    leaf_heading_field=spec.jsonl_leaf_heading_field,
+                    body_field=spec.jsonl_body_field,
+                    chunk_index_field=spec.jsonl_chunk_index_field,
+                ),
             )
         else:
             # _load_document_trees validates the set; this is a guard

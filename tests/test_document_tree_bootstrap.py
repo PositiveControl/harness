@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from harness.character import DocumentTreeSpec
 from harness.retrieval.context_package import AccessPolicy
@@ -164,27 +163,66 @@ def test_builder_is_idempotent(tmp_path: Path) -> None:
     assert second.count_embedded() == first_count
 
 
-def test_builder_raises_on_jsonl_spec(tmp_path: Path) -> None:
-    """JSONL format is recognized by the spec parser but not yet wired
-    through the character bootstrap. The builder raises a clear
-    NotImplementedError so users see the deferred-wiring story rather
-    than getting a confusing markdown-parse error."""
+def test_builder_populates_jsonl_tree(tmp_path: Path) -> None:
+    """harness-k38k: JSONL specs with per-corpus config (depth_fields,
+    heading_prefixes, leaf_heading_field) flow through the builder
+    and produce a populated tree. Mirrors the ATC ingest's shape:
+    structural-only chapter + section_group + embedded leaf sections."""
+    import json
+
     char_dir = tmp_path / "fake_char"
     (char_dir / "corpus").mkdir(parents=True)
-    jsonl_path = char_dir / "corpus" / "source.jsonl"
-    jsonl_path.write_text("{}\n", encoding="utf-8")
+    jsonl_path = char_dir / "corpus" / "atc.jsonl"
+    rows = [
+        {
+            "chapter": "2",
+            "parent_section": "2-4",
+            "section": "2-4-3",
+            "title": "VFR Aircraft",
+            "chunk_index": 0,
+            "body": "VFR rules apply.",
+        },
+        {
+            "chapter": "2",
+            "parent_section": "2-4",
+            "section": "2-4-4",
+            "title": "Special VFR",
+            "chunk_index": 0,
+            "body": "Special VFR rules.",
+        },
+    ]
+    with jsonl_path.open("w", encoding="utf-8") as fp:
+        for row in rows:
+            fp.write(json.dumps(row) + "\n")
+
     spec = DocumentTreeSpec(
-        name="corpus",
-        description="JSONL corpus",
+        name="jo_7110_65",
+        description="ATC corpus",
         source_path=jsonl_path,
         source_format="jsonl",
+        jsonl_depth_fields=("chapter", "parent_section", "section"),
+        jsonl_heading_prefixes=("Chapter ", "§", ""),
+        jsonl_leaf_heading_field="title",
     )
-    with pytest.raises(NotImplementedError, match="jsonl source_format"):
-        build_document_tree_store_for_character(
-            character_path=char_dir,
-            embedder=_HashEmbedder(),
-            document_trees=(spec,),
-        )
+    store = build_document_tree_store_for_character(
+        character_path=char_dir,
+        embedder=_HashEmbedder(),
+        document_trees=(spec,),
+    )
+    assert isinstance(store, DocumentTreeStore)
+    # Two leaf sections embedded; the chapter and section_group are
+    # structural-only (no body in JSONL → no embed).
+    assert store.count_embedded() == 2
+
+    doc = store.upsert_document(name="jo_7110_65")
+    leaf = store.get_node_by_path(doc.id, "2-4-3")
+    assert leaf is not None
+    assert leaf.heading == "VFR Aircraft"
+    assert "VFR rules apply." in leaf.body
+    # Intermediate heading uses the prefix.
+    chapter = store.get_node_by_path(doc.id, "2")
+    assert chapter is not None
+    assert chapter.heading == "Chapter 2"
 
 
 # ---------- rebuild_embeddings ----------

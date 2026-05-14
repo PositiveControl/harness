@@ -406,6 +406,9 @@ def test_document_trees_loads_markdown_spec(tmp_path: Path) -> None:
 
 
 def test_document_trees_accepts_jsonl_format(tmp_path: Path) -> None:
+    """harness-k38k: JSONL specs now require a `jsonl:` block with at
+    least `depth_fields`. The format itself is still accepted at the
+    top-level; the per-corpus config lives nested."""
     import shutil
 
     char_dir = tmp_path / "jsonl_char"
@@ -417,10 +420,13 @@ def test_document_trees_accepts_jsonl_format(tmp_path: Path) -> None:
         "    description: chunked corpus\n"
         "    source: corpus/chunks/source.jsonl\n"
         "    format: jsonl\n"
+        "    jsonl:\n"
+        "      depth_fields: [chapter, section]\n"
     )
 
     character = load_character(char_dir)
     assert character.document_trees[0].source_format == "jsonl"
+    assert character.document_trees[0].jsonl_depth_fields == ("chapter", "section")
 
 
 def test_document_trees_rejects_unknown_format(tmp_path: Path) -> None:
@@ -492,3 +498,111 @@ def test_document_trees_rejects_non_list(tmp_path: Path) -> None:
     core_path.write_text(core_path.read_text() + "\ndocument_trees: not a list\n")
     with pytest.raises(ValueError, match=r"`document_trees` must be a list"):
         load_character(char_dir)
+
+
+# ---------- document_trees JSONL config (harness-k38k) ----------
+
+
+def test_document_trees_jsonl_spec_loads_full_config(tmp_path: Path) -> None:
+    """JSONL spec with full jsonl: block populates all the per-corpus
+    knobs on DocumentTreeSpec — depth_fields, heading_prefixes, the
+    leaf-heading field. The character bootstrap can then dispatch to
+    iter_jsonl_nodes without code-level config."""
+    import shutil
+
+    char_dir = tmp_path / "jsonl_full"
+    shutil.copytree(AIRTON, char_dir)
+    core_path = char_dir / "core.yaml"
+    core_path.write_text(
+        core_path.read_text() + "\ndocument_trees:\n"
+        "  - name: jo_7110_65\n"
+        "    description: ATC corpus\n"
+        "    source: corpus/jo.jsonl\n"
+        "    format: jsonl\n"
+        "    jsonl:\n"
+        "      depth_fields: [chapter, parent_section, section]\n"
+        "      heading_prefixes: ['Chapter ', '§', '']\n"
+        "      leaf_heading_field: title\n"
+    )
+
+    character = load_character(char_dir)
+    spec = character.document_trees[0]
+    assert spec.source_format == "jsonl"
+    assert spec.jsonl_depth_fields == ("chapter", "parent_section", "section")
+    assert spec.jsonl_heading_prefixes == ("Chapter ", "§", "")
+    assert spec.jsonl_leaf_heading_field == "title"
+    # Defaults preserved when caller doesn't override.
+    assert spec.jsonl_body_field == "body"
+    assert spec.jsonl_chunk_index_field == "chunk_index"
+
+
+def test_document_trees_jsonl_requires_depth_fields(tmp_path: Path) -> None:
+    """JSONL format without a `jsonl:` block (or with no depth_fields)
+    raises at YAML load time so the misconfig surfaces immediately
+    rather than at session-start ingest."""
+    import shutil
+
+    import pytest
+
+    char_dir = tmp_path / "jsonl_bad"
+    shutil.copytree(AIRTON, char_dir)
+    core_path = char_dir / "core.yaml"
+    core_path.write_text(
+        core_path.read_text() + "\ndocument_trees:\n"
+        "  - name: corpus\n"
+        "    description: missing config\n"
+        "    source: corpus/source.jsonl\n"
+        "    format: jsonl\n"
+    )
+    with pytest.raises(ValueError, match=r"jsonl format requires"):
+        load_character(char_dir)
+
+
+def test_document_trees_jsonl_rejects_empty_depth_fields(tmp_path: Path) -> None:
+    import shutil
+
+    import pytest
+
+    char_dir = tmp_path / "jsonl_empty_df"
+    shutil.copytree(AIRTON, char_dir)
+    core_path = char_dir / "core.yaml"
+    core_path.write_text(
+        core_path.read_text() + "\ndocument_trees:\n"
+        "  - name: corpus\n"
+        "    description: bad config\n"
+        "    source: corpus/source.jsonl\n"
+        "    format: jsonl\n"
+        "    jsonl:\n"
+        "      depth_fields: []\n"
+    )
+    with pytest.raises(ValueError, match=r"jsonl.depth_fields must be a non-empty list of strings"):
+        load_character(char_dir)
+
+
+def test_document_trees_markdown_ignores_jsonl_block(tmp_path: Path) -> None:
+    """A jsonl: block under a markdown spec is silently allowed (no-op).
+    Lets a user keep a stale block around when they flip a corpus from
+    jsonl back to markdown without forcing a YAML cleanup."""
+    import shutil
+
+    char_dir = tmp_path / "md_with_jsonl_block"
+    shutil.copytree(AIRTON, char_dir)
+    (char_dir / "seed_documents").mkdir()
+    (char_dir / "seed_documents" / "doc.md").write_text("# Title\n\nbody\n", encoding="utf-8")
+    core_path = char_dir / "core.yaml"
+    core_path.write_text(
+        core_path.read_text() + "\ndocument_trees:\n"
+        "  - name: doc\n"
+        "    description: markdown\n"
+        "    source: seed_documents/doc.md\n"
+        "    format: markdown\n"
+        "    jsonl:\n"
+        "      depth_fields: [stale]\n"
+    )
+    character = load_character(char_dir)
+    spec = character.document_trees[0]
+    assert spec.source_format == "markdown"
+    # The jsonl_depth_fields field reflects what was declared (parser
+    # parses-but-doesn't-enforce-for-markdown). That's OK — markdown
+    # adapter doesn't read it.
+    assert spec.jsonl_depth_fields == ("stale",)

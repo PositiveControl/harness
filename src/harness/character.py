@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import frontmatter
 import yaml
@@ -59,9 +60,9 @@ _DOCUMENT_TREE_FORMATS = frozenset({"markdown", "jsonl"})
 @dataclass(frozen=True)
 class DocumentTreeSpec:
     """One hierarchical document declared by a character in core.yaml
-    under `document_trees:` (harness-ejxn). The CLI reads this list at
-    session start and builds a per-character `DocumentTreeStore` with
-    one document ingested per spec.
+    under `document_trees:` (harness-ejxn + harness-k38k). The CLI reads
+    this list at session start and builds a per-character
+    `DocumentTreeStore` with one document ingested per spec.
 
     `name` is the document name that flows into
     `DocumentTreeStore.upsert_document` and shows up in tree-slot
@@ -71,16 +72,38 @@ class DocumentTreeSpec:
       - `markdown` — heading-derived hierarchy, positional path slugs.
         The canonical path for new prose-shaped corpora.
       - `jsonl` — pre-chunked rows with explicit hierarchy fields.
-        Used by ATC-shaped corpora; today the JSONL ingest path
-        runs through scripts/atc_ingest_tree.py because the field
-        names + heading prefixes are corpus-specific. A character-
-        level JSONL spec is reserved for a follow-up that lifts the
-        per-corpus config into core.yaml."""
+        Per-corpus knobs (which JSONL fields define depth, what to
+        prepend to intermediate headings, which field holds the leaf
+        title) live in the `jsonl_*` attributes below. Markdown specs
+        ignore them.
+
+    YAML shape under `document_trees:`:
+
+        - name: jo_7110_65
+          description: FAA Order JO 7110.65 — Air Traffic Control
+          source: corpus/chunks/jo_7110_65.jsonl
+          format: jsonl
+          jsonl:
+            depth_fields: [chapter, parent_section, section]
+            heading_prefixes: ["Chapter ", "§", ""]
+            leaf_heading_field: title
+            # body_field / chunk_index_field default to "body" / "chunk_index"
+    """
 
     name: str
     description: str
     source_path: Path
     source_format: str
+    # JSONL-only config. Empty on markdown specs and ignored by the
+    # markdown adapter. Required (non-empty depth_fields) when
+    # source_format == "jsonl"; the parser raises with a clear pointer
+    # when omitted, so the misconfig surfaces at YAML load rather than
+    # at ingest time.
+    jsonl_depth_fields: tuple[str, ...] = ()
+    jsonl_heading_prefixes: tuple[str, ...] = ()
+    jsonl_leaf_heading_field: str | None = None
+    jsonl_body_field: str = "body"
+    jsonl_chunk_index_field: str | None = "chunk_index"
 
 
 @dataclass(frozen=True)
@@ -565,15 +588,78 @@ def _load_document_trees(raw: object, path: Path) -> tuple[DocumentTreeSpec, ...
                 f"{path}/core.yaml: document_trees[{idx}] format must be one of "
                 f"{sorted(_DOCUMENT_TREE_FORMATS)}; got {fmt!r}"
             )
+        jsonl_cfg = _parse_document_tree_jsonl(entry.get("jsonl"), path, idx=idx, fmt=fmt)
         out.append(
             DocumentTreeSpec(
                 name=name,
                 description=description,
                 source_path=(path / source_raw).resolve(),
                 source_format=fmt,
+                **jsonl_cfg,
             )
         )
     return tuple(out)
+
+
+def _parse_document_tree_jsonl(raw: object, path: Path, *, idx: int, fmt: str) -> dict[str, Any]:
+    """Parse the optional `jsonl:` nested mapping on a document_trees
+    entry. Returns kwargs ready to splat into DocumentTreeSpec.
+
+    Schema (all keys optional when fmt != 'jsonl'):
+      - depth_fields:        list[str] — required when fmt == 'jsonl'.
+      - heading_prefixes:    list[str] — optional, defaults [].
+      - leaf_heading_field:  str | null — optional.
+      - body_field:          str — defaults 'body'.
+      - chunk_index_field:   str | null — defaults 'chunk_index'.
+
+    Catching depth_fields-missing at YAML load (rather than at builder
+    time) means a fixture author sees the typo immediately instead of
+    discovering it on the next chat session start."""
+    location = f"{path}/core.yaml: document_trees[{idx}]"
+    cfg: dict[str, Any] = {}
+    if raw is None:
+        if fmt == "jsonl":
+            raise ValueError(
+                f"{location}: jsonl format requires a `jsonl:` block with at least `depth_fields`"
+            )
+        return cfg
+    if not isinstance(raw, dict):
+        raise ValueError(f"{location}: `jsonl` must be a mapping, got {type(raw).__name__}")
+
+    df = raw.get("depth_fields")
+    if df is None:
+        if fmt == "jsonl":
+            raise ValueError(f"{location}: jsonl format requires `jsonl.depth_fields`")
+    else:
+        if not isinstance(df, list) or not df or not all(isinstance(f, str) and f for f in df):
+            raise ValueError(f"{location}: jsonl.depth_fields must be a non-empty list of strings")
+        cfg["jsonl_depth_fields"] = tuple(df)
+
+    hp = raw.get("heading_prefixes")
+    if hp is not None:
+        if not isinstance(hp, list) or not all(isinstance(p, str) for p in hp):
+            raise ValueError(f"{location}: jsonl.heading_prefixes must be a list of strings")
+        cfg["jsonl_heading_prefixes"] = tuple(hp)
+
+    lhf = raw.get("leaf_heading_field")
+    if lhf is not None:
+        if not isinstance(lhf, str) or not lhf:
+            raise ValueError(f"{location}: jsonl.leaf_heading_field must be a non-empty string")
+        cfg["jsonl_leaf_heading_field"] = lhf
+
+    bf = raw.get("body_field")
+    if bf is not None:
+        if not isinstance(bf, str) or not bf:
+            raise ValueError(f"{location}: jsonl.body_field must be a non-empty string")
+        cfg["jsonl_body_field"] = bf
+
+    cif = raw.get("chunk_index_field")
+    if cif is not None:
+        if cif is False or (cif is not None and not isinstance(cif, str)):
+            raise ValueError(f"{location}: jsonl.chunk_index_field must be a string or null")
+        cfg["jsonl_chunk_index_field"] = cif if cif else None
+
+    return cfg
 
 
 _VOICE_REWRITERS = frozenset({"persona", "caveman", "none"})
