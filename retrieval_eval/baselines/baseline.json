@@ -1,0 +1,275 @@
+{
+  "embedder": "BAAI/bge-small-en-v1.5",
+  "embedder_dim": 384,
+  "k": 10,
+  "cells": [
+    {
+      "corpus": "prose_journal",
+      "shape": "prose",
+      "retriever": "hybrid_episodic",
+      "k": 10,
+      "case_count": 12,
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "median_rank": 0.0,
+      "wall_ms": 190.2,
+      "cases": [
+        {
+          "id": "q_capacitor_skipped_component",
+          "query": "the time my drone build failed because I left out a small part on the power board",
+          "expected_record_ids": [
+            "capacitor-incident"
+          ],
+          "hit_record_ids": [
+            "capacitor-incident",
+            "solder-joint-lesson",
+            "flight-code-regression",
+            "ishida-rule",
+            "backup-drive-cascade",
+            "tailscale-migration",
+            "typewriter-restoration",
+            "dishwasher-noise",
+            "coffee-grinder-burr",
+            "garden-frost-2022"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_jquery_wedding",
+          "query": "first time I shipped a real website using a JavaScript framework",
+          "expected_record_ids": [
+            "jquery-first-project"
+          ],
+          "hit_record_ids": [
+            "jquery-first-project",
+            "tailscale-migration",
+            "ishida-rule",
+            "backup-drive-cascade",
+            "flight-code-regression",
+            "capacitor-incident",
+            "coffee-grinder-burr",
+            "bicycle-fit-revision",
+            "solder-joint-lesson",
+            "typewriter-restoration"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_flight_throttle",
+          "query": "the avionics regression where the test stand showed reverse motor direction",
+          "expected_record_ids": [
+            "flight-code-regression"
+          ],
+          "hit_record_ids": [
+            "flight-code-regression",
+            "capacitor-incident",
+            "solder-joint-lesson",
+            "tailscale-migration",
+            "typewriter-restoration",
+            "dishwasher-noise",
+            "backup-drive-cascade",
+            "ishida-rule",
+            "coffee-grinder-burr",
+            "bicycle-fit-revision"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_solder_temperature",
+          "query": "diagnosing a hardware bug that only appeared at low temperatures",
+          "expected_record_ids": [
+            "solder-joint-lesson"
+          ],
+          "hit_record_ids": [
+            "solder-joint-lesson",
+            "garden-frost-2022",
+            "flight-code-regression",
+            "capacitor-incident",
+            "dishwasher-noise",
+            "ishida-rule",
+            "backup-drive-cascade",
+            "jquery-first-project",
+            "coffee-grinder-burr",
+            "bicycle-fit-revision"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_ishida_principle",
+          "query": "the heuristic about when multiple failure theories means you don't understand the system",
+          "expected_record_ids": [
+            "ishida-rule"
+          ],
+          "hit_record_ids": [
+            "ishida-rule",
+            "flight-code-regression",
+            "solder-joint-lesson",
+            "coffee-grinder-burr",
+            "capacitor-incident",
+            "backup-drive-cascade",
+            "tailscale-migration",
+            "dishwasher-noise",
+            "bicycle-fit-revision",
+            "typewriter-restoration"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_tailscale_security",
+          "query": "what I gained by moving my home network off the public internet",
+          "expected_record_ids": [
+            "tailscale-migration"
+          ],
+          "hit_record_ids": [
+            "tailscale-migration",
+            "backup-drive-cascade",
+            "flight-code-regression",
+            "jquery-first-project",
+            "bicycle-fit-revision",
+            "capacitor-incident",
+            "solder-joint-lesson",
+            "garden-frost-2022",
+            "dishwasher-noise",
+            "ishida-rule"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_dishwasher_floor",
+          "query": "how I solved an appliance noise that only happened in my kitchen",
+          "expected_record_ids": [
+            "dishwasher-noise"
+          ],
+          "hit_record_ids": [
+            "dishwasher-noise",
+            "capacitor-incident",
+            "solder-joint-lesson",
+            "garden-frost-2022",
+            "tailscale-migration",
+            "backup-drive-cascade",
+            "typewriter-restoration",
+            "flight-code-regression",
+            "jquery-first-project",
+            "ishida-rule"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_frost_tomatoes",
+          "query": "the year I lost my fall garden to an unexpected freeze",
+          "expected_record_ids": [
+            "garden-frost-2022"
+          ],
+          "hit_record_ids": [
+            "garden-frost-2022",
+            "solder-joint-lesson",
+            "capacitor-incident",
+            "bicycle-fit-revision",
+            "flight-code-regression",
+            "ishida-rule",
+            "tailscale-migration",
+            "backup-drive-cascade",
+            "dishwasher-noise",
+            "typewriter-restoration"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_grinder_consistency",
+          "query": "espresso machine grinder producing uneven coffee grounds after long use",
+          "expected_record_ids": [
+            "coffee-grinder-burr"
+          ],
+          "hit_record_ids": [
+            "coffee-grinder-burr",
+            "ishida-rule",
+            "bicycle-fit-revision",
+            "flight-code-regression",
+            "solder-joint-lesson",
+            "capacitor-incident",
+            "typewriter-restoration",
+            "dishwasher-noise",
+            "backup-drive-cascade",
+            "garden-frost-2022"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_olivetti_parts",
+          "query": "the antique writing machine I rebuilt and how I sourced a rubber roller part",
+          "expected_record_ids": [
+            "typewriter-restoration"
+          ],
+          "hit_record_ids": [
+            "typewriter-restoration",
+            "capacitor-incident",
+            "dishwasher-noise",
+            "solder-joint-lesson",
+            "backup-drive-cascade",
+            "flight-code-regression",
+            "jquery-first-project",
+            "ishida-rule",
+            "coffee-grinder-burr",
+            "bicycle-fit-revision"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_bike_knee_pain",
+          "query": "long-running cycling injury that turned out to be a saddle height issue",
+          "expected_record_ids": [
+            "bicycle-fit-revision"
+          ],
+          "hit_record_ids": [
+            "bicycle-fit-revision",
+            "solder-joint-lesson",
+            "capacitor-incident",
+            "flight-code-regression",
+            "dishwasher-noise",
+            "garden-frost-2022",
+            "ishida-rule",
+            "typewriter-restoration",
+            "coffee-grinder-burr",
+            "backup-drive-cascade"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_silent_backup_failure",
+          "query": "the off-site backup that appeared to work but was writing nothing",
+          "expected_record_ids": [
+            "backup-drive-cascade"
+          ],
+          "hit_record_ids": [
+            "backup-drive-cascade",
+            "tailscale-migration",
+            "flight-code-regression",
+            "typewriter-restoration",
+            "jquery-first-project",
+            "solder-joint-lesson",
+            "capacitor-incident",
+            "bicycle-fit-revision",
+            "ishida-rule",
+            "garden-frost-2022"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        }
+      ]
+    }
+  ]
+}

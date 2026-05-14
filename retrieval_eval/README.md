@@ -22,7 +22,7 @@ retrieval_eval/
 ├── data/
 │   └── returns.csv                 # tabular_returns backing data (deterministic)
 └── baselines/
-    └── phase0.json                 # baseline numbers, regression target
+    └── baseline.json                 # baseline numbers, regression target
 ```
 
 ## Running the bench
@@ -43,7 +43,7 @@ The tree-retriever cells skip with a one-line message if
 `retrieval_eval/data/tree_atc.sqlite` is missing; everything else still
 runs.
 
-Writes `retrieval_eval/baselines/phase0.json` by default. Each new
+Writes `retrieval_eval/baselines/baseline.json` by default. Each new
 retriever in later phases lands its own bench cell alongside the
 current `hybrid_episodic` cell so deltas stay attributable.
 
@@ -168,7 +168,7 @@ via the agent itself, not a separate model layer.
 2. If shape is `tabular`, drop the CSV under `data/`.
 3. Add a sentinel test under `tests/` if your shape needs new wiring
    in `scripts/bench_retrieval_shape.py`.
-4. Run the bench and commit the updated `baselines/phase0.json`.
+4. Run the bench and commit the updated `baselines/baseline.json`.
 
 ## Adding a new retriever (Phase 1+)
 
@@ -241,7 +241,7 @@ instead of working with silently-incomplete context.
   which evolves with ingests — baseline numbers there are tied to the
   store state at the time of the baseline commit. The bench snapshots
   the live DB to a tempfile at run start to avoid concurrent-writer
-  drift mid-run; recommit `phase0.json` after any `atc_ingest` change.
+  drift mid-run; recommit `baseline.json` after any `atc_ingest` change.
 - `EpisodicStore._search_dense` / `_search_text` rank by score only;
   Python's stable sort preserves whatever SQLite row order the
   candidate query returned, which itself isn't deterministic without

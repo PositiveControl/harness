@@ -17,7 +17,7 @@ Corpora live under `retrieval_eval/corpora/`:
                               into an in-memory episodic store with a
                               flattened body template.
 
-Output: `retrieval_eval/baselines/phase0.json` — a single envelope
+Output: `retrieval_eval/baselines/baseline.json` — a single envelope
 holding one section per corpus, each with recall@1/3/5/k, MRR, median
 rank, wall_ms, and per-case hit_record_ids for debugging.
 
@@ -743,8 +743,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=REPO_ROOT / "retrieval_eval" / "baselines" / "phase0.json",
-        help="Output JSON path. Default: retrieval_eval/baselines/phase0.json",
+        default=REPO_ROOT / "retrieval_eval" / "baselines" / "baseline.json",
+        help="Output JSON path. Default: retrieval_eval/baselines/baseline.json",
     )
     parser.add_argument(
         "--k",
