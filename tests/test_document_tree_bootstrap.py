@@ -163,6 +163,160 @@ def test_builder_is_idempotent(tmp_path: Path) -> None:
     assert second.count_embedded() == first_count
 
 
+def test_bm25_search_matches_bare_path_anchor(tmp_path: Path) -> None:
+    """harness-q6zl: BM25 must surface a section when the query is its
+    section number (e.g., '91.131'). Pre-q6zl, FTS5 indexed only
+    heading + body and tokenized at . / - boundaries, so '91.131'
+    split into '91' and '131' tokens and missed the actual section.
+    The fix adds an `anchors` column carrying §<path> + <path> +
+    <document> + <document>:<path>, and switches the tokenizer's
+    tokenchars to keep multi-segment paths whole."""
+    from harness.store.document_tree import DocumentTreeStore
+
+    embedder = _HashEmbedder()
+    store = DocumentTreeStore(db_path=tmp_path / "anchors.sqlite", embedder=embedder)
+    doc = store.upsert_document(name="CFR_14_Vol2")
+    # Body intentionally omits the section number — this is the
+    # CFR pattern where sections rarely self-reference. Pre-q6zl this
+    # case is a guaranteed BM25 miss; post-fix the anchors column
+    # carries the path.
+    store.ingest_node(
+        document_id=doc.id,
+        parent_id=None,
+        path="91.131",
+        ordinal=1,
+        depth=1,
+        node_type="section",
+        heading="Operations in Class B airspace.",
+        body="The operator must receive an ATC clearance from the ATC facility "
+        "having jurisdiction for that airspace before operating an aircraft "
+        "in that area.",
+        embed=True,
+    )
+    # Add a few neighbor sections so the test demonstrates rank-not-just-presence.
+    store.ingest_node(
+        document_id=doc.id,
+        parent_id=None,
+        path="91.130",
+        ordinal=2,
+        depth=1,
+        node_type="section",
+        heading="Operations in Class C airspace.",
+        body="Two-way radio communications required before entering Class C.",
+        embed=True,
+    )
+    store.ingest_node(
+        document_id=doc.id,
+        parent_id=None,
+        path="91.135",
+        ordinal=3,
+        depth=1,
+        node_type="section",
+        heading="Operations in Class A airspace.",
+        body="An aircraft within Class A airspace must operate under IFR.",
+        embed=True,
+    )
+
+    # BM25 query for the bare section path returns the matching node first.
+    hits = store.search("91.131", k=3, mode="text")
+    assert hits, "BM25 returned no hits for '91.131'"
+    top_node, _ = hits[0]
+    assert top_node.path == "91.131", (
+        f"BM25 should rank §91.131 top for query '91.131', got §{top_node.path}"
+    )
+
+    # Same for the §-prefixed form.
+    prefixed_hits = store.search("§91.131", k=3, mode="text")
+    assert prefixed_hits, "BM25 returned no hits for '§91.131'"
+    assert prefixed_hits[0][0].path == "91.131"
+
+    # Document-qualified form also resolves.
+    qualified_hits = store.search("CFR_14_Vol2:91.131", k=3, mode="text")
+    assert qualified_hits, "BM25 returned no hits for 'CFR_14_Vol2:91.131'"
+    assert qualified_hits[0][0].path == "91.131"
+
+
+def test_anchors_migration_brings_old_store_up_to_date(tmp_path: Path) -> None:
+    """harness-q6zl: pre-q6zl stores don't have the anchors column. The
+    migration in __init__ should add it, backfill existing rows from
+    path + document_name, and rebuild the FTS5 sidecar so BM25
+    queries work against pre-existing data without a re-ingest."""
+    import sqlite3
+
+    from harness.store.document_tree import DocumentTreeStore
+
+    # Step 1: write a pre-q6zl-shaped DB by hand (no anchors column,
+    # old FTS5 schema). Just enough rows + indexes for the migration
+    # to find something to backfill.
+    db = tmp_path / "legacy.sqlite"
+    raw = sqlite3.connect(db)
+    raw.execute("""
+        CREATE TABLE tree_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            source_uri TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    raw.execute("""
+        CREATE TABLE tree_nodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER NOT NULL REFERENCES tree_documents(id),
+            parent_id INTEGER REFERENCES tree_nodes(id),
+            path TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            depth INTEGER NOT NULL,
+            node_type TEXT NOT NULL,
+            heading TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            embedding BLOB,
+            embedder_id TEXT,
+            embedding_dim INTEGER,
+            created_at TEXT NOT NULL,
+            UNIQUE (document_id, path)
+        )
+    """)
+    raw.execute(
+        "INSERT INTO tree_documents (name, source_uri, created_at) "
+        "VALUES ('JO_7110.65', NULL, '2026-05-14T12:00:00+00:00')"
+    )
+    doc_id = int(raw.execute("SELECT id FROM tree_documents").fetchone()[0])
+    embedder = _HashEmbedder()
+    # Pre-compute an embedding so dense search would still work.
+    from harness.store.document_tree import _build_embed_text
+
+    text = _build_embed_text(
+        heading="PILOT ACKNOWLEDGMENT", body="Listen for readback.", path="2-4-3"
+    )
+    vec = embedder.embed([text])[0].astype(np.float32).tobytes()
+    raw.execute(
+        """INSERT INTO tree_nodes
+           (document_id, parent_id, path, ordinal, depth, node_type, heading,
+            body, embedding, embedder_id, embedding_dim, created_at)
+           VALUES (?, NULL, '2-4-3', 1, 1, 'section', 'PILOT ACKNOWLEDGMENT',
+                   'Listen for readback.', ?, ?, ?, '2026-05-14T12:00:00+00:00')""",
+        (doc_id, vec, embedder.id, embedder.dimension),
+    )
+    raw.commit()
+    raw.close()
+
+    # Step 2: open with current code. The migration should run and
+    # leave the store in a queryable state.
+    store = DocumentTreeStore(db_path=db, embedder=embedder)
+
+    # Anchors column exists and is backfilled for the existing row.
+    anchors_value = store._conn.execute(
+        "SELECT anchors FROM tree_nodes WHERE path = '2-4-3'"
+    ).fetchone()[0]
+    assert "2-4-3" in anchors_value
+    assert "JO_7110.65" in anchors_value
+
+    # BM25 search works post-migration without a re-ingest.
+    hits = store.search("2-4-3", k=3, mode="text")
+    assert hits
+    assert hits[0][0].path == "2-4-3"
+
+
 def test_provenance_distinguishes_documents_with_colliding_paths(tmp_path: Path) -> None:
     """harness-mu22: when two documents in the same tree store share a
     path (e.g., JO §2-4-3 and AIM §2-4-3), provenance.record_id must

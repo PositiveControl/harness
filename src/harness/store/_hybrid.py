@@ -38,7 +38,7 @@ _FTS_TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 _FTS_COMPOUND_RE = re.compile(r"[A-Za-z0-9_]+(?:[-/][A-Za-z0-9_]+)+")
 
 
-def sanitize_fts_query(query: str) -> str:
+def sanitize_fts_query(query: str, *, preserve_punctuation: str = "") -> str:
     """Turn arbitrary user text into a safe FTS5 MATCH clause.
 
     Strategy (two-pass):
@@ -64,10 +64,35 @@ def sanitize_fts_query(query: str) -> str:
     of their actual query — without the quotes, FTS5 would try to
     parse it as an operator and throw a syntax error mid-search.
 
+    `preserve_punctuation` (harness-q6zl) lets a caller declare
+    additional characters that should NOT be split out of pass-1
+    tokens. The tree store passes `.-:` so multi-segment section
+    paths (`91.131`, `2-4-3`, `CFR_14_Vol2:91.131`) round-trip as
+    single quoted FTS5 phrases — aligned with its `tokenchars '.-:'`
+    tokenizer config so the indexed token and the query token use
+    the same character set. The default (empty string) preserves
+    the original episodic / semantic behavior.
+
     Returns empty string when no valid tokens remain; callers should
     short-circuit the search (FTS5 errors on empty MATCH clauses).
     """
-    tokens = _FTS_TOKEN_RE.findall(query)
+    if preserve_punctuation:
+        escaped = re.escape(preserve_punctuation)
+        token_re = re.compile(rf"[A-Za-z0-9_{escaped}]+")
+        # Strip leading/trailing punctuation so a query that includes
+        # `§91.131:` doesn't produce a phrase `"91.131:"` (a different
+        # token from the indexed `91.131`). Keep internal punctuation
+        # intact so multi-segment paths survive.
+        strip_chars = preserve_punctuation
+    else:
+        token_re = _FTS_TOKEN_RE
+        strip_chars = ""
+    raw_tokens = token_re.findall(query)
+    if strip_chars:
+        tokens = [t.strip(strip_chars) for t in raw_tokens]
+        tokens = [t for t in tokens if t]
+    else:
+        tokens = raw_tokens
     if not tokens:
         return ""
     clauses = [f'"{t}"' for t in tokens]

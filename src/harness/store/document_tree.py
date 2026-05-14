@@ -78,6 +78,14 @@ CREATE TABLE IF NOT EXISTS tree_nodes (
     node_type      TEXT    NOT NULL,
     heading        TEXT    NOT NULL,
     body           TEXT    NOT NULL DEFAULT '',
+    -- harness-q6zl: BM25-searchable rendering of the section anchor.
+    -- Carries `§<path>`, the bare path, the document name, and the
+    -- qualified `<document>:<path>` form so a BM25 query for any of
+    -- those forms surfaces this row. Populated at ingest_node time
+    -- and reindexed by the FTS5 sidecar via the same trigger that
+    -- mirrors heading + body. Empty string is legal (back-compat
+    -- for stores whose rows pre-date the column).
+    anchors        TEXT    NOT NULL DEFAULT '',
     -- NULL embedding ⇒ structural-only node; not surfaced by search().
     embedding      BLOB,
     embedder_id    TEXT,
@@ -94,31 +102,50 @@ CREATE INDEX IF NOT EXISTS tree_nodes_doc_idx      ON tree_nodes (document_id);
 CREATE INDEX IF NOT EXISTS tree_nodes_dim_idx      ON tree_nodes (embedding_dim);
 """
 
-# FTS5 sidecar mirrors `tree_nodes`: heading + body, content-pointed
-# back at the main table. Porter stemming for tense-tolerant BM25 —
-# same rationale as `episodic_fts` (harness-cpf).
-_FTS_TOKENIZE = "porter unicode61 remove_diacritics 1"
+# FTS5 sidecar mirrors `tree_nodes`: heading + body + anchors. Porter
+# stemming for tense-tolerant BM25 (same rationale as `episodic_fts`,
+# harness-cpf). `tokenchars '.-:'` keeps multi-segment section paths
+# (`91.131`, `2-4-3`, `CFR_14_Vol2:91.131`) as single tokens rather
+# than splitting them at the punctuation — harness-q6zl: airton_c
+# baseline failed because BM25 was splitting `91.131` into `91` and
+# `131`, matching neither.
+_FTS_TOKENIZE = "porter unicode61 remove_diacritics 1 tokenchars '.-:'"
 
 _CREATE_FTS = f"""
 CREATE VIRTUAL TABLE IF NOT EXISTS tree_nodes_fts USING fts5(
-    heading, body,
+    heading, body, anchors,
     content='tree_nodes',
     content_rowid='id',
-    tokenize='{_FTS_TOKENIZE}'
+    tokenize="{_FTS_TOKENIZE}"
 );
 
 CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_ai
 AFTER INSERT ON tree_nodes BEGIN
-    INSERT INTO tree_nodes_fts(rowid, heading, body)
-    VALUES (new.id, new.heading, new.body);
+    INSERT INTO tree_nodes_fts(rowid, heading, body, anchors)
+    VALUES (new.id, new.heading, new.body, new.anchors);
 END;
 
 CREATE TRIGGER IF NOT EXISTS tree_nodes_fts_ad
 AFTER DELETE ON tree_nodes BEGIN
-    INSERT INTO tree_nodes_fts(tree_nodes_fts, rowid, heading, body)
-    VALUES ('delete', old.id, old.heading, old.body);
+    INSERT INTO tree_nodes_fts(tree_nodes_fts, rowid, heading, body, anchors)
+    VALUES ('delete', old.id, old.heading, old.body, old.anchors);
 END;
 """  # noqa: S608 — module-level constant; _FTS_TOKENIZE is never user-supplied
+
+
+def _build_anchor_text(*, path: str, document_name: str) -> str:
+    """Compose the BM25-indexed anchor string for a tree node. Carries
+    every form a caller might phrase as a search:
+
+      - bare path:        91.131
+      - §-prefixed path:  §91.131
+      - document only:    CFR_14_Vol2
+      - qualified:        CFR_14_Vol2:91.131
+
+    All four forms share the same row, so a BM25 query on any of them
+    surfaces this section. The tokenizer's tokenchars config keeps the
+    dotted/hyphenated forms whole (harness-q6zl)."""
+    return f"§{path} {path} {document_name} {document_name}:{path}"
 
 
 @dataclass(frozen=True)
@@ -182,7 +209,78 @@ class DocumentTreeStore:
         self._conn.executescript(_CREATE_DOCUMENTS)
         self._conn.executescript(_CREATE_NODES)
         self._conn.executescript(_CREATE_INDEXES)
+        migrated = self._migrate_anchors_column()
         self._conn.executescript(_CREATE_FTS)
+        if migrated:
+            self._rebuild_fts_index()
+
+    def _migrate_anchors_column(self) -> bool:
+        """harness-q6zl: bring a pre-q6zl tree_nodes table up to the
+        current schema. Adds the `anchors` column when missing,
+        backfills it from existing rows, and rebuilds the FTS5 sidecar
+        so its column list + tokenchars config match the new schema.
+
+        Idempotent: on a fresh DB the column already exists from
+        `_CREATE_NODES` and nothing more happens. On a pre-q6zl DB
+        the migration runs once and finishes before the FTS5 schema
+        executescript runs against the now-correct underlying table.
+
+        The FTS sidecar gets a hard rebuild rather than an ALTER because
+        FTS5 doesn't support column-list ALTER, AND the tokenizer
+        change (tokenchars '.-:') means existing token rows wouldn't
+        match queries under the new tokenizer anyway."""
+        existing_cols = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(tree_nodes)").fetchall()
+        }
+        migrated = False
+        if "anchors" in existing_cols:
+            # New DB, or already migrated — but still drop the FTS5
+            # table when it exists under the OLD column list so the
+            # subsequent executescript can recreate it with the new
+            # schema. We detect via a probe SELECT.
+            fts_cols = {
+                row[1] for row in self._conn.execute("PRAGMA table_info(tree_nodes_fts)").fetchall()
+            }
+            if fts_cols and "anchors" not in fts_cols:
+                self._conn.execute("DROP TABLE IF EXISTS tree_nodes_fts")
+                self._conn.execute("DROP TRIGGER IF EXISTS tree_nodes_fts_ai")
+                self._conn.execute("DROP TRIGGER IF EXISTS tree_nodes_fts_ad")
+                migrated = True
+            return migrated
+
+        # Pre-q6zl schema. Three steps:
+        # 1. Add the column with the back-compat default ('').
+        # 2. Backfill anchors from path + document_name for every row.
+        # 3. Drop the FTS sidecar so the next executescript rebuilds it.
+        self._conn.execute("ALTER TABLE tree_nodes ADD COLUMN anchors TEXT NOT NULL DEFAULT ''")
+        rows = self._conn.execute(
+            """SELECT n.id, n.path, d.name
+                 FROM tree_nodes n
+                 JOIN tree_documents d ON d.id = n.document_id"""
+        ).fetchall()
+        for node_id, path, doc_name in rows:
+            anchors = _build_anchor_text(path=str(path), document_name=str(doc_name))
+            self._conn.execute(
+                "UPDATE tree_nodes SET anchors = ? WHERE id = ?", (anchors, int(node_id))
+            )
+        # FTS sidecar must be rebuilt — old schema has no anchors
+        # column, and the tokenizer change requires reindexing anyway.
+        self._conn.execute("DROP TABLE IF EXISTS tree_nodes_fts")
+        self._conn.execute("DROP TRIGGER IF EXISTS tree_nodes_fts_ai")
+        self._conn.execute("DROP TRIGGER IF EXISTS tree_nodes_fts_ad")
+        return True
+
+    def _rebuild_fts_index(self) -> None:
+        """harness-q6zl: after a migration drops and recreates the FTS5
+        sidecar, its inverted index is empty even though tree_nodes
+        still carries content. Use FTS5's `rebuild` command so the
+        external-content table re-scans tree_nodes and rebuilds the
+        index. Note: `SELECT COUNT(*) FROM tree_nodes_fts` on an
+        external-content table returns the content-table count, not
+        the inverted-index entry count, so it cannot be used as a
+        sync check — only the caller's explicit migration flag
+        tells us a rebuild is actually needed."""
+        self._conn.execute("INSERT INTO tree_nodes_fts(tree_nodes_fts) VALUES('rebuild')")
 
     # ---------- document CRUD ----------
 
@@ -256,12 +354,18 @@ class DocumentTreeStore:
             embedder_id = self.embedder.id
             embedding_dim = self.embedder.dimension
 
+        # harness-q6zl: compute the BM25-indexed anchor string. Needs
+        # the document's name, which we look up once per ingest call —
+        # cheap because each ingest writes one node.
+        document = self.get_document(document_id)
+        anchors = _build_anchor_text(path=path, document_name=document.name)
+
         cur = self._conn.execute(
             """INSERT INTO tree_nodes (
                 document_id, parent_id, path, ordinal, depth, node_type,
-                heading, body, embedding, embedder_id, embedding_dim,
+                heading, body, anchors, embedding, embedder_id, embedding_dim,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 document_id,
                 parent_id,
@@ -271,6 +375,7 @@ class DocumentTreeStore:
                 node_type,
                 heading,
                 body,
+                anchors,
                 embedding_bytes,
                 embedder_id,
                 embedding_dim,
@@ -421,13 +526,31 @@ class DocumentTreeStore:
         return scored[:k]
 
     def _search_text(self, query: str, *, k: int) -> list[tuple[TreeNode, float]]:
-        match = sanitize_fts_query(query)
+        # harness-q6zl: preserve `.-:` in query tokens so multi-segment
+        # section paths align with the tokenchars config on the FTS5
+        # index (both sides see `91.131` as one token rather than
+        # `91` + `131`).
+        match = sanitize_fts_query(query, preserve_punctuation=".-:")
         if not match:
             return []
+        # Column-weighted BM25: anchors gets a 3x boost relative to
+        # heading/body. The anchor index is the harness-q6zl
+        # mechanism for finding sections by their numeric path
+        # (e.g., "91.131"); the weight tilts toward path matches
+        # without over-rotating. Tuning notes (harness-q6zl):
+        # - 5x and 20x tested; both gained one airton_c case
+        #   (ppl_class_b_entry_requirements) but didn't move others;
+        # - airton_c1 has an independent rank 0 → 1 regression on
+        #   `controller_same_runway_departure` from the schema/
+        #   tokenizer change itself (two sections share the title
+        #   "SAME RUNWAY SEPARATION"; not weight-driven).
+        # 3x is the conservative anchor signal — enough to surface
+        # path matches above neighbor-section noise but not enough
+        # to flip well-ranked semantic hits.
         rows = self._conn.execute(
             """SELECT n.id, n.document_id, n.parent_id, n.path, n.ordinal,
                       n.depth, n.node_type, n.heading, n.body, n.created_at,
-                      bm25(tree_nodes_fts) AS bm25_score
+                      bm25(tree_nodes_fts, 1.0, 1.0, 3.0) AS bm25_score
                FROM tree_nodes_fts
                JOIN tree_nodes n ON n.id = tree_nodes_fts.rowid
                WHERE tree_nodes_fts MATCH ?
