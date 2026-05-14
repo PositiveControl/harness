@@ -45,53 +45,122 @@ ingest:
     Reason: {reason}
     Status: {status}
 
+# Table-shaped retriever wiring (harness-edt6 / Phase 2). When set, the
+# bench builds a `TabularStore` in-memory, registers the CSV as one
+# logical table, and emits a `table_sql_oracle` cell using the per-case
+# `sql:` strings below. The cell measures the *architectural ceiling*:
+# if the agent picks correct SQL, can table-shaped retrieval answer the
+# question? NL→SQL generation is a separate concern handled by the
+# `query_table` tool at chat time; the bench uses oracle SQL so the
+# numbers reflect the storage layer's correctness, not NL2SQL quality.
+table:
+  table_name: returns
+  description: |
+    Customer return requests, one row per refund. Fields: order_id (int),
+    customer_id (text), category (jacket / shoes / kitchen / electronics
+    / outdoor), item (specific product), amount_usd (refund amount, real
+    number), order_month (3-letter month abbreviation), reason (why the
+    customer returned it), status (approved / pending / denied).
+  columns:
+    - [order_id, INTEGER, "Unique order identifier"]
+    - [customer_id, TEXT, "Customer code (C-prefixed)"]
+    - [category, TEXT, "High-level product family"]
+    - [item, TEXT, "Specific item returned"]
+    - [amount_usd, REAL, "Refund amount in USD"]
+    - [order_month, TEXT, "Three-letter month abbreviation"]
+    - [reason, TEXT, "Customer's stated reason"]
+    - [status, TEXT, "Return decision: approved / pending / denied"]
+
 cases:
   # ----- Easy: unique (item, reason) tuple -----
   - id: q_easy_damaged_leather_jacket
     query: "find the leather jacket return where the buyer said it arrived damaged"
     expected_record_ids: ["order:10063"]
+    sql: |
+      SELECT order_id FROM returns
+      WHERE item = 'leather' AND reason = 'damaged on arrival'
 
   - id: q_easy_wrongsize_kettle_denied
     query: "kettle that was returned for being the wrong size and ended up denied"
     expected_record_ids: ["order:10708"]
+    sql: |
+      SELECT order_id FROM returns
+      WHERE item = 'kettle' AND reason = 'wrong size' AND status = 'denied'
 
   - id: q_easy_damaged_keyboard
     query: "mechanical keyboard that came in damaged"
     expected_record_ids: ["order:10511"]
+    sql: |
+      SELECT order_id FROM returns
+      WHERE item = 'mechanical keyboard' AND reason = 'damaged on arrival'
 
   - id: q_easy_duplicate_water_filter
     query: "the customer who ordered a water filter twice by mistake"
     expected_record_ids: ["order:10346"]
+    sql: |
+      SELECT order_id FROM returns
+      WHERE item = 'water filter' AND reason = 'duplicate order'
 
   - id: q_easy_loafers_misdescribed
     query: "loafers returned because they didn't match the product description"
     expected_record_ids: ["order:10518"]
+    sql: |
+      SELECT order_id FROM returns
+      WHERE item = 'loafers' AND reason = 'not as described'
 
   - id: q_easy_damaged_camp_stove
     query: "camp stove that arrived damaged"
     expected_record_ids: ["order:10670"]
+    sql: |
+      SELECT order_id FROM returns
+      WHERE item = 'camp stove' AND reason = 'damaged on arrival'
 
   # ----- Hard: shape-dependent (aggregation / sort) -----
   - id: q_hard_highest_value
     query: "show me the highest-value return in the dataset"
-    expected_record_ids: ["order:10377"]   # $848.42 monitor
+    expected_record_ids: ["order:10377"]
+    sql: |
+      SELECT order_id FROM returns
+      ORDER BY CAST(amount_usd AS REAL) DESC LIMIT 1
 
   - id: q_hard_second_highest
     query: "the second-highest dollar amount return"
-    expected_record_ids: ["order:10331"]   # $840.18 blender
+    expected_record_ids: ["order:10331"]
+    sql: |
+      SELECT order_id FROM returns
+      ORDER BY CAST(amount_usd AS REAL) DESC LIMIT 1 OFFSET 1
 
   - id: q_hard_top_march_700
     query: "March returns above seven hundred dollars"
     expected_record_ids: ["order:10476", "order:10483", "order:10628", "order:10693"]
+    sql: |
+      SELECT order_id FROM returns
+      WHERE order_month = 'Mar' AND CAST(amount_usd AS REAL) > 700
 
   - id: q_hard_big_backpack_denied
     query: "expensive backpack return that the company denied"
     expected_record_ids: ["order:10476", "order:10584"]
+    sql: |
+      SELECT order_id FROM returns
+      WHERE item = 'backpack' AND status = 'denied'
+      ORDER BY CAST(amount_usd AS REAL) DESC
 
   - id: q_hard_cheap_espresso
     query: "the cheapest espresso machine return — under thirty dollars"
-    expected_record_ids: ["order:10390"]   # $22.49 denied espresso
+    expected_record_ids: ["order:10390"]
+    sql: |
+      SELECT order_id FROM returns
+      WHERE item = 'espresso machine' AND CAST(amount_usd AS REAL) < 30
+      ORDER BY CAST(amount_usd AS REAL) ASC
 
   - id: q_hard_oct_damaged
     query: "expensive items damaged on arrival in October"
-    expected_record_ids: ["order:10073", "order:10584"]
+    # Top-2 most expensive Oct-damaged returns ($765.53 fleece, $716.44 fleece).
+    # Original fixture listed cheaper rows by mistake — corrected during
+    # harness-edt6 review when the table-shape cell surfaced the discrepancy.
+    expected_record_ids: ["order:10076", "order:10559"]
+    sql: |
+      SELECT order_id FROM returns
+      WHERE order_month = 'Oct' AND reason = 'damaged on arrival'
+      ORDER BY CAST(amount_usd AS REAL) DESC
+

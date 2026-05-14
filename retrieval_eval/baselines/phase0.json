@@ -15,7 +15,7 @@
       "recall_at_k": 1.0,
       "mrr": 1.0,
       "median_rank": 0.0,
-      "wall_ms": 164.8,
+      "wall_ms": 144.9,
       "cases": [
         {
           "id": "q_capacitor_skipped_component",
@@ -283,7 +283,7 @@
       "recall_at_k": 0.8966,
       "mrr": 0.7053,
       "median_rank": 0.0,
-      "wall_ms": 2469.5,
+      "wall_ms": 2611.5,
       "cases": [
         {
           "id": "controller_readback_requirement",
@@ -910,7 +910,7 @@
       "recall_at_k": 1.0,
       "mrr": 0.8387,
       "median_rank": 0.0,
-      "wall_ms": 795.5,
+      "wall_ms": 835.1,
       "cases": [
         {
           "id": "controller_readback_requirement",
@@ -1537,7 +1537,7 @@
       "recall_at_k": 0.8966,
       "mrr": 0.7529,
       "median_rank": 0.0,
-      "wall_ms": 374.4,
+      "wall_ms": 435.0,
       "cases": [
         {
           "id": "controller_readback_requirement",
@@ -2164,7 +2164,7 @@
       "recall_at_k": 0.9655,
       "mrr": 0.8534,
       "median_rank": 0.0,
-      "wall_ms": 406.1,
+      "wall_ms": 436.4,
       "cases": [
         {
           "id": "controller_readback_requirement",
@@ -2785,13 +2785,13 @@
       "retriever": "hybrid_episodic",
       "k": 10,
       "case_count": 12,
-      "recall_at_1": 0.5,
-      "recall_at_3": 0.5,
-      "recall_at_5": 0.5833,
+      "recall_at_1": 0.5833,
+      "recall_at_3": 0.5833,
+      "recall_at_5": 0.6667,
       "recall_at_k": 0.75,
-      "mrr": 0.544,
+      "mrr": 0.6181,
       "median_rank": 0.0,
-      "wall_ms": 163.8,
+      "wall_ms": 157.2,
       "cases": [
         {
           "id": "q_easy_damaged_leather_jacket",
@@ -3032,8 +3032,8 @@
           "id": "q_hard_oct_damaged",
           "query": "expensive items damaged on arrival in October",
           "expected_record_ids": [
-            "order:10073",
-            "order:10584"
+            "order:10076",
+            "order:10559"
           ],
           "hit_record_ids": [
             "order:10076",
@@ -3047,8 +3047,183 @@
             "order:10584",
             "order:10362"
           ],
-          "rank_of_first_expected": 8,
-          "score_of_first_expected": 0.0281
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.032
+        }
+      ]
+    },
+    {
+      "corpus": "tabular_returns",
+      "shape": "tabular",
+      "retriever": "table_sql_oracle",
+      "k": 10,
+      "case_count": 12,
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "median_rank": 0.0,
+      "wall_ms": 0.6,
+      "cases": [
+        {
+          "id": "q_easy_damaged_leather_jacket",
+          "query": "find the leather jacket return where the buyer said it arrived damaged",
+          "expected_record_ids": [
+            "order:10063"
+          ],
+          "hit_record_ids": [
+            "order:10063"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 1.0
+        },
+        {
+          "id": "q_easy_wrongsize_kettle_denied",
+          "query": "kettle that was returned for being the wrong size and ended up denied",
+          "expected_record_ids": [
+            "order:10708"
+          ],
+          "hit_record_ids": [
+            "order:10708"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 1.0
+        },
+        {
+          "id": "q_easy_damaged_keyboard",
+          "query": "mechanical keyboard that came in damaged",
+          "expected_record_ids": [
+            "order:10511"
+          ],
+          "hit_record_ids": [
+            "order:10511"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 1.0
+        },
+        {
+          "id": "q_easy_duplicate_water_filter",
+          "query": "the customer who ordered a water filter twice by mistake",
+          "expected_record_ids": [
+            "order:10346"
+          ],
+          "hit_record_ids": [
+            "order:10346"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 1.0
+        },
+        {
+          "id": "q_easy_loafers_misdescribed",
+          "query": "loafers returned because they didn't match the product description",
+          "expected_record_ids": [
+            "order:10518"
+          ],
+          "hit_record_ids": [
+            "order:10518"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 1.0
+        },
+        {
+          "id": "q_easy_damaged_camp_stove",
+          "query": "camp stove that arrived damaged",
+          "expected_record_ids": [
+            "order:10670"
+          ],
+          "hit_record_ids": [
+            "order:10670"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 1.0
+        },
+        {
+          "id": "q_hard_highest_value",
+          "query": "show me the highest-value return in the dataset",
+          "expected_record_ids": [
+            "order:10377"
+          ],
+          "hit_record_ids": [
+            "order:10377"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 1.0
+        },
+        {
+          "id": "q_hard_second_highest",
+          "query": "the second-highest dollar amount return",
+          "expected_record_ids": [
+            "order:10331"
+          ],
+          "hit_record_ids": [
+            "order:10331"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 1.0
+        },
+        {
+          "id": "q_hard_top_march_700",
+          "query": "March returns above seven hundred dollars",
+          "expected_record_ids": [
+            "order:10476",
+            "order:10483",
+            "order:10628",
+            "order:10693"
+          ],
+          "hit_record_ids": [
+            "order:10476",
+            "order:10483",
+            "order:10628",
+            "order:10693"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 1.0
+        },
+        {
+          "id": "q_hard_big_backpack_denied",
+          "query": "expensive backpack return that the company denied",
+          "expected_record_ids": [
+            "order:10476",
+            "order:10584"
+          ],
+          "hit_record_ids": [
+            "order:10476",
+            "order:10584",
+            "order:10168",
+            "order:10633"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 1.0
+        },
+        {
+          "id": "q_hard_cheap_espresso",
+          "query": "the cheapest espresso machine return \u2014 under thirty dollars",
+          "expected_record_ids": [
+            "order:10390"
+          ],
+          "hit_record_ids": [
+            "order:10390"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 1.0
+        },
+        {
+          "id": "q_hard_oct_damaged",
+          "query": "expensive items damaged on arrival in October",
+          "expected_record_ids": [
+            "order:10076",
+            "order:10559"
+          ],
+          "hit_record_ids": [
+            "order:10076",
+            "order:10559",
+            "order:10584",
+            "order:10073",
+            "order:10491"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 1.0
         }
       ]
     }

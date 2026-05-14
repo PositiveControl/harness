@@ -71,6 +71,7 @@ from harness.retrieval.st_embedder import SentenceTransformersEmbedder  # noqa: 
 from harness.retrieval.tree_retriever import TreeRetriever  # noqa: E402
 from harness.store.document_tree import DocumentTreeStore  # noqa: E402
 from harness.store.episodic import EpisodicStore  # noqa: E402
+from harness.store.tabular import TableSchema, TabularStore  # noqa: E402
 
 _DEFAULT_EMBEDDER = "BAAI/bge-small-en-v1.5"
 _DEFAULT_K = 10
@@ -343,6 +344,96 @@ def _run_prose(corpus_yaml: Path, *, k: int, embedder_repo: str) -> list[CorpusB
     return _run_with_retrievers(cases=cases, store=store, expander=expander, spec=spec, k=k)
 
 
+def _build_tabular_sql_cell(
+    *,
+    spec: dict[str, Any],
+    raw_cases: list[dict[str, Any]],
+    data_path: Path,
+    embedder_repo: str,
+    k: int,
+) -> CorpusBench | None:
+    """Build the `table_sql_oracle` cell: register the CSV as one table
+    in a fresh in-memory `TabularStore`, run each fixture case's
+    `sql:` against it, score the returned `order_id` column against
+    the expected record ids.
+
+    The "oracle" framing is honest: SQL is hand-written in the YAML
+    per case, so this measures whether the *storage layer* delivers
+    correct rows when given correct SQL — the architectural ceiling,
+    not NL2SQL quality. Returns None when the corpus spec doesn't
+    declare a `table:` block (no table-shape wiring requested).
+    """
+    table_spec = spec.get("table")
+    if not table_spec:
+        return None
+
+    table_name = str(table_spec["table_name"])
+    description = str(table_spec.get("description", "")).strip()
+    columns = tuple(
+        (str(col), str(typ), str(desc))
+        for col, typ, desc in (entry for entry in table_spec["columns"])
+    )
+    schema = TableSchema(name=table_name, description=description, columns=columns)
+
+    embedder = SentenceTransformersEmbedder(model_name=embedder_repo)
+    store = TabularStore(db_path=Path(":memory:"), embedder=embedder)
+    store.register_table_from_csv(schema=schema, csv_path=data_path)
+
+    # ID prefix mirrors what the episodic ingest applies so the eval
+    # speaks the same record-id language across cells.
+    id_prefix = str(spec.get("ingest", {}).get("id_prefix", ""))
+    id_column = str(spec.get("ingest", {}).get("id_column", ""))
+
+    cases = [
+        ShapeCase(
+            id=str(c["id"]),
+            query=str(c["query"]),
+            expected_record_ids=tuple(str(x) for x in c["expected_record_ids"]),
+        )
+        for c in raw_cases
+    ]
+
+    def _search(query: str, depth: int) -> list[ShapeHit]:
+        # Find the case row that matches this query — the fixture's
+        # query is the lookup key. (We can't keep the SQL on the
+        # ShapeCase because the generic eval module doesn't carry
+        # corpus-specific extras. Mapping by query string keeps the
+        # eval module pure-generic.)
+        sql = ""
+        for case in raw_cases:
+            if str(case.get("query")) == query:
+                sql = str(case.get("sql", "")).strip()
+                break
+        if not sql:
+            return []
+        result = store.query_sql(table_name, sql)
+        # SQL might project any columns; we need the id_column to
+        # build a record_id. If it isn't present in the projection,
+        # the case can't be scored — return nothing.
+        if id_column not in result.columns:
+            return []
+        idx = result.columns.index(id_column)
+        # Synthesize descending scores so the eval treats earlier-
+        # returned rows as higher-ranked. SQL imposes its own order
+        # via ORDER BY; we just preserve that.
+        out: list[ShapeHit] = []
+        for rank, row in enumerate(result.rows[:depth]):
+            record_id = f"{id_prefix}{row[idx]}"
+            out.append(ShapeHit(record_id=record_id, score=1.0 - rank * 0.01))
+        return out
+
+    t0 = time.perf_counter()
+    result = run_retrieval_shape(cases, _search, k=k)
+    wall_ms = (time.perf_counter() - t0) * 1000
+    return _result_to_cell(
+        result=result,
+        corpus_name=str(spec["name"]),
+        shape=str(spec["shape"]),
+        retriever="table_sql_oracle",
+        wall_ms=wall_ms,
+    )
+
+
 def _run_tabular(corpus_yaml: Path, *, k: int, embedder_repo: str) -> list[CorpusBench]:
     spec = _load_yaml(corpus_yaml)
     data_path = (corpus_yaml.parent / str(spec["data_path"])).resolve()
@@ -364,7 +455,22 @@ def _run_tabular(corpus_yaml: Path, *, k: int, embedder_repo: str) -> list[Corpu
     ]
 
     expander = _load_corpus_glossary(corpus_yaml, spec)
-    return _run_with_retrievers(cases=cases, store=store, expander=expander, spec=spec, k=k)
+    cells = _run_with_retrievers(cases=cases, store=store, expander=expander, spec=spec, k=k)
+
+    # Table-shaped retriever cell (harness-edt6). Independent of the
+    # episodic/expander stack — registers the CSV as one TabularStore
+    # table and runs per-case oracle SQL through it.
+    sql_cell = _build_tabular_sql_cell(
+        spec=spec,
+        raw_cases=raw_cases,
+        data_path=data_path,
+        embedder_repo=embedder_repo,
+        k=k,
+    )
+    if sql_cell is not None:
+        cells.append(sql_cell)
+
+    return cells
 
 
 def _build_structured_atc_search_fn(

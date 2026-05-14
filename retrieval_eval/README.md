@@ -130,6 +130,36 @@ If a `glossary:` is also wired, it also emits
 (flat | tree) × (no expander | + expander) are visible in one
 envelope. Tree-store paths resolve relative to the corpus YAML.
 
+### Optional `table:` wiring + per-case `sql:` (tabular shape only)
+
+```yaml
+table:
+  table_name: returns
+  description: |
+    Customer return requests, one row per refund. ...
+  columns:
+    - [order_id, INTEGER, "Unique order identifier"]
+    - [amount_usd, REAL, "Refund amount in USD"]
+    # ...
+cases:
+  - id: q_hard_highest_value
+    query: "show me the highest-value return"
+    expected_record_ids: ["order:10377"]
+    sql: |
+      SELECT order_id FROM returns
+      ORDER BY CAST(amount_usd AS REAL) DESC LIMIT 1
+```
+
+When set, the bench registers the CSV as one logical table in an
+in-memory `TabularStore`, then runs each case's `sql:` through
+`store.query_sql`. The returned `id_column` is prefixed with
+`ingest.id_prefix` to build `record_id` strings that align with the
+fixture's `expected_record_ids`. Emits a `table_sql_oracle` cell —
+"oracle" because the SQL is fixture-supplied rather than NL-generated,
+isolating the storage layer from NL→SQL quality. The production tool
+`harness.tools.query_table.QueryTableTool` handles NL→SQL at chat time
+via the agent itself, not a separate model layer.
+
 ## Adding a new corpus
 
 1. Create `corpora/<name>.yaml` with one of the shapes above.
@@ -156,7 +186,8 @@ envelope. Tree-store paths resolve relative to the corpus YAML.
 | structured_atc | hybrid_episodic+expander | 79.3% | 89.7% | 89.7% | 100% | 0.839 | + lifted QueryExpander (harness-m78r) |
 | structured_atc | tree_section_hybrid | 65.5% | 82.8% | **89.7%** | 89.7% | 0.753 | section-grained tree (harness-h5ly) — **+13.8pp r@5 vs Phase 0** |
 | structured_atc | tree_section_hybrid+expander | 75.9% | 93.1% | **96.5%** | 96.5% | 0.853 | tree + expander — best aggregate result |
-| tabular_returns | hybrid_episodic | 50.0% | 50.0% | 58.3% | 75.0% | 0.544 | predicted Phase 2 wedge — aggregation queries hard-miss because flat vector retrieval can't sort |
+| tabular_returns | hybrid_episodic | 58.3% | 58.3% | 66.7% | 75.0% | 0.618 | Phase 0 baseline — flat vector hard-misses on aggregation queries |
+| tabular_returns | **table_sql_oracle** | **100%** | **100%** | **100%** | **100%** | **1.000** | table-shape via `TabularStore` (harness-edt6) — **+33.3pp r@5 vs Phase 0** |
 
 **Multi-cell layout:** corpora that declare a `glossary:` field emit a
 `+expander` cell; corpora that declare a `tree_store:` field emit
@@ -173,6 +204,17 @@ each primitive's contribution stays attributable:
 section-grained ingest delivers r@5 = 89.7% (+13.8pp), is ~7× faster
 than flat hybrid (374ms vs 2470ms — 675 nodes vs 1854), and composes
 cleanly with the expander.
+
+**Phase 2 verdict:** table-shape lands. The bench cell measures the
+*architectural ceiling* with fixture-supplied SQL (NL→SQL generation
+is the agent's job at chat time; the bench keeps that variable out
+of the storage-layer measurement). Table-shape via `TabularStore`
+delivers r@1 / r@5 / r@k all at 100% vs Phase 0's 58.3% / 66.7% / 75%
+(+33-41pp), in ~1ms. Validates the thesis: tabular data should be
+retrieved AS tables. Production tool:
+`harness.tools.query_table.QueryTableTool` exposes the registered
+schemas in its description so the model can write correct SQL inline,
+no separate `list_tables` round-trip.
 
 ## Determinism
 
