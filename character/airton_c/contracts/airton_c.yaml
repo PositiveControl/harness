@@ -29,6 +29,12 @@ slots:
     required: true
     min_cardinality: 1
     max_hits: 5
+    # harness-0t7a: when 2+ sibling leaves under the same parent
+    # appear in the hits, replace the cluster with the parent. Useful
+    # for queries that scope to a topic (e.g., "what does §5-3
+    # cover?") and for eval fixtures whose expected_anchors point at
+    # parent-section paths (5-3, 7-4, Part 97).
+    auto_merge: true
 
   - name: handbook_context
     store: episodic

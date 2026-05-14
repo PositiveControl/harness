@@ -81,6 +81,13 @@ class SlotSpec:
     query_template: str | None = None
     sql_template: str | None = None
     table_name: str | None = None
+    # harness-0t7a: opt-in parent-section auto-merge for tree slots.
+    # When True and 2+ sibling leaves under the same parent appear in
+    # the slot's hits, the orchestrator replaces the cluster with a
+    # single hit at the parent path. Useful for queries that scope to
+    # a topic ("what does §5-3 cover?") and for fixtures whose
+    # expected_anchors are parent paths. Ignored on non-tree slots.
+    auto_merge: bool = False
 
     def __post_init__(self) -> None:
         if self.store not in _VALID_STORES:
@@ -100,6 +107,11 @@ class SlotSpec:
             raise ValueError(f"slot {self.name!r}: max_hits must be >= 1")
         if self.min_cardinality < 0:
             raise ValueError(f"slot {self.name!r}: min_cardinality must be >= 0")
+        if self.auto_merge and self.store != "tree":
+            raise ValueError(
+                f"slot {self.name!r}: auto_merge applies to tree slots only "
+                f"(got store={self.store!r})"
+            )
 
 
 @dataclass(frozen=True)
@@ -173,6 +185,7 @@ def _parse_slot(entry: object, path: Path, idx: int) -> SlotSpec:
         query_template=_optional_str(entry, "query_template"),
         sql_template=_optional_str(entry, "sql_template"),
         table_name=_optional_str(entry, "table_name"),
+        auto_merge=bool(entry.get("auto_merge", False)),
     )
 
 
@@ -282,7 +295,12 @@ def _fetch_slot(
         if stores.tree is None:
             raise ValueError(f"slot {slot.name!r}: tree slot needs a tree store in StoreBundle")
         query = _render_template(slot.query_template or "", variables, slot=slot)
-        tree_results = stores.tree.search(query, k=slot.max_hits, mode="hybrid")
+        # When auto_merge is opt-in, ask the store for a wider
+        # candidate set so the merge has enough sibling matches to
+        # detect parent clusters (harness-0t7a). The post-process
+        # trims back to max_hits.
+        fetch_k = slot.max_hits * 3 if slot.auto_merge else slot.max_hits
+        tree_results = stores.tree.search(query, k=fetch_k, mode="hybrid")
         # Resolve each hit's document name so multi-document stores
         # (airton_c spans 6 sources, harness-mu22) carry source
         # attribution in both the rendered body and the provenance
@@ -293,6 +311,16 @@ def _fetch_slot(
         for node, _score in tree_results:
             if node.document_id not in doc_name_by_id:
                 doc_name_by_id[node.document_id] = stores.tree.get_document(node.document_id).name
+        if slot.auto_merge:
+            tree_results = _merge_sibling_clusters(
+                tree_results, store=stores.tree, max_hits=slot.max_hits
+            )
+            # Refresh the doc-name cache for any newly-promoted parents.
+            for node, _score in tree_results:
+                if node.document_id not in doc_name_by_id:
+                    doc_name_by_id[node.document_id] = stores.tree.get_document(
+                        node.document_id
+                    ).name
         return [
             _RawHit(
                 slot_name=slot.name,
@@ -339,6 +367,75 @@ def _fetch_slot(
         return hits
 
     raise ValueError(f"slot {slot.name!r}: unknown store {slot.store!r}")
+
+
+_MIN_CLUSTER_SIZE = 2
+"""Minimum number of sibling-leaf hits under the same parent before
+auto_merge collapses them into the parent (harness-0t7a). Two is the
+smallest signal that the model probably wants the parent topic —
+one sibling is just a single result, three+ would miss queries where
+two leaves cleanly summarize a section."""
+
+
+def _merge_sibling_clusters(
+    hits: list[tuple[Any, float]],
+    *,
+    store: Any,
+    max_hits: int,
+) -> list[tuple[Any, float]]:
+    """harness-0t7a: replace clusters of 2+ sibling-leaf hits with the
+    parent. Preserves the highest sibling score for the promoted
+    parent (and uses the cluster head's position in the output so
+    ranking semantics carry over). Hits without a parent_id (top-level
+    nodes) and clusters of 1 pass through unchanged.
+
+    Returns up to `max_hits` results in stable order: cluster heads
+    stay at the position of their highest-ranked sibling, with the
+    other siblings dropped. Non-clustered hits keep their rank.
+
+    Typed `Any` on the node side to avoid an import-time dependency
+    on the store's record type — duck-typed at runtime."""
+    if not hits:
+        return []
+    # Group by parent_id, tracking the FIRST (highest-ranked) sibling.
+    cluster_first_idx: dict[tuple[int, int], int] = {}
+    cluster_members: dict[tuple[int, int], list[int]] = {}
+    for idx, (node, _score) in enumerate(hits):
+        if node.parent_id is None:
+            continue
+        key = (node.document_id, node.parent_id)
+        cluster_members.setdefault(key, []).append(idx)
+        cluster_first_idx.setdefault(key, idx)
+
+    promote: dict[int, tuple[Any, float]] = {}
+    drop: set[int] = set()
+    for key, members in cluster_members.items():
+        if len(members) < _MIN_CLUSTER_SIZE:
+            continue
+        head_idx = cluster_first_idx[key]
+        head_node, head_score = hits[head_idx]
+        try:
+            parent = store.get_node(head_node.parent_id)
+        except KeyError:
+            continue
+        promote[head_idx] = (parent, head_score)
+        # Drop the sibling-cluster members AFTER the head; the head
+        # position gets replaced with the parent.
+        for member_idx in members:
+            if member_idx != head_idx:
+                drop.add(member_idx)
+
+    out: list[tuple[Any, float]] = []
+    for idx, item in enumerate(hits):
+        if idx in drop:
+            continue
+        if idx in promote:
+            out.append(promote[idx])
+        else:
+            out.append(item)
+        if len(out) >= max_hits:
+            break
+    return out
 
 
 def _render_template(template: str, variables: Mapping[str, Any], *, slot: SlotSpec) -> str:

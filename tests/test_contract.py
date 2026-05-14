@@ -426,3 +426,45 @@ def test_assemble_package_tabular_slot_returns_one_hit_per_row(tmp_path: Path) -
     # Body carries column=value pairs the model can read.
     assert "order_id=10001" in hits[0].body
     assert "amount_usd=100" in hits[0].body
+
+
+# ---------- auto_merge validation (harness-0t7a) ----------
+
+
+def test_slot_spec_auto_merge_rejects_non_tree_slots() -> None:
+    """harness-0t7a: auto_merge only makes sense for tree slots. The
+    SlotSpec validator catches mis-applied flags at construction time
+    so fixture authors see the typo before chat boot."""
+    with pytest.raises(ValueError, match=r"auto_merge applies to tree slots only"):
+        SlotSpec(
+            name="bad",
+            store="episodic",
+            query_template="{q}",
+            auto_merge=True,
+        )
+    with pytest.raises(ValueError, match=r"auto_merge applies to tree slots only"):
+        SlotSpec(
+            name="bad",
+            store="tabular",
+            sql_template="SELECT * FROM t",
+            table_name="t",
+            auto_merge=True,
+        )
+
+
+def test_slot_spec_auto_merge_accepted_on_tree_slot() -> None:
+    """Tree slots accept auto_merge=True without complaint. Default
+    stays False so existing slots are unchanged."""
+    spec = SlotSpec(
+        name="ok",
+        store="tree",
+        query_template="{q}",
+        auto_merge=True,
+    )
+    assert spec.auto_merge is True
+    default = SlotSpec(
+        name="default",
+        store="tree",
+        query_template="{q}",
+    )
+    assert default.auto_merge is False

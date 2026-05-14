@@ -250,6 +250,83 @@ def test_airton_c_body_carries_document_tag(tmp_path: Path) -> None:
         assert f"[{document}]" in hit.body, f"body missing [{document}] tag: {hit.body[:120]}"
 
 
+def test_airton_c_auto_merge_promotes_parent_when_siblings_cluster(tmp_path: Path) -> None:
+    """harness-0t7a: when 2+ sibling-leaf hits under the same parent
+    appear in the slot's results, the contract orchestrator replaces
+    the cluster with a single hit at the parent path. Exercises the
+    auto_merge: true flag on airton_c's applicable_section slot
+    against a synthetic JO §5-3 corpus where the fixture expects the
+    parent path `5-3`."""
+    embedder = _HashEmbedder()
+    fake_char = tmp_path / "fake_merge"
+    chunks_dir = fake_char / "corpus" / "chunks"
+    chunks_dir.mkdir(parents=True)
+    jo_path = chunks_dir / "jo_7110_65.jsonl"
+    # Three sibling leaves under §5-3 — `auto_merge` fires when 2+
+    # show up. Headings are intentionally similar so the embedder
+    # ranks them together.
+    jo_rows = [
+        {
+            "chapter": "5",
+            "parent_section": "5-3",
+            "section": "5-3-1",
+            "title": "IFR clearance limit issuance",
+            "chunk_index": 0,
+            "body": "Issue an IFR clearance limit on initial contact.",
+        },
+        {
+            "chapter": "5",
+            "parent_section": "5-3",
+            "section": "5-3-2",
+            "title": "IFR clearance limit amendment",
+            "chunk_index": 0,
+            "body": "Amend an IFR clearance limit before reaching the fix.",
+        },
+        {
+            "chapter": "5",
+            "parent_section": "5-3",
+            "section": "5-3-3",
+            "title": "IFR clearance limit holding",
+            "chunk_index": 0,
+            "body": "When a hold is anticipated at the clearance limit.",
+        },
+    ]
+    with jo_path.open("w", encoding="utf-8") as fp:
+        for row in jo_rows:
+            fp.write(json.dumps(row) + "\n")
+    real_spec = {spec.name: spec for spec in load_character(CHARACTER_PATH).document_trees}[
+        "JO_7110.65"
+    ]
+    spec = DocumentTreeSpec(
+        name="JO_7110.65",
+        description=real_spec.description,
+        source_path=jo_path,
+        source_format="jsonl",
+        jsonl_depth_fields=real_spec.jsonl_depth_fields,
+        jsonl_heading_prefixes=real_spec.jsonl_heading_prefixes,
+        jsonl_leaf_heading_field=real_spec.jsonl_leaf_heading_field,
+    )
+    store = build_document_tree_store_for_character(
+        character_path=fake_char,
+        embedder=embedder,
+        document_trees=(spec,),
+    )
+    assert isinstance(store, DocumentTreeStore)
+
+    contract = load_contract(CHARACTER_PATH / "contracts" / "airton_c.yaml")
+    episodic = EpisodicStore(db_path=tmp_path / "ep.sqlite", embedder=embedder)
+    package = assemble_package(
+        contract,
+        variables={"request_summary": "IFR clearance limit"},
+        access=AccessPolicy(user_id="mark", role="airton_c"),
+        stores=StoreBundle(tree=store, episodic=episodic),
+    )
+    paths = [h.provenance.record_id.partition(":")[2] for h in package.hits]
+    # The cluster of §5-3-1/§5-3-2/§5-3-3 collapses to the parent
+    # §5-3. The fixture's expected_anchor `5-3` then matches.
+    assert "5-3" in paths, f"expected promoted parent §5-3, got {paths}"
+
+
 def test_airton_c_anchor_query_routes_to_named_section(tmp_path: Path) -> None:
     """harness-5yzn: when the contract's slot query includes an
     explicit section anchor (e.g. via query_synonyms.yaml expansion
