@@ -163,6 +163,83 @@ def test_builder_is_idempotent(tmp_path: Path) -> None:
     assert second.count_embedded() == first_count
 
 
+def test_provenance_distinguishes_documents_with_colliding_paths(tmp_path: Path) -> None:
+    """harness-mu22: when two documents in the same tree store share a
+    path (e.g., JO §2-4-3 and AIM §2-4-3), provenance.record_id must
+    distinguish them via the document name. The agent reading the
+    package needs to cite the SOURCE, not just the path."""
+    from harness.retrieval.contract import (
+        ContractBundle,
+        SlotSpec,
+        StoreBundle,
+        assemble_package,
+    )
+    from harness.store.document_tree import DocumentTreeStore
+
+    embedder = _HashEmbedder()
+    store = DocumentTreeStore(db_path=tmp_path / "multi.sqlite", embedder=embedder)
+
+    # Two documents with the same path "2-4-3" but different content.
+    doc_a = store.upsert_document(name="JO_7110.65")
+    store.ingest_node(
+        document_id=doc_a.id,
+        parent_id=None,
+        path="2-4-3",
+        ordinal=1,
+        depth=1,
+        node_type="section",
+        heading="PILOT ACKNOWLEDGMENT",
+        body="Controllers ensure pilots acknowledge clearances.",
+        embed=True,
+    )
+    doc_b = store.upsert_document(name="AIM")
+    store.ingest_node(
+        document_id=doc_b.id,
+        parent_id=None,
+        path="2-4-3",
+        ordinal=1,
+        depth=1,
+        node_type="section",
+        heading="HELICOPTER ROUTES",
+        body="Helicopter VFR routes near busy terminals.",
+        embed=True,
+    )
+
+    contract = ContractBundle(
+        role="multi_source",
+        intent="Find applicable sections",
+        budget_tokens=500,
+        slots=(
+            SlotSpec(
+                name="sections",
+                store="tree",
+                query_template="clearance acknowledgment",
+                required=True,
+                min_cardinality=1,
+                max_hits=5,
+            ),
+        ),
+    )
+    package = assemble_package(
+        contract,
+        variables={},
+        access=AccessPolicy(user_id="mark", role="multi_source"),
+        stores=StoreBundle(tree=store),
+    )
+    assert package.hits, "search returned nothing"
+    # Both colliding paths surface; provenance disambiguates by document.
+    record_ids = {h.provenance.record_id for h in package.hits}
+    assert "JO_7110.65:2-4-3" in record_ids or "AIM:2-4-3" in record_ids, (
+        f"expected document-attributed record_id, got {record_ids}"
+    )
+    # The body for each hit carries [<document>] in the heading line.
+    for hit in package.hits:
+        document = hit.provenance.record_id.partition(":")[0]
+        assert f"[{document}]" in hit.body, (
+            f"body missing document tag [{document}]: {hit.body[:80]}"
+        )
+
+
 def test_make_tree_search_fn_returns_anchor_prefixed_principle(tmp_path: Path) -> None:
     """harness-c9fc: make_tree_search_fn wraps a DocumentTreeStore so
     the atc-retrieval eval can score against tree-shaped hits. The
@@ -354,7 +431,10 @@ def test_tree_store_flows_through_assemble_package(tmp_path: Path) -> None:
         f"required tree slot should be filled but is missing: {package.missing_required_slots}"
     )
     assert package.hits, "tree-slot contract returned no hits"
-    # Every hit names tree as its store and carries a section path id.
+    # Every hit names tree as its store and carries a `<document>:<path>`
+    # provenance (harness-mu22).
     for hit in package.hits:
         assert hit.provenance.store == "tree"
-        assert "-" in hit.provenance.record_id or hit.provenance.record_id.isdigit()
+        document, _, path = hit.provenance.record_id.partition(":")
+        assert document == "refund_policy"
+        assert "-" in path or path.isdigit()

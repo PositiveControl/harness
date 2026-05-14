@@ -283,13 +283,25 @@ def _fetch_slot(
             raise ValueError(f"slot {slot.name!r}: tree slot needs a tree store in StoreBundle")
         query = _render_template(slot.query_template or "", variables, slot=slot)
         tree_results = stores.tree.search(query, k=slot.max_hits, mode="hybrid")
+        # Resolve each hit's document name so multi-document stores
+        # (airton_c spans 6 sources, harness-mu22) carry source
+        # attribution in both the rendered body and the provenance
+        # record_id. Single-document stores get the same treatment —
+        # the format is uniform across characters. Caching avoids
+        # repeated SELECTs when several hits share a document.
+        doc_name_by_id: dict[int, str] = {}
+        for node, _score in tree_results:
+            if node.document_id not in doc_name_by_id:
+                doc_name_by_id[node.document_id] = stores.tree.get_document(node.document_id).name
         return [
             _RawHit(
                 slot_name=slot.name,
-                body=_format_tree_body(node.heading, node.body, node.path),
+                body=_format_tree_body(
+                    node.heading, node.body, node.path, doc_name_by_id[node.document_id]
+                ),
                 provenance=Provenance(
                     store="tree",
-                    record_id=node.path,
+                    record_id=f"{doc_name_by_id[node.document_id]}:{node.path}",
                     method="hybrid",
                     score=float(score),
                 ),
@@ -348,8 +360,14 @@ def _format_episodic_body(title: str, body: str, principle: str | None) -> str:
     return " — ".join(parts) if len(parts) > 1 else (parts[0] if parts else "")
 
 
-def _format_tree_body(heading: str, body: str, path: str) -> str:
-    head = f"§{path} {heading.strip()}"
+def _format_tree_body(heading: str, body: str, path: str, document_name: str) -> str:
+    """Render a tree hit for the agent. Format: `§<path> [<document>] <heading>`
+    on the first line, body underneath. The bracketed document name
+    surfaces source attribution (harness-mu22) — load-bearing for
+    multi-document characters like airton_c whose directive is to cite
+    the source. Single-document characters get the same format; the
+    bracket reads as a no-op tag rather than a collision risk."""
+    head = f"§{path} [{document_name}] {heading.strip()}"
     return f"{head}\n{body.strip()}" if body.strip() else head
 
 

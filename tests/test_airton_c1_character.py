@@ -209,11 +209,14 @@ def test_airton_c1_contract_resolves_against_tree_store(tmp_path: Path) -> None:
     for hit in package.hits:
         assert hit.provenance.store == "tree"
         assert hit.provenance.method == "hybrid"
-        # record_id matches the section-path slug pattern (digits +
-        # hyphens) — the agent can quote §<record_id> back to the user.
-        record = hit.provenance.record_id
-        assert record.replace("-", "").isdigit(), (
-            f"tree provenance record_id should be a section path, got {record!r}"
+        # harness-mu22: record_id is `<document>:<path>`. For airton_c1
+        # the document is `jo_7110_65`; the path is a section slug.
+        document, _, path = hit.provenance.record_id.partition(":")
+        assert document == "jo_7110_65", (
+            f"tree provenance should attribute jo_7110_65, got {document!r}"
+        )
+        assert path.replace("-", "").isdigit(), (
+            f"path component should be a section slug, got {path!r}"
         )
 
 

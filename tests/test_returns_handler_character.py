@@ -398,6 +398,10 @@ def test_returns_handler_contract_fans_out_to_all_three_stores(
     workflow_hits = package.hits_for_slot("workflow_step")
     assert workflow_hits, "tree slot returned no hits"
     assert all(h.provenance.store == "tree" for h in workflow_hits)
-    # Provenance is the section path (e.g. "1-2-3"), not a row id.
+    # harness-mu22: provenance record_id is `<document>:<path>` so
+    # multi-document characters can disambiguate sources. For
+    # returns_handler the document is `returns_workflow`.
     for hit in workflow_hits:
-        assert "-" in hit.provenance.record_id or hit.provenance.record_id.isdigit()
+        document, _, path = hit.provenance.record_id.partition(":")
+        assert document == "returns_workflow"
+        assert "-" in path or path.isdigit()
