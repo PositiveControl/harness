@@ -1,0 +1,253 @@
+{
+  "character": "airton_c",
+  "fixture": "/Users/mevans/dev/ideas/harness/character/airton_c/atc_eval.yaml",
+  "k": 10,
+  "recall_at_1": 0.4090909090909091,
+  "recall_at_3": 0.6363636363636364,
+  "recall_at_5": 0.7272727272727273,
+  "recall_at_k": 0.7272727272727273,
+  "median_rank": 0.0,
+  "cases": [
+    {
+      "id": "ppl_vfr_cloud_clearance_above_10k",
+      "audience": "ppl",
+      "query": "What's the VFR cloud clearance in Class E airspace above 10,000 MSL?",
+      "expected_anchors": [
+        "91.155"
+      ],
+      "rank_of_first_expected": 4,
+      "score_of_first_expected": 0.029910714285714284,
+      "found": true
+    },
+    {
+      "id": "ppl_class_b_entry_requirements",
+      "audience": "ppl",
+      "query": "What do I need to enter Class B airspace as a VFR pilot?",
+      "expected_anchors": [
+        "91.131"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 1000000000.0,
+      "found": true
+    },
+    {
+      "id": "ppl_hemispheric_cruising_altitudes",
+      "audience": "ppl",
+      "query": "What are the VFR cruising altitudes above 3,000 AGL?",
+      "expected_anchors": [
+        "91.159"
+      ],
+      "rank_of_first_expected": 1,
+      "score_of_first_expected": 0.032266458495966696,
+      "found": true
+    },
+    {
+      "id": "ppl_right_of_way_rules",
+      "audience": "ppl",
+      "query": "Who has right-of-way when two aircraft are converging at the same altitude?",
+      "expected_anchors": [
+        "91.113"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03278688524590164,
+      "found": true
+    },
+    {
+      "id": "ppl_preflight_action",
+      "audience": "ppl",
+      "query": "What preflight actions does the FAA require before any flight?",
+      "expected_anchors": [
+        "91.103"
+      ],
+      "rank_of_first_expected": 2,
+      "score_of_first_expected": 0.029051670471052088,
+      "found": true
+    },
+    {
+      "id": "ppl_altimeter_setting",
+      "audience": "ppl",
+      "query": "What altimeter setting am I required to use below 18,000 MSL?",
+      "expected_anchors": [
+        "91.121"
+      ],
+      "rank_of_first_expected": 1,
+      "score_of_first_expected": 0.032266458495966696,
+      "found": true
+    },
+    {
+      "id": "ppl_transponder_requirements",
+      "audience": "ppl",
+      "query": "When is a Mode C transponder required in Class E airspace?",
+      "expected_anchors": [
+        "91.215"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 1000000000.0,
+      "found": true
+    },
+    {
+      "id": "ppl_pic_responsibility",
+      "audience": "ppl",
+      "query": "Who has final authority over the operation of the aircraft?",
+      "expected_anchors": [
+        "91.3"
+      ],
+      "rank_of_first_expected": null,
+      "score_of_first_expected": null,
+      "found": false
+    },
+    {
+      "id": "ppl_readback_basics",
+      "audience": "ppl",
+      "query": "What ATC instructions must I read back verbatim?",
+      "expected_anchors": [
+        "4-4-7"
+      ],
+      "rank_of_first_expected": 1,
+      "score_of_first_expected": 0.03200204813108039,
+      "found": true
+    },
+    {
+      "id": "ppl_wake_turbulence_avoidance",
+      "audience": "ppl",
+      "query": "As a student pilot, how do I avoid wake turbulence behind a large jet?",
+      "expected_anchors": [
+        "7-4"
+      ],
+      "rank_of_first_expected": null,
+      "score_of_first_expected": null,
+      "found": false
+    },
+    {
+      "id": "ifr_alternate_airport_weather",
+      "audience": "ifr",
+      "query": "When is a filed alternate airport required for IFR?",
+      "expected_anchors": [
+        "91.169"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03252247488101534,
+      "found": true
+    },
+    {
+      "id": "ifr_takeoff_minimums_part_91",
+      "audience": "ifr",
+      "query": "Are takeoff minimums required for Part 91 operations?",
+      "expected_anchors": [
+        "91.175"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 1000000000.0,
+      "found": true
+    },
+    {
+      "id": "ifr_missed_approach",
+      "audience": "ifr",
+      "query": "What are the required actions on a missed approach?",
+      "expected_anchors": [],
+      "rank_of_first_expected": null,
+      "score_of_first_expected": null,
+      "found": false
+    },
+    {
+      "id": "ifr_minimum_en_route_altitude",
+      "audience": "ifr",
+      "query": "What's the minimum en-route altitude for IFR operations?",
+      "expected_anchors": [
+        "91.177"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 1000000000.0,
+      "found": true
+    },
+    {
+      "id": "ifr_ifr_clearance_limit",
+      "audience": "ifr",
+      "query": "What does it mean when my clearance includes a 'clearance limit'?",
+      "expected_anchors": [
+        "5-3"
+      ],
+      "rank_of_first_expected": null,
+      "score_of_first_expected": null,
+      "found": false
+    },
+    {
+      "id": "ifr_lost_comm_rules",
+      "audience": "ifr",
+      "query": "What do I do if I lose two-way radio communication in IMC on an IFR flight plan?",
+      "expected_anchors": [
+        "91.185"
+      ],
+      "rank_of_first_expected": 3,
+      "score_of_first_expected": 0.029827662395050816,
+      "found": true
+    },
+    {
+      "id": "ifr_approach_categories",
+      "audience": "ifr",
+      "query": "How are approach categories (A, B, C, D, E) determined?",
+      "expected_anchors": [
+        "97"
+      ],
+      "rank_of_first_expected": null,
+      "score_of_first_expected": null,
+      "found": false
+    },
+    {
+      "id": "ifr_vfr_on_top",
+      "audience": "ifr",
+      "query": "What is VFR-on-top and when can I request it?",
+      "expected_anchors": [
+        "4-4-8"
+      ],
+      "rank_of_first_expected": 1,
+      "score_of_first_expected": 0.031754032258064516,
+      "found": true
+    },
+    {
+      "id": "ifr_instrument_currency",
+      "audience": "ifr",
+      "query": "What are the instrument currency requirements for IFR operations?",
+      "expected_anchors": [
+        "61.57"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 1000000000.0,
+      "found": true
+    },
+    {
+      "id": "ifr_descent_below_mda",
+      "audience": "ifr",
+      "query": "When can I descend below MDA or DA on an instrument approach?",
+      "expected_anchors": [
+        "91.175"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03252247488101534,
+      "found": true
+    },
+    {
+      "id": "shared_notam_scope_self_aware",
+      "audience": "ppl",
+      "query": "Is there a TFR over KPAO right now?",
+      "expected_anchors": [],
+      "rank_of_first_expected": null,
+      "score_of_first_expected": null,
+      "found": false
+    },
+    {
+      "id": "shared_cancel_ifr_in_imc",
+      "audience": "ifr",
+      "query": "Can I cancel my IFR clearance while still in the clouds?",
+      "expected_anchors": [
+        "5-1-15",
+        "91.153",
+        "91.155",
+        "91.173"
+      ],
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.032266458495966696,
+      "found": true
+    }
+  ]
+}

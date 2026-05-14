@@ -86,3 +86,86 @@ sections:
     - next sector approval before altitude change
     - altitude change while handoff in progress
     - coordinate altitude change handoff next controller
+
+  # ---- harness-gzxg: CFR + Part 61 entries bridging lay PPL/IFR
+  # queries to specific federal-aviation-regulation sections. Each
+  # entry was a hard-miss in the airton_c atc-retrieval baseline
+  # against the tree store (recall@5 50% → target ≥95%). Section-level
+  # tree embeddings don't capture lay-language signals chunk-level
+  # retrieval did; query-side synonyms restore the lift. Same
+  # query-only policy as the controller-side entries above: ingest-side
+  # rows stay jargon-shaped for precision; lay terms only steer the
+  # QUERY.
+
+  "91.131":
+    # PPL Class B entry — case `ppl_class_b_entry_requirements`.
+    # Lay query: "What do I need to enter Class B airspace as a VFR
+    # pilot?" — doc-text says "Operations in Class B airspace." Lay
+    # phrasing uses "enter" / "fly into" / "VFR pilot in Class B"
+    # which the section title doesn't enumerate.
+    - what do I need to enter Class B airspace
+    - requirements to enter Class B as VFR pilot
+    - fly into Class B airspace VFR
+    - VFR clearance into Class B
+    - permission to enter Class B airspace
+
+  "91.215":
+    # PPL transponder requirements — case `ppl_transponder_requirements`.
+    # Lay query: "When is a Mode C transponder required in Class E
+    # airspace?" — doc-text covers "ATC transponder and altitude
+    # reporting equipment and use." Mode C / Mode A terminology lives
+    # in PCG entries, not in the section title.
+    - when is Mode C transponder required
+    - Mode C requirement Class E airspace
+    - transponder required Class E
+    - altitude reporting transponder requirement
+    - Mode C altitude reporting
+
+  "91.3":
+    # PIC responsibility — case `ppl_pic_responsibility`. Lay query:
+    # "Who has final authority over the operation of the aircraft?"
+    # Doc-text: "Responsibility and authority of the pilot in command."
+    # Lay phrasing uses "final authority" / "in charge" / "ultimate
+    # responsibility" without naming PIC.
+    - who has final authority over aircraft operation
+    - final authority over the operation of the aircraft
+    - pilot in command authority
+    - PIC final authority responsibility
+    - who is responsible for the aircraft in flight
+
+  "91.175":
+    # IFR takeoff minimums — case `ifr_takeoff_minimums_part_91`. Lay
+    # query: "Are takeoff minimums required for Part 91 operations?"
+    # Doc-text title: "Takeoff and landing under IFR." The takeoff-
+    # minimums distinction lives inside the section body, not the
+    # title. Part 91 vs 121/135 is also a key disambiguator.
+    - takeoff minimums required Part 91
+    - Part 91 takeoff minimums IFR
+    - IFR takeoff visibility minimums Part 91
+    - departure minimums Part 91 operations
+    - need takeoff minimums under Part 91
+
+  "91.177":
+    # IFR minimum en-route altitude — case `ifr_minimum_en_route_altitude`.
+    # Lay query: "What's the minimum en-route altitude for IFR
+    # operations?" Doc-text title: "Minimum altitudes for IFR
+    # operations." Lay query says "en-route" (MEA terminology); the
+    # section title doesn't.
+    - minimum en-route altitude IFR
+    - MEA minimum en-route altitude
+    - minimum altitude IFR en-route
+    - lowest altitude IFR cruise
+    - en-route altitude requirement IFR
+
+  "61.57":
+    # IFR instrument currency — case `ifr_instrument_currency`. Lay
+    # query: "What are the instrument currency requirements for IFR
+    # operations?" Doc-text title: "Recent flight experience: Pilot
+    # in command." Currency is a Part 61 concept — the section
+    # discusses 6 approaches / hold / intercept tracking in 6 months;
+    # "currency" itself doesn't appear in the title.
+    - instrument currency requirements
+    - IFR currency Part 61
+    - recent instrument experience requirements
+    - currency for IFR operations
+    - six approaches and a hold currency
