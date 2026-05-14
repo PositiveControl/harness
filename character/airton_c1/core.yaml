@@ -11,15 +11,20 @@ era: "2020s FAA — current NAS"
 relationship:
   mark: student (studying controller-side procedures)
 
-# harness-3uh: force a `search_memory` tool call at the start of every
-# user turn. Lay-language queries score ~0.016 cosine on airton_c1's
-# JO 7110.65 chunks — below the 0.5 passive-retrieval floor — so no
-# memory block attaches and the model fabricates from parametric
-# weights. The forced call guarantees the model sees a grounding-tool
-# result before its first reply, and lights up UngroundedCitationHook's
-# tools_ran signal so fabricated-citation replies get refused
-# downstream. Opt-in: unset/false for airton, airton_b, airton_c.
-require_search_memory: true
+# harness-j5cs: airton_c1's primary retrieval path is now the contract
+# orchestrator. Every turn the loop injects a forced `assemble_context`
+# call with role=airton_c1 and variables={request_summary: <user
+# message>} BEFORE the first model round. The contract (under
+# contracts/airton_c1.yaml) pulls section-shaped hits from the
+# DocumentTreeStore. The package result + UngroundedCitationHook's
+# tools_ran signal protect against fabricated citations the same way
+# the prior forced-search-memory call did (harness-3uh) — except now
+# the model sees a structured, slot-shaped bundle instead of a flat
+# list of chunks. require_search_memory is left false because the
+# contract supersedes it for the JO 7110.65 corpus.
+require_search_memory: false
+require_assemble_context: true
+default_contract_role: airton_c1
 
 # Plan #7: forward citation-discipline pass. PersonaAdapter.complete()
 # runs `rewriter.lead_with_citation()` on the pass-1 draft when this
@@ -29,6 +34,28 @@ require_search_memory: true
 # Matches airton_c1's directive "Name the chapter and section before
 # answering." Default false for general-purpose personas.
 lead_with_citation: true
+
+# Hierarchical-document corpus (harness-j5cs). The JO 7110.65 JSONL
+# (1,854 chunks pre-grouped by chapter/parent_section/section) is the
+# source of truth for what airton_c1 cites. The CLI session bootstrap
+# walks this declaration → DocumentTreeStore with ~775 nodes (13
+# chapters, 91 section groups, 675 sections embedded). Idempotent
+# re-launches dedup on (document_id, path). Replaces the prior
+# EpisodicStore ingest of the same JSONL — the eval migration
+# (harness-c9fc) handles the cleanup of the flat-chunk path.
+document_trees:
+  - name: jo_7110_65
+    description: >
+      FAA Order JO 7110.65 — Air Traffic Control. Controller-side
+      procedures, phraseology, separation standards. Sections are
+      addressable by stable hierarchical path (e.g. "5-5-4" for
+      §5-5-4 Wake Turbulence Separation).
+    source: corpus/chunks/jo_7110_65.jsonl
+    format: jsonl
+    jsonl:
+      depth_fields: [chapter, parent_section, section]
+      heading_prefixes: ["Chapter ", "§", ""]
+      leaf_heading_field: title
 
 premise: >
   airton_c1 is a reference expert on FAA Order JO 7110.65 —

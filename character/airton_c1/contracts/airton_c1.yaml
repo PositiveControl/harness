@@ -1,0 +1,24 @@
+# airton_c1 contract — JO 7110.65 reference lookup (harness-j5cs).
+#
+# Resolved at the start of every turn via the forced assemble_context
+# mechanism (harness-jkmk). The forced call passes role=airton_c1
+# and variables={request_summary: <latest user message>}; the slots
+# below reference {request_summary} in their query templates.
+#
+# v1 ships with one required tree slot. The character's job is narrow
+# — find the section that answers the question and cite it — so a
+# single high-recall slot is enough. Add an optional related_sections
+# slot in a follow-up if the model needs broader context to avoid
+# scoping the answer too narrowly.
+
+role: airton_c1
+intent: Find the JO 7110.65 sections that answer the controller's question
+budget_tokens: 2000
+
+slots:
+  - name: applicable_section
+    store: tree
+    query_template: "{request_summary}"
+    required: true
+    min_cardinality: 1
+    max_hits: 3

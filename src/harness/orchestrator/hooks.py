@@ -1817,8 +1817,11 @@ UNGROUNDED_SECTION_CITATION_RE = re.compile(
 # section-citation reply. Intentionally narrow: only memory-backed
 # retrieval counts. `fetch_url`, `search_web`, `read_file`, etc. do
 # NOT count — a web-fetch result is not a substitute for having pulled
-# the citation from character-owned memory.
-_GROUNDING_TOOLS: frozenset[str] = frozenset({"search_memory", "fact_search"})
+# the citation from character-owned memory. `assemble_context`
+# (harness-j5cs) counts because it fans out into the same memory
+# stores via the contract orchestrator — the agent sees a packaged
+# bundle of episodic / tabular / tree hits with provenance.
+_GROUNDING_TOOLS: frozenset[str] = frozenset({"search_memory", "fact_search", "assemble_context"})
 
 
 # Canned refusal shown when the hook fires. Character-agnostic — the

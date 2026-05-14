@@ -192,13 +192,17 @@ def test_require_search_memory_defaults_to_false() -> None:
     assert airton_b.require_search_memory is False
 
 
-def test_require_search_memory_true_on_airton_c1() -> None:
-    """harness-3uh: airton_c1 opts in because lay-language JO 7110.65
-    queries score below the passive-retrieval floor. The flag drives
-    the tool-loop's forced-search-memory injection at CLI + TUI call
-    sites."""
+def test_airton_c1_uses_forced_assemble_context() -> None:
+    """harness-j5cs: airton_c1 migrated from forced search_memory to
+    forced assemble_context. The contract orchestrator is now the
+    primary retrieval path; the flat-chunk search_memory path is
+    superseded by tree-shaped contract slots. UngroundedCitationHook
+    still gets a tools_ran signal because assemble_context is in
+    _GROUNDING_TOOLS."""
     airton_c1 = load_character(AIRTON_C1)
-    assert airton_c1.require_search_memory is True
+    assert airton_c1.require_search_memory is False
+    assert airton_c1.require_assemble_context is True
+    assert airton_c1.default_contract_role == "airton_c1"
 
 
 # ---------- harness-a2sa: data-driven branch fields ----------
@@ -367,13 +371,30 @@ def test_system_prompt_excludes_named_voice_examples() -> None:
 # ---------- document_trees (harness-ejxn) ----------
 
 
-def test_document_trees_default_empty_for_existing_characters() -> None:
-    """Existing characters that don't ship `document_trees:` keep an
-    empty tuple. Null-safe default — no migration required for any
-    persona that doesn't opt in."""
-    for char_path in (AIRTON, AIRTON_B, AIRTON_C, AIRTON_C1):
+def test_document_trees_default_empty_for_non_opted_characters() -> None:
+    """Characters that don't ship `document_trees:` keep an empty
+    tuple. Null-safe default — no migration required for any persona
+    that doesn't opt in. airton_c1 opted in as of harness-j5cs and is
+    excluded from this regression check; its spec is tested directly
+    below."""
+    for char_path in (AIRTON, AIRTON_B, AIRTON_C):
         character = load_character(char_path)
         assert character.document_trees == (), f"{char_path.name} should default to empty"
+
+
+def test_airton_c1_ships_jsonl_tree_spec() -> None:
+    """harness-j5cs: airton_c1 declares its JO 7110.65 JSONL corpus
+    via document_trees:. The CLI session bootstrap builds the per-
+    character DocumentTreeStore from this spec."""
+    character = load_character(AIRTON_C1)
+    assert len(character.document_trees) == 1
+    spec = character.document_trees[0]
+    assert spec.name == "jo_7110_65"
+    assert spec.source_format == "jsonl"
+    assert spec.jsonl_depth_fields == ("chapter", "parent_section", "section")
+    assert spec.jsonl_heading_prefixes == ("Chapter ", "§", "")
+    assert spec.jsonl_leaf_heading_field == "title"
+    assert spec.source_path.exists()
 
 
 def test_document_trees_loads_markdown_spec(tmp_path: Path) -> None:
@@ -579,11 +600,11 @@ def test_document_trees_jsonl_rejects_empty_depth_fields(tmp_path: Path) -> None
         load_character(char_dir)
 
 
-def test_require_assemble_context_defaults_false() -> None:
-    """harness-jkmk: every existing character keeps the default False
-    so their orchestrator path is unchanged. The flag is opt-in just
-    like require_search_memory."""
-    for char_path in (AIRTON, AIRTON_B, AIRTON_C, AIRTON_C1):
+def test_require_assemble_context_defaults_false_for_non_opted() -> None:
+    """harness-jkmk: every character without an explicit opt-in keeps
+    the default False so its orchestrator path is unchanged. airton_c1
+    opted in as of harness-j5cs and is covered by a dedicated test."""
+    for char_path in (AIRTON, AIRTON_B, AIRTON_C):
         character = load_character(char_path)
         assert character.require_assemble_context is False
         assert character.default_contract_role is None
