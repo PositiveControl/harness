@@ -28,6 +28,7 @@ from harness.retrieval.contract import (
     assemble_package,
     load_contract,
 )
+from harness.store.document_tree import build_document_tree_store_for_character
 from harness.store.episodic import EpisodicStore
 from harness.store.tabular import build_tabular_store_for_character
 
@@ -72,6 +73,40 @@ def _seed_episodic_with_policies(store: EpisodicStore) -> None:
             tier="seed",
             source="character_seed",
         )
+
+
+def _bootstrap_tree_store_for_test(tmp_path: Path, embedder: _HashEmbedder):  # type: ignore[no-untyped-def]
+    """Build a per-test DocumentTreeStore from the character's
+    document_trees declaration. Mirrors the tabular fake-char-dir
+    pattern: symlink the markdown source into a tmp character dir so
+    the store's SQLite file lands under tmp_path rather than clobbering
+    the character's own data dir."""
+    char = load_character(CHARACTER_PATH)
+    if not char.document_trees:
+        return None
+    fake_char_dir = tmp_path / "fake_char_tree"
+    seed_dir = fake_char_dir / "seed_documents"
+    seed_dir.mkdir(parents=True, exist_ok=True)
+    from harness.character import DocumentTreeSpec
+
+    specs: list[DocumentTreeSpec] = []
+    for raw in char.document_trees:
+        target = seed_dir / raw.source_path.name
+        if not target.exists():
+            target.symlink_to(raw.source_path)
+        specs.append(
+            DocumentTreeSpec(
+                name=raw.name,
+                description=raw.description,
+                source_path=target,
+                source_format=raw.source_format,
+            )
+        )
+    return build_document_tree_store_for_character(
+        character_path=fake_char_dir,
+        embedder=embedder,
+        document_trees=tuple(specs),
+    )
 
 
 # ---------- character loading ----------
@@ -208,6 +243,7 @@ def test_returns_handler_contract_resolves_against_character_stores(
     )
     assert tabular is not None
 
+    tree = _bootstrap_tree_store_for_test(tmp_path, embedder)
     contract = load_contract(CHARACTER_PATH / "contracts" / "returns_handler.yaml")
     package = assemble_package(
         contract,
@@ -216,7 +252,7 @@ def test_returns_handler_contract_resolves_against_character_stores(
             "request_summary": "leather jacket arrived damaged",
         },
         access=AccessPolicy(user_id="C9148", role="returns_handler"),
-        stores=StoreBundle(episodic=episodic, tabular=tabular),
+        stores=StoreBundle(episodic=episodic, tabular=tabular, tree=tree),
     )
     assert package.is_complete, f"missing slots: {package.missing_required_slots}"
     assert package.hits_for_slot("customer_history")
@@ -268,6 +304,7 @@ def test_returns_handler_contract_reports_missing_for_unknown_customer(
         tabular_tables=(spec,),
     )
 
+    tree = _bootstrap_tree_store_for_test(tmp_path, embedder)
     contract = load_contract(CHARACTER_PATH / "contracts" / "returns_handler.yaml")
     package = assemble_package(
         contract,
@@ -276,7 +313,91 @@ def test_returns_handler_contract_reports_missing_for_unknown_customer(
             "request_summary": "any return",
         },
         access=AccessPolicy(user_id="C9999", role="returns_handler"),
-        stores=StoreBundle(episodic=episodic, tabular=tabular),
+        stores=StoreBundle(episodic=episodic, tabular=tabular, tree=tree),
     )
     assert not package.is_complete
     assert "matching_orders" in package.missing_required_slots
+
+
+# ---------- document_trees + 3-store contract (harness-zae0) ----------
+
+
+def test_character_loads_with_document_trees() -> None:
+    """The new declarative wiring point: returns_handler ships a
+    returns_workflow tree at character/<name>/seed_documents/."""
+    char = load_character(CHARACTER_PATH)
+    assert len(char.document_trees) == 1
+    tree_spec = char.document_trees[0]
+    assert tree_spec.name == "returns_workflow"
+    assert tree_spec.source_format == "markdown"
+    assert tree_spec.source_path.exists()
+
+
+def test_returns_handler_contract_fans_out_to_all_three_stores(
+    tmp_path: Path,
+) -> None:
+    """The acceptance criterion for harness-zae0: a single contract
+    call fans out to episodic + tabular + tree and returns hits from
+    every shape. Proves the contract primitive carries its load when
+    a character mixes all three data shapes — the whole point of the
+    contract envelope."""
+    char = load_character(CHARACTER_PATH)
+    embedder = _HashEmbedder()
+
+    episodic = EpisodicStore(db_path=tmp_path / "ep.sqlite", embedder=embedder)
+    _seed_episodic_with_policies(episodic)
+    episodic.ingest(
+        external_id="ch:C9148:prior-march",
+        title="Customer C9148 prior return",
+        body="Customer C9148 previously returned a leather jacket in March.",
+        principle="Past customer interaction",
+        tier="seed",
+        source="character_seed",
+    )
+
+    fake_char_dir = tmp_path / "fake_char"
+    (fake_char_dir / "data").mkdir(parents=True)
+    (fake_char_dir / "data" / "returns.csv").symlink_to(char.tabular_tables[0].csv_path)
+    from harness.character import TabularTableSpec
+
+    tabular_spec = TabularTableSpec(
+        table_name=char.tabular_tables[0].table_name,
+        description=char.tabular_tables[0].description,
+        csv_path=fake_char_dir / "data" / "returns.csv",
+        columns=char.tabular_tables[0].columns,
+    )
+    tabular = build_tabular_store_for_character(
+        character_path=fake_char_dir,
+        embedder=embedder,
+        tabular_tables=(tabular_spec,),
+    )
+    tree = _bootstrap_tree_store_for_test(tmp_path, embedder)
+    assert tree is not None, "returns_handler should ship a tree spec"
+
+    contract = load_contract(CHARACTER_PATH / "contracts" / "returns_handler.yaml")
+    package = assemble_package(
+        contract,
+        variables={
+            "customer_id": "C9148",
+            "request_summary": "damaged on arrival escalation",
+        },
+        access=AccessPolicy(user_id="C9148", role="returns_handler"),
+        stores=StoreBundle(episodic=episodic, tabular=tabular, tree=tree),
+    )
+    assert package.is_complete, f"missing: {package.missing_required_slots}"
+
+    # Every shape contributed: episodic, tabular, tree.
+    stores_seen = {h.provenance.store for h in package.hits}
+    assert stores_seen == {"episodic", "tabular", "tree"}, (
+        f"expected all three stores to fire, got {stores_seen}"
+    )
+
+    # Tree slot: workflow_step pulls from the returns_workflow doc and
+    # the section path id flows through provenance — the agent can
+    # quote "§1-2 Order verification" back to the user with audit.
+    workflow_hits = package.hits_for_slot("workflow_step")
+    assert workflow_hits, "tree slot returned no hits"
+    assert all(h.provenance.store == "tree" for h in workflow_hits)
+    # Provenance is the section path (e.g. "1-2-3"), not a row id.
+    for hit in workflow_hits:
+        assert "-" in hit.provenance.record_id or hit.provenance.record_id.isdigit()

@@ -33,3 +33,15 @@ slots:
     required: true
     min_cardinality: 1
     max_hits: 10
+
+  # Procedure slot (harness-zae0). Pulls the workflow section that
+  # most likely applies to this request from the returns_workflow
+  # document tree. Optional — the policy slots already cover the
+  # decision; the workflow gives the AGENT a procedural anchor for
+  # *how* to phrase the decision (assess → decide → escalate).
+  - name: workflow_step
+    store: tree
+    query_template: "returns workflow {request_summary}"
+    required: false
+    min_cardinality: 0
+    max_hits: 2

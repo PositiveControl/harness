@@ -83,3 +83,21 @@ tabular_tables:
       - [order_month, TEXT, "Three-letter month abbreviation"]
       - [reason, TEXT, "Customer's stated reason for return"]
       - [status, TEXT, "Return decision so far: approved / pending / denied"]
+
+# Document trees this character ships with (harness-zae0). The CLI
+# reads this list at session start and builds a per-character
+# DocumentTreeStore at character/<name>/data/document_tree.sqlite.
+# Idempotent on re-launch (UNIQUE(document_id, path) dedup); the
+# markdown file is the source of truth.
+#
+# The workflow manual carries the *procedure* — how a request walks
+# assessment → decision → escalation — while the seed_memories carry
+# the per-rule policies. The contract pulls both so the agent has
+# flow-and-rule on the same turn.
+document_trees:
+  - name: returns_workflow
+    description: >
+      Step-by-step procedure for the returns desk: how to assess a
+      request, apply the policy rules, and route escalations.
+    source: seed_documents/returns_workflow.md
+    format: markdown
