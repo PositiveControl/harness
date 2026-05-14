@@ -37,7 +37,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
@@ -308,6 +308,58 @@ class DocumentTreeStore:
         ).fetchone()
         return int(row[0]) if row is not None else 0
 
+    def count_mismatched_embeddings(self) -> int:
+        """Count embedded nodes whose stored dimension doesn't match the
+        current embedder. Mirrors the EpisodicStore / SemanticStore /
+        TabularStore surface so `memory rebuild-embeddings` can fold
+        this store in (harness-px7k). Structural-only nodes (embedding
+        IS NULL) are excluded — they don't need rebuilding."""
+        row = self._conn.execute(
+            """SELECT COUNT(*) FROM tree_nodes
+               WHERE embedding IS NOT NULL AND embedding_dim != ?""",
+            (self.embedder.dimension,),
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def rebuild_embeddings(self) -> tuple[int, int]:
+        """Re-embed every embedded node under the current embedder.
+        Returns (rows_updated, rows_skipped). Skipped is always 0 —
+        there's no superseded equivalent at the tree-node grain — but
+        the tuple shape mirrors EpisodicStore / SemanticStore /
+        TabularStore so the rebuild plumbing can call them uniformly.
+
+        Useful after a `HARNESS_EMBEDDER_REPO` swap: existing embedded
+        nodes are dim-locked to the old model and silently drop out of
+        `search()` until rebuilt. Structural-only nodes (embedding IS
+        NULL) are left alone — they never participated in retrieval
+        and don't need an embedding."""
+        rows = self._conn.execute(
+            """SELECT id, heading, body, path FROM tree_nodes
+               WHERE embedding IS NOT NULL ORDER BY id"""
+        ).fetchall()
+        if not rows:
+            return 0, 0
+        texts = [
+            _build_embed_text(heading=heading, body=body, path=path)
+            for _id, heading, body, path in rows
+        ]
+        vectors = self.embedder.embed(texts)
+        updated = 0
+        for (node_id, _heading, _body, _path), vec in zip(rows, vectors, strict=True):
+            self._conn.execute(
+                """UPDATE tree_nodes
+                      SET embedding = ?, embedder_id = ?, embedding_dim = ?
+                    WHERE id = ?""",
+                (
+                    vec.astype(np.float32).tobytes(),
+                    self.embedder.id,
+                    self.embedder.dimension,
+                    node_id,
+                ),
+            )
+            updated += 1
+        return updated, 0
+
     def children(self, node_id: int) -> list[TreeNode]:
         rows = self._conn.execute(
             """SELECT id, document_id, parent_id, path, ordinal, depth,
@@ -433,3 +485,68 @@ def _row_to_node(row: tuple) -> TreeNode:  # type: ignore[type-arg]
         body=str(row[8]),
         created_at=datetime.fromisoformat(str(row[9])),
     )
+
+
+def build_document_tree_store_for_character(
+    character_path: Path,
+    embedder: Embedder,
+    document_trees: tuple[Any, ...],
+) -> DocumentTreeStore | None:
+    """Build (and populate) a DocumentTreeStore for a character that
+    ships `document_trees:` declarations in core.yaml (harness-px7k).
+
+    Returns None when the character ships no document trees — callers
+    use this to decide whether to wire the store at all.
+
+    The store lives at `<character_path>/data/document_tree.sqlite`.
+    Idempotent on re-launch: re-ingesting from the same source produces
+    the same row count because `DocumentTreeStore.ingest_node` returns
+    the existing row when `(document_id, path)` collides. Edits to the
+    source file land on the next session start without manual rebuild
+    — assuming additive edits; renumbers force fresh paths that look
+    like new nodes (the structural-edit concern documented on
+    harness-2zf4).
+
+    `document_trees` is typed as `tuple[Any, ...]` to dodge an import
+    cycle: `harness.character.DocumentTreeSpec` would force this
+    module to import character.py at load time. Duck-typed access at
+    runtime keeps the cycle clean — each spec needs `.name`,
+    `.description`, `.source_path`, `.source_format`.
+
+    JSONL specs are deferred (the per-corpus config — depth_fields,
+    heading_prefixes — isn't on the spec yet). For now they raise a
+    clear error; characters with JSONL corpora keep using
+    `scripts/atc_ingest_tree.py` until the spec grows the config.
+    """
+    if not document_trees:
+        return None
+    db_path = character_path / "data" / "document_tree.sqlite"
+    store = DocumentTreeStore(db_path=db_path, embedder=embedder)
+    # Local import dodges a hard circular dep at module load (the
+    # ingest module imports the store types).
+    from harness.store.document_tree_ingest import (
+        ingest_blueprints,
+        iter_markdown_nodes,
+    )
+
+    for spec in document_trees:
+        if spec.source_format == "markdown":
+            ingest_blueprints(
+                store,
+                document_name=spec.name,
+                source_uri=str(spec.source_path),
+                blueprints=iter_markdown_nodes(spec.source_path),
+            )
+        elif spec.source_format == "jsonl":
+            raise NotImplementedError(
+                f"document_trees[{spec.name!r}]: jsonl source_format is "
+                "declared but not yet wired through the character spec — "
+                "use scripts/atc_ingest_tree.py for JSONL corpora today."
+            )
+        else:
+            # _load_document_trees validates the set; this is a guard
+            # against future format additions that forget to wire here.
+            raise ValueError(
+                f"document_trees[{spec.name!r}]: unknown source_format {spec.source_format!r}"
+            )
+    return store

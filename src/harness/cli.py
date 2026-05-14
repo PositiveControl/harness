@@ -540,12 +540,38 @@ def _build_tabular_store_for_session(
     )
 
 
+def _build_document_tree_store_for_session(
+    character: Character | None,
+    memory_store: EpisodicStore | None,
+) -> object | None:
+    """Build a per-character DocumentTreeStore from
+    `character.document_trees`, or return None when the character
+    doesn't ship hierarchical-doc data (harness-px7k).
+
+    Mirrors `_build_tabular_store_for_session`: same embedder as
+    episodic (so dense vectors are consistent across stores),
+    idempotent on re-launch (the store dedups on `(document_id, path)`),
+    and `object` return type to dodge a top-of-file import of the
+    DocumentTreeStore class.
+    """
+    if character is None or not character.document_trees or memory_store is None:
+        return None
+    from harness.store.document_tree import build_document_tree_store_for_character
+
+    return build_document_tree_store_for_character(
+        character_path=settings.character_path,
+        embedder=memory_store.embedder,
+        document_trees=character.document_trees,
+    )
+
+
 def _build_assemble_context_tool(
     *,
     character: Character | None,
     memory_store: EpisodicStore | None,
     speaker: str,
     tabular_store: object | None,
+    tree_store: object | None,
 ) -> AssembleContextTool | None:
     """Construct the AssembleContextTool from character + store handles.
 
@@ -561,19 +587,22 @@ def _build_assemble_context_tool(
     flows into StoreBundle.tabular so tabular slots in contracts
     actually resolve. None for characters without table data.
 
-    Tree store wiring is still TODO — no character ships document-tree
-    data yet, so the contract orchestrator surfaces a clear error
-    string for tree-slot contracts.
+    `tree_store` (harness-px7k) — analogous wiring for `document_trees:`.
+    A per-character DocumentTreeStore flows into StoreBundle.tree so
+    tree-slot contracts resolve end-to-end. None for characters
+    without hierarchical-doc data.
     """
     if character is None:
         return None
     contracts_dir = settings.character_path / "contracts"
     from harness.retrieval.contract import StoreBundle
+    from harness.store.document_tree import DocumentTreeStore
     from harness.store.tabular import TabularStore
 
     bundle = StoreBundle(
         episodic=memory_store,
         tabular=tabular_store if isinstance(tabular_store, TabularStore) else None,
+        tree=tree_store if isinstance(tree_store, DocumentTreeStore) else None,
     )
     return AssembleContextTool(
         stores=bundle,
@@ -1420,6 +1449,10 @@ def _build_tool_registry_for_tui(
     # need it (assemble_context, future tabular-flavored tools) share
     # one connection.
     tabular_store = _build_tabular_store_for_session(character, memory_store)
+    # Per-character document-tree store (harness-px7k). Same single-
+    # instance pattern as tabular_store — assemble_context (and any
+    # future tree-flavored tool) gets the one populated handle.
+    tree_store = _build_document_tree_store_for_session(character, memory_store)
 
     builders: dict[str, Callable[[], Tool | None]] = {
         "read_file": lambda: ReadFileTool(root=workspace_path),
@@ -1468,6 +1501,7 @@ def _build_tool_registry_for_tui(
             memory_store=memory_store,
             speaker=speaker,
             tabular_store=tabular_store,
+            tree_store=tree_store,
         ),
         "phraseology_lint": lambda: (
             PhraseologyLintTool(
@@ -4537,21 +4571,29 @@ def memory_rebuild_embeddings() -> None:
     # embedder feeds all three stores, and an embedder swap drifts
     # the tabular dim the same way it drifts episodic / semantic.
     tabular_store = _build_tabular_store_for_session(character, episodic)
+    # harness-px7k: same treatment for the document-tree store.
+    tree_store_for_rebuild = _build_document_tree_store_for_session(character, episodic)
+    from harness.store.document_tree import DocumentTreeStore
     from harness.store.tabular import TabularStore  # local for type narrowing
 
     tabular_typed = tabular_store if isinstance(tabular_store, TabularStore) else None
+    tree_typed = (
+        tree_store_for_rebuild if isinstance(tree_store_for_rebuild, DocumentTreeStore) else None
+    )
     try:
         ep_mismatched = episodic.count_mismatched_embeddings()
         sem_mismatched = semantic.count_mismatched_embeddings()
         tab_mismatched = (
             tabular_typed.count_mismatched_embeddings() if tabular_typed is not None else 0
         )
+        tree_mismatched = tree_typed.count_mismatched_embeddings() if tree_typed is not None else 0
         tabular_blurb = (
             f"; tabular: {tab_mismatched} mismatched" if tabular_typed is not None else ""
         )
+        tree_blurb = f"; tree: {tree_mismatched} mismatched" if tree_typed is not None else ""
         console.print(
             f"episodic: {ep_mismatched} mismatched; "
-            f"semantic: {sem_mismatched} mismatched{tabular_blurb}."
+            f"semantic: {sem_mismatched} mismatched{tabular_blurb}{tree_blurb}."
         )
         with Status("re-embedding episodic…", console=console):
             ep_updated, _ = episodic.rebuild_embeddings()
@@ -4561,10 +4603,15 @@ def memory_rebuild_embeddings() -> None:
         if tabular_typed is not None:
             with Status("re-embedding tabular…", console=console):
                 tab_updated, _ = tabular_typed.rebuild_embeddings()
+        tree_updated = 0
+        if tree_typed is not None:
+            with Status("re-embedding tree…", console=console):
+                tree_updated, _ = tree_typed.rebuild_embeddings()
         tab_msg = f" and {tab_updated} tabular" if tabular_typed is not None else ""
+        tree_msg = f" and {tree_updated} tree" if tree_typed is not None else ""
         console.print(
-            f"[green]rebuilt {ep_updated} episodic and {sem_updated} semantic{tab_msg} "
-            f"embeddings with {episodic.embedder.id}.[/green]"
+            f"[green]rebuilt {ep_updated} episodic and {sem_updated} semantic"
+            f"{tab_msg}{tree_msg} embeddings with {episodic.embedder.id}.[/green]"
         )
     finally:
         episodic.close()

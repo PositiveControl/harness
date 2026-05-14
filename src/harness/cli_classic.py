@@ -213,6 +213,17 @@ def build_classic_registry(
             tabular_tables=character.tabular_tables,
         )
 
+    # Per-character document-tree store (harness-px7k). Same pattern.
+    tree_store = None
+    if character is not None and character.document_trees and memory_store is not None:
+        from harness.store.document_tree import build_document_tree_store_for_character
+
+        tree_store = build_document_tree_store_for_character(
+            character_path=settings.character_path,
+            embedder=memory_store.embedder,
+            document_trees=character.document_trees,
+        )
+
     builders: dict[str, Callable[[], Tool | None]] = {
         "read_file": lambda: ReadFileTool(root=workspace_path),
         "edit_file": lambda: EditFileTool(root=workspace_path),
@@ -285,7 +296,9 @@ def build_classic_registry(
         "assemble_context": (
             lambda: (
                 AssembleContextTool(
-                    stores=StoreBundle(episodic=memory_store, tabular=tabular_store),
+                    stores=StoreBundle(
+                        episodic=memory_store, tabular=tabular_store, tree=tree_store
+                    ),
                     contracts_dir=settings.character_path / "contracts",
                     user_id=speaker,
                 )
