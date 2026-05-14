@@ -163,6 +163,72 @@ def test_builder_is_idempotent(tmp_path: Path) -> None:
     assert second.count_embedded() == first_count
 
 
+def test_bm25_search_matches_parent_section_and_chapter(tmp_path: Path) -> None:
+    """harness-8k94: the anchors column carries parent_section and
+    chapter tokens in addition to the leaf path. A BM25 query for a
+    parent-section path (`5-3`) or a CFR part (`91`) surfaces leaves
+    under that parent — useful when the auto-merge orchestrator hasn't
+    yet collapsed the cluster, and load-bearing for queries that
+    explicitly name a chapter.
+
+    The structural-only parent itself is NOT embedded (its body is
+    empty), so search() can't return §5-3 directly. The leaves under
+    §5-3 carry `5-3` in their anchors column, so a query for `5-3`
+    matches them."""
+    from harness.store.document_tree import DocumentTreeStore
+
+    embedder = _HashEmbedder()
+    store = DocumentTreeStore(db_path=tmp_path / "extended.sqlite", embedder=embedder)
+    doc = store.upsert_document(name="JO_7110.65")
+    chapter_node = store.ingest_node(
+        document_id=doc.id,
+        parent_id=None,
+        path="5",
+        ordinal=1,
+        depth=1,
+        node_type="chapter",
+        heading="Chapter 5",
+        body="",
+        embed=False,
+    )
+    parent_node = store.ingest_node(
+        document_id=doc.id,
+        parent_id=chapter_node.id,
+        path="5-3",
+        ordinal=1,
+        depth=2,
+        node_type="section_group",
+        heading="§5-3",
+        body="",
+        embed=False,
+    )
+    for ord_idx, leaf_path in enumerate(["5-3-1", "5-3-2", "5-3-3"], start=1):
+        store.ingest_node(
+            document_id=doc.id,
+            parent_id=parent_node.id,
+            path=leaf_path,
+            ordinal=ord_idx,
+            depth=3,
+            node_type="section",
+            heading=f"IFR clearance {leaf_path}",
+            body=f"Body for §{leaf_path}.",
+            embed=True,
+        )
+
+    # BM25 for the parent-section path returns all three leaves under §5-3.
+    parent_hits = store.search("5-3", k=5, mode="text")
+    paths = {node.path for node, _ in parent_hits}
+    assert {"5-3-1", "5-3-2", "5-3-3"}.issubset(paths), (
+        f"expected all §5-3 children for parent-section query, got {paths}"
+    )
+    # BM25 for the chapter path returns the chapter's leaves too.
+    chapter_hits = store.search("5", k=5, mode="text")
+    chapter_paths = {node.path for node, _ in chapter_hits}
+    assert {"5-3-1", "5-3-2", "5-3-3"}.issubset(chapter_paths), (
+        f"expected chapter leaves for chapter query, got {chapter_paths}"
+    )
+
+
 def test_bm25_search_matches_bare_path_anchor(tmp_path: Path) -> None:
     """harness-q6zl: BM25 must surface a section when the query is its
     section number (e.g., '91.131'). Pre-q6zl, FTS5 indexed only

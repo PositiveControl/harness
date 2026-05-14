@@ -134,19 +134,46 @@ END;
 """  # noqa: S608 — module-level constant; _FTS_TOKENIZE is never user-supplied
 
 
-def _build_anchor_text(*, path: str, document_name: str) -> str:
+def _build_anchor_text(
+    *,
+    path: str,
+    document_name: str,
+    parent_section: str | None = None,
+    chapter: str | None = None,
+) -> str:
     """Compose the BM25-indexed anchor string for a tree node. Carries
     every form a caller might phrase as a search:
 
-      - bare path:        91.131
-      - §-prefixed path:  §91.131
-      - document only:    CFR_14_Vol2
-      - qualified:        CFR_14_Vol2:91.131
+      - bare path:           91.131
+      - §-prefixed path:     §91.131
+      - parent_section:      91          (JO/AIM: `2-4`, CFR: `91`)
+      - chapter:             91          (JO/AIM: `2`, CFR: `91`)
+      - document only:       CFR_14_Vol2
+      - qualified:           CFR_14_Vol2:91.131
 
-    All four forms share the same row, so a BM25 query on any of them
-    surfaces this section. The tokenizer's tokenchars config keeps the
-    dotted/hyphenated forms whole (harness-q6zl)."""
-    return f"§{path} {path} {document_name} {document_name}:{path}"
+    All forms share the same row, so a BM25 query on any of them
+    surfaces this section. The tokenizer's tokenchars config
+    (`.-:`) keeps dotted/hyphenated forms whole; § gets stripped by
+    unicode61 but the bare-token forms still match (harness-q6zl /
+    harness-8k94).
+
+    parent_section + chapter are optional — markdown-shaped trees and
+    older callers can leave them None. When present, they widen the
+    BM25 surface so a query like `§5-3` or `Part 91` matches the
+    sibling leaves under that parent without needing the auto-merge
+    promotion path. Dedupe at emit time so `parent_section == path`
+    (PCG-shape glossaries) doesn't double the same token."""
+    parts: list[str] = [f"§{path}", path, document_name, f"{document_name}:{path}"]
+    emitted = {f"§{path}", path}
+    if parent_section and parent_section not in emitted:
+        parts.append(parent_section)
+        parts.append(f"§{parent_section}")
+        emitted.add(parent_section)
+    if chapter and chapter not in emitted:
+        parts.append(chapter)
+        parts.append(f"§{chapter}")
+        emitted.add(chapter)
+    return " ".join(parts)
 
 
 # harness-5yzn: section-path-shaped tokens. Catches CFR (`91.131`,
@@ -287,12 +314,23 @@ class DocumentTreeStore:
         # 3. Drop the FTS sidecar so the next executescript rebuilds it.
         self._conn.execute("ALTER TABLE tree_nodes ADD COLUMN anchors TEXT NOT NULL DEFAULT ''")
         rows = self._conn.execute(
-            """SELECT n.id, n.path, d.name
+            """SELECT n.id, n.path, n.parent_id, d.name
                  FROM tree_nodes n
                  JOIN tree_documents d ON d.id = n.document_id"""
         ).fetchall()
-        for node_id, path, doc_name in rows:
-            anchors = _build_anchor_text(path=str(path), document_name=str(doc_name))
+        for node_id, path, parent_id, doc_name in rows:
+            # harness-8k94: backfill carries parent_section + chapter
+            # tokens too. Resolved via the same parent-chain walk
+            # ingest_node uses.
+            parent_section_path, chapter_path = self._resolve_anchor_ancestors(
+                int(parent_id) if parent_id is not None else None
+            )
+            anchors = _build_anchor_text(
+                path=str(path),
+                document_name=str(doc_name),
+                parent_section=parent_section_path,
+                chapter=chapter_path,
+            )
             self._conn.execute(
                 "UPDATE tree_nodes SET anchors = ? WHERE id = ?", (anchors, int(node_id))
             )
@@ -387,11 +425,20 @@ class DocumentTreeStore:
             embedder_id = self.embedder.id
             embedding_dim = self.embedder.dimension
 
-        # harness-q6zl: compute the BM25-indexed anchor string. Needs
-        # the document's name, which we look up once per ingest call —
-        # cheap because each ingest writes one node.
+        # harness-q6zl + harness-8k94: compute the BM25-indexed anchor
+        # string. Needs the document's name + the parent / grandparent
+        # paths so queries naming `§5-3` or `Part 91` match without
+        # waiting for auto-merge to fire. parent/grandparent come from
+        # the existing parent_id chain; one extra SELECT per non-root
+        # node is cheap because each ingest call writes one row.
         document = self.get_document(document_id)
-        anchors = _build_anchor_text(path=path, document_name=document.name)
+        parent_section_path, chapter_path = self._resolve_anchor_ancestors(parent_id)
+        anchors = _build_anchor_text(
+            path=path,
+            document_name=document.name,
+            parent_section=parent_section_path,
+            chapter=chapter_path,
+        )
 
         cur = self._conn.execute(
             """INSERT INTO tree_nodes (
@@ -436,6 +483,40 @@ class DocumentTreeStore:
             (document_id, path),
         ).fetchone()
         return _row_to_node(row) if row is not None else None
+
+    def _resolve_anchor_ancestors(self, parent_id: int | None) -> tuple[str | None, str | None]:
+        """harness-8k94: walk one or two steps up the parent chain to
+        get the parent_section and chapter paths the anchors column
+        wants. Returns `(parent_section, chapter)` — either may be
+        None for top-level or single-level nodes.
+
+        For a leaf at depth 3 (JO §2-4-3): parent_section = '2-4',
+        chapter = '2'. For a leaf at depth 2 (PCG: letter + entry):
+        parent_section = chapter = the letter. For a depth-1 node:
+        both None (no useful ancestor).
+
+        One SELECT per non-root node; results aren't cached because
+        each ingest_node call writes one row and the cost is small."""
+        if parent_id is None:
+            return None, None
+        parent_row = self._conn.execute(
+            "SELECT path, parent_id FROM tree_nodes WHERE id = ?",
+            (parent_id,),
+        ).fetchone()
+        if parent_row is None:
+            return None, None
+        parent_path = str(parent_row[0])
+        grandparent_id = parent_row[1]
+        if grandparent_id is None:
+            # Two-level corpus (PCG: letter → entry). parent_section
+            # IS the chapter at this depth.
+            return parent_path, parent_path
+        grandparent_row = self._conn.execute(
+            "SELECT path FROM tree_nodes WHERE id = ?",
+            (int(grandparent_id),),
+        ).fetchone()
+        chapter = str(grandparent_row[0]) if grandparent_row is not None else None
+        return parent_path, chapter
 
     def count_embedded(self) -> int:
         """Number of nodes carrying an embedding — drives ingest progress
