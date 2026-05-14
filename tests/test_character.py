@@ -374,10 +374,9 @@ def test_system_prompt_excludes_named_voice_examples() -> None:
 def test_document_trees_default_empty_for_non_opted_characters() -> None:
     """Characters that don't ship `document_trees:` keep an empty
     tuple. Null-safe default — no migration required for any persona
-    that doesn't opt in. airton_c1 opted in as of harness-j5cs and is
-    excluded from this regression check; its spec is tested directly
-    below."""
-    for char_path in (AIRTON, AIRTON_B, AIRTON_C):
+    that doesn't opt in. airton_c1 (harness-j5cs) and airton_c
+    (harness-a22f) opted in and are tested directly below."""
+    for char_path in (AIRTON, AIRTON_B):
         character = load_character(char_path)
         assert character.document_trees == (), f"{char_path.name} should default to empty"
 
@@ -395,6 +394,33 @@ def test_airton_c1_ships_jsonl_tree_spec() -> None:
     assert spec.jsonl_heading_prefixes == ("Chapter ", "§", "")
     assert spec.jsonl_leaf_heading_field == "title"
     assert spec.source_path.exists()
+
+
+def test_airton_c_ships_five_jsonl_tree_specs() -> None:
+    """harness-a22f: airton_c declares 5 hierarchical corpora via
+    document_trees: (JO, AIM, CFR Vol 1, CFR Vol 2, PCG). PHAK is the
+    sixth source but stays in episodic per the harness-by1j hybrid
+    decision."""
+    character = load_character(AIRTON_C)
+    names = [spec.name for spec in character.document_trees]
+    assert names == ["JO_7110.65", "AIM", "CFR_14_Vol1", "CFR_14_Vol2", "PCG"]
+    # All five share the same jsonl shape except PCG which is 2-level
+    # (chapter == letter, section == glossary entry).
+    by_name = {spec.name: spec for spec in character.document_trees}
+    assert by_name["JO_7110.65"].jsonl_depth_fields == (
+        "chapter",
+        "parent_section",
+        "section",
+    )
+    assert by_name["PCG"].jsonl_depth_fields == ("chapter", "section")
+    # The leaf heading comes from the `title` field for every source.
+    for spec in character.document_trees:
+        assert spec.jsonl_leaf_heading_field == "title"
+        assert spec.source_path.exists()
+    # Forced-call flags wired.
+    assert character.require_search_memory is False
+    assert character.require_assemble_context is True
+    assert character.default_contract_role == "airton_c"
 
 
 def test_document_trees_loads_markdown_spec(tmp_path: Path) -> None:
@@ -603,8 +629,9 @@ def test_document_trees_jsonl_rejects_empty_depth_fields(tmp_path: Path) -> None
 def test_require_assemble_context_defaults_false_for_non_opted() -> None:
     """harness-jkmk: every character without an explicit opt-in keeps
     the default False so its orchestrator path is unchanged. airton_c1
-    opted in as of harness-j5cs and is covered by a dedicated test."""
-    for char_path in (AIRTON, AIRTON_B, AIRTON_C):
+    (harness-j5cs) and airton_c (harness-a22f) opted in and are covered
+    by dedicated tests."""
+    for char_path in (AIRTON, AIRTON_B):
         character = load_character(char_path)
         assert character.require_assemble_context is False
         assert character.default_contract_role is None

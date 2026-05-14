@@ -6,16 +6,83 @@ era: "2020s FAA — current NAS"
 relationship:
   mark: student (PPL / IFR track)
 
-# harness-3uh: force a `search_memory` tool call at the start of every
-# user turn. Lay-language NAS queries score well below the 0.5 passive-
-# retrieval floor on dense BGE-small, so no memory block attaches and
-# the model fabricates from parametric weights. The forced call
-# guarantees the model sees a grounding-tool result before its first
-# reply, and lights up UngroundedCitationHook's `tools_ran` signal so
-# fabricated-citation replies get refused downstream. Same rationale as
-# airton_c1; the wider generalist corpus does not change the failure
-# mode — it widens the surface of fabricable section numbers.
-require_search_memory: true
+# harness-a22f: airton_c is on the contract primitive. Every turn the
+# orchestrator forces an `assemble_context` call with role=airton_c.
+# The contract (contracts/airton_c.yaml) pulls section-shaped hits
+# from a 5-document tree store (JO + AIM + CFR Vol1 + CFR Vol2 + PCG)
+# AND a parallel episodic slot for PHAK content (PHAK's chunker
+# stored entire handbook chapters per "section", which doesn't tree-
+# shape at useful granularity — kept in episodic as a flat-chunk
+# tier, per the harness-by1j hybrid decision). Source attribution
+# surfaces via the harness-mu22 document-name plumbing —
+# provenance.record_id is `<document>:<path>`, so the agent quotes
+# both source and section. require_search_memory stays false because
+# the contract supersedes the flat-chunk grounding call for the
+# hierarchical corpora.
+require_search_memory: false
+require_assemble_context: true
+default_contract_role: airton_c
+
+# Hierarchical-document corpora (harness-a22f). Five of airton_c's six
+# sources have section-level hierarchy (JO 7110.65, AIM, 14 CFR Vol 1
+# and Vol 2, PCG) and ingest cleanly into a DocumentTreeStore. PHAK is
+# the exception — its chunker stored entire handbook chapters per
+# "section" (200-900 rows each, no finer granularity), so its content
+# stays in the flat-chunk episodic store and surfaces via a separate
+# contract slot. The harness-by1j hybrid decision documents the
+# rationale.
+#
+# Each spec is a separate document in ONE DocumentTreeStore (at
+# data/document_tree.sqlite); paths are unique per document (so JO
+# §2-4-3 and AIM §2-4-3 coexist with distinct provenance via
+# harness-mu22). PCG carries only 2 hierarchy levels (chapter == letter,
+# section == glossary entry) so its depth_fields tuple is shorter.
+document_trees:
+  - name: JO_7110.65
+    description: >
+      FAA Order JO 7110.65 — Air Traffic Control. Controller-side
+      procedures, phraseology, and separation standards.
+    source: corpus/chunks/jo_7110_65.jsonl
+    format: jsonl
+    jsonl:
+      depth_fields: [chapter, parent_section, section]
+      leaf_heading_field: title
+  - name: AIM
+    description: >
+      Aeronautical Information Manual — pilot-facing procedures,
+      airspace use, communications, emergency procedures.
+    source: corpus/chunks/aim.jsonl
+    format: jsonl
+    jsonl:
+      depth_fields: [chapter, parent_section, section]
+      leaf_heading_field: title
+  - name: CFR_14_Vol1
+    description: >
+      14 CFR Vol 1 — federal aviation regulations (Parts 1-59).
+      Airworthiness standards, certification procedures, airmen.
+    source: corpus/chunks/cfr_14_vol1.jsonl
+    format: jsonl
+    jsonl:
+      depth_fields: [chapter, parent_section, section]
+      leaf_heading_field: title
+  - name: CFR_14_Vol2
+    description: >
+      14 CFR Vol 2 — federal aviation regulations (Parts 60+).
+      Operating rules (Parts 91, 107, 121, 135 etc.), commercial ops.
+    source: corpus/chunks/cfr_14_vol2.jsonl
+    format: jsonl
+    jsonl:
+      depth_fields: [chapter, parent_section, section]
+      leaf_heading_field: title
+  - name: PCG
+    description: >
+      Pilot/Controller Glossary — definitions and abbreviations used
+      in NAS documentation. Two-level: letter → glossary entry.
+    source: corpus/chunks/pcg.jsonl
+    format: jsonl
+    jsonl:
+      depth_fields: [chapter, section]
+      leaf_heading_field: title
 
 # Plan #7: forward citation-discipline pass. PersonaAdapter.complete()
 # runs `rewriter.lead_with_citation()` on the pass-1 draft when this

@@ -361,30 +361,32 @@ def main(argv: list[str] | None = None) -> int:
 
     character = load_character(settings.character_path)
 
-    # harness-c9fc: when a character moves to contracts (document_trees:
-    # in core.yaml carrying the corpus source), the JSONL feeds the
-    # DocumentTreeStore via build_document_tree_store_for_character at
-    # session start — episodic ingest of the same JSONL is now stale.
-    # Guard against accidentally re-populating episodic with chunks
-    # that are no longer the source of truth.
+    # harness-c9fc + harness-a22f: when a character moves to contracts
+    # (document_trees: in core.yaml carrying a JSONL source), the
+    # DocumentTreeStore handles those slugs at session start —
+    # episodic ingest of the same JSONL is now stale. Silently filter
+    # them out rather than refusing the whole run, so a hybrid
+    # character (airton_c: 5 sources in tree, PHAK in episodic) can
+    # still ingest the episodic-only slugs.
     tree_sources = {
         str(spec.source_path) for spec in character.document_trees if spec.source_format == "jsonl"
     }
     conflicting = [slug for slug in slugs if str(CORPUS_CHUNKS / f"{slug}.jsonl") in tree_sources]
     if conflicting:
         print(
-            f"character {character.name!r} declares document_trees for "
-            f"{conflicting} — these are now ingested into the DocumentTreeStore at "
-            f"session start. Episodic ingest is the OLD path (harness-c9fc).",
+            f"skipping {conflicting} — these are owned by document_trees "
+            f"and ingested into the DocumentTreeStore at session start "
+            f"(harness-c9fc / harness-a22f). Run `harness chat` or "
+            f"`harness memory rebuild-embeddings` to refresh the tree.",
             file=sys.stderr,
         )
+        slugs = tuple(s for s in slugs if s not in conflicting)
+    if not slugs:
         print(
-            "If you really want both, use --only with a different slug. "
-            "Otherwise drop the --only flag or run with a character that "
-            "doesn't declare document_trees.",
+            f"no episodic-owned slugs to ingest for character {character.name!r}",
             file=sys.stderr,
         )
-        return 1
+        return 0
 
     print(f"character: {character.name}")
     print(f"db:        {settings.character_db_path}")

@@ -1,0 +1,38 @@
+# airton_c contract — NAS reference lookup (harness-a22f).
+#
+# Resolved at the start of every turn via the forced assemble_context
+# mechanism (harness-jkmk). The forced call passes role=airton_c and
+# variables={request_summary: <latest user message>}; the slots below
+# reference {request_summary} in their query templates.
+#
+# Two slots fan over different stores:
+#
+# - applicable_section (tree, required): pulls section-shaped hits
+#   from the 5-document tree store (JO + AIM + CFR Vol1 + CFR Vol2 +
+#   PCG). Provenance carries `<source>:<path>` per harness-mu22 so the
+#   agent quotes "AIM 4-3-2" or "CFR_14_Vol2:91.155" with audit.
+#
+# - handbook_context (episodic, optional): pulls PHAK chunks. PHAK
+#   doesn't tree-shape at useful granularity (entire handbook chapters
+#   per "section") so it stays in episodic. The slot is optional —
+#   PHAK gives PPL-flavored framing but isn't a primary citation
+#   source. Hits may not appear for every query.
+
+role: airton_c
+intent: Find the NAS sections that answer the question
+budget_tokens: 3000
+
+slots:
+  - name: applicable_section
+    store: tree
+    query_template: "{request_summary}"
+    required: true
+    min_cardinality: 1
+    max_hits: 5
+
+  - name: handbook_context
+    store: episodic
+    query_template: "{request_summary}"
+    required: false
+    min_cardinality: 0
+    max_hits: 2
