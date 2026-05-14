@@ -1,0 +1,53 @@
+version: 1
+name: structured_atc
+shape: structured_doc
+description: |
+  Pointer corpus — re-uses the existing JO 7110.65 ingest under
+  airton_c1 (~1,843 seed rows, ingested via scripts/atc_ingest.py)
+  plus the existing atc_eval.yaml fixture. This corpus measures how
+  well the current flat hybrid retriever handles a deeply-nested
+  technical document where the right answer is a specific section
+  (e.g. §3-10-3).
+
+  Phase 0 baseline runs the stock hybrid retriever; harness-m78r adds
+  a second cell (`hybrid_episodic+expander`) that points at the
+  airton_c1 glossary YAMLs so the expander's contribution is visible
+  per-corpus. The two-cell layout keeps later phases honest:
+    - vs stock hybrid → did the new primitive (tree, table, etc.) move
+      the number on its own?
+    - vs hybrid+expander → does the new primitive still earn its keep
+      once the cheap, content-driven expander is in the mix?
+  Phase 1 tree retriever will report against both cells.
+
+  Phase 1 expectation: the tree retriever beats this baseline by
+  promoting parent sections when multiple leaves under the same
+  parent get retrieved (LlamaIndex auto-merge). If it doesn't, throw
+  it out.
+
+  Matching strategy: anchors are §N-N-N codes parsed out of an
+  episodic record's `principle` field. The fixture's
+  `expected_citations` is a list-of-alternates (any present counts).
+  This is the legacy matcher from src/harness/evals/atc_retrieval.py
+  — bench_retrieval_shape calls into that module directly rather
+  than re-implementing the regex.
+
+# Resolved relative to this YAML file's directory.
+external_eval:
+  fixture: ../../character/airton_c1/atc_eval.yaml
+  store: ../../character/airton_c1/data/harness.sqlite
+  match_strategy: anchor_in_principle
+
+# Optional glossary wiring (harness-m78r). When set, bench_retrieval_shape
+# emits a `hybrid_episodic+expander` cell alongside the stock cell so the
+# expander's recall contribution shows up in the baseline JSON. Paths
+# resolve relative to this YAML file's directory.
+glossary: ../../character/airton_c1/corpus/synonyms.yaml
+glossary_query_only: ../../character/airton_c1/corpus/query_synonyms.yaml
+
+# Optional tree-store wiring (harness-h5ly / Phase 1). When set, the
+# bench builds tree-retriever cells (`tree_section_hybrid` and, if a
+# glossary is also wired, `tree_section_hybrid+expander`). The SQLite
+# file is produced by `scripts/atc_ingest_tree.py`. The two retrievers
+# differ in granularity: flat hybrid embeds 1,854 chunks, tree hybrid
+# embeds 675 sections (each carrying its full concatenated body).
+tree_store: ../data/tree_atc.sqlite

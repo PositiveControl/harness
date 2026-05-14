@@ -1,0 +1,166 @@
+version: 1
+name: prose_journal
+shape: prose
+description: |
+  Self-contained mini-corpus of 12 short prose journal entries on
+  disparate technical / personal topics. Each entry has a unique
+  external_id and one expected query that targets it specifically.
+
+  Phase 0 baseline: dense + BM25 hybrid via EpisodicStore. Expectation
+  is that prose retrieval is the strongest shape for the current
+  stack — we use this corpus as the upper bound the other shapes get
+  measured against.
+
+  Authorship rule: every record must contain a distinctive token or
+  phrase that doesn't appear in any other record's text. Otherwise the
+  fixture stops measuring retrieval quality and starts measuring
+  topical overlap. The queries deliberately avoid those distinctive
+  tokens — they target semantic intent so dense cosine has to earn
+  the hit.
+
+records:
+  - id: capacitor-incident
+    text: |
+      In 2003 my first quadcopter prototype kept browning out mid-hover.
+      Hours of probing finally surfaced the cause: a missing decoupling
+      part on the regulator board that I had skipped during assembly to
+      save a few minutes. Lesson stuck — never optimize away the boring
+      components on the power path.
+
+  - id: jquery-first-project
+    text: |
+      My first production web project shipped in 2008 — a wedding-RSVP
+      microsite for a friend, written in jQuery. Five hundred guests, no
+      server-side state, everything POSTed to a Google Form via AJAX. It
+      worked. The CSS was a disaster. I learned more from that two-week
+      sprint than from any class.
+
+  - id: flight-code-regression
+    text: |
+      One Tuesday morning the avionics build started producing reverse
+      throttle response on the test bench. A junior engineer had moved a
+      constant from a header to a config file and lost the sign in the
+      process. The regression survived three reviewers because the unit
+      tests mocked the IO layer. Now we run hardware-in-the-loop on every
+      commit to the flight stack.
+
+  - id: solder-joint-lesson
+    text: |
+      The cold-joint problem on the sensor harness took two months to
+      diagnose because the failure was thermal. Boards passed at bench
+      temperature, failed at altitude. Once we built an environmental
+      chamber out of a freezer and a hair dryer, the joint failed on
+      cue. Repro before fix, always.
+
+  - id: ishida-rule
+    text: |
+      Ishida's rule: when a system has three plausible failure modes and
+      one fix candidate, you have not understood the system. Either the
+      modes are not actually distinct, or the fix is not specific. Stop
+      and re-investigate. We named it after Ishida because she said it
+      to me in 2014 about a deployment we had bandaged four times in a
+      row.
+
+  - id: tailscale-migration
+    text: |
+      Moving the home lab off the public IPv4 gateway onto Tailscale
+      cut my exposure by about 80% measured by abusive auth attempts in
+      the logs. The trade-off was a single dependency on Tailscale's
+      coordination server, which I accepted because Headscale exists as
+      an exit hatch if I ever need to self-host the control plane.
+
+  - id: dishwasher-noise
+    text: |
+      The new dishwasher had a recurring drain-cycle noise that none of
+      the three repair visits could reproduce. It only happened on the
+      tile floor, never on the wood-floor demo unit at the showroom. A
+      sympathetic vibration thing. We put a 6mm rubber mat under it and
+      the noise vanished. Sometimes the answer is mechanical, not
+      electronic.
+
+  - id: garden-frost-2022
+    text: |
+      The October 2022 frost wiped out the autumn tomatoes overnight. I
+      had ignored two days of dropping low-temperature forecasts because
+      the daytime highs stayed warm. Now I run an explicit cold-snap
+      checklist on every dew-point forecast that mentions clear skies.
+
+  - id: coffee-grinder-burr
+    text: |
+      The grinder started producing inconsistent particle sizes after
+      about 18 months of daily use. Pulled it apart, found the burrs
+      had developed a chip on the lower disc — probably a stray bean
+      stem. Replaced both burrs, recalibrated the zero point, back to
+      espresso-grade output. Sharpness matters more than RPM.
+
+  - id: typewriter-restoration
+    text: |
+      Restoring the 1962 Olivetti was a four-month project. The hardest
+      part was not the mechanical work — it was sourcing a replacement
+      platen rubber. Eventually found one through a collector in
+      Bologna who hand-cast them in batches of ten. The keys still
+      strike like nothing else.
+
+  - id: bicycle-fit-revision
+    text: |
+      Three years of intermittent knee pain on long rides traced back
+      to a saddle that was eight millimeters too high. The bike fitter
+      caught it in five minutes after I had spent two years suspecting
+      cleat alignment. Measure the right thing.
+
+  - id: backup-drive-cascade
+    text: |
+      The off-site backup chain failed silently for nine weeks before I
+      noticed. The rsync job was reporting success but writing to a
+      stale snapshot that had been re-mounted read-only. Now every
+      backup job ends with a checksum-and-list round trip — if the
+      remote count drifts, the alert fires.
+
+cases:
+  - id: q_capacitor_skipped_component
+    query: "the time my drone build failed because I left out a small part on the power board"
+    expected_record_ids: ["capacitor-incident"]
+
+  - id: q_jquery_wedding
+    query: "first time I shipped a real website using a JavaScript framework"
+    expected_record_ids: ["jquery-first-project"]
+
+  - id: q_flight_throttle
+    query: "the avionics regression where the test stand showed reverse motor direction"
+    expected_record_ids: ["flight-code-regression"]
+
+  - id: q_solder_temperature
+    query: "diagnosing a hardware bug that only appeared at low temperatures"
+    expected_record_ids: ["solder-joint-lesson"]
+
+  - id: q_ishida_principle
+    query: "the heuristic about when multiple failure theories means you don't understand the system"
+    expected_record_ids: ["ishida-rule"]
+
+  - id: q_tailscale_security
+    query: "what I gained by moving my home network off the public internet"
+    expected_record_ids: ["tailscale-migration"]
+
+  - id: q_dishwasher_floor
+    query: "how I solved an appliance noise that only happened in my kitchen"
+    expected_record_ids: ["dishwasher-noise"]
+
+  - id: q_frost_tomatoes
+    query: "the year I lost my fall garden to an unexpected freeze"
+    expected_record_ids: ["garden-frost-2022"]
+
+  - id: q_grinder_consistency
+    query: "espresso machine grinder producing uneven coffee grounds after long use"
+    expected_record_ids: ["coffee-grinder-burr"]
+
+  - id: q_olivetti_parts
+    query: "the antique writing machine I rebuilt and how I sourced a rubber roller part"
+    expected_record_ids: ["typewriter-restoration"]
+
+  - id: q_bike_knee_pain
+    query: "long-running cycling injury that turned out to be a saddle height issue"
+    expected_record_ids: ["bicycle-fit-revision"]
+
+  - id: q_silent_backup_failure
+    query: "the off-site backup that appeared to work but was writing nothing"
+    expected_record_ids: ["backup-drive-cascade"]

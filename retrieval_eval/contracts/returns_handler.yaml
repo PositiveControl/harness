@@ -1,0 +1,56 @@
+# Worked contract for the returns-handler role (harness-s3f7 / Phase 3).
+#
+# Demonstrates the contract pattern end-to-end against the same
+# synthetic returns dataset Phases 0-2 used. The role's job is to
+# decide a refund request: it needs the customer's past history, the
+# applicable refund policy, and the specific order(s) being returned.
+#
+# Three slots, three shaped stores:
+#   1. customer_history (episodic) — prose memory of past interactions
+#      with this customer. Required: a returns handler should never
+#      decide without context on what they've previously asked for.
+#   2. refund_policy (episodic) — the static policy memory (synthetic
+#      seed records under `retrieval_eval/data/refund_policies/`).
+#      Required: the handler's decision must be grounded in policy.
+#   3. matching_orders (tabular) — the actual rows from the returns
+#      table that match the customer + (optional) order_id filter.
+#      Required: there's no decision to make without the order data.
+#
+# Variables expected:
+#   - customer_id (e.g. "C9148")
+#   - request_summary (e.g. "leather jacket arrived damaged")
+#
+# Token budget: 1500. Generous for a small synthetic dataset; in a
+# real deployment this would be sized to leave room for the model's
+# system prompt + the conversation.
+
+role: returns-handler
+intent: Decide whether to approve, deny, or escalate a customer return request
+budget_tokens: 1500
+
+slots:
+  - name: customer_history
+    store: episodic
+    query_template: "past returns customer interactions {customer_id}"
+    required: true
+    min_cardinality: 1
+    max_hits: 3
+
+  - name: refund_policy
+    store: episodic
+    query_template: "refund policy {request_summary}"
+    required: true
+    min_cardinality: 1
+    max_hits: 2
+
+  - name: matching_orders
+    store: tabular
+    table_name: returns
+    sql_template: |
+      SELECT order_id, item, amount_usd, order_month, reason, status
+      FROM returns
+      WHERE customer_id = '{customer_id}'
+      ORDER BY CAST(amount_usd AS REAL) DESC
+    required: true
+    min_cardinality: 1
+    max_hits: 10
