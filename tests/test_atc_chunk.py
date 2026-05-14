@@ -358,6 +358,63 @@ def test_cfr_parser_captures_section_number(chunker: object) -> None:
     assert "Basic VFR weather minimums" in c.title
 
 
+def test_cfr_parser_recovers_inline_bolded_section_starts(chunker: object) -> None:
+    """harness-f349: pymupdf4llm occasionally extracts a section
+    heading inline (no leading `##`), typically immediately after the
+    prior section's EFFECTIVE DATE NOTE. The chunker pre-promotes
+    those to heading lines so the section becomes addressable."""
+    md = (
+        "## PART 91 — GENERAL OPERATING AND FLIGHT RULES\n"
+        "\n"
+        "## **§ 91.1 Applicability.**\n"
+        "\n"
+        "This part applies to the operation of aircraft.\n"
+        "\n"
+        "EFFECTIVE DATE NOTE: Amendments to § 91.1 were published "
+        "Nov. 21, 2024, effective Jan. 21, 2025. "
+        "**§ 91.3 Responsibility and authority of the pilot in command.**\n"
+        "\n"
+        "(a) The pilot in command of an aircraft is directly responsible for,\n"
+        "and is the final authority as to, the operation of that aircraft.\n"
+    )
+    cfg = chunker.PARSERS["cfr_14_vol2"]  # type: ignore[attr-defined]
+    chunks = chunker.chunk_markdown(md, cfg)  # type: ignore[attr-defined]
+    sections = [c.section for c in chunks]
+    assert "91.1" in sections, f"§91.1 should chunk normally, got {sections}"
+    assert "91.3" in sections, (
+        f"§91.3 should be recovered from inline-bolded heading, got {sections}"
+    )
+    by_section = {c.section: c for c in chunks}
+    assert "final authority" in by_section["91.3"].body
+    assert "Responsibility" in by_section["91.3"].title
+
+
+def test_cfr_parser_skips_toc_list_items(chunker: object) -> None:
+    """TOC entries (`- **§ N.M Title.**`) look like inline-bolded
+    sections but are list items. harness-f349's promotion should
+    skip them so the chunker doesn't accidentally split a TOC into
+    fake-section blocks."""
+    md = (
+        "## PART 91 — GENERAL OPERATING AND FLIGHT RULES\n"
+        "\n"
+        "Table of contents:\n"
+        "\n"
+        "- **§ 91.1 Applicability.**\n"
+        "- **§ 91.3 Responsibility and authority of the pilot in command.**\n"
+        "\n"
+        "## **§ 91.1 Applicability.**\n"
+        "\n"
+        "This part applies.\n"
+    )
+    cfg = chunker.PARSERS["cfr_14_vol2"]  # type: ignore[attr-defined]
+    chunks = chunker.chunk_markdown(md, cfg)  # type: ignore[attr-defined]
+    # Only the real `## **§ 91.1 ...**` heading should produce a chunk.
+    # The TOC entries get carried as body text under PART 91, but never
+    # become their own section.
+    sections = [c.section for c in chunks]
+    assert sections == ["91.1"], f"TOC list items leaked into sections: {sections}"
+
+
 # ---------- PCG parser ----------
 
 

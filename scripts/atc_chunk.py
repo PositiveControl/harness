@@ -650,11 +650,46 @@ def chunk_markdown(md: str, cfg: ParserConfig) -> list[Chunk]:
     """Full pipeline for one document: segment → parse → size-shape →
     renumber. The renumber pass keeps `chunk_index` unique per
     `(source, section)` so coarse-section sources (PHAK) don't collapse
-    under ingest-time dedup. No-op for fine-grained sources."""
+    under ingest-time dedup. No-op for fine-grained sources.
+
+    CFR-only pre-pass (harness-f349): promote inline-bolded section
+    starts (`**§ N.M Title.**` mid-paragraph) to heading lines so
+    _iter_blocks emits them as separate sections. pymupdf4llm
+    extraction occasionally drops the leading `##` heading marker for
+    a section that immediately follows another section's EFFECTIVE
+    DATE NOTE — without this promotion, those sections get swallowed
+    into the prior section's body and never become addressable
+    (e.g., §91.3 PIC authority in CFR Vol 2)."""
+    if cfg.kind == "cfr":
+        md = _promote_inline_section_starts(md)
     blocks = list(_iter_blocks(md))
     parser = _PARSERS_BY_KIND[cfg.kind]
     parsed = parser(blocks, cfg)
     return list(_renumber_chunk_indexes(_expand_by_size(parsed)))
+
+
+# harness-f349: catches `**§ N.M Title.**` bolded section starts that
+# pymupdf4llm extracted inline instead of as their own heading line.
+# Negative lookbehinds exclude:
+#   - existing heading lines (`## **§ ...`): already a section start.
+#   - TOC list items (`- **§ ...`): table-of-contents entry, not a
+#     section header.
+#   - word-boundary middles (alnum char before `**`): the bolded run
+#     is part of a longer prose word, not a section start. EFFECTIVE
+#     DATE NOTE-style cases have `. ` or ` ` immediately before
+#     `**§`, which passes the lookbehind.
+_INLINE_SECTION_RE = re.compile(
+    r"(?<!#\s)(?<!- )(?<![A-Za-z0-9])(\*\*§\s*\d+\.\d+[a-z]?\s+[A-Z][^*]+\.\*\*)"
+)
+
+
+def _promote_inline_section_starts(md: str) -> str:
+    """Insert `\\n\\n## ` before each inline-bolded section-start
+    pattern (harness-f349). The `\\n` after `\\1` ensures the
+    pattern's trailing body content lands on its own line, where
+    _iter_blocks treats it as body for the new section rather than
+    appending to the heading."""
+    return _INLINE_SECTION_RE.sub(r"\n\n## \1\n", md)
 
 
 def write_jsonl(chunks: Iterable[Chunk], dst: Path) -> int:
