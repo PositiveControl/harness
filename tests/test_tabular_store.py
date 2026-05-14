@@ -315,3 +315,65 @@ def test_from_clause_identifiers_picks_up_join_targets() -> None:
 def test_from_clause_identifiers_is_case_insensitive() -> None:
     refs = _from_clause_identifiers("select * from RETURNS")
     assert refs == ["RETURNS"]
+
+
+# ---------- embedder-swap robustness (harness-pzpy) ----------
+
+
+def test_count_mismatched_embeddings_zero_when_dim_matches(tmp_path: Path) -> None:
+    store = TabularStore(db_path=tmp_path / "tab.sqlite", embedder=_HashEmbedder())
+    store.register_table(schema=_returns_schema(), rows=[])
+    store.register_table(schema=_users_schema(), rows=[])
+    assert store.count_mismatched_embeddings() == 0
+
+
+def test_count_mismatched_embeddings_surfaces_dim_drift(tmp_path: Path) -> None:
+    """Register under one embedder dim, swap to a different dim, count
+    should reflect every row as mismatched. This is the signal the CLI
+    rebuild command uses to tell the user whether a rebuild is worth it."""
+    store = TabularStore(db_path=tmp_path / "tab.sqlite", embedder=_HashEmbedder())
+    store.register_table(schema=_returns_schema(), rows=[])
+    store.register_table(schema=_users_schema(), rows=[])
+    # Swap to a wider embedder; both registered embeddings now have
+    # the wrong dim.
+    store.embedder = _HashEmbedder(id="wider", dimension=16)
+    assert store.count_mismatched_embeddings() == 2
+
+
+def test_rebuild_embeddings_restores_find_tables_after_swap(tmp_path: Path) -> None:
+    """The motivating bug: register a table, swap embedders, find_tables
+    silently filters the dim-mismatched row out. Rebuild restores
+    the hit list."""
+    store = TabularStore(db_path=tmp_path / "tab.sqlite", embedder=_HashEmbedder())
+    store.register_table(schema=_returns_schema(), rows=[])
+    # Pre-swap: find_tables returns the registered table.
+    pre = store.find_tables("anything", k=5)
+    assert len(pre) == 1
+
+    # Swap.
+    store.embedder = _HashEmbedder(id="wider", dimension=16)
+    mid = store.find_tables("anything", k=5)
+    assert mid == []  # silently filtered
+
+    # Rebuild restores.
+    updated, skipped = store.rebuild_embeddings()
+    assert updated == 1
+    assert skipped == 0
+    post = store.find_tables("anything", k=5)
+    assert len(post) == 1
+
+
+def test_rebuild_embeddings_is_idempotent(tmp_path: Path) -> None:
+    """Running rebuild twice in a row produces the same count both
+    times. Mirrors the EpisodicStore contract."""
+    store = TabularStore(db_path=tmp_path / "tab.sqlite", embedder=_HashEmbedder())
+    store.register_table(schema=_returns_schema(), rows=[])
+    store.register_table(schema=_users_schema(), rows=[])
+    first_updated, _ = store.rebuild_embeddings()
+    second_updated, _ = store.rebuild_embeddings()
+    assert first_updated == second_updated == 2
+
+
+def test_rebuild_embeddings_on_empty_store_returns_zero(tmp_path: Path) -> None:
+    store = TabularStore(db_path=tmp_path / "tab.sqlite", embedder=_HashEmbedder())
+    assert store.rebuild_embeddings() == (0, 0)

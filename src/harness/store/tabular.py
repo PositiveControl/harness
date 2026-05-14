@@ -337,6 +337,53 @@ class TabularStore:
         columns = tuple(d[0] for d in cur.description or ())
         return QueryResult(sql=sql, columns=columns, rows=rows)
 
+    def count_mismatched_embeddings(self) -> int:
+        """How many registered tables carry embeddings whose dim doesn't
+        match the current embedder. Same surface as EpisodicStore /
+        SemanticStore so the `harness memory rebuild-embeddings` CLI
+        can fold tabular tables into the same flow when a character
+        wires one (harness-pzpy)."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM tabular_registry WHERE embedding_dim != ?",
+            (self.embedder.dimension,),
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def rebuild_embeddings(self) -> tuple[int, int]:
+        """Re-embed every registered table's schema_text under the
+        current embedder (harness-pzpy). Returns (rows_updated, rows_skipped).
+        Skipped is always 0 — there's no superseded equivalent at the
+        table grain — but the tuple shape mirrors EpisodicStore /
+        SemanticStore so callers can share the rebuild plumbing.
+
+        Useful after a `HARNESS_EMBEDDER_REPO` swap: registered tables'
+        schema embeddings are dim-locked to the old model and silently
+        drop out of `find_tables` until they're rebuilt. Idempotent —
+        running twice produces the same result, modulo any non-
+        determinism the embedder might have."""
+        rows = self._conn.execute(
+            "SELECT id, schema_text FROM tabular_registry ORDER BY id"
+        ).fetchall()
+        if not rows:
+            return 0, 0
+        texts = [str(r[1]) for r in rows]
+        vectors = self.embedder.embed(texts)
+        updated = 0
+        for (registry_id, _schema_text), vec in zip(rows, vectors, strict=True):
+            self._conn.execute(
+                """UPDATE tabular_registry
+                      SET embedding = ?, embedder_id = ?, embedding_dim = ?
+                    WHERE id = ?""",
+                (
+                    vec.astype(np.float32).tobytes(),
+                    self.embedder.id,
+                    self.embedder.dimension,
+                    registry_id,
+                ),
+            )
+            updated += 1
+        return updated, 0
+
 
 # ---------- helpers ----------
 
