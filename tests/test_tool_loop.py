@@ -2529,6 +2529,146 @@ def test_force_search_memory_skips_when_user_message_empty() -> None:
     assert stub.calls == []
 
 
+# ---------- forced assemble_context (harness-jkmk) ----------
+
+
+@dataclass
+class _StubAssembleContextTool:
+    """Minimal assemble_context stand-in. Mirrors _StubSearchMemoryTool
+    in shape but takes `role` and `variables` per the real
+    AssembleContextTool API. We only care that the orchestrator hands
+    us the expected arguments and threads the result back."""
+
+    output: str = "Context Package — stub"
+    calls: list[dict[str, object]] = field(default_factory=list)
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="assemble_context",
+            description="stub assemble_context",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "role": {"type": "string"},
+                    "variables": {"type": "object"},
+                },
+                "required": ["role"],
+            },
+            tier="read",
+        )
+
+    def call(self, *, role: str, variables: dict[str, object] | None = None) -> str:
+        self.calls.append({"role": role, "variables": variables or {}})
+        return self.output
+
+
+def test_force_assemble_context_injects_call_before_model_round() -> None:
+    """With force_assemble_context=<role>, the orchestrator fires an
+    assemble_context call before the first model round. Variables map
+    {request_summary: <user message>} so the contract's slot templates
+    see the user's question without the model needing to extract it."""
+    stub = _StubAssembleContextTool(output="Context Package — refund decision")
+    registry = ToolRegistry()
+    registry.register(stub)
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="here is an answer")])
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="customer asked for a refund")],
+        registry,
+        force_assemble_context="returns_handler",
+    )
+
+    assert len(stub.calls) == 1
+    assert stub.calls[0]["role"] == "returns_handler"
+    assert stub.calls[0]["variables"] == {"request_summary": "customer asked for a refund"}
+
+    # Adapter saw the forced tool result in working history before
+    # generating its reply.
+    assert len(adapter.calls_seen) == 1
+    tool_msgs = [m for m in adapter.calls_seen[0] if m.role == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].name == "assemble_context"
+    assert tool_msgs[0].content == "Context Package — refund decision"
+
+    # Forced-call events fire at round_index=0, before round_start.
+    kinds = [(e.kind, e.round_index) for e in result.events]
+    forced_start = next(i for i, k in enumerate(kinds) if k == ("tool_call_start", 0))
+    round_start = next(i for i, k in enumerate(kinds) if k == ("round_start", 0))
+    assert forced_start < round_start
+
+
+def test_force_assemble_context_default_none_skips_injection() -> None:
+    """Default (force_assemble_context=None) preserves the
+    pre-harness-jkmk path. No forced call, no tool message in working."""
+    stub = _StubAssembleContextTool()
+    registry = ToolRegistry()
+    registry.register(stub)
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="plain answer")])
+
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="anything")],
+        registry,
+    )
+
+    assert stub.calls == []
+    tool_msgs = [m for m in adapter.calls_seen[0] if m.role == "tool"]
+    assert tool_msgs == []
+
+
+def test_force_assemble_context_degrades_when_tool_absent() -> None:
+    """If assemble_context isn't registered (e.g., the tool-set doesn't
+    include it), the forced call is a no-op and the turn still
+    completes. Character flag is advisory, not load-bearing."""
+    # Empty registry — assemble_context not present.
+    registry = ToolRegistry()
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="plain answer")])
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="some question")],
+        registry,
+        force_assemble_context="some_role",
+    )
+    # No tool-call events for the forced call (tool not registered).
+    forced_events = [e for e in result.events if e.kind == "tool_call_start"]
+    assert forced_events == []
+    # The turn still produced a reply.
+    assert result.content == "plain answer"
+
+
+def test_force_assemble_context_stacks_with_force_search_memory() -> None:
+    """A character can opt into both forced calls. search_memory runs
+    first (harness-3uh), assemble_context runs second (harness-jkmk),
+    both visible in working history before the model round."""
+    sm = _StubSearchMemoryTool(output="recalled: prior context")
+    ac = _StubAssembleContextTool(output="Context Package — full bundle")
+    registry = ToolRegistry()
+    registry.register(sm)
+    registry.register(ac)
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="answer")])
+
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="combined question")],
+        registry,
+        force_search_memory=True,
+        force_assemble_context="some_role",
+    )
+
+    assert len(sm.calls) == 1
+    assert len(ac.calls) == 1
+    tool_msgs = [m for m in adapter.calls_seen[0] if m.role == "tool"]
+    # search_memory FIRST, assemble_context SECOND — the contract order
+    # is documented and tested so a character that wants the search
+    # hit to be visible inside the contract's episodic slot gets the
+    # right ordering.
+    names = [m.name for m in tool_msgs]
+    assert names == ["search_memory", "assemble_context"]
+
+
 # Explicit import to confirm we can pass pytest from the tests folder
 def test_tools_module_importable() -> None:
     import harness.tools  # noqa: F401 — import-for-side-effect check

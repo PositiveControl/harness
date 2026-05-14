@@ -393,6 +393,60 @@ def _router_prelude(
 
 
 _FORCED_SEARCH_MEMORY = "search_memory"
+_FORCED_ASSEMBLE_CONTEXT = "assemble_context"
+
+
+def _forced_assemble_context_prelude(
+    working: list[ChatMessage],
+    registry: ToolRegistry,
+    emit: Callable[[ToolLoopEvent], None],
+    seen_calls: set[tuple[str, str]],
+    user_message: str | None,
+    succeeded_tools: set[str],
+    role: str,
+) -> bool:
+    """Inject a mandatory `assemble_context` call at turn start
+    (harness-jkmk). Sibling of `_forced_search_memory_prelude` for the
+    contract-shaped retrieval path.
+
+    Arguments passed:
+      - `role` — the character's `default_contract_role`. Names which
+        contract YAML to resolve.
+      - `variables` — `{request_summary: <user_message>}`. The contract
+        slots' query templates reference `{request_summary}` by
+        convention. Other variables a contract needs (customer_id,
+        flight_id, …) aren't known at forced-call time — those contracts
+        are not candidates for `require_assemble_context` today.
+
+    Graceful degradation: skipped on empty user_message or when
+    `assemble_context` isn't in the registry (e.g. `--tool-set minimal`).
+    The character flag is advisory, not load-bearing.
+
+    `succeeded_tools` mutated with `'assemble_context'` regardless of the
+    tool's own success signal — same rationale as the search_memory
+    prelude (UngroundedCitationHook gates on 'did a grounding tool
+    run', not 'did it return hits'). Returns True if the forced call
+    actually ran.
+    """
+    from harness.orchestrator.hooks import _call_key
+
+    if user_message is None or not user_message.strip():
+        return False
+    if _FORCED_ASSEMBLE_CONTEXT not in registry:
+        return False
+    call = ToolCall(
+        name=_FORCED_ASSEMBLE_CONTEXT,
+        arguments={"role": role, "variables": {"request_summary": user_message}},
+    )
+    emit(ToolLoopEvent(kind="tool_call_start", call=call, round_index=0))
+    result = registry.call(call.name, call.arguments)
+    kind = "tool_call_end" if result.success else "tool_call_failed"
+    emit(ToolLoopEvent(kind=kind, call=call, result=result, round_index=0))
+    seen_calls.add(_call_key(call))
+    working.append(ChatMessage(role="assistant", content="", tool_calls=(call,)))
+    working.append(ChatMessage(role="tool", content=result.output, name=call.name))
+    succeeded_tools.add(_FORCED_ASSEMBLE_CONTEXT)
+    return True
 
 
 def _forced_search_memory_prelude(
@@ -664,6 +718,7 @@ def run_tool_loop(
     hooks: HookPipeline | None = None,
     memory_block_attached: bool = False,
     force_search_memory: bool = False,
+    force_assemble_context: str | None = None,
     banter_tracker: BanterStreakTracker | None = None,
     scope_redirect_template: str | None = None,
 ) -> ToolLoopResult:
@@ -710,6 +765,17 @@ def run_tool_loop(
     airton_c1, harness-3uh) where passive retrieval routinely misses
     lay-language paraphrases of in-scope queries. Degrades gracefully
     to a no-op if `search_memory` isn't in the registry.
+
+    `force_assemble_context`, when set to a role name, injects a
+    mandatory `assemble_context` tool call before the first model round
+    (harness-jkmk). The role is the character's `default_contract_role`;
+    the variables dict is `{request_summary: <latest user message>}`.
+    Used by characters whose primary retrieval path is the contract
+    orchestrator (rather than flat search_memory). Degrades gracefully
+    to a no-op if `assemble_context` isn't in the registry. Runs after
+    `force_search_memory` so a character can opt into both (the contract
+    package then sees the search_memory result as part of an episodic
+    slot if its YAML wires one).
 
     `banter_tracker`, when set, intercepts banter-shaped user messages
     (epic harness-jjm9) BEFORE any forced grounding, router pass, or
@@ -785,6 +851,23 @@ def run_tool_loop(
             seen_calls,
             turn_user_message,
             succeeded_tools,
+        )
+        any_tool_succeeded = any_tool_succeeded or forced_ran
+
+    # Forced assemble_context injection (harness-jkmk). Same shape as
+    # the search_memory prelude; runs after it so a character that opts
+    # into both gets the search hit AND the contract package staged
+    # before the first model round. Skipped when no role is specified
+    # (the common case — only contract-first characters opt in).
+    if force_assemble_context is not None:
+        forced_ran = _forced_assemble_context_prelude(
+            working,
+            registry,
+            emit,
+            seen_calls,
+            turn_user_message,
+            succeeded_tools,
+            role=force_assemble_context,
         )
         any_tool_succeeded = any_tool_succeeded or forced_ran
 

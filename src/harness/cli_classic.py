@@ -573,6 +573,11 @@ class ClassicChatSession:
                 hooks=self.hooks,
                 memory_block_attached=bool(recalled),
                 force_search_memory=self.character.require_search_memory,
+                force_assemble_context=(
+                    self.character.default_contract_role
+                    if self.character.require_assemble_context
+                    else None
+                ),
                 banter_tracker=self.banter_tracker,
                 scope_redirect_template=self.character.scope_redirect_template,
             )

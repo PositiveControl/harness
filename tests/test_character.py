@@ -579,6 +579,49 @@ def test_document_trees_jsonl_rejects_empty_depth_fields(tmp_path: Path) -> None
         load_character(char_dir)
 
 
+def test_require_assemble_context_defaults_false() -> None:
+    """harness-jkmk: every existing character keeps the default False
+    so their orchestrator path is unchanged. The flag is opt-in just
+    like require_search_memory."""
+    for char_path in (AIRTON, AIRTON_B, AIRTON_C, AIRTON_C1):
+        character = load_character(char_path)
+        assert character.require_assemble_context is False
+        assert character.default_contract_role is None
+
+
+def test_require_assemble_context_loads_with_role(tmp_path: Path) -> None:
+    """Setting both flags loads them onto the Character. The
+    orchestrator wires the role into the forced-call argument."""
+    import shutil
+
+    char_dir = tmp_path / "char_with_forced_ctx"
+    shutil.copytree(AIRTON, char_dir)
+    core_path = char_dir / "core.yaml"
+    core_path.write_text(
+        core_path.read_text()
+        + "\nrequire_assemble_context: true\n"
+        + "default_contract_role: my_role\n"
+    )
+    character = load_character(char_dir)
+    assert character.require_assemble_context is True
+    assert character.default_contract_role == "my_role"
+
+
+def test_require_assemble_context_without_role_raises(tmp_path: Path) -> None:
+    """harness-jkmk: setting the flag without naming a role surfaces
+    at YAML load time. No silent no-op at runtime."""
+    import shutil
+
+    import pytest
+
+    char_dir = tmp_path / "char_bad_forced_ctx"
+    shutil.copytree(AIRTON, char_dir)
+    core_path = char_dir / "core.yaml"
+    core_path.write_text(core_path.read_text() + "\nrequire_assemble_context: true\n")
+    with pytest.raises(ValueError, match=r"needs `default_contract_role`"):
+        load_character(char_dir)
+
+
 def test_document_trees_markdown_ignores_jsonl_block(tmp_path: Path) -> None:
     """A jsonl: block under a markdown spec is silently allowed (no-op).
     Lets a user keep a stale block around when they flip a corpus from

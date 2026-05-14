@@ -162,6 +162,26 @@ class Character:
     # / `--facts`) still runs in addition, not in place. Default False;
     # every other character leaves behavior unchanged.
     require_search_memory: bool = False
+    # Contract-flavored sibling of `require_search_memory` (harness-jkmk).
+    # When True, the orchestrator injects a forced `assemble_context`
+    # call at turn start, with role = `default_contract_role` and
+    # variables = {request_summary: <user message>}. The package result
+    # lands in `working` before the model's first round, so the model
+    # sees a full contract resolution (episodic + tabular + tree hits,
+    # whichever the contract names) without needing to ask. Used by
+    # characters that move onto the contract primitive as their primary
+    # retrieval path. Requires `default_contract_role` to be set;
+    # otherwise the parser raises at YAML load time.
+    require_assemble_context: bool = False
+    # Role name passed to a forced assemble_context call (harness-jkmk).
+    # Must be a contract role declared under
+    # `character/<name>/contracts/<role>.yaml`. Validation deferred to
+    # runtime (the AssembleContextTool surfaces an "unknown role" error
+    # cleanly if the contract YAML is missing); the parser only enforces
+    # presence when `require_assemble_context: true`. Convention: the
+    # contract for that role takes a `{request_summary}` variable; the
+    # orchestrator fills it from the latest user message.
+    default_contract_role: str | None = None
     # Plan #7 / forward citation-discipline pass. When true,
     # PersonaAdapter.complete() runs `rewriter.lead_with_citation()` on
     # the pass-1 draft before the voice rewriter sees it — hoists the
@@ -434,6 +454,13 @@ def load_character(path: Path) -> Character:
     values = tuple(Value(id=v["id"], rule=v["rule"]) for v in core["values"])
     tabular_tables = _load_tabular_tables(core.get("tabular_tables"), path)
     document_trees = _load_document_trees(core.get("document_trees"), path)
+    require_assemble_context = bool(core.get("require_assemble_context", False))
+    default_contract_role = _opt_str(core, "default_contract_role", path=path, parent_name="core")
+    if require_assemble_context and not default_contract_role:
+        raise ValueError(
+            f"{path}/core.yaml: `require_assemble_context: true` needs "
+            "`default_contract_role` to name the contract to call (harness-jkmk)"
+        )
 
     # Thought-graph block is optional: personas without bd ops tools
     # simply omit the section.
@@ -467,6 +494,8 @@ def load_character(path: Path) -> Character:
         ablated_voice_samples=tuple(ablated_samples),
         seed_memories=tuple(seeds),
         require_search_memory=bool(core.get("require_search_memory", False)),
+        require_assemble_context=require_assemble_context,
+        default_contract_role=default_contract_role,
         lead_with_citation=bool(core.get("lead_with_citation", False)),
         tool_descriptions=tool_descriptions,
         tabular_tables=tabular_tables,
