@@ -35,12 +35,14 @@ from harness.orchestrator import ToolLoopEvent, run_tool_loop
 from harness.persona.banter import BanterStreakTracker, load_default_tracker
 from harness.persona.rewriter import build_rewriter_messages
 from harness.retrieval import VoiceRetriever
+from harness.retrieval.contract import StoreBundle
 from harness.router import GrammarRouter, ModelRouter, Router
 from harness.store import EpisodicStore, SemanticStore
 from harness.store.audit import AuditStore, record_turn_audit
 from harness.store.bd_adapter import BeadsAdapter
 from harness.store.transcript import Transcript
 from harness.tools import (
+    AssembleContextTool,
     ConsolidateMemoryTool,
     EditFileTool,
     FetchUrlTool,
@@ -259,6 +261,21 @@ def build_classic_registry(
                     semantic_store=semantic_store,
                 )
                 if memory_store is not None and semantic_store is not None
+                else None
+            )
+        ),
+        # Phase 3 contract orchestrator wiring (harness-xysp). Contracts
+        # discovered under character/<name>/contracts/*.yaml; tree +
+        # tabular stores deliberately left None until per-character
+        # wiring lands (harness-kgpi).
+        "assemble_context": (
+            lambda: (
+                AssembleContextTool(
+                    stores=StoreBundle(episodic=memory_store),
+                    contracts_dir=settings.character_path / "contracts",
+                    user_id=speaker,
+                )
+                if character is not None
                 else None
             )
         ),

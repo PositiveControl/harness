@@ -145,6 +145,17 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "introspect",
         "spawn_subagent",
     ),
+    # Contract-driven retrieval (harness-xysp). For role-specialized
+    # agents whose work is contract-shaped — the contract YAML declares
+    # what each slot needs, `assemble_context` materializes a packaged
+    # context bundle in one call. Pairs with search_memory / search_facts
+    # for the cases the contract doesn't predict.
+    "contract": (
+        "assemble_context",
+        "search_memory",
+        "search_facts",
+        "introspect",
+    ),
     # Kitchen-sink — every built-in tool the registry knows about.
     # Intended as the starting point for scripts/chat.sh + power users
     # who prefer to prune with --tools-drop rather than opt in to each
@@ -174,6 +185,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "fetch_url",
         "introspect",
         "spawn_subagent",
+        "assemble_context",
     ),
 }
 

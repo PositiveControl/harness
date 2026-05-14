@@ -3,6 +3,7 @@ can reason about. The orchestrator runs the tool loop; individual tools
 do not know about chat, retrieval, persona, or authorization — those
 concerns live in `src/harness/orchestrator/`."""
 
+from harness.tools.assemble_context import AssembleContextTool
 from harness.tools.base import (
     ModelReply,
     StreamChunk,
@@ -46,6 +47,7 @@ from harness.tools.write_file import WriteFileTool
 __all__ = [
     "DEFAULT_PROFILE",
     "TOOL_PROFILES",
+    "AssembleContextTool",
     "ConsolidateMemoryTool",
     "EditFileTool",
     "FetchUrlTool",

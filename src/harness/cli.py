@@ -55,6 +55,7 @@ from harness.store.transcript import Transcript, TranscriptMessage
 from harness.tools import (
     DEFAULT_PROFILE,
     TOOL_PROFILES,
+    AssembleContextTool,
     EditFileTool,
     FetchUrlTool,
     GitDiffTool,
@@ -511,6 +512,40 @@ OPS_TOOL_NAMES: frozenset[str] = frozenset(
         "persist_focus_note",
     }
 )
+
+
+def _build_assemble_context_tool(
+    *,
+    character: Character | None,
+    memory_store: EpisodicStore | None,
+    speaker: str,
+) -> AssembleContextTool | None:
+    """Construct the AssembleContextTool from character + store handles.
+
+    Character convention: contracts live under
+    `character/<name>/contracts/*.yaml`. When the directory doesn't
+    exist (most characters), the tool still registers but its
+    description says 'no contracts registered' and any call returns a
+    polite error. Cheap to ship the tool unconditionally — the cost
+    of an unused builder is one extra dict entry.
+
+    Tree + tabular stores are NOT wired here. Phase 3's primitive
+    supports them; integrating them per-character is harness-kgpi's
+    job (the returns-handler character that exercises the full
+    contract pipeline). For now `StoreBundle.tabular` and `.tree`
+    stay None and contracts that depend on them surface a clear
+    error string at call time.
+    """
+    if character is None:
+        return None
+    contracts_dir = settings.character_path / "contracts"
+    from harness.retrieval.contract import StoreBundle
+
+    return AssembleContextTool(
+        stores=StoreBundle(episodic=memory_store),
+        contracts_dir=contracts_dir,
+        user_id=speaker,
+    )
 
 
 def _missing_builder_reason(name: str, character: Character | None) -> str:
@@ -1386,6 +1421,11 @@ def _build_tool_registry_for_tui(
         ),
         "transcript_ingest": lambda: (
             TranscriptIngestTool(store=memory_store) if memory_store is not None else None
+        ),
+        "assemble_context": lambda: _build_assemble_context_tool(
+            character=character,
+            memory_store=memory_store,
+            speaker=speaker,
         ),
         "phraseology_lint": lambda: (
             PhraseologyLintTool(
