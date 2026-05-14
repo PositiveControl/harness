@@ -92,6 +92,13 @@ class RetrievalCase:
     # section at all within K).
     rank_of_first_expected: int | None
     score_of_first_expected: float | None
+    # harness-rvnb: scope-redirect cases ship with empty
+    # expected_citations (the fixture asserts the model REFUSES to
+    # cite anything; retrieval doesn't decide it). Setting this
+    # excludes the case from aggregate recall metrics — the alternative
+    # of treating it as a hard miss inflates the denominator with
+    # cases retrieval never owned.
+    no_expected: bool = False
 
     @property
     def found(self) -> bool:
@@ -100,20 +107,63 @@ class RetrievalCase:
     def recall_at(self, depth: int) -> bool:
         """True when the first expected anchor appears at rank < depth.
         Depth 1 is top-1, depth 3 is top-3, etc. A case with rank=None
-        (hard miss) returns False at every depth."""
+        (hard miss) returns False at every depth.
+
+        harness-rvnb: no_expected cases (scope-redirect fixtures with
+        empty expected_anchors) are NOT scored as recall — the eval's
+        aggregate metrics exclude them from both numerator and
+        denominator. This property returns False for them so callers
+        that filter on `recall_at(...) is True` don't double-count."""
+        if self.no_expected:
+            return False
         rank = self.rank_of_first_expected
         return rank is not None and rank < depth
+
+
+def _matches(hit_anchors: frozenset[str], expected: frozenset[str]) -> bool:
+    """harness-rvnb: a hit matches when (a) an extracted hit anchor
+    appears in `expected`, OR (b) any expected anchor is a path-
+    prefix of some hit anchor on a section-boundary. Prefix matching
+    lets fixtures express parent-section or part-only expected
+    anchors (`5-3`, `97`) without enumerating every leaf — e.g., a
+    fixture expecting `97` matches a hit at §97.3.
+
+    The prefix check requires the boundary char to be `.` or `-` so
+    `91` doesn't accidentally match `915` or `9100`. Section paths in
+    this corpus are always either dot-separated (CFR) or hyphen-
+    separated (JO/AIM)."""
+    if hit_anchors & expected:
+        return True
+    for exp in expected:
+        for hit in hit_anchors:
+            if hit.startswith(exp + ".") or hit.startswith(exp + "-"):
+                return True
+    return False
 
 
 def score_case(row: AtcFixtureRow, hits: Sequence[RetrievalHit]) -> RetrievalCase:
     """Score one case against a pre-fetched hit list. Pure function;
     the caller decides what K to pre-fetch."""
     expected = _expected_anchor_set(row)
+    if not expected:
+        # harness-rvnb: scope-redirect fixture (empty expected_citations).
+        # Retrieval can't fail at this — the model's reply is what
+        # the fixture's keyword/principle checks really probe.
+        return RetrievalCase(
+            id=row.id,
+            audience=row.audience,
+            query=row.question,
+            expected_anchors=(),
+            hits=tuple(hits),
+            rank_of_first_expected=None,
+            score_of_first_expected=None,
+            no_expected=True,
+        )
     rank: int | None = None
     first_score: float | None = None
     for idx, hit in enumerate(hits):
         hit_anchors = _extract_anchors(hit.principle)
-        if hit_anchors & expected:
+        if _matches(hit_anchors, expected):
             rank = idx
             first_score = hit.score
             break
@@ -158,9 +208,14 @@ class RetrievalResult:
         return self._recall(self.k)
 
     def _recall(self, depth: int) -> float:
-        if not self.cases:
+        """harness-rvnb: exclude no_expected cases (scope-redirect
+        fixtures with empty expected_anchors) from both numerator and
+        denominator. They aren't retrieval cases — the fixture asserts
+        the model REFUSES to cite, not that retrieval found anything."""
+        scorable = [c for c in self.cases if not c.no_expected]
+        if not scorable:
             return 0.0
-        return sum(1 for c in self.cases if c.recall_at(depth)) / len(self.cases)
+        return sum(1 for c in scorable if c.recall_at(depth)) / len(scorable)
 
     @property
     def median_rank(self) -> float | None:
@@ -206,6 +261,7 @@ def make_tree_search_fn(
     store: Any,
     *,
     expand: Callable[[str], str] | None = None,
+    auto_merge: bool = False,
 ) -> SearchFn:
     """Wrap a `DocumentTreeStore` into a SearchFn the eval can drive
     (harness-c9fc). The eval scores anchors out of a hit's `principle`
@@ -217,6 +273,13 @@ def make_tree_search_fn(
     role as the episodic-side query expander (synonyms, etc.). When
     None, the raw query is forwarded.
 
+    `auto_merge` (harness-rvnb): when True, post-process the hits with
+    `merge_sibling_clusters` so the eval mirrors what the contract
+    orchestrator does for auto_merge slots. Fetches 3x the depth from
+    the store so the merge has cluster headroom, then trims back to
+    `depth`. Used when the character's contract has auto_merge=true
+    on its tree slot (airton_c does).
+
     Typed as `Any` to dodge a hard import dep on harness.store —
     `evals/` is supposed to be pure-eval; the caller owns the store
     type. Duck-typed: anything with `.search(query, k, mode='hybrid')`
@@ -226,7 +289,12 @@ def make_tree_search_fn(
 
     def _search(query: str, depth: int) -> list[RetrievalHit]:
         expanded = expand(query) if expand is not None else query
-        raw = store.search(expanded, k=depth, mode="hybrid")
+        fetch_k = depth * 3 if auto_merge else depth
+        raw = store.search(expanded, k=fetch_k, mode="hybrid")
+        if auto_merge:
+            from harness.store.document_tree import merge_sibling_clusters
+
+            raw = merge_sibling_clusters(list(raw), store=store, max_hits=depth)
         return [RetrievalHit(principle=f"§{node.path}", score=float(score)) for node, score in raw]
 
     return _search

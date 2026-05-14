@@ -312,7 +312,9 @@ def _fetch_slot(
             if node.document_id not in doc_name_by_id:
                 doc_name_by_id[node.document_id] = stores.tree.get_document(node.document_id).name
         if slot.auto_merge:
-            tree_results = _merge_sibling_clusters(
+            from harness.store.document_tree import merge_sibling_clusters
+
+            tree_results = merge_sibling_clusters(
                 tree_results, store=stores.tree, max_hits=slot.max_hits
             )
             # Refresh the doc-name cache for any newly-promoted parents.
@@ -369,73 +371,13 @@ def _fetch_slot(
     raise ValueError(f"slot {slot.name!r}: unknown store {slot.store!r}")
 
 
-_MIN_CLUSTER_SIZE = 2
-"""Minimum number of sibling-leaf hits under the same parent before
-auto_merge collapses them into the parent (harness-0t7a). Two is the
-smallest signal that the model probably wants the parent topic —
-one sibling is just a single result, three+ would miss queries where
-two leaves cleanly summarize a section."""
-
-
-def _merge_sibling_clusters(
-    hits: list[tuple[Any, float]],
-    *,
-    store: Any,
-    max_hits: int,
-) -> list[tuple[Any, float]]:
-    """harness-0t7a: replace clusters of 2+ sibling-leaf hits with the
-    parent. Preserves the highest sibling score for the promoted
-    parent (and uses the cluster head's position in the output so
-    ranking semantics carry over). Hits without a parent_id (top-level
-    nodes) and clusters of 1 pass through unchanged.
-
-    Returns up to `max_hits` results in stable order: cluster heads
-    stay at the position of their highest-ranked sibling, with the
-    other siblings dropped. Non-clustered hits keep their rank.
-
-    Typed `Any` on the node side to avoid an import-time dependency
-    on the store's record type — duck-typed at runtime."""
-    if not hits:
-        return []
-    # Group by parent_id, tracking the FIRST (highest-ranked) sibling.
-    cluster_first_idx: dict[tuple[int, int], int] = {}
-    cluster_members: dict[tuple[int, int], list[int]] = {}
-    for idx, (node, _score) in enumerate(hits):
-        if node.parent_id is None:
-            continue
-        key = (node.document_id, node.parent_id)
-        cluster_members.setdefault(key, []).append(idx)
-        cluster_first_idx.setdefault(key, idx)
-
-    promote: dict[int, tuple[Any, float]] = {}
-    drop: set[int] = set()
-    for key, members in cluster_members.items():
-        if len(members) < _MIN_CLUSTER_SIZE:
-            continue
-        head_idx = cluster_first_idx[key]
-        head_node, head_score = hits[head_idx]
-        try:
-            parent = store.get_node(head_node.parent_id)
-        except KeyError:
-            continue
-        promote[head_idx] = (parent, head_score)
-        # Drop the sibling-cluster members AFTER the head; the head
-        # position gets replaced with the parent.
-        for member_idx in members:
-            if member_idx != head_idx:
-                drop.add(member_idx)
-
-    out: list[tuple[Any, float]] = []
-    for idx, item in enumerate(hits):
-        if idx in drop:
-            continue
-        if idx in promote:
-            out.append(promote[idx])
-        else:
-            out.append(item)
-        if len(out) >= max_hits:
-            break
-    return out
+"""harness-0t7a / harness-rvnb: the cluster-merge implementation now
+lives in `harness.store.document_tree.merge_sibling_clusters` so both
+the contract orchestrator (this module) and the atc-retrieval eval
+(`harness.evals.atc_retrieval.make_tree_search_fn`) can call it
+through one canonical entry point. We import it locally inside
+`_fetch_slot` to avoid pulling a store-layer symbol onto this module's
+top-level surface."""
 
 
 def _render_template(template: str, variables: Mapping[str, Any], *, slot: SlotSpec) -> str:

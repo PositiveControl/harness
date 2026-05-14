@@ -415,3 +415,70 @@ def test_baseline_comparison_dataclass_is_frozen() -> None:
     except Exception:
         return
     raise AssertionError("BaselineComparison should be frozen")
+
+
+# ---------- prefix matching + no_expected (harness-rvnb) ----------
+
+
+def test_score_case_matches_parent_expected_to_leaf_hit() -> None:
+    """harness-rvnb: a fixture expecting a parent-section anchor
+    (`5-3`, `97`) should pass when retrieval surfaces a leaf under
+    that parent (`5-3-1`, `97.3`). The prefix check requires a `.`
+    or `-` boundary so `91` doesn't accidentally match `915`."""
+    row = _row("parent_expected_hyphen", "what does 5-3 cover?", (("5-3",),))
+    hits = [RetrievalHit(principle="§5-3-1", score=0.5)]
+    case = score_case(row, hits)
+    assert case.rank_of_first_expected == 0
+
+    row = _row("parent_expected_dot", "what does Part 97 cover?", (("97",),))
+    hits = [RetrievalHit(principle="§97.3", score=0.5)]
+    case = score_case(row, hits)
+    assert case.rank_of_first_expected == 0
+
+
+def test_score_case_prefix_match_requires_boundary() -> None:
+    """`91` must not match `915` or `9100` — only `91.X` or `91-X`
+    on a path-component boundary."""
+    row = _row("boundary_required", "?", (("91",),))
+    # `915` shares the `91` prefix but isn't a child section.
+    hits = [RetrievalHit(principle="§915.42", score=0.5)]
+    case = score_case(row, hits)
+    assert case.rank_of_first_expected is None
+
+    # Same for hyphen — `1-2` doesn't match `12-3-4`.
+    row = _row("hyphen_boundary", "?", (("1-2",),))
+    hits = [RetrievalHit(principle="§12-3-4", score=0.5)]
+    case = score_case(row, hits)
+    assert case.rank_of_first_expected is None
+
+
+def test_score_case_empty_expected_marks_no_expected() -> None:
+    """harness-rvnb: scope-redirect fixtures ship with empty
+    expected_citations. score_case marks them as no_expected=True
+    and they get excluded from aggregate recall metrics."""
+    row = _row("scope_redirect", "what does the manual say about birds?", ())
+    hits = [RetrievalHit(principle="§3-2-1", score=0.5)]
+    case = score_case(row, hits)
+    assert case.no_expected is True
+    assert case.rank_of_first_expected is None
+    assert case.recall_at(5) is False  # not counted as a hit
+
+
+def test_retrieval_result_excludes_no_expected_from_recall() -> None:
+    """Aggregate recall excludes no_expected cases from both
+    numerator and denominator. 2 hits out of 3 scoreable (+ 1
+    no_expected) → recall = 2/3, not 2/4."""
+    cases = []
+    # Two passing cases.
+    for case_id in ("hit_a", "hit_b"):
+        row = _row(case_id, "?", (("5-5-4",),))
+        cases.append(score_case(row, [RetrievalHit(principle="§5-5-4", score=0.5)]))
+    # One miss.
+    row = _row("miss", "?", (("9-9-9",),))
+    cases.append(score_case(row, [RetrievalHit(principle="§1-1-1", score=0.5)]))
+    # One no_expected — should NOT affect denominator.
+    row = _row("scope", "?", ())
+    cases.append(score_case(row, [RetrievalHit(principle="§1-1-1", score=0.5)]))
+    result = RetrievalResult(cases=tuple(cases), k=10)
+    # 2 of 3 scoreable hits → 0.667, not 0.5 (2/4).
+    assert abs(result.recall_at_5 - 2 / 3) < 1e-6

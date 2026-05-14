@@ -3343,6 +3343,15 @@ def eval_atc_retrieval(
     from harness.store.document_tree import DocumentTreeStore
 
     if isinstance(tree_store_obj, DocumentTreeStore):
+        # harness-rvnb: the eval intentionally does NOT mirror the
+        # contract orchestrator's auto_merge behavior. Auto_merge is
+        # the right call when the agent reads structural-only parents
+        # alongside the model's wrap-up, but the eval's anchor-based
+        # scoring rewards leaf-level retrieval. Replacing leaves with
+        # parents during the eval would break fixture-expected
+        # leaf-section anchors that happen to cluster post-retrieval.
+        # Prefix matching in `_matches` covers the parent-expected
+        # fixture cases without touching the orchestrator's behavior.
         _search = make_tree_search_fn(tree_store_obj, expand=expander.expand)
         if not as_json:
             console.print("[dim]retrieval source: document_tree (per character spec)[/dim]")

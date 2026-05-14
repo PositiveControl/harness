@@ -2,10 +2,10 @@
   "character": "airton_c",
   "fixture": "/Users/mevans/dev/ideas/harness/character/airton_c/atc_eval.yaml",
   "k": 10,
-  "recall_at_1": 0.45454545454545453,
-  "recall_at_3": 0.6818181818181818,
-  "recall_at_5": 0.7727272727272727,
-  "recall_at_k": 0.7727272727272727,
+  "recall_at_1": 0.55,
+  "recall_at_3": 0.8,
+  "recall_at_5": 0.9,
+  "recall_at_k": 0.95,
   "median_rank": 0.0,
   "cases": [
     {
@@ -114,9 +114,9 @@
       "expected_anchors": [
         "7-4"
       ],
-      "rank_of_first_expected": null,
-      "score_of_first_expected": null,
-      "found": false
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 0.03252247488101534,
+      "found": true
     },
     {
       "id": "ifr_alternate_airport_weather",
@@ -189,9 +189,9 @@
       "expected_anchors": [
         "97"
       ],
-      "rank_of_first_expected": null,
-      "score_of_first_expected": null,
-      "found": false
+      "rank_of_first_expected": 6,
+      "score_of_first_expected": 0.015873015873015872,
+      "found": true
     },
     {
       "id": "ifr_vfr_on_top",

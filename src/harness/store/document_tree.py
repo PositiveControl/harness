@@ -773,6 +773,91 @@ class DocumentTreeStore:
 # ---------- row helpers ----------
 
 
+_MIN_CLUSTER_SIZE = 2
+"""Minimum number of sibling-leaf hits under the same parent before
+auto_merge collapses them into the parent (harness-0t7a). Two is the
+smallest signal that the model probably wants the parent topic —
+one sibling is just a single result, three+ would miss queries where
+two leaves cleanly summarize a section."""
+
+
+def merge_sibling_clusters(
+    hits: list[tuple[Any, float]],
+    *,
+    store: Any,
+    max_hits: int,
+) -> list[tuple[Any, float]]:
+    """harness-0t7a: replace clusters of 2+ sibling-leaf hits with the
+    parent. Preserves the highest sibling score for the promoted
+    parent (and uses the cluster head's position in the output so
+    ranking semantics carry over). Hits without a parent_id (top-level
+    nodes) and clusters of 1 pass through unchanged.
+
+    Returns up to `max_hits` results in stable order: cluster heads
+    stay at the position of their highest-ranked sibling, with the
+    other siblings dropped. Non-clustered hits keep their rank.
+
+    Typed `Any` on the node side to avoid an import-time dependency
+    on the store's record type — duck-typed at runtime.
+
+    Canonical entry point shared by the contract orchestrator (where
+    auto_merge is opt-in per slot) and the atc-retrieval eval (where
+    auto_merge tracks the orchestrator's behaviour so retrieval-only
+    baselines mirror the model-facing path). harness-rvnb relocated
+    this from `harness.retrieval.contract` so both callers can reach
+    it without importing through the contract layer."""
+    if not hits:
+        return []
+    # Group by parent_id, tracking the FIRST (highest-ranked) sibling.
+    cluster_first_idx: dict[tuple[int, int], int] = {}
+    cluster_members: dict[tuple[int, int], list[int]] = {}
+    for idx, (node, _score) in enumerate(hits):
+        if node.parent_id is None:
+            continue
+        key = (node.document_id, node.parent_id)
+        cluster_members.setdefault(key, []).append(idx)
+        cluster_first_idx.setdefault(key, idx)
+
+    promote: dict[int, tuple[Any, float]] = {}
+    drop: set[int] = set()
+    for key, members in cluster_members.items():
+        if len(members) < _MIN_CLUSTER_SIZE:
+            continue
+        head_idx = cluster_first_idx[key]
+        head_node, head_score = hits[head_idx]
+        try:
+            parent = store.get_node(head_node.parent_id)
+        except KeyError:
+            continue
+        # Skip promotion when the parent's path is single-segment
+        # (no `.` or `-`). For CFR, parent_section is the bare Part
+        # number (e.g., `91`) — collapsing §91.131 + §91.135 to §91
+        # loses both the specific rule and any retrieval signal,
+        # because the `_extract_anchors` regex requires a separator
+        # to match. JO/AIM parents (`5-3`, `2-4`) keep their useful
+        # signal and continue to promote.
+        if "." not in parent.path and "-" not in parent.path:
+            continue
+        promote[head_idx] = (parent, head_score)
+        # Drop the sibling-cluster members AFTER the head; the head
+        # position gets replaced with the parent.
+        for member_idx in members:
+            if member_idx != head_idx:
+                drop.add(member_idx)
+
+    out: list[tuple[Any, float]] = []
+    for idx, item in enumerate(hits):
+        if idx in drop:
+            continue
+        if idx in promote:
+            out.append(promote[idx])
+        else:
+            out.append(item)
+        if len(out) >= max_hits:
+            break
+    return out
+
+
 def _row_to_document(row: tuple) -> TreeDocument:  # type: ignore[type-arg]
     return TreeDocument(
         id=int(row[0]),
