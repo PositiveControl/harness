@@ -17,6 +17,8 @@ retrieval_eval/
 │   ├── prose_journal.yaml          # 12 self-contained prose records (inline)
 │   ├── structured_atc.yaml         # pointer to airton_c1 JO 7110.65 ingest
 │   └── tabular_returns.yaml        # 200-row synthetic CSV
+├── contracts/                      # worked role contracts (harness-s3f7)
+│   └── returns_handler.yaml        # one slot per shaped store, end-to-end
 ├── data/
 │   └── returns.csv                 # tabular_returns backing data (deterministic)
 └── baselines/
@@ -215,6 +217,20 @@ retrieved AS tables. Production tool:
 `harness.tools.query_table.QueryTableTool` exposes the registered
 schemas in its description so the model can write correct SQL inline,
 no separate `list_tables` round-trip.
+
+**Phase 3 verdict:** Context Package + Contract Bundle lands. Per the
+data-retrieval-primitives notes: Intent / Access (policy) / Proof
+(provenance) / Budget (cost bound). The package
+(`harness.retrieval.context_package.RetrievalContextPackage`) wraps
+shape-aware retrieval in a single envelope; `ContractBundle`
+(`harness.retrieval.contract`) declares per-role what slots must be
+filled, from which shaped store, with what query template.
+`assemble_package` walks the contract, calls each store, packages
+the result. Worked contract: `retrieval_eval/contracts/returns_handler.yaml`
+pulls customer history (episodic), refund policy (episodic), and
+matching orders (tabular) in one call. Required-slot misses surface
+in `missing_required_slots` so the agent gets told *what's missing*
+instead of working with silently-incomplete context.
 
 ## Determinism
 
