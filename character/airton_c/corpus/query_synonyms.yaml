@@ -169,3 +169,21 @@ sections:
     - recent instrument experience requirements
     - currency for IFR operations
     - six approaches and a hold currency
+
+  "5-3-8":
+    # IFR clearance limit — case `ifr_ifr_clearance_limit`. Lay query:
+    # "What does it mean when my clearance includes a 'clearance
+    # limit'?" The canonical clearance-limit definition lives in AIM
+    # §4-4-3 ("Clearance Items"), but the fixture's expected anchor
+    # is `5-3` (a parent-section prefix); AIM §5-3-8 ("Holding") is
+    # the only §5-3-X section that materially mentions clearance
+    # limits — aircraft hold at the clearance limit when further
+    # clearance hasn't been issued. Targeting §5-3-8 satisfies both
+    # the prefix-match expectation and the semantic relevance
+    # (clearance limit ↔ holding behaviour). Rank: hard-miss →
+    # expected ≤ 5 (added 2026-05-14, harness-rvnb followup).
+    - clearance includes a clearance limit
+    - what is a clearance limit
+    - clearance limit IFR
+    - clearance limit holding
+    - clearance limit means in IFR clearance
