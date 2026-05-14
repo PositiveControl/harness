@@ -1,0 +1,35 @@
+# returns_handler contract (harness-kgpi). The character's primary
+# work-shape, materialized via assemble_context. See
+# character/returns_handler/constitution.md for the workflow this
+# contract serves.
+
+role: returns_handler
+intent: Decide whether to approve, deny, or escalate a customer return request
+budget_tokens: 1500
+
+slots:
+  - name: customer_history
+    store: episodic
+    query_template: "past returns customer interactions {customer_id}"
+    required: true
+    min_cardinality: 1
+    max_hits: 3
+
+  - name: refund_policy
+    store: episodic
+    query_template: "refund policy {request_summary}"
+    required: true
+    min_cardinality: 1
+    max_hits: 2
+
+  - name: matching_orders
+    store: tabular
+    table_name: returns
+    sql_template: |
+      SELECT order_id, item, amount_usd, order_month, reason, status
+      FROM returns
+      WHERE customer_id = '{customer_id}'
+      ORDER BY CAST(amount_usd AS REAL) DESC
+    required: true
+    min_cardinality: 1
+    max_hits: 10

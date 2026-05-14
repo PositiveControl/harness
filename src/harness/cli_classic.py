@@ -199,6 +199,20 @@ def build_classic_registry(
         query_only_path=default_query_only_synonyms_path(settings.character_path),
     )
 
+    # Per-character tabular store (harness-kgpi). Same pattern as the
+    # TUI builder — None for characters that don't ship tabular_tables;
+    # the AssembleContextTool then surfaces "tabular slot needs a
+    # tabular store" for any contract slot that wants one.
+    tabular_store = None
+    if character is not None and character.tabular_tables and memory_store is not None:
+        from harness.store.tabular import build_tabular_store_for_character
+
+        tabular_store = build_tabular_store_for_character(
+            character_path=settings.character_path,
+            embedder=memory_store.embedder,
+            tabular_tables=character.tabular_tables,
+        )
+
     builders: dict[str, Callable[[], Tool | None]] = {
         "read_file": lambda: ReadFileTool(root=workspace_path),
         "edit_file": lambda: EditFileTool(root=workspace_path),
@@ -264,14 +278,14 @@ def build_classic_registry(
                 else None
             )
         ),
-        # Phase 3 contract orchestrator wiring (harness-xysp). Contracts
-        # discovered under character/<name>/contracts/*.yaml; tree +
-        # tabular stores deliberately left None until per-character
-        # wiring lands (harness-kgpi).
+        # Phase 3 contract orchestrator wiring (harness-xysp +
+        # harness-kgpi). Contracts under character/<name>/contracts/*.yaml;
+        # tabular store wired when the character declares
+        # `tabular_tables:` in core.yaml.
         "assemble_context": (
             lambda: (
                 AssembleContextTool(
-                    stores=StoreBundle(episodic=memory_store),
+                    stores=StoreBundle(episodic=memory_store, tabular=tabular_store),
                     contracts_dir=settings.character_path / "contracts",
                     user_id=speaker,
                 )

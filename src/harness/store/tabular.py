@@ -136,6 +136,18 @@ class TableHit:
 
 
 @dataclass(frozen=True)
+class TableLoadSpec:
+    """One CSV-backed table to load on `replace_tables_from_specs`.
+    The Character → TabularStore bootstrap builds these from the
+    `tabular_tables:` declarations in core.yaml. Kept distinct from
+    `TableSchema` so the schema can stay store-internal while this
+    spec carries the data-source pointer."""
+
+    schema: TableSchema
+    csv_path: Path
+
+
+@dataclass(frozen=True)
 class QueryResult:
     """Output of `query_sql`. `columns` mirrors the SELECT's projection;
     `rows` is the materialized result. `sql` is the literal SQL that
@@ -349,6 +361,26 @@ class TabularStore:
         ).fetchone()
         return int(row[0]) if row is not None else 0
 
+    def replace_tables_from_specs(
+        self,
+        specs: tuple[TableLoadSpec, ...],
+    ) -> None:
+        """Idempotent character bootstrap (harness-kgpi). For each
+        spec, drop+recreate the registered table from its CSV. Called
+        at session start when a character ships `tabular_tables:`.
+
+        `replace=True` semantics on every spec so the CSV file is the
+        single source of truth — edits to the CSV land on the next
+        session start without manual rebuild. Embedder re-emits each
+        schema vector under the current embedder, so this also fixes
+        a dim drift in one step."""
+        for spec in specs:
+            self.register_table_from_csv(
+                schema=spec.schema,
+                csv_path=spec.csv_path,
+                replace=True,
+            )
+
     def rebuild_embeddings(self) -> tuple[int, int]:
         """Re-embed every registered table's schema_text under the
         current embedder (harness-pzpy). Returns (rows_updated, rows_skipped).
@@ -422,3 +454,43 @@ def _row_to_registered(row: tuple) -> RegisteredTable:  # type: ignore[type-arg]
         schema_text=str(row[2]),
         created_at=datetime.fromisoformat(str(row[3])),
     )
+
+
+def build_tabular_store_for_character(
+    character_path: Path,
+    embedder: Embedder,
+    tabular_tables: tuple[Any, ...],
+) -> TabularStore | None:
+    """Build (and populate) a TabularStore for a character that ships
+    `tabular_tables:` declarations in core.yaml (harness-kgpi).
+
+    Returns None when the character ships no tabular tables — callers
+    use this to decide whether to wire the store at all (no point
+    spinning up a SQLite file the character won't use).
+
+    The store lives at `<character_path>/data/tabular.sqlite`. CSVs
+    are reloaded fresh on every call (replace=True semantics) so the
+    CSV is the single source of truth — edit the CSV, restart the
+    session, the table reflects the new data.
+
+    `tabular_tables` is typed as `tuple[Any, ...]` rather than
+    `tuple[TabularTableSpec, ...]` to dodge an import cycle:
+    `harness.character.TabularTableSpec` would force this module to
+    import character.py at module load. Duck-typed access at runtime
+    keeps the cycle clean — each spec needs `.table_name`,
+    `.description`, `.csv_path`, `.columns`.
+    """
+    if not tabular_tables:
+        return None
+    db_path = character_path / "data" / "tabular.sqlite"
+    store = TabularStore(db_path=db_path, embedder=embedder)
+    specs: list[TableLoadSpec] = []
+    for raw in tabular_tables:
+        schema = TableSchema(
+            name=raw.table_name,
+            description=raw.description,
+            columns=raw.columns,
+        )
+        specs.append(TableLoadSpec(schema=schema, csv_path=raw.csv_path))
+    store.replace_tables_from_specs(tuple(specs))
+    return store

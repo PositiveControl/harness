@@ -1,0 +1,201 @@
+order_id,customer_id,category,item,amount_usd,order_month,reason,status
+10002,C1432,shoes,sneakers,718.17,Oct,duplicate order,pending
+10005,C8367,electronics,tablet,485.57,Mar,changed mind,approved
+10010,C7222,jacket,denim,49.12,Feb,not as described,approved
+10013,C6096,jacket,fleece,409.22,Feb,changed mind,pending
+10018,C2033,electronics,headphones,102.5,Sep,changed mind,approved
+10022,C5225,kitchen,blender,755.63,Feb,duplicate order,approved
+10028,C1935,outdoor,camp stove,83.89,Sep,changed mind,pending
+10032,C5148,electronics,headphones,738.63,May,wrong size,pending
+10039,C4555,outdoor,camp stove,720.88,Jan,not as described,pending
+10041,C2355,jacket,fleece,530.69,Jan,wrong size,approved
+10044,C9051,electronics,mechanical keyboard,700.8,Nov,duplicate order,pending
+10045,C2144,outdoor,tent,543.32,Feb,duplicate order,denied
+10048,C7327,outdoor,camp stove,321.04,Sep,not as described,pending
+10053,C3000,kitchen,espresso machine,253.75,Jun,changed mind,denied
+10056,C8707,shoes,hiking,616.16,Jun,not as described,denied
+10063,C9148,jacket,leather,182.12,Mar,damaged on arrival,denied
+10065,C2660,jacket,fleece,594.55,Sep,damaged on arrival,denied
+10066,C6163,kitchen,kettle,604.7,Jan,damaged on arrival,denied
+10069,C8224,jacket,denim,160.07,Aug,not as described,approved
+10073,C7005,kitchen,espresso machine,335.87,Oct,damaged on arrival,denied
+10076,C4943,jacket,fleece,765.53,Oct,damaged on arrival,pending
+10080,C1124,electronics,monitor,684.43,Jul,wrong size,denied
+10087,C4890,electronics,monitor,273.25,May,wrong size,pending
+10091,C3535,electronics,monitor,695.4,Apr,not as described,approved
+10095,C1691,shoes,boots,34.13,Jun,changed mind,pending
+10099,C2855,jacket,denim,241.39,Oct,duplicate order,approved
+10100,C9288,outdoor,water filter,319.5,Dec,not as described,pending
+10101,C2722,kitchen,toaster,772.42,Feb,not as described,pending
+10102,C9795,jacket,puffer,562.82,Jun,changed mind,denied
+10108,C4029,outdoor,sleeping bag,616.83,Oct,wrong size,pending
+10115,C6639,jacket,denim,640.27,May,duplicate order,denied
+10122,C7121,outdoor,water filter,772.27,May,not as described,pending
+10129,C1389,electronics,webcam,86.87,Dec,changed mind,pending
+10130,C9164,outdoor,water filter,219.55,Feb,damaged on arrival,approved
+10131,C6915,jacket,puffer,588.5,May,wrong size,pending
+10137,C8228,jacket,parka,529.01,Jun,not as described,pending
+10144,C6506,shoes,boots,199.6,May,changed mind,denied
+10148,C1335,shoes,sneakers,285.54,Oct,wrong size,denied
+10149,C9696,electronics,monitor,542.63,Jun,not as described,denied
+10155,C2152,shoes,loafers,100.23,Feb,damaged on arrival,approved
+10161,C1723,shoes,sneakers,297.28,May,duplicate order,approved
+10167,C4344,kitchen,toaster,229.06,Dec,wrong size,pending
+10168,C2285,outdoor,backpack,440.88,Jun,damaged on arrival,denied
+10170,C8651,jacket,parka,705.29,Dec,not as described,pending
+10173,C3318,jacket,denim,608.88,Jun,changed mind,approved
+10174,C6076,jacket,denim,403.97,Oct,changed mind,pending
+10179,C6494,jacket,fleece,798.26,Jan,changed mind,approved
+10186,C2798,outdoor,water filter,638.86,Sep,damaged on arrival,approved
+10190,C7776,shoes,loafers,174.27,Nov,duplicate order,denied
+10193,C9300,electronics,tablet,756.36,May,duplicate order,pending
+10198,C4759,kitchen,espresso machine,227.09,May,changed mind,denied
+10204,C5717,outdoor,water filter,319.57,Aug,not as described,denied
+10207,C3596,shoes,loafers,460.01,Mar,wrong size,denied
+10211,C6179,kitchen,kettle,770.88,Jun,damaged on arrival,denied
+10216,C4037,shoes,loafers,273.6,Oct,wrong size,denied
+10222,C3673,shoes,boots,309.76,Nov,changed mind,pending
+10229,C7963,kitchen,espresso machine,663.0,May,damaged on arrival,denied
+10230,C7041,shoes,loafers,76.05,Dec,damaged on arrival,pending
+10231,C4173,outdoor,sleeping bag,436.59,Jul,wrong size,approved
+10234,C4959,electronics,webcam,27.33,Jan,not as described,approved
+10239,C2134,shoes,loafers,331.12,Oct,changed mind,approved
+10246,C8542,outdoor,tent,675.01,Jan,changed mind,denied
+10253,C5106,outdoor,tent,468.54,Mar,changed mind,approved
+10255,C8152,jacket,puffer,543.34,Nov,duplicate order,denied
+10256,C2190,electronics,headphones,517.83,Apr,wrong size,denied
+10263,C7820,electronics,mechanical keyboard,83.71,Dec,duplicate order,approved
+10267,C2585,kitchen,toaster,72.83,May,duplicate order,denied
+10269,C4021,electronics,headphones,139.06,Feb,duplicate order,approved
+10275,C8834,outdoor,backpack,808.08,Nov,changed mind,approved
+10277,C4891,kitchen,toaster,711.2,Jun,not as described,denied
+10278,C4498,outdoor,sleeping bag,691.95,Feb,not as described,approved
+10282,C8683,kitchen,toaster,251.44,Nov,duplicate order,denied
+10287,C9896,electronics,webcam,832.53,Feb,wrong size,denied
+10294,C1718,kitchen,espresso machine,690.17,Jul,wrong size,pending
+10300,C6525,outdoor,tent,421.23,Mar,wrong size,pending
+10303,C9686,kitchen,toaster,781.84,Jan,wrong size,denied
+10310,C6778,shoes,loafers,193.45,Jan,changed mind,pending
+10313,C7243,kitchen,blender,544.47,Dec,damaged on arrival,denied
+10320,C5920,shoes,sneakers,840.0,Jul,duplicate order,approved
+10323,C7827,outdoor,water filter,624.8,Jun,damaged on arrival,pending
+10328,C9912,electronics,webcam,290.78,Jan,changed mind,pending
+10330,C1060,shoes,running,761.71,Dec,not as described,denied
+10331,C4126,kitchen,blender,840.18,Nov,not as described,pending
+10337,C8517,electronics,mechanical keyboard,231.8,Oct,duplicate order,pending
+10342,C7324,shoes,hiking,439.98,Mar,damaged on arrival,pending
+10346,C7515,outdoor,water filter,465.82,Apr,duplicate order,approved
+10348,C2055,shoes,running,450.69,Oct,changed mind,approved
+10351,C3630,electronics,mechanical keyboard,446.27,Jan,duplicate order,approved
+10357,C6318,outdoor,water filter,361.88,Jun,damaged on arrival,approved
+10362,C6607,shoes,boots,417.85,May,damaged on arrival,denied
+10363,C5996,outdoor,sleeping bag,766.68,Jan,not as described,pending
+10365,C4583,shoes,sneakers,816.13,Jan,not as described,approved
+10366,C1576,jacket,puffer,468.89,Feb,wrong size,approved
+10373,C3551,kitchen,espresso machine,408.98,Jan,not as described,denied
+10377,C1214,electronics,monitor,848.42,Feb,not as described,approved
+10383,C8730,shoes,hiking,743.95,Oct,not as described,approved
+10390,C8361,kitchen,espresso machine,22.49,Jun,damaged on arrival,denied
+10396,C5632,outdoor,sleeping bag,232.88,Apr,not as described,denied
+10397,C6772,shoes,loafers,422.94,May,changed mind,pending
+10402,C4992,jacket,leather,509.57,Nov,duplicate order,denied
+10403,C7478,shoes,boots,267.4,Sep,changed mind,denied
+10406,C9170,electronics,headphones,829.13,Aug,wrong size,approved
+10413,C2381,kitchen,kettle,439.44,Dec,duplicate order,pending
+10418,C1349,kitchen,blender,415.04,Feb,changed mind,approved
+10421,C5919,kitchen,cast-iron skillet,393.26,Apr,changed mind,approved
+10428,C7069,outdoor,camp stove,59.7,Feb,wrong size,denied
+10431,C9874,jacket,parka,479.63,Aug,damaged on arrival,pending
+10435,C9335,electronics,webcam,477.37,Sep,not as described,approved
+10436,C3074,electronics,webcam,571.11,Oct,not as described,denied
+10441,C7105,outdoor,tent,540.71,Jan,duplicate order,denied
+10445,C4556,shoes,sneakers,332.64,Nov,duplicate order,approved
+10447,C7554,kitchen,cast-iron skillet,409.32,Sep,damaged on arrival,denied
+10452,C3256,kitchen,blender,631.97,May,damaged on arrival,denied
+10454,C1847,electronics,headphones,793.75,May,duplicate order,pending
+10459,C6965,kitchen,cast-iron skillet,149.34,Sep,changed mind,denied
+10464,C5847,electronics,tablet,239.75,Dec,duplicate order,approved
+10467,C2580,shoes,boots,25.23,Mar,damaged on arrival,denied
+10473,C9821,electronics,monitor,537.96,Dec,changed mind,approved
+10476,C5964,outdoor,backpack,742.21,Mar,wrong size,denied
+10483,C4060,outdoor,sleeping bag,745.22,Mar,changed mind,approved
+10489,C6706,electronics,webcam,425.21,Dec,changed mind,pending
+10491,C6426,kitchen,espresso machine,323.62,Oct,damaged on arrival,pending
+10492,C4030,jacket,fleece,565.6,May,wrong size,denied
+10493,C9500,shoes,running,145.33,Sep,wrong size,approved
+10494,C2470,jacket,fleece,604.37,Aug,not as described,pending
+10501,C6158,electronics,tablet,664.24,Jan,not as described,approved
+10505,C3098,outdoor,sleeping bag,680.92,Feb,not as described,denied
+10508,C6281,electronics,headphones,781.24,Dec,duplicate order,approved
+10509,C2249,jacket,fleece,755.37,Dec,changed mind,pending
+10511,C1198,electronics,mechanical keyboard,262.23,Aug,damaged on arrival,approved
+10512,C9368,kitchen,kettle,719.67,Jan,damaged on arrival,pending
+10514,C1233,outdoor,backpack,383.2,May,wrong size,pending
+10518,C8718,shoes,loafers,63.93,Jun,not as described,approved
+10525,C5642,electronics,webcam,581.63,Apr,damaged on arrival,pending
+10527,C6774,outdoor,camp stove,837.69,Nov,wrong size,pending
+10534,C9040,shoes,boots,671.13,Feb,damaged on arrival,denied
+10538,C2942,shoes,sneakers,386.43,Oct,duplicate order,approved
+10541,C5142,outdoor,tent,669.29,Jan,not as described,denied
+10543,C9726,outdoor,camp stove,803.12,Jan,wrong size,pending
+10544,C1483,shoes,hiking,819.6,Jul,changed mind,pending
+10547,C4444,shoes,sneakers,760.27,Apr,not as described,approved
+10548,C2316,shoes,loafers,627.51,Jan,wrong size,denied
+10552,C5044,shoes,boots,443.24,Nov,duplicate order,denied
+10559,C5221,jacket,fleece,716.44,Oct,damaged on arrival,approved
+10563,C4122,shoes,loafers,202.23,May,changed mind,denied
+10564,C9212,kitchen,cast-iron skillet,839.19,Jan,not as described,approved
+10566,C8552,kitchen,cast-iron skillet,754.81,Jun,changed mind,denied
+10567,C1765,outdoor,backpack,497.25,Jul,damaged on arrival,approved
+10568,C9275,outdoor,backpack,58.95,Mar,duplicate order,pending
+10569,C2365,jacket,denim,82.89,Jul,changed mind,pending
+10570,C9178,kitchen,toaster,614.86,Jan,changed mind,pending
+10575,C3526,shoes,boots,292.93,Apr,damaged on arrival,approved
+10580,C7363,electronics,headphones,479.64,Jan,damaged on arrival,pending
+10583,C4898,electronics,monitor,39.1,Aug,not as described,pending
+10584,C2856,outdoor,backpack,687.43,Oct,damaged on arrival,denied
+10589,C2740,kitchen,blender,651.59,Nov,wrong size,approved
+10590,C2008,shoes,hiking,397.51,Dec,damaged on arrival,approved
+10597,C3525,jacket,puffer,344.0,Mar,not as described,pending
+10601,C1363,jacket,leather,774.79,Apr,duplicate order,pending
+10607,C7094,shoes,hiking,672.29,Sep,wrong size,denied
+10608,C4199,electronics,headphones,298.05,Feb,not as described,pending
+10609,C2878,shoes,running,715.13,Oct,wrong size,approved
+10611,C2011,jacket,leather,39.93,Feb,duplicate order,denied
+10617,C3812,electronics,webcam,183.32,Jun,wrong size,approved
+10620,C8306,shoes,boots,57.53,Dec,duplicate order,approved
+10621,C4309,electronics,webcam,130.71,Nov,not as described,pending
+10624,C4272,electronics,webcam,107.71,Jun,duplicate order,pending
+10628,C2306,outdoor,sleeping bag,765.09,Mar,changed mind,pending
+10629,C5830,outdoor,backpack,234.25,Dec,wrong size,approved
+10633,C2485,outdoor,backpack,134.43,Feb,duplicate order,denied
+10635,C2098,shoes,boots,119.78,Mar,duplicate order,denied
+10640,C3463,outdoor,sleeping bag,230.23,Mar,not as described,pending
+10643,C1053,outdoor,sleeping bag,178.45,Jul,duplicate order,denied
+10645,C7314,outdoor,water filter,492.38,Oct,wrong size,approved
+10648,C3791,electronics,mechanical keyboard,305.91,Feb,duplicate order,approved
+10649,C7990,jacket,puffer,348.99,Aug,not as described,denied
+10652,C9214,kitchen,blender,532.09,Dec,changed mind,denied
+10659,C3575,electronics,tablet,258.67,May,wrong size,pending
+10666,C4221,outdoor,water filter,431.82,May,wrong size,denied
+10670,C4378,outdoor,camp stove,497.35,May,damaged on arrival,approved
+10673,C5686,kitchen,blender,85.81,Sep,wrong size,denied
+10677,C3589,shoes,hiking,291.82,Jan,not as described,pending
+10684,C8584,shoes,sneakers,642.67,Sep,damaged on arrival,denied
+10686,C8862,shoes,running,651.9,Sep,duplicate order,approved
+10687,C1306,jacket,fleece,179.26,Dec,duplicate order,pending
+10689,C2459,electronics,monitor,566.07,Nov,damaged on arrival,denied
+10690,C1801,electronics,webcam,403.17,Sep,not as described,pending
+10693,C8248,electronics,webcam,724.44,Mar,not as described,denied
+10698,C6920,outdoor,sleeping bag,622.23,Jan,wrong size,denied
+10701,C8496,jacket,puffer,339.73,Jul,wrong size,pending
+10706,C1634,outdoor,backpack,310.67,Jun,changed mind,pending
+10708,C6968,kitchen,kettle,103.3,Sep,wrong size,denied
+10710,C2842,outdoor,tent,307.12,Jan,changed mind,pending
+10717,C2590,shoes,hiking,310.09,Aug,wrong size,denied
+10721,C5420,shoes,sneakers,369.44,Oct,changed mind,pending
+10728,C1765,outdoor,tent,836.74,Dec,not as described,approved
+10735,C7805,electronics,headphones,341.91,Jul,damaged on arrival,pending
+10737,C8118,outdoor,water filter,271.49,Sep,wrong size,approved
+10739,C1874,jacket,denim,805.17,Dec,damaged on arrival,denied
+10743,C5277,jacket,parka,556.48,Nov,changed mind,approved

@@ -42,6 +42,12 @@ data/
 # though they live under a data/ subdir (harness-kj2a).
 !retrieval_eval/data/
 !retrieval_eval/data/*
+# returns_handler character ships a source CSV under data/ that gets
+# loaded into a per-character TabularStore on session start (harness-kgpi).
+# Only the CSV is tracked — the .sqlite files generated from it stay
+# ignored via the *.sqlite rule below.
+!character/returns_handler/data/
+!character/returns_handler/data/*.csv
 logs/
 *.sqlite
 *.sqlite-journal

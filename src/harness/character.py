@@ -36,6 +36,24 @@ class SeedMemory:
 
 
 @dataclass(frozen=True)
+class TabularTableSpec:
+    """One tabular table declared by a character in core.yaml under
+    `tabular_tables:` (harness-kgpi). The CLI reads this list at
+    session start and registers each table into a per-character
+    `TabularStore` so the agent's `assemble_context` calls can fan
+    out into SQL.
+
+    `csv_path` is resolved against the character directory at load
+    time. `columns` is a tuple of (name, type_hint, nl_description) —
+    same shape `TabularStore.TableSchema.columns` consumes."""
+
+    table_name: str
+    description: str
+    csv_path: Path
+    columns: tuple[tuple[str, str, str], ...]
+
+
+@dataclass(frozen=True)
 class ThoughtGraph:
     """Ab's thought-graph workflow rules (harness-9qw). These only bind
     when the matching bd ops tools are actually loaded — the runtime
@@ -110,6 +128,11 @@ class Character:
     # Lets a corpus-grounded persona reframe its own search tool
     # without editing src/harness/tools/profiles.py.
     tool_descriptions: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Tabular tables this character ships with (harness-kgpi). Empty
+    # tuple for characters that don't ship table data. The CLI uses
+    # this list to decide whether to spin up a per-character
+    # TabularStore at session start.
+    tabular_tables: tuple[TabularTableSpec, ...] = ()
     # ---- harness-a2sa: data-driven replacements for name-based branches ----
     # Voice rewrite layer. "persona" wraps the model adapter in
     # PersonaAdapter (Airton's two-pass voice rewrite); "caveman" wraps
@@ -348,6 +371,7 @@ def load_character(path: Path) -> Character:
             }
 
     values = tuple(Value(id=v["id"], rule=v["rule"]) for v in core["values"])
+    tabular_tables = _load_tabular_tables(core.get("tabular_tables"), path)
 
     # Thought-graph block is optional: personas without bd ops tools
     # simply omit the section.
@@ -383,6 +407,7 @@ def load_character(path: Path) -> Character:
         require_search_memory=bool(core.get("require_search_memory", False)),
         lead_with_citation=bool(core.get("lead_with_citation", False)),
         tool_descriptions=tool_descriptions,
+        tabular_tables=tabular_tables,
         voice_rewriter=_load_voice_rewriter(core, path),
         bd_assignee=_opt_str(core.get("bd"), "assignee", path=path),
         bd_exclude_assignee=_opt_str(core.get("bd"), "exclude_assignee", path=path),
@@ -406,6 +431,58 @@ def load_character(path: Path) -> Character:
 
 
 # ---- harness-a2sa: helpers for the new core.yaml fields ----
+
+
+def _load_tabular_tables(raw: object, path: Path) -> tuple[TabularTableSpec, ...]:
+    """Parse the optional `tabular_tables:` list from core.yaml
+    (harness-kgpi). Each entry is a mapping with `table_name`,
+    `description`, `csv_path` (relative to character_path), and
+    `columns` (list of [name, type, desc] triples).
+
+    Returns empty tuple when the key is absent — most characters
+    don't ship tabular tables and the parser stays graceful for them.
+    Malformed entries raise ValueError with a clear pointer at the
+    offending row."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"{path}/core.yaml: `tabular_tables` must be a list, got {type(raw).__name__}"
+        )
+    out: list[TabularTableSpec] = []
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ValueError(f"{path}/core.yaml: tabular_tables[{idx}] must be a mapping")
+        table_name = str(entry.get("table_name") or "").strip()
+        description = str(entry.get("description") or "").strip()
+        csv_raw = str(entry.get("csv_path") or "").strip()
+        if not table_name or not csv_raw:
+            raise ValueError(
+                f"{path}/core.yaml: tabular_tables[{idx}] needs `table_name` + `csv_path`"
+            )
+        cols_raw = entry.get("columns")
+        if not isinstance(cols_raw, list) or not cols_raw:
+            raise ValueError(
+                f"{path}/core.yaml: tabular_tables[{idx}] needs a non-empty `columns` list"
+            )
+        columns: list[tuple[str, str, str]] = []
+        for col_idx, col in enumerate(cols_raw):
+            if not isinstance(col, list) or len(col) != 3:
+                raise ValueError(
+                    f"{path}/core.yaml: tabular_tables[{idx}].columns[{col_idx}] "
+                    f"must be [name, type, description]"
+                )
+            columns.append((str(col[0]), str(col[1]), str(col[2])))
+        out.append(
+            TabularTableSpec(
+                table_name=table_name,
+                description=description,
+                csv_path=(path / csv_raw).resolve(),
+                columns=tuple(columns),
+            )
+        )
+    return tuple(out)
+
 
 _VOICE_REWRITERS = frozenset({"persona", "caveman", "none"})
 

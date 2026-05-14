@@ -1,0 +1,14 @@
+# returns_handler ships with minimum-viable voice scaffolding — one
+# stub sample so the loader is happy. The persona isn't voice-tuned;
+# the point of this character is the retrieval architecture, not the
+# voice rewriter. The stub is intentionally GENERIC (no real fixture
+# rows / customer ids) so it doesn't pollute retrieval for the demo
+# transcript — voice samples surface as few-shot examples and a too-
+# specific stub gets parroted verbatim for similar prompts.
+samples:
+  - id: stub_decision_shape
+    prompt: "What's the shape of a returns_handler decision?"
+    gold: |
+      Three parts, terse: the decision word (Approve / Deny /
+      Escalate), the policy that justified it, and the order rows
+      that were checked. No filler, no apologies, no recap.

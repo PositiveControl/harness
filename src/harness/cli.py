@@ -514,11 +514,38 @@ OPS_TOOL_NAMES: frozenset[str] = frozenset(
 )
 
 
+def _build_tabular_store_for_session(
+    character: Character | None,
+    memory_store: EpisodicStore | None,
+) -> object | None:
+    """Build a per-character TabularStore from `character.tabular_tables`,
+    or return None if the character doesn't ship table data
+    (harness-kgpi).
+
+    Reuses the episodic store's embedder so dense vectors are
+    consistent across stores. Idempotent: re-runs at session start
+    drop+recreate the data tables from the CSVs, with a fresh schema
+    embedding under the current embedder. `object` return type dodges
+    a top-of-file import of the TabularStore class; the only callers
+    treat it as a duck-typed bundle member.
+    """
+    if character is None or not character.tabular_tables or memory_store is None:
+        return None
+    from harness.store.tabular import build_tabular_store_for_character
+
+    return build_tabular_store_for_character(
+        character_path=settings.character_path,
+        embedder=memory_store.embedder,
+        tabular_tables=character.tabular_tables,
+    )
+
+
 def _build_assemble_context_tool(
     *,
     character: Character | None,
     memory_store: EpisodicStore | None,
     speaker: str,
+    tabular_store: object | None,
 ) -> AssembleContextTool | None:
     """Construct the AssembleContextTool from character + store handles.
 
@@ -529,20 +556,27 @@ def _build_assemble_context_tool(
     polite error. Cheap to ship the tool unconditionally — the cost
     of an unused builder is one extra dict entry.
 
-    Tree + tabular stores are NOT wired here. Phase 3's primitive
-    supports them; integrating them per-character is harness-kgpi's
-    job (the returns-handler character that exercises the full
-    contract pipeline). For now `StoreBundle.tabular` and `.tree`
-    stay None and contracts that depend on them surface a clear
-    error string at call time.
+    `tabular_store` (harness-kgpi) — when the character ships
+    `tabular_tables:` declarations, the per-character TabularStore
+    flows into StoreBundle.tabular so tabular slots in contracts
+    actually resolve. None for characters without table data.
+
+    Tree store wiring is still TODO — no character ships document-tree
+    data yet, so the contract orchestrator surfaces a clear error
+    string for tree-slot contracts.
     """
     if character is None:
         return None
     contracts_dir = settings.character_path / "contracts"
     from harness.retrieval.contract import StoreBundle
+    from harness.store.tabular import TabularStore
 
+    bundle = StoreBundle(
+        episodic=memory_store,
+        tabular=tabular_store if isinstance(tabular_store, TabularStore) else None,
+    )
     return AssembleContextTool(
-        stores=StoreBundle(episodic=memory_store),
+        stores=bundle,
         contracts_dir=contracts_dir,
         user_id=speaker,
     )
@@ -1380,6 +1414,13 @@ def _build_tool_registry_for_tui(
 
     phraseology_verb_anchors = load_verb_anchors(default_verb_anchors_path(settings.character_path))
 
+    # Per-character tabular store (harness-kgpi). None for characters
+    # that don't ship `tabular_tables:` in core.yaml — most characters
+    # today. The TUI keeps a single instance so multiple builders that
+    # need it (assemble_context, future tabular-flavored tools) share
+    # one connection.
+    tabular_store = _build_tabular_store_for_session(character, memory_store)
+
     builders: dict[str, Callable[[], Tool | None]] = {
         "read_file": lambda: ReadFileTool(root=workspace_path),
         "edit_file": lambda: EditFileTool(root=workspace_path),
@@ -1426,6 +1467,7 @@ def _build_tool_registry_for_tui(
             character=character,
             memory_store=memory_store,
             speaker=speaker,
+            tabular_store=tabular_store,
         ),
         "phraseology_lint": lambda: (
             PhraseologyLintTool(
@@ -4490,18 +4532,38 @@ def memory_rebuild_embeddings() -> None:
     semantic = _open_semantic_store()
     if episodic is None or semantic is None:
         raise typer.Exit(code=1)
+    # harness-pzpy: also rebuild the character's tabular schema
+    # embeddings when one is wired. The store ID is the same — same
+    # embedder feeds all three stores, and an embedder swap drifts
+    # the tabular dim the same way it drifts episodic / semantic.
+    tabular_store = _build_tabular_store_for_session(character, episodic)
+    from harness.store.tabular import TabularStore  # local for type narrowing
+
+    tabular_typed = tabular_store if isinstance(tabular_store, TabularStore) else None
     try:
         ep_mismatched = episodic.count_mismatched_embeddings()
         sem_mismatched = semantic.count_mismatched_embeddings()
+        tab_mismatched = (
+            tabular_typed.count_mismatched_embeddings() if tabular_typed is not None else 0
+        )
+        tabular_blurb = (
+            f"; tabular: {tab_mismatched} mismatched" if tabular_typed is not None else ""
+        )
         console.print(
-            f"episodic: {ep_mismatched} mismatched; semantic: {sem_mismatched} mismatched."
+            f"episodic: {ep_mismatched} mismatched; "
+            f"semantic: {sem_mismatched} mismatched{tabular_blurb}."
         )
         with Status("re-embedding episodic…", console=console):
             ep_updated, _ = episodic.rebuild_embeddings()
         with Status("re-embedding semantic…", console=console):
             sem_updated, _ = semantic.rebuild_embeddings()
+        tab_updated = 0
+        if tabular_typed is not None:
+            with Status("re-embedding tabular…", console=console):
+                tab_updated, _ = tabular_typed.rebuild_embeddings()
+        tab_msg = f" and {tab_updated} tabular" if tabular_typed is not None else ""
         console.print(
-            f"[green]rebuilt {ep_updated} episodic and {sem_updated} semantic "
+            f"[green]rebuilt {ep_updated} episodic and {sem_updated} semantic{tab_msg} "
             f"embeddings with {episodic.embedder.id}.[/green]"
         )
     finally:
