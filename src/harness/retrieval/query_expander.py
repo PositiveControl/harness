@@ -1,7 +1,7 @@
 """Query-side synonym expansion (harness-ajn).
 
-Mirrors the ingest-side enrichment in `scripts/atc_ingest.py`: when the
-corpus's `synonyms.yaml` defines lay-term variants for a section, those
+Mirrors the ingest-side enrichment in `scripts/atc_ingest.py`: when a
+corpus's glossary YAML defines lay-term variants for a topic, those
 variants get appended to every stored row's principle so BM25 can hit
 lay-language queries and dense cosine sees the full semantic field. The
 ingest side was already solving half the problem — the query side needed
@@ -12,28 +12,49 @@ DOES hit §3-10-3 via BM25 (the stored synonym header contains the exact
 phrase) but only weakly via dense cosine: the user's query vector is
 384-dim over the literal phrase, while the stored vector is 384-dim over
 `body + title + principle + all-synonyms` — a much larger semantic
-field. Expanding the query with the other synonyms from the same section
+field. Expanding the query with the other synonyms from the same topic
 shifts the query vector toward that field, lifting dense cosine without
 changing BM25's hits.
 
-For section-less queries (no lay term matches), `expand()` returns the
+For unmatched queries (no lay term matches), `expand()` returns the
 query unchanged — identity-preserving so there's no per-query cost when
-expansion doesn't apply. Characters without a `synonyms.yaml` file get
-a `NullQueryExpander` from `load_query_expander()` and pay no cost at
+expansion doesn't apply. Characters without a glossary file get a
+`NullQueryExpander` from `load_query_expander()` and pay no cost at
 all.
 
-The expander is character-agnostic on API: only the synonyms.yaml path
-is wired from character state. Ingest-side's `_load_synonyms` is a peer
-of this code; the two independently parse the same file because the
-ingest path lives in scripts/ (off the import path for harness) and
-cross-importing would drag the CLI into the script namespace. YAGNI
-beats sharing one parser between two small files.
+Character-agnostic by design. The mechanism (token-subset matching +
+augmentation) is reusable for any character with a domain glossary:
+legal citation lookups, medical codes, internal product names, etc.
+The glossary YAML schema declares its own output prefix so a non-ATC
+glossary doesn't get the `§` prefix bolted on (harness-m78r):
+
+  # legacy / ATC-flavored — implicit `§` prefix
+  sections:
+    "3-10-3":
+      - shortest distance on approach
+
+  # character-agnostic — no implicit prefix, explicit one when wanted
+  prefix: "ICD-10 "
+  topics:
+    "E11.9":
+      - "high blood sugar"
+
+Both top-level shapes (`sections:` and `topics:`) are accepted; missing
+`prefix:` defaults to `§` for `sections:` (back-compat) and `""` for
+`topics:` (new convention).
+
+Ingest-side's `_load_synonyms` is a peer of this code; the two
+independently parse the same file because the ingest path lives in
+scripts/ (off the import path for harness) and cross-importing would
+drag the CLI into the script namespace. YAGNI beats sharing one parser
+between two small files.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -99,8 +120,8 @@ def _content_tokens(text: str) -> frozenset[str]:
 
 
 class QueryExpander:
-    """Load lay-term → section mappings from a `synonyms.yaml` file and
-    expand incoming queries with symmetric enrichment. Immutable after
+    """Load lay-term → topic mappings from a glossary YAML and expand
+    incoming queries with symmetric enrichment. Immutable after
     construction — callers that want a refreshed index must build a new
     instance.
 
@@ -110,73 +131,104 @@ class QueryExpander:
     and was too strict — natural-language paraphrases rarely contain
     curated lay phrases verbatim. Content-token-subset matches the real
     paraphrase pattern without over-triggering (the lay term still has
-    to supply every topical word; extras in the query don't hurt)."""
+    to supply every topical word; extras in the query don't hurt).
 
-    def __init__(self, sections: dict[str, tuple[str, ...]]) -> None:
-        # Canonical storage: section_id → tuple of lay-term variants.
+    `topic_prefix` (harness-m78r) — string spliced before each topic id
+    in the expansion output. The legacy default is `§` because the
+    airton_c1 glossary's ingest-side enrichment uses `§N-N-N` anchors
+    and the query side must match for FTS5 to hit the stored tag. Empty
+    string is the right default for any new glossary — only ATC-style
+    section-anchor data needs the §.
+    """
+
+    def __init__(
+        self,
+        topics: dict[str, tuple[str, ...]],
+        *,
+        topic_prefix: str = "§",
+    ) -> None:
+        # Canonical storage: topic_id → tuple of lay-term variants.
         # Tuples so the instance is effectively frozen (no mutation via
         # returned references).
-        self._sections: dict[str, tuple[str, ...]] = {
-            sec: tuple(variants) for sec, variants in sections.items() if variants
+        self._topics: dict[str, tuple[str, ...]] = {
+            topic: tuple(variants) for topic, variants in topics.items() if variants
         }
-        # Pre-compute (content_token_set, section) for every lay term.
+        self._topic_prefix = topic_prefix
+        # Pre-compute (content_token_set, topic) for every lay term.
         # A term with zero content tokens (e.g. "the on") is dropped — a
         # zero-token subset matches every query, which is pure noise.
         self._term_tokens: tuple[tuple[frozenset[str], str], ...] = tuple(
-            (tokens, section)
-            for section, variants in self._sections.items()
+            (tokens, topic)
+            for topic, variants in self._topics.items()
             for term in variants
             if (tokens := _content_tokens(term))
         )
 
+    # `_sections` is preserved as a back-compat read-only alias for the
+    # `LLMQueryExpander` subclass which sets `self._sections = {}` in
+    # its constructor to opt out of the static-table path. Removing the
+    # attribute outright would silently mask bugs in subclasses.
+    @property
+    def _sections(self) -> dict[str, tuple[str, ...]]:
+        return self._topics
+
+    @_sections.setter
+    def _sections(self, value: dict[str, tuple[str, ...]]) -> None:
+        self._topics = value
+
     @property
     def is_empty(self) -> bool:
-        """True when the synonyms source was missing or parsed to zero
-        section entries. Callers can short-circuit construction /
+        """True when the glossary source was missing or parsed to zero
+        topic entries. Callers can short-circuit construction /
         persistence when the expander would be a no-op."""
-        return not self._sections
+        return not self._topics
 
-    def triggered_sections(self, query: str) -> tuple[str, ...]:
-        """Section IDs whose lay-term list has at least one
+    def triggered_topics(self, query: str) -> tuple[str, ...]:
+        """Topic IDs whose lay-term list has at least one
         content-token-subset hit in `query`. Order is stable (insertion
-        order of `self._sections`) so the output is deterministic. Each
-        section appears at most once even if multiple terms matched."""
+        order of `self._topics`) so the output is deterministic. Each
+        topic appears at most once even if multiple terms matched."""
         query_tokens = _content_tokens(query)
         if not query_tokens:
             return ()
         hit: dict[str, None] = {}  # ordered set
-        for term_tokens, section in self._term_tokens:
+        for term_tokens, topic in self._term_tokens:
             if term_tokens.issubset(query_tokens):
-                hit.setdefault(section, None)
-        return tuple(sec for sec in self._sections if sec in hit)
+                hit.setdefault(topic, None)
+        return tuple(topic for topic in self._topics if topic in hit)
+
+    # Back-compat alias — many call sites and tests reference the old
+    # name. New code should prefer `triggered_topics()`.
+    def triggered_sections(self, query: str) -> tuple[str, ...]:
+        return self.triggered_topics(query)
 
     def expand(self, query: str) -> str:
         """Return `query` augmented with the aggregated lay-term list
-        of every triggered section. When nothing triggers, returns the
+        of every triggered topic. When nothing triggers, returns the
         original query unchanged — identity-preserving.
 
         Format matches the ingest-side `[synonyms: a; b; c]` header so
         BM25 tokenization and dense embedding treat the two symmetrically:
-          "<query> [related: §<sec>: term1; term2; ... | §<sec2>: ...]"
+          "<query> [related: <prefix><topic>: term1; term2; ... | ...]"
 
-        Section anchors are embedded in the expansion so FTS5 can still
-        hit the `[section: N-N-N]` tag in the stored text — useful when
-        the user's query is a jargon-light paraphrase but maps cleanly
-        to a single section."""
-        sections = self.triggered_sections(query)
-        if not sections:
+        The `<prefix>` defaults to `§` for back-compat with ATC-flavored
+        glossaries whose stored data carries section-anchor tags; new
+        glossaries override via `topic_prefix=""` in the constructor or
+        a `prefix:` field in their YAML."""
+        topics = self.triggered_topics(query)
+        if not topics:
             return query
         chunks: list[str] = []
-        for sec in sections:
-            variants = self._sections[sec]
-            chunks.append(f"§{sec}: " + "; ".join(variants))
+        for topic in topics:
+            variants = self._topics[topic]
+            chunks.append(f"{self._topic_prefix}{topic}: " + "; ".join(variants))
         return f"{query} [related: " + " | ".join(chunks) + "]"
 
 
 class NullQueryExpander(QueryExpander):
-    """Identity expander for characters without a synonyms file. Keeps
+    """Identity expander for characters without a glossary file. Keeps
     call sites branch-free: `expander.expand(q)` works regardless of
-    whether the character has corpus synonyms."""
+    whether the character carries corpus synonyms."""
 
     def __init__(self) -> None:
         super().__init__({})
@@ -185,28 +237,68 @@ class NullQueryExpander(QueryExpander):
         return query
 
 
-def _parse_sections_file(path: Path) -> dict[str, tuple[str, ...]]:
-    """Parse one synonyms-shaped YAML into a {section: (variants,)} dict.
-    Returns {} for missing / malformed files — degrades gracefully."""
+@dataclass(frozen=True)
+class _ParsedGlossary:
+    """Result of parsing one glossary YAML. `topics` is the variant map;
+    `prefix` is the topic-output prefix (None when the YAML didn't
+    declare one, so the caller can apply the legacy-vs-new default).
+    `had_legacy_key` records whether the parsed file used the old
+    `sections:` top-level key — drives the back-compat default for
+    `prefix` when the YAML is silent on it."""
+
+    topics: dict[str, tuple[str, ...]]
+    prefix: str | None
+    had_legacy_key: bool
+
+
+def _parse_glossary_file(path: Path) -> _ParsedGlossary:
+    """Parse one glossary-shaped YAML.
+
+    Accepts both top-level keys: `topics:` (new convention) and
+    `sections:` (legacy ATC convention). If both are present, `topics:`
+    wins (encourages migration without breaking back-compat).
+
+    Optional `prefix:` at the top level overrides the default
+    topic-prefix used in the expander's output. When missing, the
+    caller applies the legacy-vs-new default — see `load_query_expander`.
+
+    Returns an empty parsed result for missing / malformed files —
+    degrades gracefully."""
+    empty = _ParsedGlossary(topics={}, prefix=None, had_legacy_key=False)
     if not path.exists():
-        return {}
+        return empty
     try:
         raw = yaml.safe_load(path.read_text())
     except yaml.YAMLError:
-        return {}
+        return empty
     if not isinstance(raw, dict):
-        return {}
-    sections_raw = raw.get("sections")
-    if not isinstance(sections_raw, dict):
-        return {}
+        return empty
+    topics_raw = raw.get("topics")
+    legacy = False
+    if not isinstance(topics_raw, dict):
+        topics_raw = raw.get("sections")
+        if isinstance(topics_raw, dict):
+            legacy = True
+        else:
+            return empty
     parsed: dict[str, tuple[str, ...]] = {}
-    for section, variants in sections_raw.items():
+    for topic, variants in topics_raw.items():
         if not isinstance(variants, list):
             continue
         cleaned = tuple(str(v).strip() for v in variants if isinstance(v, str) and v.strip())
         if cleaned:
-            parsed[str(section)] = cleaned
-    return parsed
+            parsed[str(topic)] = cleaned
+    prefix_raw = raw.get("prefix")
+    prefix = str(prefix_raw) if isinstance(prefix_raw, str) else None
+    return _ParsedGlossary(topics=parsed, prefix=prefix, had_legacy_key=legacy)
+
+
+# Back-compat alias — exported under the old name for downstream callers
+# (`scripts/suggest_synonyms.py`, `scripts/test_synonyms.py` reach into
+# the parser for their own validation). New code should prefer
+# `_parse_glossary_file`.
+def _parse_sections_file(path: Path) -> dict[str, tuple[str, ...]]:
+    return _parse_glossary_file(path).topics
 
 
 def load_query_expander(
@@ -214,42 +306,64 @@ def load_query_expander(
     *,
     query_only_path: Path | None = None,
 ) -> QueryExpander:
-    """Load a `QueryExpander` from one or two YAML files.
+    """Load a `QueryExpander` from one or two glossary YAML files.
 
     `synonyms_path` is the shared file consumed by both the ingest
     script and the query expander (character/<name>/corpus/synonyms.yaml
     convention). `query_only_path` is an optional additive file whose
     entries ONLY influence query-side expansion, never ingest-side row
     augmentation (character/<name>/corpus/query_synonyms.yaml
-    convention). When both files carry entries for the same section,
-    the variants are merged (duplicates deduped).
+    convention). When both files carry entries for the same topic, the
+    variants are merged (duplicates deduped).
 
     Returns a `NullQueryExpander` when both files are missing or empty.
+
+    Topic-prefix resolution (harness-m78r):
+      - If either YAML declares `prefix: "..."`, that wins. When both
+        declare a prefix the shared file wins (it owns ingest-side data).
+      - Else if either YAML uses the legacy `sections:` key, prefix
+        defaults to `§` (back-compat with airton_c1 / airton_c).
+      - Else (new `topics:` schema only) prefix defaults to `""`.
 
     Malformed YAML or unexpected shape silently degrades — this helper
     prefers missing entries over a failed chat bootstrap. Inspect with
     `is_empty` or `isinstance(..., NullQueryExpander)` for a strict
     check.
     """
-    shared: dict[str, tuple[str, ...]] = (
-        _parse_sections_file(synonyms_path) if synonyms_path is not None else {}
+    shared = (
+        _parse_glossary_file(synonyms_path)
+        if synonyms_path is not None
+        else _ParsedGlossary(topics={}, prefix=None, had_legacy_key=False)
     )
-    query_only: dict[str, tuple[str, ...]] = (
-        _parse_sections_file(query_only_path) if query_only_path is not None else {}
+    query_only = (
+        _parse_glossary_file(query_only_path)
+        if query_only_path is not None
+        else _ParsedGlossary(topics={}, prefix=None, had_legacy_key=False)
     )
-    if not shared and not query_only:
+    if not shared.topics and not query_only.topics:
         return NullQueryExpander()
-    # Merge: union the section keys; for sections present in both, merge
+    # Merge: union the topic keys; for topics present in both, merge
     # variants (preserving insertion order from shared first, then
     # query-only, deduped).
     merged: dict[str, tuple[str, ...]] = {}
-    for section in list(shared) + [s for s in query_only if s not in shared]:
+    for topic in list(shared.topics) + [t for t in query_only.topics if t not in shared.topics]:
         seen: dict[str, None] = {}
-        for source in (shared.get(section, ()), query_only.get(section, ())):
+        for source in (shared.topics.get(topic, ()), query_only.topics.get(topic, ())):
             for variant in source:
                 seen.setdefault(variant, None)
-        merged[section] = tuple(seen)
-    return QueryExpander(merged) if merged else NullQueryExpander()
+        merged[topic] = tuple(seen)
+    if not merged:
+        return NullQueryExpander()
+
+    if shared.prefix is not None:
+        prefix = shared.prefix
+    elif query_only.prefix is not None:
+        prefix = query_only.prefix
+    elif shared.had_legacy_key or query_only.had_legacy_key:
+        prefix = "§"
+    else:
+        prefix = ""
+    return QueryExpander(merged, topic_prefix=prefix)
 
 
 def default_synonyms_path(character_path: Path) -> Path:
@@ -412,10 +526,11 @@ class LLMQueryExpander(QueryExpander):
         max_tokens: int = 128,
         temperature: float = 0.0,
     ) -> None:
-        # Skip the parent constructor's section-table init — we don't
+        # Skip the parent constructor's topic-table init — we don't
         # use the static-table path. `chain_to`, when present, owns
-        # the section-table semantics for the chained pass.
-        self._sections = {}
+        # the topic-table semantics for the chained pass.
+        self._topics: dict[str, tuple[str, ...]] = {}
+        self._topic_prefix = ""
         self._term_tokens = ()
         self._adapter = adapter
         self._chain_to = chain_to

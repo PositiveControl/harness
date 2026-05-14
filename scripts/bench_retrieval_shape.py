@@ -62,6 +62,11 @@ from harness.evals.retrieval_shape import (  # noqa: E402
     ShapeResult,
     run_retrieval_shape,
 )
+from harness.retrieval.query_expander import (  # noqa: E402
+    NullQueryExpander,
+    QueryExpander,
+    load_query_expander,
+)
 from harness.retrieval.st_embedder import SentenceTransformersEmbedder  # noqa: E402
 from harness.store.episodic import EpisodicStore  # noqa: E402
 
@@ -211,10 +216,18 @@ def _ingest_csv_rows(
 # Per-shape eval runners
 
 
-def _build_episodic_search_fn(store: EpisodicStore) -> Any:
+def _build_episodic_search_fn(
+    store: EpisodicStore,
+    *,
+    expander: QueryExpander | None = None,
+) -> Any:
     """Wrap EpisodicStore.search into a ShapeSearchFn that returns
     ShapeHit objects keyed by external_id. The eval doesn't see the
     underlying record.
+
+    `expander`, when provided, rewrites the user query before search —
+    the harness-m78r path that lifts airton_c1's QueryExpander into
+    the bench. `None` = stock hybrid baseline (Phase 0 default).
 
     Hits are re-sorted by (-score, record_id) to pin tie-breaks at the
     bench boundary. The underlying hybrid path ranks by score only and
@@ -228,6 +241,8 @@ def _build_episodic_search_fn(store: EpisodicStore) -> Any:
     """
 
     def _search(query: str, k: int) -> list[ShapeHit]:
+        if expander is not None:
+            query = expander.expand(query)
         hits = store.search(query, k=k, mode="hybrid", user_id=None)
         out: list[ShapeHit] = []
         for record, score in hits:
@@ -240,7 +255,71 @@ def _build_episodic_search_fn(store: EpisodicStore) -> Any:
     return _search
 
 
-def _run_prose(corpus_yaml: Path, *, k: int, embedder_repo: str) -> CorpusBench:
+def _load_corpus_glossary(corpus_yaml: Path, spec: dict[str, Any]) -> QueryExpander | None:
+    """Read optional `glossary:` / `glossary_query_only:` fields from a
+    corpus spec and return a `QueryExpander`, or None when neither is
+    set. Paths in the YAML are relative to the corpus YAML file."""
+    primary_raw = spec.get("glossary")
+    query_only_raw = spec.get("glossary_query_only")
+    if not primary_raw and not query_only_raw:
+        return None
+    primary = (corpus_yaml.parent / str(primary_raw)).resolve() if primary_raw else None
+    query_only = (corpus_yaml.parent / str(query_only_raw)).resolve() if query_only_raw else None
+    expander = load_query_expander(primary, query_only_path=query_only)
+    if isinstance(expander, NullQueryExpander):
+        return None
+    return expander
+
+
+def _run_with_retrievers(
+    *,
+    cases: list[ShapeCase],
+    store: EpisodicStore,
+    expander: QueryExpander | None,
+    spec: dict[str, Any],
+    k: int,
+) -> list[CorpusBench]:
+    """Run the case list under every registered retriever for this
+    corpus (today: `hybrid_episodic` always; `hybrid_plus_expander` when
+    a glossary is wired). Returns one CorpusBench per retriever."""
+    cells: list[CorpusBench] = []
+
+    # Cell 1: stock hybrid.
+    stock_fn = _build_episodic_search_fn(store, expander=None)
+    t0 = time.perf_counter()
+    stock_result = run_retrieval_shape(cases, stock_fn, k=k)
+    stock_ms = (time.perf_counter() - t0) * 1000
+    cells.append(
+        _result_to_cell(
+            result=stock_result,
+            corpus_name=str(spec["name"]),
+            shape=str(spec["shape"]),
+            retriever="hybrid_episodic",
+            wall_ms=stock_ms,
+        )
+    )
+
+    # Cell 2: hybrid + expander. Only emitted when the corpus pointed at
+    # a non-empty glossary — harness-m78r's "lifted primitive" cell.
+    if expander is not None:
+        expander_fn = _build_episodic_search_fn(store, expander=expander)
+        t0 = time.perf_counter()
+        expander_result = run_retrieval_shape(cases, expander_fn, k=k)
+        expander_ms = (time.perf_counter() - t0) * 1000
+        cells.append(
+            _result_to_cell(
+                result=expander_result,
+                corpus_name=str(spec["name"]),
+                shape=str(spec["shape"]),
+                retriever="hybrid_episodic+expander",
+                wall_ms=expander_ms,
+            )
+        )
+
+    return cells
+
+
+def _run_prose(corpus_yaml: Path, *, k: int, embedder_repo: str) -> list[CorpusBench]:
     spec = _load_yaml(corpus_yaml)
     records = spec.get("records") or []
     raw_cases = spec.get("cases") or []
@@ -258,20 +337,11 @@ def _run_prose(corpus_yaml: Path, *, k: int, embedder_repo: str) -> CorpusBench:
         for c in raw_cases
     ]
 
-    search_fn = _build_episodic_search_fn(store)
-    t0 = time.perf_counter()
-    result = run_retrieval_shape(cases, search_fn, k=k)
-    wall_ms = (time.perf_counter() - t0) * 1000
-    return _result_to_cell(
-        result=result,
-        corpus_name=str(spec["name"]),
-        shape=str(spec["shape"]),
-        retriever="hybrid_episodic",
-        wall_ms=wall_ms,
-    )
+    expander = _load_corpus_glossary(corpus_yaml, spec)
+    return _run_with_retrievers(cases=cases, store=store, expander=expander, spec=spec, k=k)
 
 
-def _run_tabular(corpus_yaml: Path, *, k: int, embedder_repo: str) -> CorpusBench:
+def _run_tabular(corpus_yaml: Path, *, k: int, embedder_repo: str) -> list[CorpusBench]:
     spec = _load_yaml(corpus_yaml)
     data_path = (corpus_yaml.parent / str(spec["data_path"])).resolve()
     if not data_path.exists():
@@ -291,20 +361,48 @@ def _run_tabular(corpus_yaml: Path, *, k: int, embedder_repo: str) -> CorpusBenc
         for c in raw_cases
     ]
 
-    search_fn = _build_episodic_search_fn(store)
-    t0 = time.perf_counter()
-    result = run_retrieval_shape(cases, search_fn, k=k)
-    wall_ms = (time.perf_counter() - t0) * 1000
-    return _result_to_cell(
-        result=result,
-        corpus_name=str(spec["name"]),
-        shape=str(spec["shape"]),
-        retriever="hybrid_episodic",
-        wall_ms=wall_ms,
-    )
+    expander = _load_corpus_glossary(corpus_yaml, spec)
+    return _run_with_retrievers(cases=cases, store=store, expander=expander, spec=spec, k=k)
 
 
-def _run_structured_atc(corpus_yaml: Path, *, k: int, embedder_repo: str) -> CorpusBench:
+def _build_structured_atc_search_fn(
+    store: EpisodicStore,
+    *,
+    expander: QueryExpander | None = None,
+) -> Any:
+    """Per-hit anchor-in-principle search adapter for structured-doc
+    corpora. Re-keys store hits from external_id → parsed anchor so
+    the generic scorer can match without knowing ATC conventions.
+
+    `expander` mirrors `_build_episodic_search_fn` — applied to the
+    query before `store.search`."""
+
+    def _search(query: str, depth: int) -> list[ShapeHit]:
+        if expander is not None:
+            query = expander.expand(query)
+        # Mirror the airton_c1 retrieval path: hybrid, no user scoping
+        # (the corpus is shared / NULL user).
+        hits = store.search(query, k=depth, mode="hybrid", user_id=None)
+        out: list[ShapeHit] = []
+        for record, score in hits:
+            # If a record's principle holds multiple anchors, emit one
+            # synthetic hit per anchor at the same rank score — mirrors
+            # how the existing atc_retrieval scorer treats multi-anchor
+            # principles. Caller's scorer takes the first matching
+            # anchor per case.
+            for anchor in _extract_anchors(record.principle or ""):
+                out.append(ShapeHit(record_id=anchor, score=float(score)))
+        # Same tie-pinning logic as _build_episodic_search_fn — see
+        # docstring there. Without this the structured baseline r@1 /
+        # MRR wobble across invocations because tied dense-cosine
+        # scores are extremely common in this corpus.
+        out.sort(key=lambda h: (-h.score, h.record_id))
+        return out
+
+    return _search
+
+
+def _run_structured_atc(corpus_yaml: Path, *, k: int, embedder_repo: str) -> list[CorpusBench]:
     """Re-uses the populated airton_c1 episodic store. We don't ingest
     here — the store is the live one on disk, opened in the same
     embedder so dense vectors line up."""
@@ -333,9 +431,7 @@ def _run_structured_atc(corpus_yaml: Path, *, k: int, embedder_repo: str) -> Cor
     atc_rows = _load_atc_fixture_rows(fixture_path)
 
     # Each ATC fixture case becomes a ShapeCase whose expected_record_ids
-    # are the flat set of acceptable anchors (e.g. {"2-4-3"}). The
-    # search_fn re-keys hits from external_id → parsed anchor so the
-    # generic scorer can match without knowing ATC conventions.
+    # are the flat set of acceptable anchors (e.g. {"2-4-3"}).
     cases: list[ShapeCase] = []
     for row in atc_rows:
         anchors = _expected_anchor_set(row)
@@ -349,36 +445,39 @@ def _run_structured_atc(corpus_yaml: Path, *, k: int, embedder_repo: str) -> Cor
             )
         )
 
-    def _search(query: str, depth: int) -> list[ShapeHit]:
-        # Mirror the airton_c1 retrieval path: hybrid, no user scoping
-        # (the corpus is shared / NULL user).
-        hits = store.search(query, k=depth, mode="hybrid", user_id=None)
-        out: list[ShapeHit] = []
-        for record, score in hits:
-            # If a record's principle holds multiple anchors, emit one
-            # synthetic hit per anchor at the same rank score — mirrors
-            # how the existing atc_retrieval scorer treats multi-anchor
-            # principles. Caller's scorer takes the first matching
-            # anchor per case.
-            for anchor in _extract_anchors(record.principle or ""):
-                out.append(ShapeHit(record_id=anchor, score=float(score)))
-        # Same tie-pinning logic as _build_episodic_search_fn — see
-        # docstring there. Without this the structured baseline r@1 /
-        # MRR wobble across invocations because tied dense-cosine
-        # scores are extremely common in this corpus.
-        out.sort(key=lambda h: (-h.score, h.record_id))
-        return out
+    expander = _load_corpus_glossary(corpus_yaml, spec)
+    cells: list[CorpusBench] = []
 
+    stock_fn = _build_structured_atc_search_fn(store, expander=None)
     t0 = time.perf_counter()
-    result = run_retrieval_shape(cases, _search, k=k)
-    wall_ms = (time.perf_counter() - t0) * 1000
-    return _result_to_cell(
-        result=result,
-        corpus_name=str(spec["name"]),
-        shape=str(spec["shape"]),
-        retriever="hybrid_episodic",
-        wall_ms=wall_ms,
+    stock_result = run_retrieval_shape(cases, stock_fn, k=k)
+    stock_ms = (time.perf_counter() - t0) * 1000
+    cells.append(
+        _result_to_cell(
+            result=stock_result,
+            corpus_name=str(spec["name"]),
+            shape=str(spec["shape"]),
+            retriever="hybrid_episodic",
+            wall_ms=stock_ms,
+        )
     )
+
+    if expander is not None:
+        expander_fn = _build_structured_atc_search_fn(store, expander=expander)
+        t0 = time.perf_counter()
+        expander_result = run_retrieval_shape(cases, expander_fn, k=k)
+        expander_ms = (time.perf_counter() - t0) * 1000
+        cells.append(
+            _result_to_cell(
+                result=expander_result,
+                corpus_name=str(spec["name"]),
+                shape=str(spec["shape"]),
+                retriever="hybrid_episodic+expander",
+                wall_ms=expander_ms,
+            )
+        )
+
+    return cells
 
 
 # ----------------------------------------------------------------------
@@ -423,8 +522,7 @@ def run_all(
             sys.stderr.write(f"[skip] {name}: unknown shape {shape!r}\n")
             continue
         sys.stderr.write(f"[run]  {name} ({shape}) ...\n")
-        cell = runner(corpus_yaml, k=k, embedder_repo=embedder_repo)
-        envelope.cells.append(cell)
+        envelope.cells.extend(runner(corpus_yaml, k=k, embedder_repo=embedder_repo))
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(asdict(envelope), indent=2))
@@ -435,13 +533,13 @@ def _print_summary(envelope: BaselineEnvelope) -> None:
     print()
     print(f"=== retrieval-shape baseline (embedder={envelope.embedder}, k={envelope.k}) ===")
     print(
-        f"{'corpus':<24} {'shape':<16} {'cases':>5} "
+        f"{'corpus':<20} {'retriever':<28} {'cases':>5} "
         f"{'r@1':>6} {'r@3':>6} {'r@5':>6} {'r@k':>6} {'mrr':>6} {'ms':>7}"
     )
-    print("-" * 88)
+    print("-" * 96)
     for cell in envelope.cells:
         print(
-            f"{cell.corpus:<24} {cell.shape:<16} {cell.case_count:>5} "
+            f"{cell.corpus:<20} {cell.retriever:<28} {cell.case_count:>5} "
             f"{cell.recall_at_1 * 100:>5.1f}% {cell.recall_at_3 * 100:>5.1f}% "
             f"{cell.recall_at_5 * 100:>5.1f}% {cell.recall_at_k * 100:>5.1f}% "
             f"{cell.mrr:>6.3f} {cell.wall_ms:>7.0f}"

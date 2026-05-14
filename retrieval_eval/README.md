@@ -95,6 +95,20 @@ The bench imports the existing `harness.evals.atc_retrieval` anchor
 matcher (`§N-N-N` extracted from `EpisodicRecord.principle`) — caller
 doesn't need to teach the generic eval module about anchors.
 
+### Optional `glossary:` wiring (any shape)
+
+```yaml
+glossary: ../../path/to/synonyms.yaml
+glossary_query_only: ../../path/to/query_synonyms.yaml   # optional
+```
+
+When set, the bench loads the glossary through
+`harness.retrieval.query_expander.load_query_expander` and emits a
+second cell (`hybrid_episodic+expander`) alongside the stock one. The
+glossary YAML itself uses either the new `topics:` schema (default
+empty prefix) or the legacy `sections:` schema (default `§` prefix);
+both accept an explicit `prefix:` field that wins.
+
 ## Adding a new corpus
 
 1. Create `corpora/<name>.yaml` with one of the shapes above.
@@ -112,20 +126,22 @@ doesn't need to teach the generic eval module about anchors.
    envelope's `retriever` field is what distinguishes the two cells.
 3. Re-run, commit `baselines/phase<N>.json`.
 
-## What the baseline says (Phase 0)
+## What the baseline says
 
-| corpus | shape | r@1 | r@3 | r@5 | r@k | MRR | notes |
+| corpus | retriever | r@1 | r@3 | r@5 | r@k | MRR | notes |
 |---|---|---|---|---|---|---|---|
-| prose_journal | prose | 100% | 100% | 100% | 100% | 1.000 | upper bound; flat hybrid is excellent on prose |
-| structured_atc | structured_doc | 65.5% | 75.9% | 75.9% | 89.7% | 0.705 | STOCK hybrid only; deployed pipeline runs through a character-specific query expander that lifts this to 79%/100% |
-| tabular_returns | tabular | 50.0% | 50.0% | 58.3% | 75.0% | 0.544 | predicted gap — aggregation-shaped queries hard-miss because flat vector retrieval can't sort |
+| prose_journal | hybrid_episodic | 100% | 100% | 100% | 100% | 1.000 | upper bound; flat hybrid is excellent on prose |
+| structured_atc | hybrid_episodic | 65.5% | 75.9% | 75.9% | 89.7% | 0.705 | stock — no glossary |
+| structured_atc | hybrid_episodic+expander | 79.3% | 89.7% | 89.7% | 100% | 0.839 | + lifted QueryExpander (harness-m78r) |
+| tabular_returns | hybrid_episodic | 50.0% | 50.0% | 58.3% | 75.0% | 0.544 | predicted Phase 2 wedge — aggregation queries hard-miss because flat vector retrieval can't sort |
 
-The structured-doc number is intentionally lower than the existing
-`character/airton_c1/atc_retrieval_baseline.json` (79%/89%/100%) — that
-baseline includes airton_c1's `QueryExpander`, this one does not.
-Comparing later phases against an un-augmented stock retriever keeps
-them apples-to-apples; layering the expander on top is an additive,
-separate measurement.
+**Two-cell layout (harness-m78r):** corpora that declare a `glossary:`
+field emit both a stock and an `+expander` cell. Phase 1+ retrievers
+report against *both* cells so the new primitive's contribution is
+honest:
+- vs stock hybrid → did the primitive move the number on its own?
+- vs hybrid+expander → does it still earn its keep with the cheap,
+  content-driven expander already in the mix?
 
 ## Determinism
 

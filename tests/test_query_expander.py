@@ -481,3 +481,124 @@ def test_load_llm_expand_prompt_falls_back_when_file_empty(tmp_path: Path) -> No
     override = tmp_path / "prompt.md"
     override.write_text("   \n\n   ", encoding="utf-8")
     assert _load_llm_expand_prompt(override) == _DEFAULT_LLM_EXPAND_PROMPT
+
+
+# ---------- harness-m78r: prefix parameterization + topics: schema ----------
+
+
+def test_query_expander_topic_prefix_defaults_to_section_anchor() -> None:
+    """Constructor default preserves airton_c1's `§` prefix — back-compat
+    contract. New characters can pass `topic_prefix=""` for a clean
+    glossary-id output."""
+    exp = QueryExpander({"3-10-3": ("shortest distance on approach",)})
+    out = exp.expand("shortest distance on approach")
+    assert "[related: §3-10-3:" in out
+
+
+def test_query_expander_topic_prefix_can_be_overridden() -> None:
+    exp = QueryExpander(
+        {"E11.9": ("high blood sugar",)},
+        topic_prefix="ICD-10 ",
+    )
+    out = exp.expand("patient has high blood sugar")
+    assert "[related: ICD-10 E11.9:" in out
+
+
+def test_query_expander_empty_prefix_produces_bare_topic_id() -> None:
+    """No prefix at all — the expanded query carries the raw topic key."""
+    exp = QueryExpander(
+        {"frost-prevention": ("cover plants",)},
+        topic_prefix="",
+    )
+    out = exp.expand("how do I cover plants for frost")
+    assert "[related: frost-prevention:" in out
+
+
+def test_load_query_expander_reads_topics_yaml_with_empty_default_prefix(
+    tmp_path: Path,
+) -> None:
+    """New `topics:` schema (no `sections:`) defaults to empty prefix —
+    glossary content travels as-is. Characters carrying ATC-style
+    section anchors keep their existing `sections:` shape and the
+    legacy `§` default."""
+    path = tmp_path / "glossary.yaml"
+    path.write_text(
+        "version: 1\n"
+        "topics:\n"
+        "  refund-policy:\n"
+        "    - send back damaged item\n"
+        "    - return for refund\n"
+    )
+    exp = load_query_expander(path)
+    out = exp.expand("can I send back a damaged item")
+    assert "[related: refund-policy:" in out
+
+
+def test_load_query_expander_sections_yaml_keeps_legacy_section_prefix(
+    tmp_path: Path,
+) -> None:
+    """Legacy `sections:` shape — `§` prefix preserved so airton_c1
+    deployment behavior is unchanged."""
+    path = tmp_path / "synonyms.yaml"
+    path.write_text('version: 1\nsections:\n  "3-10-3":\n    - shortest distance on approach\n')
+    exp = load_query_expander(path)
+    out = exp.expand("shortest distance on approach")
+    assert "[related: §3-10-3:" in out
+
+
+def test_load_query_expander_explicit_prefix_in_yaml_wins(tmp_path: Path) -> None:
+    """An explicit `prefix:` in YAML overrides both the legacy default
+    and the new-schema default."""
+    path = tmp_path / "glossary.yaml"
+    path.write_text('version: 1\nprefix: "ICD-10 "\ntopics:\n  E11.9:\n    - high blood sugar\n')
+    exp = load_query_expander(path)
+    out = exp.expand("patient has high blood sugar")
+    assert "[related: ICD-10 E11.9:" in out
+
+
+def test_load_query_expander_explicit_prefix_overrides_legacy_default(
+    tmp_path: Path,
+) -> None:
+    """A legacy `sections:` shape that also declares `prefix:` honors
+    the explicit declaration — even when the explicit value is empty."""
+    path = tmp_path / "synonyms.yaml"
+    path.write_text(
+        'version: 1\nprefix: ""\nsections:\n  "3-10-3":\n    - shortest distance on approach\n'
+    )
+    exp = load_query_expander(path)
+    out = exp.expand("shortest distance on approach")
+    # No `§` because the YAML explicitly cleared the prefix.
+    assert "[related: 3-10-3:" in out
+    assert "§3-10-3" not in out
+
+
+def test_load_query_expander_prefers_topics_when_both_keys_present(
+    tmp_path: Path,
+) -> None:
+    """If a YAML carries both `topics:` and `sections:`, the new
+    convention wins (and the legacy default-`§` doesn't apply)."""
+    path = tmp_path / "glossary.yaml"
+    path.write_text(
+        "version: 1\n"
+        "topics:\n"
+        "  new-thing:\n"
+        "    - new lay phrase\n"
+        "sections:\n"
+        '  "3-10-3":\n'
+        "    - shortest distance on approach\n"
+    )
+    exp = load_query_expander(path)
+    # Only the topics-keyed entry surfaces.
+    assert exp.triggered_topics("new lay phrase") == ("new-thing",)
+    assert exp.triggered_topics("shortest distance on approach") == ()
+    out = exp.expand("new lay phrase")
+    # New-schema default prefix is empty.
+    assert "[related: new-thing:" in out
+
+
+def test_triggered_topics_is_alias_of_triggered_sections() -> None:
+    """Back-compat: existing callers using `triggered_sections()` keep
+    working; new code should prefer `triggered_topics()`."""
+    exp = _exp({"3-10-3": ["shortest distance on approach"]})
+    q = "shortest distance on approach"
+    assert exp.triggered_topics(q) == exp.triggered_sections(q) == ("3-10-3",)
