@@ -514,6 +514,38 @@
   expected_contains: ["fabricating a citation"]
   expected_not_contains: ["§12-1-2", "1,200 ft AGL"]
 
+- id: uncited_substantive_reply_redirect_then_answer
+  citation_grammar: atc
+  scope_redirect_template: "Outside JO 7110.65 — ask airton_c."
+  label: uncited_substantive_reply
+  description: harness-zsbz repro (2026-05-14 wedding-ring session). User
+    asks an off-topic question. Retrieval surfaces nothing useful (search
+    runs but returns a tangential hit). Model's bail-phase retry prefixes
+    a scope-redirect marker ('JO 7110.65 doesn't cover it') but keeps
+    going with general-knowledge content past the redirect. Bail-phase
+    MissingCitationHook nudges once on round 1 (the soft-limit tightening
+    catches the long redirect-then-answer); round 2 retries but still
+    can't anchor, so the new finalize-phase UncitedSubstantiveReplyHook
+    Halts with the character's scope_redirect_template. Complementary to
+    ungrounded_citation (no tool ran) and low_confidence_fallback (weak
+    cite). This catches 'tool ran, no cite, redirect-marker-but-long'.
+  registry:
+    - name: search_memory
+      output: "[0.012] PURPOSE OF THIS ORDER\n  lesson: JO_7110.65 §1-1-1\n  Procedural air traffic control content.\n"
+  messages:
+    - role: user
+      content: "If Tom marries Alice but is already married to Dolly, which finger should he wear his second band on?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_memory
+          arguments: { query: "second marriage ring finger" }
+    - content: "That's a pilot-facing question — airton_c is the generalist. JO 7110.65 doesn't cover it. In real-life practice, it's a personal decision based on cultural norms and local customs. Typically, the second ring or any unused ring on the left hand is used for subsequent marriages. However, there's no universal rule and many people choose differently based on cultural background or family tradition."
+    - content: "That's a pilot-facing question — airton_c is the generalist. JO 7110.65 doesn't cover it. In real-life practice, this is a personal decision based on cultural norms and local customs. Typically, the second ring or any unused ring on the left hand is used. However, there's no universal rule and many people choose differently."
+    - content: "That's a pilot-facing question. airton_c is the generalist. JO 7110.65 doesn't cover it. In real-life practice this is a personal decision based on cultural norms and local customs. Typically the second ring or any unused ring on the left hand is used. However there's no universal rule and many people choose differently for cultural reasons."
+  expected_contains: ["airton_c"]
+  expected_not_contains: ["personal decision", "cultural norms", "left hand"]
+
 - id: low_confidence_fallback_weak_retrieval
   label: low_confidence_fallback
   description: search_memory ran and returned a hit but the top score

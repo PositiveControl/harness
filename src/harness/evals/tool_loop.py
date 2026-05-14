@@ -307,13 +307,25 @@ def _run_scenario(scenario: dict[str, Any]) -> ToolLoopCase:
         catchers_tuple = ()
     else:
         catchers_tuple = tuple(str(c) for c in catchers_raw)
-    if valid_section_anchors or citation_grammar is not None or catchers_tuple:
+    # Optional per-scenario scope_redirect_template (harness-zsbz). Lets
+    # UncitedSubstantiveReplyHook exercise the terminal-redirect path
+    # under deterministic adapter scripts. None disables the hook.
+    scope_redirect_template = scenario.get("scope_redirect_template")
+    if scope_redirect_template is not None:
+        scope_redirect_template = str(scope_redirect_template)
+    if (
+        valid_section_anchors
+        or citation_grammar is not None
+        or catchers_tuple
+        or scope_redirect_template is not None
+    ):
         from harness.orchestrator.hooks import default_hook_pipeline as _build_pipeline
 
         hooks_override: HookPipeline | None = _build_pipeline(
             valid_section_anchors=valid_section_anchors,
             citation_grammar=citation_grammar,
             catchers=catchers_tuple,
+            scope_redirect_template=scope_redirect_template,
         )
     else:
         hooks_override = None

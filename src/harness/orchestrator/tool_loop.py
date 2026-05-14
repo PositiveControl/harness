@@ -142,6 +142,34 @@ _MAX_TOKENS_CEILING = 32768
 _BAIL_RETRIES_PER_TURN = 2
 
 
+def _has_lexicon_hit(user_message: str, lexicon: tuple[str, ...]) -> bool:
+    """Word-boundary, case-insensitive presence check for any token in
+    `lexicon`. Multi-word entries match with internal whitespace
+    collapsed ('class b' against 'Class  B'). Tokens whose first/last
+    character is a non-word character (e.g. '§') skip the corresponding
+    `\\b` anchor on that side — `\\b` only fires at word/non-word
+    transitions, so a bare `§` would never match otherwise. Returns
+    False on an empty lexicon — callers consume that as 'gate disabled.'"""
+    if not lexicon:
+        return False
+    import re
+
+    haystack = re.sub(r"\s+", " ", user_message.lower())
+    for token in lexicon:
+        needle = token.strip().lower()
+        if not needle:
+            continue
+        if " " in needle:
+            pattern = re.escape(needle).replace(r"\ ", r"\s+")
+        else:
+            left = r"\b" if needle[0].isalnum() or needle[0] == "_" else ""
+            right = r"\b" if needle[-1].isalnum() or needle[-1] == "_" else ""
+            pattern = f"{left}{re.escape(needle)}{right}"
+        if re.search(pattern, haystack):
+            return True
+    return False
+
+
 def _disabled_snapshot() -> frozenset[str]:
     """Snapshot the module-level disabled set at hook-invocation time.
     Pipeline methods take a frozenset so they can't mutate it; the
@@ -721,6 +749,7 @@ def run_tool_loop(
     force_assemble_context: str | None = None,
     banter_tracker: BanterStreakTracker | None = None,
     scope_redirect_template: str | None = None,
+    scope_lexicon: tuple[str, ...] = (),
 ) -> ToolLoopResult:
     """Drive a model + tool registry until the model emits a text-only
     reply or `max_rounds` rounds are spent.
@@ -838,6 +867,31 @@ def run_tool_loop(
             )
         banter_tracker.note_real_prompt()
 
+    # Pre-prelude lexical scope gate (harness-8dop option 4). When the
+    # character ships a `scope_lexicon` AND the user message contains
+    # zero domain-vocabulary hits AND a redirect template is set,
+    # short-circuit BEFORE the forced search/assemble preludes or the
+    # router call. The motivating failures ("how many fruit bats fit
+    # in a cave", "wedding ring on which finger") contain no aviation
+    # vocabulary at all — running retrieval on them just burns latency
+    # and gives the model fodder for a fabricated cite. The smart
+    # router still gets a turn on prompts with mixed signal; this only
+    # fires on the obvious-out case.
+    if (
+        scope_lexicon
+        and scope_redirect_template is not None
+        and scope_redirect_template.strip()
+        and turn_user_message is not None
+        and not _has_lexicon_hit(turn_user_message, scope_lexicon)
+    ):
+        emit(ToolLoopEvent(kind="scope_redirected", round_index=0))
+        return ToolLoopResult(
+            content=scope_redirect_template.strip(),
+            messages=working,
+            rounds=0,
+            events=events,
+        )
+
     # Forced search_memory injection (harness-3uh). Runs BEFORE the
     # router prelude so the grounding result is already in-thread when
     # the router (if any) classifies the turn. Mutates working /
@@ -884,6 +938,10 @@ def run_tool_loop(
     # bail with the canned reply — no main-model call, no fabricated
     # citation. `unsure` and `in` both fall through to the normal
     # flow; an absent template is treated as "scope gate disabled."
+    # Note: the pre-prelude lexical gate above already handled the
+    # zero-lexicon-hit prompts, so a router `out` here is the smart-
+    # router's harder call (some aviation vocabulary but actually
+    # out-of-scope, e.g. pilot-side wake-turbulence material).
     if (
         router_intent is not None
         and router_intent.scope == "out"

@@ -45,6 +45,7 @@ from harness.orchestrator.hooks import (
     ToolIntentHook,
     Truncated,
     TruncatedHook,
+    UncitedSubstantiveReplyHook,
     UngroundedCitationHook,
     UnparseableHook,
     default_hook_pipeline,
@@ -326,6 +327,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "argument_grounding",
         "low_confidence_fallback",
         "ungrounded_citation",
+        "uncited_substantive_reply",
         "table_fabrication",
         "numeric_fabrication",
         "fabrication_fallback",
@@ -737,6 +739,189 @@ def test_ungrounded_citation_runs_before_fabrication_fallback() -> None:
     )
     assert isinstance(outcome, Halt)
     assert outcome.reply.content == UNGROUNDED_CITATION_FALLBACK
+
+
+# ---------- uncited_substantive_reply (harness-zsbz) ----------
+
+# Live repro from the 2026-05-14 wedding-ring session: retry response
+# prefixes "JO 7110.65 doesn't cover it" (matching _SCOPE_REDIRECT_MARKER_RE)
+# but then continues with three paragraphs of general-knowledge content.
+# The finalize hook is the safety net for what survives the bail-phase
+# retry budget.
+_REDIRECT_THEN_ANSWER_REPLY = (
+    "That's a pilot-facing question — airton_c is the generalist. "
+    "JO 7110.65 doesn't cover it. In real-life practice, it's a "
+    "personal decision based on cultural norms and local customs. "
+    "Typically, the second ring or any unused ring on the left "
+    "hand is used for subsequent marriages. However, there's no "
+    "universal rule and many people choose differently based on "
+    "their cultural background or family tradition."
+)
+
+_SCOPE_REDIRECT_TEMPLATE = "Outside JO 7110.65 — ask airton_c."
+
+
+def test_uncited_substantive_reply_halts_on_redirect_then_answer() -> None:
+    """The motivating failure mode: a long reply that opens with a
+    scope-redirect marker then continues with general-knowledge content.
+    The bail-phase bypass only covers short clean redirects; the finalize
+    hook catches what slips through."""
+    outcome = UncitedSubstantiveReplyHook(
+        grammar=_GRAMMAR,
+        scope_redirect_template=_SCOPE_REDIRECT_TEMPLATE,
+    ).check(
+        FinalizeContext(
+            reply=_reply(_REDIRECT_THEN_ANSWER_REPLY),
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+        )
+    )
+    assert isinstance(outcome, Halt)
+    assert outcome.reply.content == _SCOPE_REDIRECT_TEMPLATE
+
+
+def test_uncited_substantive_reply_silent_without_template() -> None:
+    """Non-corpus characters (no scope_redirect_template) get no
+    enforcement — the hook is opt-in via character data."""
+    outcome = UncitedSubstantiveReplyHook(
+        grammar=_GRAMMAR,
+        scope_redirect_template=None,
+    ).check(
+        FinalizeContext(
+            reply=_reply(_REDIRECT_THEN_ANSWER_REPLY),
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_uncited_substantive_reply_silent_without_grammar() -> None:
+    """Same default: characters without citation_grammar (Airton, ab,
+    echo) skip the hook entirely."""
+    outcome = UncitedSubstantiveReplyHook(
+        grammar=None,
+        scope_redirect_template=_SCOPE_REDIRECT_TEMPLATE,
+    ).check(
+        FinalizeContext(
+            reply=_reply(_REDIRECT_THEN_ANSWER_REPLY),
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_uncited_substantive_reply_silent_when_no_grounding_tool_ran() -> None:
+    """No grounding tool ran → that's UngroundedCitationHook's domain,
+    not this one. The two hooks partition the failure space cleanly:
+    no-tool-ran → ungrounded_citation; tool-ran-no-cite → this hook."""
+    outcome = UncitedSubstantiveReplyHook(
+        grammar=_GRAMMAR,
+        scope_redirect_template=_SCOPE_REDIRECT_TEMPLATE,
+    ).check(
+        FinalizeContext(
+            reply=_reply(_REDIRECT_THEN_ANSWER_REPLY),
+            last_outcome=Continue(),
+            tools_ran=frozenset(),
+            memory_block_attached=False,
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_uncited_substantive_reply_silent_on_short_redirect() -> None:
+    """A short clean scope-redirect is the right answer — don't replace
+    it with the template (would be a no-op at best, and could downgrade
+    a more specific refusal). The hook fires only when the redirect
+    marker is followed by substantial body content."""
+    short_redirect = "That's outside JO 7110.65 — ask airton_c for the pilot view."
+    outcome = UncitedSubstantiveReplyHook(
+        grammar=_GRAMMAR,
+        scope_redirect_template=_SCOPE_REDIRECT_TEMPLATE,
+    ).check(
+        FinalizeContext(
+            reply=_reply(short_redirect),
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_uncited_substantive_reply_silent_when_citation_present() -> None:
+    """Truthful counterfactual: the same long body but with a §-anchor
+    must NOT fire — the cite-discipline gate already passed."""
+    grounded_reply = (
+        "Per JO 7110.65 §1-1-1, the purpose of the order is to prescribe "
+        "air traffic control procedures and phraseology for use by persons "
+        "providing air traffic control services. It serves to prevent "
+        "collisions, provide a safe, orderly, and expeditious flow of air "
+        "traffic, and support national security and homeland defense."
+    )
+    outcome = UncitedSubstantiveReplyHook(
+        grammar=_GRAMMAR,
+        scope_redirect_template=_SCOPE_REDIRECT_TEMPLATE,
+    ).check(
+        FinalizeContext(
+            reply=_reply(grounded_reply),
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_uncited_substantive_reply_silent_on_clarifying_question() -> None:
+    """A reply that asks the user to clarify ('manned or unmanned?')
+    isn't asserting anything — same exemption MissingCitationHook
+    gives, mirrored here so a long valid clarifying reply isn't
+    Halt-replaced at finalize."""
+    clarifier = (
+        "Could you specify whether you mean a manned or unmanned free "
+        "balloon? JO 7110.65 handles each differently — manned balloons "
+        "are treated as general aircraft, while unmanned free balloons "
+        "fall under §9-6 with distinct traffic-advisory and altitude-"
+        "verification rules. Before I answer, which one are you asking "
+        "about?"
+    )
+    outcome = UncitedSubstantiveReplyHook(
+        grammar=_GRAMMAR,
+        scope_redirect_template=_SCOPE_REDIRECT_TEMPLATE,
+    ).check(
+        FinalizeContext(
+            reply=_reply(clarifier),
+            last_outcome=Continue(),
+            tools_ran=frozenset({"search_memory"}),
+            memory_block_attached=False,
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_uncited_substantive_reply_respects_disabled_toggle() -> None:
+    """Attribution eval disables catchers by name. Pipeline must honor
+    'uncited_substantive_reply' in the disabled frozenset."""
+    pipe = default_hook_pipeline(
+        citation_grammar=_GRAMMAR,
+        scope_redirect_template=_SCOPE_REDIRECT_TEMPLATE,
+    )
+    ctx = FinalizeContext(
+        reply=_reply(_REDIRECT_THEN_ANSWER_REPLY),
+        last_outcome=Continue(),
+        tools_ran=frozenset({"search_memory"}),
+        memory_block_attached=False,
+    )
+    enabled = pipe.run_finalize(ctx, disabled=frozenset())
+    assert isinstance(enabled, Halt)
+    assert enabled.reply.content == _SCOPE_REDIRECT_TEMPLATE
+    disabled = pipe.run_finalize(ctx, disabled=frozenset({"uncited_substantive_reply"}))
+    assert isinstance(disabled, Continue)
 
 
 # ---------- table_fabrication (harness-5uq) ----------
@@ -1307,6 +1492,51 @@ def test_missing_citation_silent_when_order_not_referenced() -> None:
         )
     )
     assert isinstance(outcome, Continue)
+
+
+def test_missing_citation_silent_on_short_scope_redirect() -> None:
+    """A short, clean scope-redirect references the order to say what's
+    NOT covered ('That question is outside JO 7110.65') and shouldn't
+    be re-nudged into a pointless retry. Bypass holds for short bodies."""
+    reply_text = (
+        "That's a pilot-side question — outside JO 7110.65, which is the "
+        "controller's handbook. Ask airton_c for the pilot view."
+    )
+    outcome = MissingCitationHook(grammar=_GRAMMAR).check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_missing_citation_fires_on_redirect_then_answer_shape() -> None:
+    """harness-zsbz repro (2026-05-14): retry response prefixes 'JO 7110.65
+    doesn't cover it' then writes three paragraphs of general-knowledge
+    content. The redirect marker bypass only holds when the body is
+    short. A long marker-bearing reply gets nudged so the retry can
+    produce a clean refusal (and the finalize-phase
+    UncitedSubstantiveReplyHook catches what survives)."""
+    reply_text = (
+        "That's a pilot-facing question — airton_c is the generalist. "
+        "JO 7110.65 doesn't cover it. In real-life practice, it's a "
+        "personal decision based on cultural norms and local customs. "
+        "Typically, the second ring or any unused ring on the left "
+        "hand is used for subsequent marriages. However, there's no "
+        "universal rule and many people choose differently based on "
+        "their cultural background, family traditions, or personal "
+        "preference about visibility of marital status."
+    )
+    outcome = MissingCitationHook(grammar=_GRAMMAR).check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Nudge)
 
 
 def test_missing_citation_respects_disabled_toggle() -> None:

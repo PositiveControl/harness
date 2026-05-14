@@ -1077,6 +1077,16 @@ _SCOPE_REDIRECT_MARKER_RE = re.compile(
 )
 
 
+# Threshold past which a "scope-redirect"-marked reply is no longer
+# treated as a clean refusal. A real scope-redirect is short ("Outside
+# JO 7110.65 — ask airton_c."). A reply that says "JO 7110.65 doesn't
+# cover it" then writes three paragraphs of general-knowledge content
+# is the redirect-then-answer fabrication shape (harness-zsbz repro,
+# 2026-05-14). Both MissingCitationHook (bail) and
+# UncitedSubstantiveReplyHook (finalize) consult this limit.
+_SCOPE_REDIRECT_SOFT_LIMIT = 300
+
+
 _SCOPE_REDIRECT_NUDGE = (
     "[scope mismatch — the user's message has no aviation or ATC "
     "terminology, but your reply is discussing JO 7110.65 / ATC "
@@ -1571,8 +1581,14 @@ class MissingCitationHook:
         # Scope-redirect replies name the order to explain what's
         # NOT covered ('That question is outside JO 7110.65'). Those
         # are declining to answer, not making a substantive claim —
-        # don't demand a citation.
-        if _SCOPE_REDIRECT_MARKER_RE.search(content):
+        # don't demand a citation. BUT: a redirect marker followed by
+        # a long body is the redirect-then-answer fabrication shape
+        # (harness-zsbz, 2026-05-14 wedding-ring repro). When the
+        # reply blows past `_SCOPE_REDIRECT_SOFT_LIMIT` chars, the
+        # bypass is unsafe — let MissingCitation Nudge so the model
+        # gets another shot at a clean refusal, and let the finalize
+        # phase's UncitedSubstantiveReplyHook catch what survives.
+        if _SCOPE_REDIRECT_MARKER_RE.search(content) and len(content) <= _SCOPE_REDIRECT_SOFT_LIMIT:
             return Continue()
         # Clarifying-question replies ('Could you clarify manned or
         # unmanned?') are ASKING, not asserting. Exempt — a citation
@@ -1958,6 +1974,94 @@ class UngroundedCitationHook:
         return Halt(
             ModelReply(
                 content=UNGROUNDED_CITATION_FALLBACK,
+                tool_calls=(),
+                was_truncated=reply.was_truncated,
+                had_unparseable_call=reply.had_unparseable_call,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class UncitedSubstantiveReplyHook:
+    """Finalize-phase mirror of MissingCitationHook (harness-zsbz).
+
+    MissingCitationHook is bail-phase: when a substantive reply omits a
+    §-anchor, it Nudges so the model can add one on retry. If retries
+    are exhausted and the reply STILL touches the corpus document
+    without anchoring it, that's the fabrication this persona exists
+    to prevent — the model is paraphrasing from priors rather than
+    from a section it actually saw. Halt and replace with the
+    character's scope-redirect template instead of shipping it.
+
+    Motivating failure (2026-05-14 chat session, mark): airton_c1
+    asked an off-topic question ('wedding ring on which finger?'). The
+    first draft answered from general knowledge; missing_citation
+    fired; retry prefixed with 'JO 7110.65 doesn't cover it' (passing
+    `_SCOPE_REDIRECT_MARKER_RE`) but then continued with three
+    paragraphs of general-knowledge content. MissingCitationHook
+    Continued; finalize had no hook for this shape; the fabricated
+    answer shipped.
+
+    Trigger conditions (ALL must hold):
+      0. Character ships both `citation_grammar` and
+         `scope_redirect_template`. Either alone → silent.
+      1. A grounding tool ran this turn
+         (`ctx.tools_ran` intersects `_GROUNDING_TOOLS`).
+      2. Reply contains corpus document reference
+         (`grammar.document_reference`) OR a JO phraseology marker
+         (`_JO_PHRASEOLOGY_MARKERS_RE`).
+      3. Reply is substantive (>= 80 chars).
+      4. Reply contains NO §-anchor / TBL anchor.
+      5. Reply is NOT a clarifying question.
+      6. EITHER the scope-redirect marker is absent OR the reply is
+         longer than `_SCOPE_REDIRECT_SOFT_LIMIT` chars. A short, clean
+         scope-redirect (marker + concise body) is the right outcome;
+         this hook stays silent. A long body with the marker is the
+         'redirect-then-answer' shape and gets replaced.
+
+    Action: Halt with the character's `scope_redirect_template` as
+    the reply content. The bail-phase MissingCitationHook had two
+    rounds to extract a citation; if the model still can't, the
+    honest answer is 'outside my scope.'
+
+    Runs AFTER UngroundedCitationHook in finalize so the no-tool-ran
+    fabrication path is handled there first. The two hooks are
+    complementary: ungrounded_citation catches 'cite, no tool';
+    uncited_substantive_reply catches 'tool, no cite' after the
+    retry budget has been spent."""
+
+    grammar: CitationGrammar | None = None
+    scope_redirect_template: str | None = None
+    name: str = "uncited_substantive_reply"
+
+    def check(self, ctx: FinalizeContext) -> FinalizeOutcome:
+        if self.grammar is None:
+            return Continue()
+        template = self.scope_redirect_template
+        if not template or not template.strip():
+            return Continue()
+        if not (ctx.tools_ran & _GROUNDING_TOOLS):
+            return Continue()
+        content = ctx.reply.content
+        if len(content) < 80:
+            return Continue()
+        in_scope = bool(self.grammar.document_reference.search(content)) or bool(
+            _JO_PHRASEOLOGY_MARKERS_RE.search(content)
+        )
+        if not in_scope:
+            return Continue()
+        if _CITATION_PRESENT_RE.search(content):
+            return Continue()
+        if _CLARIFYING_QUESTION_RE.search(content):
+            return Continue()
+        # Short scope-redirects pass through. Longer marker-bearing
+        # replies are the redirect-then-answer fabrication shape.
+        if _SCOPE_REDIRECT_MARKER_RE.search(content) and len(content) <= _SCOPE_REDIRECT_SOFT_LIMIT:
+            return Continue()
+        reply = ctx.reply
+        return Halt(
+            ModelReply(
+                content=template.strip(),
                 tool_calls=(),
                 was_truncated=reply.was_truncated,
                 had_unparseable_call=reply.had_unparseable_call,
@@ -2452,6 +2556,7 @@ def default_hook_pipeline(
     valid_section_anchors: frozenset[str] = frozenset(),
     citation_grammar: CitationGrammar | None = None,
     catchers: tuple[str, ...] = (),
+    scope_redirect_template: str | None = None,
 ) -> HookPipeline:
     """Build the shipping pipeline. Order mirrors the pre-refactor
     `_diagnose_bail` branch order so first-match semantics stay
@@ -2575,6 +2680,18 @@ def default_hook_pipeline(
             # all' shape.
             LowConfidenceFallbackHook(),
             UngroundedCitationHook(),
+            # harness-zsbz: terminal mirror of MissingCitationHook —
+            # after the bail-phase retry budget is spent, a still-uncited
+            # substantive reply touching the corpus document is replaced
+            # with the character's scope-redirect template. Auto-enabled
+            # when the character ships BOTH citation_grammar and
+            # scope_redirect_template; silent otherwise. Runs AFTER
+            # UngroundedCitationHook so the no-tool-ran path is handled
+            # by the older hook first.
+            UncitedSubstantiveReplyHook(
+                grammar=citation_grammar,
+                scope_redirect_template=scope_redirect_template,
+            ),
             TableFabricationHook(),
             NumericFabricationHook(),
             FabricationFallbackHook(),
@@ -2760,6 +2877,7 @@ __all__ = [
     "ToolResultSummarizerHook",
     "Truncated",
     "TruncatedHook",
+    "UncitedSubstantiveReplyHook",
     "UngroundedCitationHook",
     "UnparseableHook",
     "default_hook_pipeline",

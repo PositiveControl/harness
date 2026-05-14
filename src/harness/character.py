@@ -283,6 +283,18 @@ class Character:
     # always-`unsure` router prompt and never get short-circuited.
     scope_hint: str | None = None
     scope_redirect_template: str | None = None
+    # Lexical scope-gate fallback (harness-8dop option 4). When the
+    # small-model router under-classifies as `unsure`, the orchestrator
+    # checks the user message for any of these tokens (case-insensitive,
+    # word-boundary match). Zero hits + a configured
+    # `scope_redirect_template` → short-circuit as `out` without
+    # spending a 7B-model round. Default empty tuple disables the
+    # fallback. Each token is a lowercased domain cue; phrases use
+    # spaces (whitespace becomes \s+ in the matcher). Personas like
+    # airton (open-ended chat) leave this empty; airton_c1 ships an
+    # aviation lexicon so prompts with zero aviation vocabulary
+    # ("fruit bats", "wedding ring") fast-fail to the redirect.
+    scope_lexicon: tuple[str, ...] = ()
 
     def system_prompt(
         self,
@@ -519,6 +531,7 @@ def load_character(path: Path) -> Character:
         scope_redirect_template=_opt_str(
             core, "scope_redirect_template", path=path, parent_name="core"
         ),
+        scope_lexicon=_load_str_tuple(core.get("scope_lexicon"), path, "scope_lexicon"),
     )
 
 

@@ -1594,6 +1594,9 @@ def _build_tool_registry_for_tui(
                         if character is not None
                         else None,
                         catchers=character.catchers if character is not None else (),
+                        scope_redirect_template=character.scope_redirect_template
+                        if character is not None
+                        else None,
                     ),
                     router=router,
                 )

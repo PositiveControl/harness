@@ -120,6 +120,7 @@ def _build_hook_pipeline(
         valid_section_anchors=valid_anchors,
         citation_grammar=grammar,
         catchers=catchers,
+        scope_redirect_template=character.scope_redirect_template,
     )
 
     if not summarize_tool_results:
@@ -361,6 +362,7 @@ def build_classic_registry(
                 hooks=default_hook_pipeline(
                     citation_grammar=character.citation_grammar,
                     catchers=character.catchers,
+                    scope_redirect_template=character.scope_redirect_template,
                 ),
                 router=router,
             )
@@ -580,6 +582,7 @@ class ClassicChatSession:
                 ),
                 banter_tracker=self.banter_tracker,
                 scope_redirect_template=self.character.scope_redirect_template,
+                scope_lexicon=self.character.scope_lexicon,
             )
             streamed = True
             _persist_tool_exchange(

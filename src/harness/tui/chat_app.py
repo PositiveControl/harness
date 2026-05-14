@@ -1041,6 +1041,7 @@ class ChatApp(App[None]):
                         else None
                     ),
                     scope_redirect_template=self._character.scope_redirect_template,
+                    scope_lexicon=self._character.scope_lexicon,
                 )
                 if self._state.turn_seq != seq:
                     return  # interrupted; drop partial reply + skip persistence

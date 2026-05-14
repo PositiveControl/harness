@@ -2123,6 +2123,141 @@ def test_scope_out_classifier_still_runs_tool_routing() -> None:
     assert not any(e.kind == "tool_call_start" for e in result.events)
 
 
+# ---------- Lexical scope-gate fallback (harness-8dop option 4) ----------
+
+
+def test_scope_lexicon_short_circuits_when_zero_hits() -> None:
+    """A user message with no overlap against the character's scope_lexicon
+    short-circuits to the redirect template — even before the router
+    runs. Motivating prompts: 'how many fruit bats can fit into a cave'
+    and 'wedding ring on which finger'. Both have zero aviation tokens."""
+    registry = ToolRegistry()
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="MAIN MODEL SHOULD NOT BE REACHED")])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="how many fruit bats can fit into a cave?")],
+        registry,
+        scope_redirect_template="Outside JO 7110.65 — ask airton_c.",
+        scope_lexicon=("aircraft", "pilot", "controller", "runway"),
+    )
+    assert result.content == "Outside JO 7110.65 — ask airton_c."
+    assert result.rounds == 0
+    assert adapter.calls_seen == []
+    assert any(e.kind == "scope_redirected" for e in result.events)
+
+
+def test_scope_lexicon_falls_through_when_any_hit() -> None:
+    """Any lexicon hit — even a glancing one — lets the prompt through
+    to the normal flow. The lexical fallback is the 'obvious-out'
+    pre-filter, not a precise scope classifier."""
+    registry = ToolRegistry()
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="real answer")])
+    result = run_tool_loop(
+        adapter,
+        [
+            ChatMessage(
+                role="user",
+                content="What's the controller side of wake turbulence separation?",
+            )
+        ],
+        registry,
+        scope_redirect_template="should not appear",
+        scope_lexicon=("aircraft", "controller", "runway"),
+    )
+    assert result.content == "real answer"
+    assert not any(e.kind == "scope_redirected" for e in result.events)
+
+
+def test_scope_lexicon_disabled_when_empty_tuple() -> None:
+    """An empty scope_lexicon disables the fallback — non-bounded
+    characters (airton, ab, airton_c) leave this empty and don't
+    short-circuit on any prompt."""
+    registry = ToolRegistry()
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="real answer")])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="how many fruit bats fit in a cave?")],
+        registry,
+        scope_redirect_template="should not appear",
+        scope_lexicon=(),
+    )
+    assert result.content == "real answer"
+    assert not any(e.kind == "scope_redirected" for e in result.events)
+
+
+def test_scope_lexicon_silent_without_template() -> None:
+    """A lexicon without a redirect template is a misconfiguration; the
+    gate stays disabled rather than dropping the user's question on the
+    floor with nothing to say."""
+    registry = ToolRegistry()
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="real answer")])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="off-topic prompt")],
+        registry,
+        scope_lexicon=("aircraft", "runway"),
+    )
+    assert result.content == "real answer"
+    assert not any(e.kind == "scope_redirected" for e in result.events)
+
+
+def test_scope_lexicon_runs_before_router_and_preludes() -> None:
+    """Pre-prelude gate skips forced search_memory AND router classify.
+    Verified by passing a router that would normally classify `in` — the
+    lexical gate fires first, so the router never sees the turn."""
+    from harness.router.intent import RouterIntent
+
+    registry = ToolRegistry()
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="should not appear")])
+    router = _ScriptedRouter(intents=[RouterIntent(tool_name=None, scope="in")])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="entirely unrelated question")],
+        registry,
+        router=router,  # type: ignore[arg-type]
+        scope_redirect_template="Outside JO 7110.65 — ask airton_c.",
+        scope_lexicon=("aircraft", "runway", "controller"),
+    )
+    assert result.content == "Outside JO 7110.65 — ask airton_c."
+    assert result.rounds == 0
+    # router.classify() was never called — its intent queue is intact.
+    assert router.classify_calls == []
+
+
+def test_scope_lexicon_matches_section_sigil() -> None:
+    """The `§` sigil is a non-word character — word boundaries don't
+    fire on either side. `_has_lexicon_hit` strips `\\b` anchors for
+    non-word chars so `§` actually matches in a prompt."""
+    registry = ToolRegistry()
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="real answer")])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="quote me §5-5-4 please")],
+        registry,
+        scope_redirect_template="should not appear",
+        scope_lexicon=("§",),
+    )
+    # `§` hit → fall through to the model, NOT short-circuit.
+    assert result.content == "real answer"
+    assert not any(e.kind == "scope_redirected" for e in result.events)
+
+
+def test_scope_lexicon_helper_word_boundary_basic() -> None:
+    """Direct test on the helper: word-boundary matching is real
+    boundary, not substring. 'air' in 'airway' must NOT hit when the
+    lexicon token is just 'air'."""
+    from harness.orchestrator.tool_loop import _has_lexicon_hit
+
+    assert _has_lexicon_hit("the air is clear", ("air",))
+    assert not _has_lexicon_hit("we took the airway home", ("air",))
+    # Multi-word collapsing.
+    assert _has_lexicon_hit("Class  B   airspace", ("class b",))
+    # Case insensitivity both ways.
+    assert _has_lexicon_hit("VECTOR me out", ("vector",))
+    # Empty lexicon → False (gate disabled signal).
+    assert not _has_lexicon_hit("anything at all", ())
+
+
 def test_router_missing_required_arg_falls_through() -> None:
     """Required `query` arg not present → skip routing, fall through."""
     from harness.router.intent import RouterIntent
