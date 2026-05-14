@@ -362,3 +362,133 @@ def test_system_prompt_excludes_named_voice_examples() -> None:
         if sample.id in excluded:
             continue
         assert sample.gold.strip() in prompt
+
+
+# ---------- document_trees (harness-ejxn) ----------
+
+
+def test_document_trees_default_empty_for_existing_characters() -> None:
+    """Existing characters that don't ship `document_trees:` keep an
+    empty tuple. Null-safe default — no migration required for any
+    persona that doesn't opt in."""
+    for char_path in (AIRTON, AIRTON_B, AIRTON_C, AIRTON_C1):
+        character = load_character(char_path)
+        assert character.document_trees == (), f"{char_path.name} should default to empty"
+
+
+def test_document_trees_loads_markdown_spec(tmp_path: Path) -> None:
+    """Synthesize a character dir with a `document_trees:` block and
+    assert the tuple shape, resolved path, and format."""
+    import shutil
+
+    char_dir = tmp_path / "with_trees"
+    shutil.copytree(AIRTON, char_dir)
+    seed_dir = char_dir / "seed_documents"
+    seed_dir.mkdir()
+    (seed_dir / "manual.md").write_text("# Title\n\nbody\n", encoding="utf-8")
+    core_path = char_dir / "core.yaml"
+    core_path.write_text(
+        core_path.read_text() + "\ndocument_trees:\n"
+        "  - name: manual\n"
+        "    description: Test manual\n"
+        "    source: seed_documents/manual.md\n"
+    )
+
+    character = load_character(char_dir)
+    assert len(character.document_trees) == 1
+    spec = character.document_trees[0]
+    assert spec.name == "manual"
+    assert spec.description == "Test manual"
+    # Path is resolved against the character dir.
+    assert spec.source_path == (char_dir / "seed_documents" / "manual.md").resolve()
+    # Format defaults to markdown.
+    assert spec.source_format == "markdown"
+
+
+def test_document_trees_accepts_jsonl_format(tmp_path: Path) -> None:
+    import shutil
+
+    char_dir = tmp_path / "jsonl_char"
+    shutil.copytree(AIRTON, char_dir)
+    core_path = char_dir / "core.yaml"
+    core_path.write_text(
+        core_path.read_text() + "\ndocument_trees:\n"
+        "  - name: corpus\n"
+        "    description: chunked corpus\n"
+        "    source: corpus/chunks/source.jsonl\n"
+        "    format: jsonl\n"
+    )
+
+    character = load_character(char_dir)
+    assert character.document_trees[0].source_format == "jsonl"
+
+
+def test_document_trees_rejects_unknown_format(tmp_path: Path) -> None:
+    import shutil
+
+    import pytest
+
+    char_dir = tmp_path / "bad_format"
+    shutil.copytree(AIRTON, char_dir)
+    core_path = char_dir / "core.yaml"
+    core_path.write_text(
+        core_path.read_text() + "\ndocument_trees:\n"
+        "  - name: m\n"
+        "    description: d\n"
+        "    source: x.md\n"
+        "    format: pdf\n"
+    )
+    with pytest.raises(ValueError, match=r"document_trees\[0\] format must be one of"):
+        load_character(char_dir)
+
+
+def test_document_trees_rejects_missing_fields(tmp_path: Path) -> None:
+    import shutil
+
+    import pytest
+
+    char_dir = tmp_path / "missing_fields"
+    shutil.copytree(AIRTON, char_dir)
+    core_path = char_dir / "core.yaml"
+    core_path.write_text(
+        core_path.read_text() + "\ndocument_trees:\n  - description: missing name + source\n"
+    )
+    with pytest.raises(ValueError, match=r"document_trees\[0\] needs `name` \+ `source`"):
+        load_character(char_dir)
+
+
+def test_document_trees_rejects_duplicate_name(tmp_path: Path) -> None:
+    """Two specs with the same `name:` would collide in the underlying
+    DocumentTreeStore (one document per name). Catch it at load time
+    so the conflict surfaces in core.yaml, not in a runtime SQL error."""
+    import shutil
+
+    import pytest
+
+    char_dir = tmp_path / "dupe_names"
+    shutil.copytree(AIRTON, char_dir)
+    core_path = char_dir / "core.yaml"
+    core_path.write_text(
+        core_path.read_text() + "\ndocument_trees:\n"
+        "  - name: same\n"
+        "    description: first\n"
+        "    source: a.md\n"
+        "  - name: same\n"
+        "    description: second\n"
+        "    source: b.md\n"
+    )
+    with pytest.raises(ValueError, match=r"document_trees\[1\] duplicate name 'same'"):
+        load_character(char_dir)
+
+
+def test_document_trees_rejects_non_list(tmp_path: Path) -> None:
+    import shutil
+
+    import pytest
+
+    char_dir = tmp_path / "wrong_type"
+    shutil.copytree(AIRTON, char_dir)
+    core_path = char_dir / "core.yaml"
+    core_path.write_text(core_path.read_text() + "\ndocument_trees: not a list\n")
+    with pytest.raises(ValueError, match=r"`document_trees` must be a list"):
+        load_character(char_dir)

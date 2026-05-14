@@ -53,6 +53,36 @@ class TabularTableSpec:
     columns: tuple[tuple[str, str, str], ...]
 
 
+_DOCUMENT_TREE_FORMATS = frozenset({"markdown", "jsonl"})
+
+
+@dataclass(frozen=True)
+class DocumentTreeSpec:
+    """One hierarchical document declared by a character in core.yaml
+    under `document_trees:` (harness-ejxn). The CLI reads this list at
+    session start and builds a per-character `DocumentTreeStore` with
+    one document ingested per spec.
+
+    `name` is the document name that flows into
+    `DocumentTreeStore.upsert_document` and shows up in tree-slot
+    contract resolutions. `source_path` is resolved against the
+    character directory at load time. `source_format` picks the
+    `document_tree_ingest` adapter:
+      - `markdown` — heading-derived hierarchy, positional path slugs.
+        The canonical path for new prose-shaped corpora.
+      - `jsonl` — pre-chunked rows with explicit hierarchy fields.
+        Used by ATC-shaped corpora; today the JSONL ingest path
+        runs through scripts/atc_ingest_tree.py because the field
+        names + heading prefixes are corpus-specific. A character-
+        level JSONL spec is reserved for a follow-up that lifts the
+        per-corpus config into core.yaml."""
+
+    name: str
+    description: str
+    source_path: Path
+    source_format: str
+
+
 @dataclass(frozen=True)
 class ThoughtGraph:
     """Ab's thought-graph workflow rules (harness-9qw). These only bind
@@ -133,6 +163,14 @@ class Character:
     # this list to decide whether to spin up a per-character
     # TabularStore at session start.
     tabular_tables: tuple[TabularTableSpec, ...] = ()
+    # Document trees this character ships with (harness-ejxn). Empty
+    # tuple for characters that don't ship hierarchical document data.
+    # The CLI uses this list to decide whether to spin up a per-
+    # character DocumentTreeStore at session start, mirroring the
+    # `tabular_tables` bootstrap. Each spec points at a markdown file
+    # (the canonical new-character path) or — reserved for follow-up
+    # — a JSONL chunk file.
+    document_trees: tuple[DocumentTreeSpec, ...] = ()
     # ---- harness-a2sa: data-driven replacements for name-based branches ----
     # Voice rewrite layer. "persona" wraps the model adapter in
     # PersonaAdapter (Airton's two-pass voice rewrite); "caveman" wraps
@@ -372,6 +410,7 @@ def load_character(path: Path) -> Character:
 
     values = tuple(Value(id=v["id"], rule=v["rule"]) for v in core["values"])
     tabular_tables = _load_tabular_tables(core.get("tabular_tables"), path)
+    document_trees = _load_document_trees(core.get("document_trees"), path)
 
     # Thought-graph block is optional: personas without bd ops tools
     # simply omit the section.
@@ -408,6 +447,7 @@ def load_character(path: Path) -> Character:
         lead_with_citation=bool(core.get("lead_with_citation", False)),
         tool_descriptions=tool_descriptions,
         tabular_tables=tabular_tables,
+        document_trees=document_trees,
         voice_rewriter=_load_voice_rewriter(core, path),
         bd_assignee=_opt_str(core.get("bd"), "assignee", path=path),
         bd_exclude_assignee=_opt_str(core.get("bd"), "exclude_assignee", path=path),
@@ -479,6 +519,58 @@ def _load_tabular_tables(raw: object, path: Path) -> tuple[TabularTableSpec, ...
                 description=description,
                 csv_path=(path / csv_raw).resolve(),
                 columns=tuple(columns),
+            )
+        )
+    return tuple(out)
+
+
+def _load_document_trees(raw: object, path: Path) -> tuple[DocumentTreeSpec, ...]:
+    """Parse the optional `document_trees:` list from core.yaml
+    (harness-ejxn). Each entry is a mapping with `name`, `description`,
+    `source` (relative path to the markdown or JSONL file), and an
+    optional `format` (default `markdown`, also accepts `jsonl`).
+
+    Returns empty tuple when the key is absent — most characters
+    don't ship hierarchical doc data and the parser stays graceful.
+    Malformed entries raise ValueError with a pointer at the offending
+    row so a fixture author finds the typo without diving into stacks.
+
+    Eager path resolution mirrors `_load_tabular_tables`: we resolve
+    against the character directory so downstream callers (the CLI
+    session bootstrap, eval fixtures) get an absolute path. We don't
+    require the file to exist — that check belongs to the ingest
+    driver, which has the only useful error context."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"{path}/core.yaml: `document_trees` must be a list, got {type(raw).__name__}"
+        )
+    out: list[DocumentTreeSpec] = []
+    seen_names: set[str] = set()
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ValueError(f"{path}/core.yaml: document_trees[{idx}] must be a mapping")
+        name = str(entry.get("name") or "").strip()
+        description = str(entry.get("description") or "").strip()
+        source_raw = str(entry.get("source") or "").strip()
+        if not name or not source_raw:
+            raise ValueError(f"{path}/core.yaml: document_trees[{idx}] needs `name` + `source`")
+        if name in seen_names:
+            raise ValueError(f"{path}/core.yaml: document_trees[{idx}] duplicate name {name!r}")
+        seen_names.add(name)
+        fmt = str(entry.get("format") or "markdown").strip()
+        if fmt not in _DOCUMENT_TREE_FORMATS:
+            raise ValueError(
+                f"{path}/core.yaml: document_trees[{idx}] format must be one of "
+                f"{sorted(_DOCUMENT_TREE_FORMATS)}; got {fmt!r}"
+            )
+        out.append(
+            DocumentTreeSpec(
+                name=name,
+                description=description,
+                source_path=(path / source_raw).resolve(),
+                source_format=fmt,
             )
         )
     return tuple(out)
