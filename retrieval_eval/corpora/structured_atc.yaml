@@ -43,3 +43,11 @@ external_eval:
 # resolve relative to this YAML file's directory.
 glossary: ../../character/airton_c1/corpus/synonyms.yaml
 glossary_query_only: ../../character/airton_c1/corpus/query_synonyms.yaml
+
+# Optional tree-store wiring (harness-h5ly / Phase 1). When set, the
+# bench builds tree-retriever cells (`tree_section_hybrid` and, if a
+# glossary is also wired, `tree_section_hybrid+expander`). The SQLite
+# file is produced by `scripts/atc_ingest_tree.py`. The two retrievers
+# differ in granularity: flat hybrid embeds 1,854 chunks, tree hybrid
+# embeds 675 sections (each carrying its full concatenated body).
+tree_store: ../data/tree_atc.sqlite

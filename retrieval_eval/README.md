@@ -26,12 +26,20 @@ retrieval_eval/
 ## Running the bench
 
 ```bash
+# First-run setup: build the tree-retriever DB (gitignored, 4 MB)
+uv run python scripts/atc_ingest_tree.py --rebuild
+
+# Then run the bench
 uv run python scripts/bench_retrieval_shape.py                 # all corpora
 uv run python scripts/bench_retrieval_shape.py --corpus prose_journal
 uv run python scripts/bench_retrieval_shape.py --k 5
 uv run python scripts/bench_retrieval_shape.py \
     --embedder nomic-ai/nomic-embed-text-v1.5
 ```
+
+The tree-retriever cells skip with a one-line message if
+`retrieval_eval/data/tree_atc.sqlite` is missing; everything else still
+runs.
 
 Writes `retrieval_eval/baselines/phase0.json` by default. Each new
 retriever in later phases lands its own bench cell alongside the
@@ -109,6 +117,19 @@ glossary YAML itself uses either the new `topics:` schema (default
 empty prefix) or the legacy `sections:` schema (default `§` prefix);
 both accept an explicit `prefix:` field that wins.
 
+### Optional `tree_store:` wiring (structured_doc shape only)
+
+```yaml
+tree_store: ../data/tree_atc.sqlite
+```
+
+When set, the bench opens a `DocumentTreeStore` SQLite (produced by
+`scripts/atc_ingest_tree.py`) and emits a `tree_section_hybrid` cell.
+If a `glossary:` is also wired, it also emits
+`tree_section_hybrid+expander` so all four combinations of
+(flat | tree) × (no expander | + expander) are visible in one
+envelope. Tree-store paths resolve relative to the corpus YAML.
+
 ## Adding a new corpus
 
 1. Create `corpora/<name>.yaml` with one of the shapes above.
@@ -131,17 +152,27 @@ both accept an explicit `prefix:` field that wins.
 | corpus | retriever | r@1 | r@3 | r@5 | r@k | MRR | notes |
 |---|---|---|---|---|---|---|---|
 | prose_journal | hybrid_episodic | 100% | 100% | 100% | 100% | 1.000 | upper bound; flat hybrid is excellent on prose |
-| structured_atc | hybrid_episodic | 65.5% | 75.9% | 75.9% | 89.7% | 0.705 | stock — no glossary |
+| structured_atc | hybrid_episodic | 65.5% | 75.9% | 75.9% | 89.7% | 0.705 | Phase 0 baseline — flat chunk hybrid, no glossary |
 | structured_atc | hybrid_episodic+expander | 79.3% | 89.7% | 89.7% | 100% | 0.839 | + lifted QueryExpander (harness-m78r) |
+| structured_atc | tree_section_hybrid | 65.5% | 82.8% | **89.7%** | 89.7% | 0.753 | section-grained tree (harness-h5ly) — **+13.8pp r@5 vs Phase 0** |
+| structured_atc | tree_section_hybrid+expander | 75.9% | 93.1% | **96.5%** | 96.5% | 0.853 | tree + expander — best aggregate result |
 | tabular_returns | hybrid_episodic | 50.0% | 50.0% | 58.3% | 75.0% | 0.544 | predicted Phase 2 wedge — aggregation queries hard-miss because flat vector retrieval can't sort |
 
-**Two-cell layout (harness-m78r):** corpora that declare a `glossary:`
-field emit both a stock and an `+expander` cell. Phase 1+ retrievers
-report against *both* cells so the new primitive's contribution is
-honest:
-- vs stock hybrid → did the primitive move the number on its own?
-- vs hybrid+expander → does it still earn its keep with the cheap,
-  content-driven expander already in the mix?
+**Multi-cell layout:** corpora that declare a `glossary:` field emit a
+`+expander` cell; corpora that declare a `tree_store:` field emit
+`tree_section_hybrid` (and a `+expander` companion when both are
+wired). Phase N+ retrievers report against the relevant prior cells so
+each primitive's contribution stays attributable:
+- vs Phase 0 stock hybrid → did the primitive move the number on its own?
+- vs Phase 0 + expander → does it still earn its keep with the
+  cheap, content-driven expander in the mix?
+- vs the previous phase's best → is this an additive win or a substitute?
+
+**Phase 1 verdict:** tree retriever lands. The bd decision rule
+(harness-h5ly) was "beat flat hybrid on r@5 or revert." Tree
+section-grained ingest delivers r@5 = 89.7% (+13.8pp), is ~7× faster
+than flat hybrid (374ms vs 2470ms — 675 nodes vs 1854), and composes
+cleanly with the expander.
 
 ## Determinism
 

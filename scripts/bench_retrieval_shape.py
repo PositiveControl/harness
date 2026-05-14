@@ -68,6 +68,8 @@ from harness.retrieval.query_expander import (  # noqa: E402
     load_query_expander,
 )
 from harness.retrieval.st_embedder import SentenceTransformersEmbedder  # noqa: E402
+from harness.retrieval.tree_retriever import TreeRetriever  # noqa: E402
+from harness.store.document_tree import DocumentTreeStore  # noqa: E402
 from harness.store.episodic import EpisodicStore  # noqa: E402
 
 _DEFAULT_EMBEDDER = "BAAI/bge-small-en-v1.5"
@@ -402,6 +404,32 @@ def _build_structured_atc_search_fn(
     return _search
 
 
+def _build_tree_search_fn(
+    retriever: TreeRetriever,
+    *,
+    expander: QueryExpander | None = None,
+) -> Any:
+    """Tree-retriever search adapter for structured-doc corpora. The
+    `record_id` returned per hit is the node's `path` (e.g. "2-4-3"),
+    which lines up directly with the ATC fixture's expected anchors —
+    no extra regex layer needed.
+
+    `expander` applies the same QueryExpander rewrite as the episodic
+    path so the tree and episodic cells are comparable when the
+    glossary primitive composes with each retriever."""
+
+    def _search(query: str, depth: int) -> list[ShapeHit]:
+        if expander is not None:
+            query = expander.expand(query)
+        hits = retriever.top_k(query, k=depth, mode="hybrid")
+        out = [ShapeHit(record_id=node.path, score=float(score)) for node, score in hits]
+        # Same (-score, record_id) tie-pin as the episodic adapter.
+        out.sort(key=lambda h: (-h.score, h.record_id))
+        return out
+
+    return _search
+
+
 def _run_structured_atc(corpus_yaml: Path, *, k: int, embedder_repo: str) -> list[CorpusBench]:
     """Re-uses the populated airton_c1 episodic store. We don't ingest
     here — the store is the live one on disk, opened in the same
@@ -476,6 +504,58 @@ def _run_structured_atc(corpus_yaml: Path, *, k: int, embedder_repo: str) -> lis
                 wall_ms=expander_ms,
             )
         )
+
+    # Tree retriever cells (harness-h5ly). When the corpus declares a
+    # `tree_store:` field, open the pre-built tree SQLite and run the
+    # same fixture against it. Section-grained ingest (one node per
+    # section, body = concatenated chunks) means each `node.path` IS
+    # the anchor — no regex-on-principle step. Snapshot the file the
+    # same way as the flat store so concurrent writes don't shift
+    # tie-breaks across runs.
+    tree_store_raw = spec.get("tree_store")
+    if tree_store_raw:
+        tree_store_path = (corpus_yaml.parent / str(tree_store_raw)).resolve()
+        if not tree_store_path.exists():
+            sys.stderr.write(
+                f"  [skip tree] tree_store not found: {tree_store_path}\n"
+                f"            run `uv run python scripts/atc_ingest_tree.py` to build it.\n"
+            )
+        else:
+            tree_snapshot = snapshot_dir / "structured_atc_tree.sqlite"
+            shutil.copy2(tree_store_path, tree_snapshot)
+            tree_store = DocumentTreeStore(db_path=tree_snapshot, embedder=embedder)
+            tree_retriever = TreeRetriever(tree_store)
+
+            tree_fn = _build_tree_search_fn(tree_retriever, expander=None)
+            t0 = time.perf_counter()
+            tree_result = run_retrieval_shape(cases, tree_fn, k=k)
+            tree_ms = (time.perf_counter() - t0) * 1000
+            cells.append(
+                _result_to_cell(
+                    result=tree_result,
+                    corpus_name=str(spec["name"]),
+                    shape=str(spec["shape"]),
+                    retriever="tree_section_hybrid",
+                    wall_ms=tree_ms,
+                )
+            )
+
+            # And tree + expander, so we can see whether the lifted
+            # primitive composes with the new primitive.
+            if expander is not None:
+                tree_expander_fn = _build_tree_search_fn(tree_retriever, expander=expander)
+                t0 = time.perf_counter()
+                tree_expander_result = run_retrieval_shape(cases, tree_expander_fn, k=k)
+                tree_expander_ms = (time.perf_counter() - t0) * 1000
+                cells.append(
+                    _result_to_cell(
+                        result=tree_expander_result,
+                        corpus_name=str(spec["name"]),
+                        shape=str(spec["shape"]),
+                        retriever="tree_section_hybrid+expander",
+                        wall_ms=tree_expander_ms,
+                    )
+                )
 
     return cells
 
