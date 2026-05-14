@@ -38,6 +38,10 @@ character/*/atc_audio/*
 character/airton_c/workspace/*
 !character/airton_c/workspace/.gitkeep
 data/
+# Retrieval-eval fixtures need their CSV-backed corpora versioned even
+# though they live under a data/ subdir (harness-kj2a).
+!retrieval_eval/data/
+!retrieval_eval/data/*
 logs/
 *.sqlite
 *.sqlite-journal

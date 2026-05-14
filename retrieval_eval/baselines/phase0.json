@@ -1,0 +1,1175 @@
+{
+  "embedder": "BAAI/bge-small-en-v1.5",
+  "embedder_dim": 384,
+  "k": 10,
+  "cells": [
+    {
+      "corpus": "prose_journal",
+      "shape": "prose",
+      "retriever": "hybrid_episodic",
+      "k": 10,
+      "case_count": 12,
+      "recall_at_1": 1.0,
+      "recall_at_3": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "median_rank": 0.0,
+      "wall_ms": 139.0,
+      "cases": [
+        {
+          "id": "q_capacitor_skipped_component",
+          "query": "the time my drone build failed because I left out a small part on the power board",
+          "expected_record_ids": [
+            "capacitor-incident"
+          ],
+          "hit_record_ids": [
+            "capacitor-incident",
+            "solder-joint-lesson",
+            "flight-code-regression",
+            "ishida-rule",
+            "backup-drive-cascade",
+            "tailscale-migration",
+            "typewriter-restoration",
+            "dishwasher-noise",
+            "coffee-grinder-burr",
+            "garden-frost-2022"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_jquery_wedding",
+          "query": "first time I shipped a real website using a JavaScript framework",
+          "expected_record_ids": [
+            "jquery-first-project"
+          ],
+          "hit_record_ids": [
+            "jquery-first-project",
+            "tailscale-migration",
+            "ishida-rule",
+            "backup-drive-cascade",
+            "flight-code-regression",
+            "capacitor-incident",
+            "coffee-grinder-burr",
+            "bicycle-fit-revision",
+            "solder-joint-lesson",
+            "typewriter-restoration"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_flight_throttle",
+          "query": "the avionics regression where the test stand showed reverse motor direction",
+          "expected_record_ids": [
+            "flight-code-regression"
+          ],
+          "hit_record_ids": [
+            "flight-code-regression",
+            "capacitor-incident",
+            "solder-joint-lesson",
+            "tailscale-migration",
+            "typewriter-restoration",
+            "dishwasher-noise",
+            "backup-drive-cascade",
+            "ishida-rule",
+            "coffee-grinder-burr",
+            "bicycle-fit-revision"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_solder_temperature",
+          "query": "diagnosing a hardware bug that only appeared at low temperatures",
+          "expected_record_ids": [
+            "solder-joint-lesson"
+          ],
+          "hit_record_ids": [
+            "solder-joint-lesson",
+            "garden-frost-2022",
+            "flight-code-regression",
+            "capacitor-incident",
+            "dishwasher-noise",
+            "ishida-rule",
+            "backup-drive-cascade",
+            "jquery-first-project",
+            "coffee-grinder-burr",
+            "bicycle-fit-revision"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_ishida_principle",
+          "query": "the heuristic about when multiple failure theories means you don't understand the system",
+          "expected_record_ids": [
+            "ishida-rule"
+          ],
+          "hit_record_ids": [
+            "ishida-rule",
+            "flight-code-regression",
+            "solder-joint-lesson",
+            "coffee-grinder-burr",
+            "capacitor-incident",
+            "backup-drive-cascade",
+            "tailscale-migration",
+            "dishwasher-noise",
+            "bicycle-fit-revision",
+            "typewriter-restoration"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_tailscale_security",
+          "query": "what I gained by moving my home network off the public internet",
+          "expected_record_ids": [
+            "tailscale-migration"
+          ],
+          "hit_record_ids": [
+            "tailscale-migration",
+            "backup-drive-cascade",
+            "flight-code-regression",
+            "jquery-first-project",
+            "bicycle-fit-revision",
+            "capacitor-incident",
+            "solder-joint-lesson",
+            "garden-frost-2022",
+            "dishwasher-noise",
+            "ishida-rule"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_dishwasher_floor",
+          "query": "how I solved an appliance noise that only happened in my kitchen",
+          "expected_record_ids": [
+            "dishwasher-noise"
+          ],
+          "hit_record_ids": [
+            "dishwasher-noise",
+            "capacitor-incident",
+            "solder-joint-lesson",
+            "garden-frost-2022",
+            "tailscale-migration",
+            "backup-drive-cascade",
+            "typewriter-restoration",
+            "flight-code-regression",
+            "jquery-first-project",
+            "ishida-rule"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_frost_tomatoes",
+          "query": "the year I lost my fall garden to an unexpected freeze",
+          "expected_record_ids": [
+            "garden-frost-2022"
+          ],
+          "hit_record_ids": [
+            "garden-frost-2022",
+            "solder-joint-lesson",
+            "capacitor-incident",
+            "bicycle-fit-revision",
+            "flight-code-regression",
+            "ishida-rule",
+            "tailscale-migration",
+            "backup-drive-cascade",
+            "dishwasher-noise",
+            "typewriter-restoration"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_grinder_consistency",
+          "query": "espresso machine grinder producing uneven coffee grounds after long use",
+          "expected_record_ids": [
+            "coffee-grinder-burr"
+          ],
+          "hit_record_ids": [
+            "coffee-grinder-burr",
+            "ishida-rule",
+            "bicycle-fit-revision",
+            "flight-code-regression",
+            "solder-joint-lesson",
+            "capacitor-incident",
+            "typewriter-restoration",
+            "dishwasher-noise",
+            "backup-drive-cascade",
+            "garden-frost-2022"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_olivetti_parts",
+          "query": "the antique writing machine I rebuilt and how I sourced a rubber roller part",
+          "expected_record_ids": [
+            "typewriter-restoration"
+          ],
+          "hit_record_ids": [
+            "typewriter-restoration",
+            "capacitor-incident",
+            "dishwasher-noise",
+            "solder-joint-lesson",
+            "backup-drive-cascade",
+            "flight-code-regression",
+            "jquery-first-project",
+            "ishida-rule",
+            "coffee-grinder-burr",
+            "bicycle-fit-revision"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_bike_knee_pain",
+          "query": "long-running cycling injury that turned out to be a saddle height issue",
+          "expected_record_ids": [
+            "bicycle-fit-revision"
+          ],
+          "hit_record_ids": [
+            "bicycle-fit-revision",
+            "solder-joint-lesson",
+            "capacitor-incident",
+            "flight-code-regression",
+            "dishwasher-noise",
+            "garden-frost-2022",
+            "ishida-rule",
+            "typewriter-restoration",
+            "coffee-grinder-burr",
+            "backup-drive-cascade"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_silent_backup_failure",
+          "query": "the off-site backup that appeared to work but was writing nothing",
+          "expected_record_ids": [
+            "backup-drive-cascade"
+          ],
+          "hit_record_ids": [
+            "backup-drive-cascade",
+            "tailscale-migration",
+            "flight-code-regression",
+            "typewriter-restoration",
+            "jquery-first-project",
+            "solder-joint-lesson",
+            "capacitor-incident",
+            "bicycle-fit-revision",
+            "ishida-rule",
+            "garden-frost-2022"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        }
+      ]
+    },
+    {
+      "corpus": "structured_atc",
+      "shape": "structured_doc",
+      "retriever": "hybrid_episodic",
+      "k": 10,
+      "case_count": 29,
+      "recall_at_1": 0.6552,
+      "recall_at_3": 0.7586,
+      "recall_at_5": 0.7586,
+      "recall_at_k": 0.8966,
+      "mrr": 0.7053,
+      "median_rank": 0.0,
+      "wall_ms": 2514.2,
+      "cases": [
+        {
+          "id": "controller_readback_requirement",
+          "query": "What do I need to verify when a pilot reads back an ATC clearance, per JO 7110.65?",
+          "expected_record_ids": [
+            "2-4-3"
+          ],
+          "hit_record_ids": [
+            "2-4-3",
+            "7110.65",
+            "2-4-3",
+            "7110.65",
+            "2-9-3",
+            "7110.65",
+            "4-5-7",
+            "7110.65",
+            "4-5-9",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "controller_wake_turbulence_application",
+          "query": "When do wake turbulence procedures apply under JO 7110.65?",
+          "expected_record_ids": [
+            "2-1-19"
+          ],
+          "hit_record_ids": [
+            "2-1-19",
+            "7110.65",
+            "5-9-9",
+            "7110.65",
+            "3-9-7",
+            "7110.65",
+            "3-9-7",
+            "7110.65",
+            "2-1-20",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0318
+        },
+        {
+          "id": "controller_same_runway_departure",
+          "query": "When can I clear a departing aircraft for takeoff behind another departing aircraft on the same runway?",
+          "expected_record_ids": [
+            "3-9-6"
+          ],
+          "hit_record_ids": [
+            "3-9-6",
+            "7110.65",
+            "3-9-6",
+            "7110.65",
+            "3-9-6",
+            "7110.65",
+            "3-9-6",
+            "7110.65",
+            "5-8-4",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0301
+        },
+        {
+          "id": "controller_same_runway_arrival",
+          "query": "When may an arriving aircraft cross the landing threshold behind another aircraft on the same runway?",
+          "expected_record_ids": [
+            "3-10-3"
+          ],
+          "hit_record_ids": [
+            "3-10-3",
+            "7110.65",
+            "3-10-3",
+            "7110.65",
+            "5-8-5",
+            "7110.65",
+            "3-12-3",
+            "7110.65",
+            "3-9-6",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.032
+        },
+        {
+          "id": "controller_same_runway_arrival_lay_phrasing",
+          "query": "What is the shortest distance an aircraft is allowed to be next to another aircraft on approach to the runway?",
+          "expected_record_ids": [
+            "3-10-3"
+          ],
+          "hit_record_ids": [
+            "3-10-3",
+            "7110.65",
+            "3-10-3",
+            "7110.65",
+            "3-9-6",
+            "7110.65",
+            "3-9-6",
+            "7110.65",
+            "3-10-3",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0315
+        },
+        {
+          "id": "controller_ifr_clearance_items_order",
+          "query": "In what order do I issue IFR clearance items?",
+          "expected_record_ids": [
+            "4-2-1"
+          ],
+          "hit_record_ids": [
+            "4-2-1",
+            "7110.65",
+            "4-2-9",
+            "7110.65",
+            "4-2-1",
+            "7110.65",
+            "4-3-2",
+            "7110.65",
+            "4-2-8",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0323
+        },
+        {
+          "id": "controller_vertical_separation_rvsm",
+          "query": "What's the IFR vertical separation minimum up to FL 410, and what changes above it?",
+          "expected_record_ids": [
+            "4-5-1"
+          ],
+          "hit_record_ids": [
+            "4-5-1",
+            "7110.65",
+            "12-1-4",
+            "7110.65",
+            "7110.65",
+            "9-4-4",
+            "7110.65",
+            "9-2-14",
+            "5-6-3",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0325
+        },
+        {
+          "id": "controller_radar_standard_separation",
+          "query": "What's the standard radar separation minimum in terminal airspace when using single-sensor ASR?",
+          "expected_record_ids": [
+            "5-5-4"
+          ],
+          "hit_record_ids": [
+            "5-5-4",
+            "7110.65",
+            "5-5-4",
+            "7110.65",
+            "5-5-4",
+            "7110.65",
+            "5-5-9",
+            "7110.65",
+            "5-5-1",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "controller_handoff_responsibilities",
+          "query": "What must the transferring controller do before making a flight-path change during a radar handoff?",
+          "expected_record_ids": [
+            "5-4-5"
+          ],
+          "hit_record_ids": [
+            "5-4-5",
+            "7110.65",
+            "5-4-6",
+            "7110.65",
+            "5-4-5",
+            "7110.65",
+            "5-4-5",
+            "7110.65",
+            "5-4-6",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "controller_missed_approach_precoord",
+          "query": "When must I issue a specific missed approach procedure before the aircraft starts final descent?",
+          "expected_record_ids": [
+            "5-10-11"
+          ],
+          "hit_record_ids": [
+            "5-10-11",
+            "7110.65",
+            "4-8-9",
+            "7110.65",
+            "4-8-9",
+            "7110.65",
+            "5-9-1",
+            "7110.65",
+            "5-12-10",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "controller_class_b_vfr_clearance",
+          "query": "What's the phraseology for clearing a VFR aircraft into Class B airspace?",
+          "expected_record_ids": [
+            "7-9-2"
+          ],
+          "hit_record_ids": [
+            "7-9-2",
+            "7110.65",
+            "7-9-2",
+            "7110.65",
+            "7-9-3",
+            "7110.65",
+            "13-2-6",
+            "7110.65",
+            "7-1-1",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "controller_vfr_on_top",
+          "query": "Under what condition may I clear an IFR aircraft to maintain 'VFR-on-top'?",
+          "expected_record_ids": [
+            "7-3-1"
+          ],
+          "hit_record_ids": [
+            "7-3-1",
+            "7-3-1",
+            "7110.65",
+            "7110.65",
+            "7-3-1",
+            "7110.65",
+            "12-1-3",
+            "7110.65",
+            "7-1-2",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0323
+        },
+        {
+          "id": "controller_emergency_distress_urgency",
+          "query": "What's the difference between a Distress and an Urgency emergency, and how does a pilot declare each?",
+          "expected_record_ids": [
+            "10-1-1"
+          ],
+          "hit_record_ids": [
+            "10-1-1",
+            "7110.65",
+            "13-2-6",
+            "7110.65",
+            "10-1-2",
+            "7110.65",
+            "10-6-3",
+            "7110.65",
+            "13-2-6",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "controller_emergency_declaration_authority",
+          "query": "Who may declare an emergency for an aircraft?",
+          "expected_record_ids": [
+            "10-2-5"
+          ],
+          "hit_record_ids": [
+            "10-1-1",
+            "7110.65",
+            "10-2-5",
+            "7110.65",
+            "10-2-1",
+            "7110.65",
+            "10-1-2",
+            "7110.65",
+            "10-2-11",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 2,
+          "score_of_first_expected": 0.0311
+        },
+        {
+          "id": "controller_omit_holding_instructions",
+          "query": "When may a controller leave out part of the holding instructions to an aircraft?",
+          "expected_record_ids": [
+            "4-6-4"
+          ],
+          "hit_record_ids": [
+            "4-6-1",
+            "7110.65",
+            "4-6-4",
+            "7110.65",
+            "4-6-4",
+            "7110.65",
+            "3-10-9",
+            "7110.65",
+            "4-6-2",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 2,
+          "score_of_first_expected": 0.0307
+        },
+        {
+          "id": "controller_wake_turbulence_concern_lay",
+          "query": "When does a controller need to worry about a small plane flying behind a big jet?",
+          "expected_record_ids": [
+            "2-1-19",
+            "2-1-20"
+          ],
+          "hit_record_ids": [
+            "5-5-4",
+            "7110.65",
+            "5-5-4",
+            "7110.65",
+            "6-1-5",
+            "7110.65",
+            "3-7-3",
+            "7110.65",
+            "3-3-6",
+            "7110.65"
+          ],
+          "rank_of_first_expected": null,
+          "score_of_first_expected": null
+        },
+        {
+          "id": "controller_same_runway_arrival_lay_time",
+          "query": "How soon after a plane lands can the next one cross the runway threshold?",
+          "expected_record_ids": [
+            "3-10-3"
+          ],
+          "hit_record_ids": [
+            "3-7-2",
+            "7110.65",
+            "5-8-5",
+            "7110.65",
+            "3-9-6",
+            "7110.65",
+            "3-10-3",
+            "7110.65",
+            "5-8-5",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 6,
+          "score_of_first_expected": 0.0283
+        },
+        {
+          "id": "controller_aircraft_to_aircraft_alerts",
+          "query": "Where can a controller find information for aircraft-to-aircraft alerts?",
+          "expected_record_ids": [
+            "13-1-2"
+          ],
+          "hit_record_ids": [
+            "2-1-6",
+            "7110.65",
+            "13-2-6",
+            "7110.65",
+            "3-1-8",
+            "7110.65",
+            "13-2-6",
+            "7110.65",
+            "10-2-13",
+            "13-1-2"
+          ],
+          "rank_of_first_expected": 9,
+          "score_of_first_expected": 0.0164
+        },
+        {
+          "id": "controller_rbn_mh_usable_distance",
+          "query": "What is the usable distance for an MH class RBN?",
+          "expected_record_ids": [
+            "4-1-1"
+          ],
+          "hit_record_ids": [
+            "4-1-1",
+            "7110.65",
+            "4-1-1",
+            "7110.65",
+            "6-4-3",
+            "7110.65",
+            "13-2-6",
+            "7110.65",
+            "4-4-1",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0325
+        },
+        {
+          "id": "controller_safety_alert_terrain",
+          "query": "When must a controller issue a safety alert to an aircraft?",
+          "expected_record_ids": [
+            "2-1-6"
+          ],
+          "hit_record_ids": [
+            "2-1-6",
+            "7110.65",
+            "2-1-6",
+            "7110.65",
+            "3-6-4",
+            "7110.65",
+            "13-2-6",
+            "7110.65",
+            "3-6-4",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "controller_minimum_fuel",
+          "query": "What does a 'minimum fuel' advisory from a pilot mean for a controller?",
+          "expected_record_ids": [
+            "2-1-8"
+          ],
+          "hit_record_ids": [
+            "2-1-8",
+            "7110.65",
+            "13-2-6",
+            "7110.65",
+            "1-2-1",
+            "7110.65",
+            "1-2-6",
+            "7110.65",
+            "1-2-6",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "controller_traffic_advisories",
+          "query": "When should a controller issue a traffic advisory to an aircraft?",
+          "expected_record_ids": [
+            "2-1-21"
+          ],
+          "hit_record_ids": [
+            "13-2-6",
+            "7110.65",
+            "2-1-21",
+            "7110.65",
+            "2-1-21",
+            "7110.65",
+            "2-1-28",
+            "7110.65",
+            "2-1-21",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 2,
+          "score_of_first_expected": 0.0292
+        },
+        {
+          "id": "controller_radio_comm_failure",
+          "query": "An IFR aircraft has lost two-way radio communication \u2014 what's the controller's first action?",
+          "expected_record_ids": [
+            "10-4-4"
+          ],
+          "hit_record_ids": [
+            "10-4-4",
+            "7110.65",
+            "5-10-4",
+            "7110.65",
+            "3-1-13",
+            "7110.65",
+            "2-1-17",
+            "7110.65",
+            "7110.65",
+            "9-2-6"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "controller_readback_lay_doublecheck",
+          "query": "How do I make sure a pilot heard the clearance correctly?",
+          "expected_record_ids": [
+            "2-4-3"
+          ],
+          "hit_record_ids": [
+            "5-10-9",
+            "7110.65",
+            "4-5-7",
+            "7110.65",
+            "10-4-4",
+            "7110.65",
+            "3-10-1",
+            "7110.65",
+            "10-3-2",
+            "2-4-3"
+          ],
+          "rank_of_first_expected": 9,
+          "score_of_first_expected": 0.0164
+        },
+        {
+          "id": "controller_vertical_minima_lay",
+          "query": "How close vertically can I let two planes get up at the airliner cruise altitudes?",
+          "expected_record_ids": [
+            "4-5-1"
+          ],
+          "hit_record_ids": [
+            "6-6-2",
+            "7110.65",
+            "4-5-7",
+            "7110.65",
+            "4-5-7",
+            "7110.65",
+            "4-5-7",
+            "7110.65",
+            "4-5-1",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 8,
+          "score_of_first_expected": 0.0226
+        },
+        {
+          "id": "controller_missed_approach_lay",
+          "query": "If a plane has to go around at the last second, when am I supposed to have already told them what to do next?",
+          "expected_record_ids": [
+            "5-10-11"
+          ],
+          "hit_record_ids": [
+            "6-7-7",
+            "7110.65",
+            "2-1-6",
+            "7110.65",
+            "10-3-3",
+            "7110.65",
+            "10-3-2",
+            "7110.65",
+            "10-3-1",
+            "7110.65"
+          ],
+          "rank_of_first_expected": null,
+          "score_of_first_expected": null
+        },
+        {
+          "id": "controller_handoff_lay",
+          "query": "What do I need to do before changing a plane's altitude during a handoff to the next sector?",
+          "expected_record_ids": [
+            "5-4-5"
+          ],
+          "hit_record_ids": [
+            "3-9-3",
+            "7110.65",
+            "7110.65",
+            "9-2-13",
+            "4-7-4",
+            "7110.65",
+            "2-1-14",
+            "7110.65",
+            "2-1-14",
+            "7110.65"
+          ],
+          "rank_of_first_expected": null,
+          "score_of_first_expected": null
+        },
+        {
+          "id": "controller_hijack_squawk",
+          "query": "An aircraft just squawked 7500. What does the controller do?",
+          "expected_record_ids": [
+            "10-2-6"
+          ],
+          "hit_record_ids": [
+            "10-2-6",
+            "7110.65",
+            "10-2-6",
+            "7110.65",
+            "5-2-5",
+            "7110.65",
+            "5-4-6",
+            "7110.65",
+            "5-2-12",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "controller_speed_adjustment_phraseology",
+          "query": "What's the phraseology for telling a pilot to slow down?",
+          "expected_record_ids": [
+            "5-7-1",
+            "5-7-2"
+          ],
+          "hit_record_ids": [
+            "5-7-2",
+            "7110.65",
+            "5-7-2",
+            "7110.65",
+            "5-7-2",
+            "7110.65",
+            "5-7-2",
+            "7110.65",
+            "5-7-2",
+            "7110.65"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0323
+        }
+      ]
+    },
+    {
+      "corpus": "tabular_returns",
+      "shape": "tabular",
+      "retriever": "hybrid_episodic",
+      "k": 10,
+      "case_count": 12,
+      "recall_at_1": 0.5,
+      "recall_at_3": 0.5,
+      "recall_at_5": 0.5833,
+      "recall_at_k": 0.75,
+      "mrr": 0.544,
+      "median_rank": 0.0,
+      "wall_ms": 141.5,
+      "cases": [
+        {
+          "id": "q_easy_damaged_leather_jacket",
+          "query": "find the leather jacket return where the buyer said it arrived damaged",
+          "expected_record_ids": [
+            "order:10063"
+          ],
+          "hit_record_ids": [
+            "order:10063",
+            "order:10065",
+            "order:10601",
+            "order:10611",
+            "order:10402",
+            "order:10076",
+            "order:10739",
+            "order:10559",
+            "order:10431",
+            "order:10155"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_easy_wrongsize_kettle_denied",
+          "query": "kettle that was returned for being the wrong size and ended up denied",
+          "expected_record_ids": [
+            "order:10708"
+          ],
+          "hit_record_ids": [
+            "order:10708",
+            "order:10066",
+            "order:10211",
+            "order:10512",
+            "order:10413",
+            "order:10303",
+            "order:10428",
+            "order:10673",
+            "order:10080",
+            "order:10476"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_easy_damaged_keyboard",
+          "query": "mechanical keyboard that came in damaged",
+          "expected_record_ids": [
+            "order:10511"
+          ],
+          "hit_record_ids": [
+            "order:10511",
+            "order:10337",
+            "order:10044",
+            "order:10648",
+            "order:10263",
+            "order:10351",
+            "order:10063",
+            "order:10066",
+            "order:10580",
+            "order:10525"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_easy_duplicate_water_filter",
+          "query": "the customer who ordered a water filter twice by mistake",
+          "expected_record_ids": [
+            "order:10346"
+          ],
+          "hit_record_ids": [
+            "order:10346",
+            "order:10666",
+            "order:10645",
+            "order:10737",
+            "order:10100",
+            "order:10186",
+            "order:10357",
+            "order:10122",
+            "order:10204",
+            "order:10130"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_easy_loafers_misdescribed",
+          "query": "loafers returned because they didn't match the product description",
+          "expected_record_ids": [
+            "order:10518"
+          ],
+          "hit_record_ids": [
+            "order:10207",
+            "order:10310",
+            "order:10190",
+            "order:10397",
+            "order:10155",
+            "order:10518",
+            "order:10548",
+            "order:10239",
+            "order:10216",
+            "order:10230"
+          ],
+          "rank_of_first_expected": 5,
+          "score_of_first_expected": 0.0305
+        },
+        {
+          "id": "q_easy_damaged_camp_stove",
+          "query": "camp stove that arrived damaged",
+          "expected_record_ids": [
+            "order:10670"
+          ],
+          "hit_record_ids": [
+            "order:10670",
+            "order:10028",
+            "order:10527",
+            "order:10039",
+            "order:10428",
+            "order:10543",
+            "order:10048",
+            "order:10066",
+            "order:10211",
+            "order:10168"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_hard_highest_value",
+          "query": "show me the highest-value return in the dataset",
+          "expected_record_ids": [
+            "order:10377"
+          ],
+          "hit_record_ids": [
+            "order:10022",
+            "order:10045",
+            "order:10275",
+            "order:10255",
+            "order:10222",
+            "order:10002",
+            "order:10413",
+            "order:10005",
+            "order:10633",
+            "order:10566"
+          ],
+          "rank_of_first_expected": null,
+          "score_of_first_expected": null
+        },
+        {
+          "id": "q_hard_second_highest",
+          "query": "the second-highest dollar amount return",
+          "expected_record_ids": [
+            "order:10331"
+          ],
+          "hit_record_ids": [
+            "order:10002",
+            "order:10102",
+            "order:10013",
+            "order:10099",
+            "order:10174",
+            "order:10222",
+            "order:10115",
+            "order:10275",
+            "order:10144",
+            "order:10239"
+          ],
+          "rank_of_first_expected": null,
+          "score_of_first_expected": null
+        },
+        {
+          "id": "q_hard_top_march_700",
+          "query": "March returns above seven hundred dollars",
+          "expected_record_ids": [
+            "order:10476",
+            "order:10483",
+            "order:10628",
+            "order:10693"
+          ],
+          "hit_record_ids": [
+            "order:10095",
+            "order:10002",
+            "order:10013",
+            "order:10161",
+            "order:10179",
+            "order:10174",
+            "order:10022",
+            "order:10005",
+            "order:10087",
+            "order:10144"
+          ],
+          "rank_of_first_expected": null,
+          "score_of_first_expected": null
+        },
+        {
+          "id": "q_hard_big_backpack_denied",
+          "query": "expensive backpack return that the company denied",
+          "expected_record_ids": [
+            "order:10476",
+            "order:10584"
+          ],
+          "hit_record_ids": [
+            "order:10476",
+            "order:10168",
+            "order:10633",
+            "order:10584",
+            "order:10514",
+            "order:10567",
+            "order:10629",
+            "order:10275",
+            "order:10706",
+            "order:10568"
+          ],
+          "rank_of_first_expected": 0,
+          "score_of_first_expected": 0.0328
+        },
+        {
+          "id": "q_hard_cheap_espresso",
+          "query": "the cheapest espresso machine return \u2014 under thirty dollars",
+          "expected_record_ids": [
+            "order:10390"
+          ],
+          "hit_record_ids": [
+            "order:10073",
+            "order:10053",
+            "order:10198",
+            "order:10390",
+            "order:10229",
+            "order:10294",
+            "order:10491",
+            "order:10373",
+            "order:10022",
+            "order:10161"
+          ],
+          "rank_of_first_expected": 3,
+          "score_of_first_expected": 0.0313
+        },
+        {
+          "id": "q_hard_oct_damaged",
+          "query": "expensive items damaged on arrival in October",
+          "expected_record_ids": [
+            "order:10073",
+            "order:10584"
+          ],
+          "hit_record_ids": [
+            "order:10076",
+            "order:10063",
+            "order:10065",
+            "order:10467",
+            "order:10313",
+            "order:10066",
+            "order:10168",
+            "order:10559",
+            "order:10584",
+            "order:10362"
+          ],
+          "rank_of_first_expected": 8,
+          "score_of_first_expected": 0.0281
+        }
+      ]
+    }
+  ]
+}

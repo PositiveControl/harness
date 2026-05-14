@@ -1,0 +1,37 @@
+version: 1
+name: structured_atc
+shape: structured_doc
+description: |
+  Pointer corpus — re-uses the existing JO 7110.65 ingest under
+  airton_c1 (~1,843 seed rows, ingested via scripts/atc_ingest.py)
+  plus the existing atc_eval.yaml fixture. This corpus measures how
+  well the current flat hybrid retriever handles a deeply-nested
+  technical document where the right answer is a specific section
+  (e.g. §3-10-3).
+
+  Phase 0 baseline: STOCK HYBRID, no character augmentation. This
+  deliberately does NOT match `character/airton_c1/atc_retrieval_baseline.json`
+  (r@1≈79%, r@5=100%), which runs through airton_c1's `QueryExpander`
+  (lay-term ↔ ATC section synonyms). The expander is character-
+  specific; the shape-aware primitives we plan in Phases 1-3 are not.
+  Comparing stock-vs-stock keeps the Phase 1 (tree) and Phase 2 (table)
+  numbers apples-to-apples against this baseline. Layering the expander
+  in is a separate, additive measurement.
+
+  Phase 1 expectation: the tree retriever beats this baseline by
+  promoting parent sections when multiple leaves under the same
+  parent get retrieved (LlamaIndex auto-merge). If it doesn't, throw
+  it out.
+
+  Matching strategy: anchors are §N-N-N codes parsed out of an
+  episodic record's `principle` field. The fixture's
+  `expected_citations` is a list-of-alternates (any present counts).
+  This is the legacy matcher from src/harness/evals/atc_retrieval.py
+  — bench_retrieval_shape calls into that module directly rather
+  than re-implementing the regex.
+
+# Resolved relative to this YAML file's directory.
+external_eval:
+  fixture: ../../character/airton_c1/atc_eval.yaml
+  store: ../../character/airton_c1/data/harness.sqlite
+  match_strategy: anchor_in_principle
