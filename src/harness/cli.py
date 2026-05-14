@@ -3259,6 +3259,7 @@ def eval_atc_retrieval(
         compare_baselines,
         default_baseline_path,
         load_baseline,
+        make_tree_search_fn,
         run_atc_retrieval,
     )
 
@@ -3327,11 +3328,31 @@ def eval_atc_retrieval(
     else:
         expander = base_expander
 
-    def _search(query: str, depth: int) -> list[RetrievalHit]:
-        raw = store.search(expander.expand(query), k=depth, mode="hybrid")
-        return [
-            RetrievalHit(principle=rec.principle or "", score=float(score)) for rec, score in raw
-        ]
+    # harness-c9fc: when the character ships document_trees (airton_c1
+    # post-migration), score against the DocumentTreeStore — the
+    # episodic store no longer carries the corpus chunks. Other
+    # characters (airton_c) keep the flat episodic path until they
+    # migrate.
+    from harness.evals.atc_retrieval import SearchFn
+
+    _search: SearchFn
+    tree_store_obj = _build_document_tree_store_for_session(character, store)
+    from harness.store.document_tree import DocumentTreeStore
+
+    if isinstance(tree_store_obj, DocumentTreeStore):
+        _search = make_tree_search_fn(tree_store_obj, expand=expander.expand)
+        if not as_json:
+            console.print("[dim]retrieval source: document_tree (per character spec)[/dim]")
+    else:
+
+        def _search_episodic(query: str, depth: int) -> list[RetrievalHit]:
+            raw = store.search(expander.expand(query), k=depth, mode="hybrid")
+            return [
+                RetrievalHit(principle=rec.principle or "", score=float(score))
+                for rec, score in raw
+            ]
+
+        _search = _search_episodic
 
     result = run_atc_retrieval(fixture, _search, k=k)
 

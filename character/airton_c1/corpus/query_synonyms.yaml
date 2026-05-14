@@ -86,3 +86,22 @@ sections:
     - next sector approval before altitude change
     - altitude change while handoff in progress
     - coordinate altitude change handoff next controller
+
+  "2-4-3":
+    # Pilot acknowledgment / readback — case
+    # `controller_readback_lay_doublecheck`. Lay phrasing "make sure
+    # a pilot heard the clearance correctly" doesn't carry the jargon
+    # "readback" or "acknowledge"; the section title is
+    # PILOT ACKNOWLEDGMENT/READ BACK. The flat-chunk retrieval
+    # baseline (pre-harness-c9fc) surfaced this case via lay-language
+    # tokens scattered across chunks; section-level tree embeddings
+    # (the harness-h5ly default) don't capture the same signal
+    # because the section's body uses jargon. Entries bridge "heard
+    # correctly" / "got the clearance right" → readback/acknowledge
+    # so the lay query lands on §2-4-3. Rank: hard-miss → expected
+    # ≤ 5 (added 2026-05-14, harness-c9fc).
+    - make sure pilot heard the clearance correctly
+    - confirm pilot heard the clearance
+    - make sure pilot got the clearance right
+    - verify pilot heard clearance correctly
+    - check pilot got clearance correctly

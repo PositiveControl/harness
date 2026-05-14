@@ -60,9 +60,11 @@ def _airton_c1_store_available() -> bool:
 _REQUIRES_STORE = pytest.mark.skipif(
     not _airton_c1_store_available(),
     reason=(
-        "airton_c1 episodic store empty or missing — run "
-        "`HARNESS_CHARACTER_NAME=airton_c1 uv run python scripts/atc_ingest.py` "
-        "first."
+        "airton_c1 episodic store empty or missing — post harness-c9fc the "
+        "character no longer ingests JO 7110.65 into episodic (it lives in "
+        "document_tree.sqlite). These SearchMemoryTool regression guards "
+        "need migrating to airton_c (still flat-chunk) or to a "
+        "DocumentTreeStore equivalent. Follow-up bead to file."
     ),
 )
 

@@ -202,6 +202,36 @@ def run_atc_retrieval(
     return RetrievalResult(cases=tuple(scored), k=k)
 
 
+def make_tree_search_fn(
+    store: Any,
+    *,
+    expand: Callable[[str], str] | None = None,
+) -> SearchFn:
+    """Wrap a `DocumentTreeStore` into a SearchFn the eval can drive
+    (harness-c9fc). The eval scores anchors out of a hit's `principle`
+    string; for tree hits the section path IS the anchor, so we
+    synthesize `principle = "§<path>"` — the existing `_extract_anchors`
+    regex matches both `§2-4-3` and bare `2-4-3` forms.
+
+    `expand`, when provided, transforms the query before search — same
+    role as the episodic-side query expander (synonyms, etc.). When
+    None, the raw query is forwarded.
+
+    Typed as `Any` to dodge a hard import dep on harness.store —
+    `evals/` is supposed to be pure-eval; the caller owns the store
+    type. Duck-typed: anything with `.search(query, k, mode='hybrid')`
+    returning iterables of `(node, score)` where node has `.path`
+    works.
+    """
+
+    def _search(query: str, depth: int) -> list[RetrievalHit]:
+        expanded = expand(query) if expand is not None else query
+        raw = store.search(expanded, k=depth, mode="hybrid")
+        return [RetrievalHit(principle=f"§{node.path}", score=float(score)) for node, score in raw]
+
+    return _search
+
+
 def default_baseline_path(character_path: Path) -> Path:
     """Where `harness eval atc-retrieval --save-baseline` writes the
     snapshot. Separate file from atc_baseline.json (which holds the

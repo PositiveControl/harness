@@ -360,6 +360,32 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     character = load_character(settings.character_path)
+
+    # harness-c9fc: when a character moves to contracts (document_trees:
+    # in core.yaml carrying the corpus source), the JSONL feeds the
+    # DocumentTreeStore via build_document_tree_store_for_character at
+    # session start — episodic ingest of the same JSONL is now stale.
+    # Guard against accidentally re-populating episodic with chunks
+    # that are no longer the source of truth.
+    tree_sources = {
+        str(spec.source_path) for spec in character.document_trees if spec.source_format == "jsonl"
+    }
+    conflicting = [slug for slug in slugs if str(CORPUS_CHUNKS / f"{slug}.jsonl") in tree_sources]
+    if conflicting:
+        print(
+            f"character {character.name!r} declares document_trees for "
+            f"{conflicting} — these are now ingested into the DocumentTreeStore at "
+            f"session start. Episodic ingest is the OLD path (harness-c9fc).",
+            file=sys.stderr,
+        )
+        print(
+            "If you really want both, use --only with a different slug. "
+            "Otherwise drop the --only flag or run with a character that "
+            "doesn't declare document_trees.",
+            file=sys.stderr,
+        )
+        return 1
+
     print(f"character: {character.name}")
     print(f"db:        {settings.character_db_path}")
     print(f"embedder:  {settings.embedder_repo}")

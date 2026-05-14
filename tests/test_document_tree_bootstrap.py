@@ -163,6 +163,57 @@ def test_builder_is_idempotent(tmp_path: Path) -> None:
     assert second.count_embedded() == first_count
 
 
+def test_make_tree_search_fn_returns_anchor_prefixed_principle(tmp_path: Path) -> None:
+    """harness-c9fc: make_tree_search_fn wraps a DocumentTreeStore so
+    the atc-retrieval eval can score against tree-shaped hits. The
+    `principle` string is synthesized as `§<path>` so the existing
+    _extract_anchors regex matches both the synthesized form and any
+    bare path form a fixture might use."""
+    from harness.evals.atc_retrieval import make_tree_search_fn
+
+    char_dir, spec = _build_char_dir_with_tree(tmp_path)
+    store = build_document_tree_store_for_character(
+        character_path=char_dir,
+        embedder=_HashEmbedder(),
+        document_trees=(spec,),
+    )
+    assert isinstance(store, DocumentTreeStore)
+
+    search_fn = make_tree_search_fn(store)
+    hits = search_fn("photo evidence damaged", 3)
+    assert hits, "search returned nothing"
+    # Every hit carries a §-prefixed principle the eval can extract.
+    for hit in hits:
+        assert hit.principle.startswith("§"), f"principle missing § prefix: {hit.principle!r}"
+        # The §-prefix is followed by a path-shaped slug like "1-1" or "1".
+        assert hit.principle[1:].replace("-", "").isdigit() or hit.principle[1:].isdigit()
+
+
+def test_make_tree_search_fn_applies_expander(tmp_path: Path) -> None:
+    """The expander callback runs before the search. A query that
+    misses without expansion can hit after expansion — same contract
+    the episodic SearchFn observes for synonym-driven recovery."""
+    from harness.evals.atc_retrieval import make_tree_search_fn
+
+    char_dir, spec = _build_char_dir_with_tree(tmp_path)
+    store = build_document_tree_store_for_character(
+        character_path=char_dir,
+        embedder=_HashEmbedder(),
+        document_trees=(spec,),
+    )
+    assert isinstance(store, DocumentTreeStore)
+
+    seen: list[str] = []
+
+    def _expand(q: str) -> str:
+        seen.append(q)
+        return q + " evidence"
+
+    search_fn = make_tree_search_fn(store, expand=_expand)
+    search_fn("photo", 3)
+    assert seen == ["photo"]
+
+
 def test_builder_populates_jsonl_tree(tmp_path: Path) -> None:
     """harness-k38k: JSONL specs with per-corpus config (depth_fields,
     heading_prefixes, leaf_heading_field) flow through the builder
