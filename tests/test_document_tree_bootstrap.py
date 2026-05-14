@@ -317,6 +317,97 @@ def test_anchors_migration_brings_old_store_up_to_date(tmp_path: Path) -> None:
     assert hits[0][0].path == "2-4-3"
 
 
+def test_anchor_aware_routing_promotes_path_match(tmp_path: Path) -> None:
+    """harness-5yzn: when the query carries an explicit section anchor
+    (a path-shaped token like `91.131`), the matching section should
+    lead the hybrid result regardless of how many neighbor sections
+    score well on the other tokens.
+
+    Pre-5yzn, long synonym-expanded queries diluted the rare anchor
+    token under common-token noise. The fix detects anchors in the
+    query and routes them through a column-scoped FTS pass that
+    bypasses RRF fusion."""
+    from harness.store.document_tree import DocumentTreeStore
+
+    embedder = _HashEmbedder()
+    store = DocumentTreeStore(db_path=tmp_path / "anchor_routing.sqlite", embedder=embedder)
+    doc = store.upsert_document(name="CFR_14_Vol2")
+    # The target section. Body deliberately doesn't say "Class B" so
+    # other Class B-shaped sections will outrank it on prose tokens.
+    store.ingest_node(
+        document_id=doc.id,
+        parent_id=None,
+        path="91.131",
+        ordinal=1,
+        depth=1,
+        node_type="section",
+        heading="Operations in Class B airspace.",
+        body="The operator must receive an ATC clearance before operating.",
+        embed=True,
+    )
+    # Distractor sections that share most of the lay-language tokens
+    # in the query (Class B, VFR, airspace, etc.) and would normally
+    # outrank §91.131 on raw BM25.
+    for path, heading, body in [
+        (
+            "91.130",
+            "Class C operations.",
+            "Class B and Class C airspace VFR operations require radio.",
+        ),
+        ("91.135", "Class A operations.", "Class A airspace VFR Class B comparison airspace."),
+        (
+            "91.215",
+            "Mode C transponder.",
+            "Class B Class C airspace VFR Class B Class B airspace requirements.",
+        ),
+    ]:
+        store.ingest_node(
+            document_id=doc.id,
+            parent_id=None,
+            path=path,
+            ordinal=int(path.split(".")[-1]),
+            depth=1,
+            node_type="section",
+            heading=heading,
+            body=body,
+            embed=True,
+        )
+
+    # Query carries the §91.131 anchor explicitly (mimicking
+    # synonym-expander output). The anchor-required pass picks up the
+    # section even though the prose tokens favor the distractors.
+    expanded_query = (
+        "Class B VFR airspace operations entry requirements "
+        "[related: §91.131: Class B VFR entry; permission Class B; clearance Class B]"
+    )
+    hits = store.search(expanded_query, k=4, mode="hybrid")
+    assert hits, "search returned nothing"
+    assert hits[0][0].path == "91.131", f"anchor-routed section should lead, got §{hits[0][0].path}"
+
+
+def test_anchor_extraction_finds_section_paths() -> None:
+    """harness-5yzn: _extract_query_anchors pulls path-shaped tokens
+    out of arbitrary query strings. Covers the formats the synonym
+    expander emits (`§<path>:`) and bare user-typed paths."""
+    from harness.store.document_tree import _extract_query_anchors
+
+    # Synonym-expander output.
+    anchors = _extract_query_anchors("[related: §91.131: Class B entry]")
+    assert (None, "91.131") in anchors
+
+    # Bare anchor in a user query.
+    anchors = _extract_query_anchors("What does §2-4-3 say about readback?")
+    assert (None, "2-4-3") in anchors
+
+    # Document-qualified anchor.
+    anchors = _extract_query_anchors("CFR_14_Vol2:91.131 details")
+    assert ("CFR_14_Vol2", "91.131") in anchors
+
+    # Prose-only query — no anchors detected.
+    anchors = _extract_query_anchors("How do I enter Class B as a VFR pilot?")
+    assert anchors == []
+
+
 def test_provenance_distinguishes_documents_with_colliding_paths(tmp_path: Path) -> None:
     """harness-mu22: when two documents in the same tree store share a
     path (e.g., JO §2-4-3 and AIM §2-4-3), provenance.record_id must

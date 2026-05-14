@@ -33,6 +33,7 @@ swappable.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -146,6 +147,38 @@ def _build_anchor_text(*, path: str, document_name: str) -> str:
     surfaces this section. The tokenizer's tokenchars config keeps the
     dotted/hyphenated forms whole (harness-q6zl)."""
     return f"§{path} {path} {document_name} {document_name}:{path}"
+
+
+# harness-5yzn: section-path-shaped tokens. Catches CFR (`91.131`,
+# `91.205a`), JO/AIM hyphenated (`2-4-3`, `5-5-4`), and 2-segment
+# parent-section paths (`2-4`, `91.3`). The leading `(?:§\s*)?` makes
+# the §-prefix optional so both the synonym-expander output
+# (`§91.131:`) and bare-anchor user queries (`91.131`) match. Three
+# capture groups: an optional document prefix (`CFR_14_Vol2:`),
+# whitespace tolerated after `§`, and the path itself.
+_ANCHOR_QUERY_RE = re.compile(r"(?:([A-Za-z][A-Za-z0-9_.]*):)?§?\s*(\d+(?:[.-]\d+){1,3}[a-z]?)")
+
+
+def _extract_query_anchors(query: str) -> list[tuple[str | None, str]]:
+    """Pull `(document_name, path)` pairs out of an FTS5 query string
+    (harness-5yzn). The `document_name` may be None when the query
+    didn't qualify which corpus to look in.
+
+    Used by `_search_text` to route an anchor-required pass alongside
+    the standard OR-mode BM25 pass. Dedupes pairs preserving first-
+    seen order so a query that names the same section twice (once
+    bare, once via the synonym expander's `§<path>:` prefix) doesn't
+    fire the same FTS pass twice."""
+    seen: set[tuple[str | None, str]] = set()
+    out: list[tuple[str | None, str]] = []
+    for match in _ANCHOR_QUERY_RE.finditer(query):
+        doc, path = match.group(1), match.group(2)
+        key = (doc, path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
 
 
 @dataclass(frozen=True)
@@ -530,37 +563,97 @@ class DocumentTreeStore:
         # section paths align with the tokenchars config on the FTS5
         # index (both sides see `91.131` as one token rather than
         # `91` + `131`).
-        match = sanitize_fts_query(query, preserve_punctuation=".-:")
-        if not match:
+        # harness-5yzn: route a parallel anchor-required pass when the
+        # query carries explicit section-path tokens (CFR `91.131`, JO
+        # `2-4-3`, etc.). The standard OR-mode BM25 pass dilutes anchor
+        # signals under long synonym-expanded queries; anchor-matching
+        # rows go to the FRONT of the result so a section-by-number
+        # request lands its target even when 40+ lay-token clauses
+        # compete for the same top-k slots.
+        anchor_hits = self._search_anchor_required(query, k=k)
+        standard_match = sanitize_fts_query(query, preserve_punctuation=".-:")
+        if not standard_match and not anchor_hits:
             return []
-        # Column-weighted BM25: anchors gets a 3x boost relative to
-        # heading/body. The anchor index is the harness-q6zl
-        # mechanism for finding sections by their numeric path
-        # (e.g., "91.131"); the weight tilts toward path matches
-        # without over-rotating. Tuning notes (harness-q6zl):
-        # - 5x and 20x tested; both gained one airton_c case
-        #   (ppl_class_b_entry_requirements) but didn't move others;
-        # - airton_c1 has an independent rank 0 → 1 regression on
-        #   `controller_same_runway_departure` from the schema/
-        #   tokenizer change itself (two sections share the title
-        #   "SAME RUNWAY SEPARATION"; not weight-driven).
-        # 3x is the conservative anchor signal — enough to surface
-        # path matches above neighbor-section noise but not enough
-        # to flip well-ranked semantic hits.
+        standard_rows = (
+            self._conn.execute(
+                """SELECT n.id, n.document_id, n.parent_id, n.path, n.ordinal,
+                          n.depth, n.node_type, n.heading, n.body, n.created_at,
+                          bm25(tree_nodes_fts, 1.0, 1.0, 3.0) AS bm25_score
+                   FROM tree_nodes_fts
+                   JOIN tree_nodes n ON n.id = tree_nodes_fts.rowid
+                   WHERE tree_nodes_fts MATCH ?
+                     AND n.embedding IS NOT NULL
+                   ORDER BY bm25_score, n.id
+                   LIMIT ?""",
+                (standard_match, k),
+            ).fetchall()
+            if standard_match
+            else []
+        )
+        # Merge: anchor-required rows lead, standard top-k fills. Dedup
+        # by node id so a section that hit both passes only surfaces
+        # once. Anchor scores get the most-negative-BM25 ceiling
+        # (-1.0e9) so they outrank everything in the standard list when
+        # callers compare scores; the absolute value is arbitrary, but
+        # the relative ordering is the load-bearing signal.
+        seen_ids: set[int] = set()
+        merged: list[tuple[TreeNode, float]] = []
+        for node in anchor_hits:
+            if node.id in seen_ids:
+                continue
+            seen_ids.add(node.id)
+            merged.append((node, 1.0e9))
+        # BM25 returns lower=better; negate so callers see higher=better.
+        for row in standard_rows:
+            node = _row_to_node(row[:10])
+            if node.id in seen_ids:
+                continue
+            seen_ids.add(node.id)
+            merged.append((node, -float(row[10])))
+        return merged[:k]
+
+    def _search_anchor_required(self, query: str, *, k: int) -> list[TreeNode]:
+        """harness-5yzn: when the query carries explicit section
+        anchors (e.g., `§91.131:` from synonym expansion, or `91.131`
+        from a user query), issue a separate FTS5 MATCH that scopes
+        to the `anchors` column. Returns the matching nodes in
+        BM25-rank order, deduped, up to `k`.
+
+        Empty list when no anchor tokens appear in the query — most
+        chat-shaped lay queries won't trip this. The detection regex
+        is path-shape-only (digits + dots/hyphens) so prose keywords
+        like `Class B` or `IFR` don't accidentally route here.
+        """
+        anchor_pairs = _extract_query_anchors(query)
+        if not anchor_pairs:
+            return []
+        # Build an OR'd MATCH clause over the anchors column. Each
+        # phrase is double-quoted so FTS5 treats the dotted/hyphenated
+        # path as a literal token (the tokenizer's tokenchars config
+        # already keeps these whole in the index).
+        phrases: list[str] = []
+        for doc, path in anchor_pairs:
+            phrases.append(f'"{path}"')
+            if doc is not None:
+                phrases.append(f'"{doc}:{path}"')
+        clause = " OR ".join(phrases)
+        # Column-qualified MATCH: `anchors:` scopes the search to the
+        # anchors column only. Avoids picking up cross-references in
+        # body text that happen to mention the section number — that
+        # noise is what the standard pass is for.
         rows = self._conn.execute(
             """SELECT n.id, n.document_id, n.parent_id, n.path, n.ordinal,
                       n.depth, n.node_type, n.heading, n.body, n.created_at,
-                      bm25(tree_nodes_fts, 1.0, 1.0, 3.0) AS bm25_score
+                      bm25(tree_nodes_fts) AS bm25_score
                FROM tree_nodes_fts
                JOIN tree_nodes n ON n.id = tree_nodes_fts.rowid
                WHERE tree_nodes_fts MATCH ?
                  AND n.embedding IS NOT NULL
                ORDER BY bm25_score, n.id
                LIMIT ?""",
-            (match, k),
+            (f"anchors:({clause})", k),
         ).fetchall()
-        # BM25 returns lower=better; negate so callers see higher=better.
-        return [(_row_to_node(r[:10]), -float(r[10])) for r in rows]
+        return [_row_to_node(r[:10]) for r in rows]
 
     def _search_hybrid(
         self, query: str, *, k: int, min_score: float
@@ -570,17 +663,30 @@ class DocumentTreeStore:
         text_hits = self._search_text(query, k=candidate_k)
         if not dense_hits and not text_hits:
             return []
+        # harness-5yzn: anchor-required hits (carried by _search_text
+        # with the sentinel 1.0e9 score) bypass RRF and lead the fused
+        # result. RRF uses rank position, not score, so a rank-0
+        # anchor hit only contributes 1/(60+1) ≈ 0.016 — not enough
+        # to beat a section that appears mid-pack in both dense AND
+        # text. The bypass mirrors the semantics of "if the user
+        # named the section, that's the section we surface."
+        anchor_hits = [(n, s) for n, s in text_hits if s >= 1.0e9]
+        anchor_ids = {n.id for n, _ in anchor_hits}
         node_map: dict[int, TreeNode] = {}
         for node, _ in dense_hits:
             node_map[node.id] = node
         for node, _ in text_hits:
             node_map.setdefault(node.id, node)
         rankings: list[list[int]] = [
-            [n.id for n, _ in dense_hits],
-            [n.id for n, _ in text_hits],
+            [n.id for n, _ in dense_hits if n.id not in anchor_ids],
+            [n.id for n, _ in text_hits if n.id not in anchor_ids],
         ]
         fused = reciprocal_rank_fusion(rankings)
-        return [(node_map[nid], score) for nid, score in fused[:k] if nid in node_map]
+        out: list[tuple[TreeNode, float]] = list(anchor_hits)
+        for nid, score in fused:
+            if nid in node_map and nid not in anchor_ids:
+                out.append((node_map[nid], score))
+        return out[:k]
 
 
 # ---------- row helpers ----------
