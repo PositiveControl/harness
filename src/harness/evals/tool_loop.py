@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -174,11 +174,21 @@ def _patch_registry_for_failure(registry: ToolRegistry, mock: _MockToolSpec) -> 
 @dataclass
 class _ScriptedAdapter:
     """Returns pre-queued ModelReply objects in order. When the queue
-    runs dry, returns a benign empty text reply so the loop terminates
-    rather than IndexError'ing — scenarios that over-queue are a fixture
-    authoring smell, not a crash."""
+    runs dry, repeats the LAST dequeued reply so retry-exhaustion
+    scenarios survive a `_BAIL_RETRIES_PER_TURN` bump — the catcher
+    keeps firing on the same shape until retries are exhausted and the
+    fabrication fallback fires. Without this, a fixture authored for
+    N retries would silently fall through to an empty reply (loop
+    terminates without fallback) the moment the constant bumps to
+    N+1 (harness-kwh1). The bail retry budget AND `max_rounds` still
+    bound the loop, so no infinite loop risk.
+
+    Falls back to an empty reply only when the queue was never
+    populated (degenerate scenario) — keeps the loop from
+    IndexError'ing."""
 
     replies: list[ModelReply]
+    _last: ModelReply | None = field(default=None, init=False, repr=False)
 
     def complete_with_tools(
         self,
@@ -189,7 +199,10 @@ class _ScriptedAdapter:
         temperature: float = 0.5,
     ) -> ModelReply:
         if self.replies:
-            return self.replies.pop(0)
+            self._last = self.replies.pop(0)
+            return self._last
+        if self._last is not None:
+            return self._last
         return ModelReply(content="")
 
 
