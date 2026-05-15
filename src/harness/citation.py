@@ -55,6 +55,18 @@ class CitationGrammar:
     document_reference: re.Pattern[str]
     document_name: str
     example_anchor: str
+    # Whether this character's "is the reply cited?" check should also
+    # accept the FAA hyphen-form fallback regex (`§N-N` / `§N-N-N` /
+    # `TBL N-N-N`) in `hooks._CITATION_PRESENT_RE`. FAA-flavored
+    # characters (airton_c, airton_c1, airton_c_tfr) set this true so
+    # the model can use bare `§3-10-3` without forcing the `JO 7110.65`
+    # prefix. Non-FAA characters (airton_f and future legal / RFC
+    # personas) leave it false — for them, the global FAA shape is a
+    # FALSE POSITIVE (smoke 2026-05-15: airton_f's model produced
+    # `§1-5 explicitly disclaims security`; surface_patterns required
+    # `§<anchor> (<doc>)` so didn't match, but the global FAA regex
+    # accepted it and let the reply through uncited).
+    accept_faa_bare_anchor: bool = False
 
 
 def load_citation_grammar(raw: object | None, path: Path) -> CitationGrammar | None:
@@ -137,6 +149,15 @@ def load_citation_grammar(raw: object | None, path: Path) -> CitationGrammar | N
         raise ValueError(
             f"{path}/core.yaml: citation_grammar.example_anchor must be a non-empty string"
         )
+    # Optional FAA bare-anchor fallback flag. Defaults False so non-
+    # FAA characters don't accidentally inherit the JO/AIM hyphen-form
+    # acceptance in hooks._CITATION_PRESENT_RE.
+    accept_faa_bare = raw.get("accept_faa_bare_anchor", False)
+    if not isinstance(accept_faa_bare, bool):
+        raise ValueError(
+            f"{path}/core.yaml: citation_grammar.accept_faa_bare_anchor "
+            f"must be a bool; got {type(accept_faa_bare).__name__}"
+        )
     return CitationGrammar(
         surface_patterns=tuple(surface_patterns),
         strip_prefix=strip_prefix,
@@ -144,4 +165,5 @@ def load_citation_grammar(raw: object | None, path: Path) -> CitationGrammar | N
         document_reference=document_reference,
         document_name=document_name.strip(),
         example_anchor=example_anchor.strip(),
+        accept_faa_bare_anchor=accept_faa_bare,
     )

@@ -1600,6 +1600,60 @@ def test_missing_citation_silent_on_clarifying_question_reply() -> None:
     assert isinstance(outcome, Continue)
 
 
+def test_missing_citation_fires_on_bare_anchor_for_non_faa_character() -> None:
+    """Smoke 2026-05-15 repro (airton_f): the model wrote `§1-5
+    explicitly disclaims security` — bare FAA-style hyphen anchor, no
+    paren-doc suffix. The character's surface_patterns require
+    `§<anchor> (<doc>)` and don't match this shape. Previously, the
+    global `_CITATION_PRESENT_RE` accepted bare `§N-N` regardless of
+    grammar and let the reply through uncited. Root fix: the global
+    fallback is now gated on `citation_grammar.accept_faa_bare_anchor`
+    (default False). airton_f leaves it default → bare §1-5 nudged."""
+    af = load_character(_REPO / "character" / "airton_f").citation_grammar
+    assert af is not None
+    assert af.accept_faa_bare_anchor is False
+    reply_text = (
+        "The corpus doesn't cover modern cryptographic key exchange "
+        "mechanisms in detail — it has a greeting protocol with no "
+        "key-agreement step (§1-5 explicitly disclaims security). "
+        "Want me to search the web instead?"
+    )
+    outcome = MissingCitationHook(grammar=af).check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"assemble_context"}),
+        )
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_missing_citation_silent_on_bare_anchor_for_faa_character() -> None:
+    """Counterfactual to the previous test: when the character's
+    grammar opts INTO the FAA bare-anchor fallback (airton_c1 / c /
+    c_tfr), a bare `§N-N-N` continues to count as a citation even
+    without the JO 7110.65 prefix. Preserves the pre-root-fix
+    behavior for FAA-flavored personas."""
+    c1 = load_character(_REPO / "character" / "airton_c1").citation_grammar
+    assert c1 is not None
+    assert c1.accept_faa_bare_anchor is True
+    reply_text = (
+        "Per JO 7110.65 §1-1-1, the order prescribes ATC procedures. "
+        "Same-runway separation is covered under §3-10-3 of the order, "
+        "with separation minima depending on weight class and runway "
+        "configuration. The relevant table is TBL 3-9-1 for category "
+        "I, II, and III combinations."
+    )
+    outcome = MissingCitationHook(grammar=c1).check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_memory"}),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
 def test_missing_citation_silent_on_do_you_mean_clarifier() -> None:
     """Variant clarifying shape — 'Do you mean X or Y?'"""
     reply_text = (

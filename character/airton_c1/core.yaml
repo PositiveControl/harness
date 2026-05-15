@@ -154,6 +154,10 @@ citation_grammar:
   document_reference: '\b(?:FAA\s+Order\s+)?JO\s*7110\.65\b'
   document_name: 'JO 7110.65'
   example_anchor: '§1-1-1'
+  # Accept the FAA bare-anchor fallback (`§N-N` / `§N-N-N` / `TBL N-N-N`)
+  # in addition to the explicit surface_patterns above. Lets the model
+  # write `§3-10-3` without forcing the `JO 7110.65` prefix every time.
+  accept_faa_bare_anchor: true
 
 # Domain catcher roster (harness-qvwq). Same three FAA-shape catchers
 # as airton_c — narrower variant inherits the catcher set since the

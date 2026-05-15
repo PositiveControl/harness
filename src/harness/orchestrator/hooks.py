@@ -841,22 +841,28 @@ _CITATION_PRESENT_RE = re.compile(
 
 
 def _reply_has_citation(content: str, grammar: CitationGrammar | None) -> bool:
-    """Return True when the reply contains a recognizable citation
-    in either the global hyphen-form shape OR any of the character's
-    declared `surface_patterns`.
+    """Return True when the reply contains a recognizable citation.
 
-    The global `_CITATION_PRESENT_RE` was authored against the JO/AIM
-    hyphen-form (§N-N-N, TBL N-N-N). Characters whose corpus uses
-    other shapes (14 CFR §91.141 dot-form for airton_c_tfr, future
-    legal / RFC personas) plug in their own `surface_patterns` via
-    `citation_grammar` in core.yaml. Asking the grammar AS WELL keeps
-    each persona honest against its own corpus while preserving the
-    JO/AIM fallback for compatibility."""
-    if _CITATION_PRESENT_RE.search(content):
-        return True
-    if grammar is None:
-        return False
-    return any(pattern.search(content) for pattern in grammar.surface_patterns)
+    Resolution order:
+      1. The character's `surface_patterns` (when grammar is supplied)
+         — these are the authoritative definition of what counts as a
+         citation for this persona.
+      2. The global JO/AIM hyphen-form fallback (`_CITATION_PRESENT_RE`)
+         — applied only when grammar is None OR when the grammar opts
+         in via `accept_faa_bare_anchor=True`. FAA-flavored characters
+         (airton_c, airton_c1, airton_c_tfr) opt in so the model can
+         use bare `§3-10-3` without the `JO 7110.65` prefix. Non-FAA
+         characters (airton_f and future legal / RFC personas) leave
+         the flag default-false — for them, the FAA hyphen-form is a
+         false-positive (smoke 2026-05-15 airton_f repro: model wrote
+         `§1-5 explicitly disclaims security`; without the gate, the
+         global regex accepted it and let the reply through uncited)."""
+    if grammar is not None:
+        if any(pattern.search(content) for pattern in grammar.surface_patterns):
+            return True
+        if not grammar.accept_faa_bare_anchor:
+            return False
+    return bool(_CITATION_PRESENT_RE.search(content))
 
 
 # A reply that's asking the user to clarify between variants isn't
@@ -1691,14 +1697,31 @@ class MissingCitationHook:
         # bypass is unsafe — let MissingCitation Nudge so the model
         # gets another shot at a clean refusal, and let the finalize
         # phase's UncitedSubstantiveReplyHook catch what survives.
-        if _SCOPE_REDIRECT_MARKER_RE.search(content) and len(content) <= _SCOPE_REDIRECT_SOFT_LIMIT:
+        #
+        # Additionally gated on no `§` in the reply (smoke 2026-05-15
+        # airton_f). At this point in the check, `_reply_has_citation`
+        # already returned False — surface_patterns didn't match and
+        # the FAA bare-anchor fallback (if opted in) didn't either.
+        # If the reply still contains a §, it's making a citation
+        # ATTEMPT that the grammar rejected — i.e., a malformed cite.
+        # A true scope-redirect doesn't combine "doesn't cover"
+        # language with a § anchor. The §-coupling is acceptable
+        # because every currently-shipped citation grammar uses §;
+        # future non-§ citation forms would need their own gate.
+        if (
+            _SCOPE_REDIRECT_MARKER_RE.search(content)
+            and len(content) <= _SCOPE_REDIRECT_SOFT_LIMIT
+            and "§" not in content
+        ):
             return Continue()
         # Clarifying-question replies ('Could you clarify manned or
         # unmanned?') are ASKING, not asserting. Exempt — a citation
         # in a question would be weirdly presumptive and looping the
         # retry would discard a perfectly good clarifying reply
-        # (harness-5uq follow-up).
-        if _CLARIFYING_QUESTION_RE.search(content):
+        # (harness-5uq follow-up). Same §-gate as scope_redirect
+        # above: a reply with bare-§ + clarifying question is still
+        # a malformed-citation fabrication.
+        if _CLARIFYING_QUESTION_RE.search(content) and "§" not in content:
             return Continue()
         return Nudge(
             _MISSING_CITATION_NUDGE_TEMPLATE.format(
@@ -2073,11 +2096,13 @@ _OPINION_TRIGGER_WORDS: tuple[str, ...] = (
 
 
 _OPINION_NO_TRIGGER_NUDGE = (
-    "Your reply contains an `Opinion:` paragraph but the user's "
-    "message didn't ask for one. Opinion paragraphs are gated on the "
-    "user using one of these trigger phrases: opinion(s), thoughts, "
-    "what do you think, your view, your take. Re-answer with the "
-    "requested content only — no Opinion paragraph."
+    "Your reply contains an `Opinion:` paragraph but the user did "
+    "NOT use any of these trigger phrases: opinion(s), thoughts, "
+    "what do you think, your view, your take. DELETE the Opinion "
+    "paragraph entirely and re-answer with the requested content "
+    "only. Do NOT keep the Opinion content under a different label "
+    "(no 'Note:', 'Analysis:', 'My view:'). The user asked for "
+    "content; give content."
 )
 
 
@@ -2141,16 +2166,24 @@ _URL_CITATION_RE = re.compile(
 
 
 _POST_SEARCH_GROUNDING_NUDGE = (
-    "search_web ran this turn but your reply doesn't fetch a result, "
-    "refine the search, or cite a URL. After search_web you have "
-    "three valid next moves: (1) call `fetch_url` on a result (prefer "
-    "a tier-1 host: scholar.google.com, arxiv.org), (2) refine the "
-    "search with a `site:` operator (e.g. `site:scholar.google.com`), "
-    "or (3) explicitly say no allowlisted source covered the question "
-    "and ask whether to broaden. Producing a training-data summary "
-    "after a search call is ungrounded — the tool fired but the "
-    "content isn't tied to any source the user can verify. Re-answer "
-    "with one of the three moves."
+    "You called `search_web` but your reply did not fetch, refine, "
+    "or cite. Take ONE of these THREE actions NOW — by ISSUING the "
+    "corresponding tool call, NOT by describing it in prose:\n"
+    "\n"
+    "ACTION 1 — Issue a `fetch_url` tool call with the URL of a "
+    "search result. Prefer tier-1 hosts (scholar.google.com, "
+    "arxiv.org).\n"
+    "ACTION 2 — Issue a `search_web` tool call again, adding a "
+    "`site:` operator to your previous query (e.g. add "
+    "`site:scholar.google.com` to the end).\n"
+    "ACTION 3 — Reply with ONLY this sentence and NO other content: "
+    "'No allowlisted source covered this query — want to broaden "
+    "the allowlist?'\n"
+    "\n"
+    "DO NOT write 'Let's refine the search...' or 'I should fetch...' "
+    "— that is describing an action, not taking it. ISSUE THE TOOL "
+    "CALL. The user does not need narration of what you would do; "
+    "they need the grounded result of you actually doing it."
 )
 
 
@@ -2440,11 +2473,21 @@ class UncitedSubstantiveReplyHook:
             return Continue()
         if _reply_has_citation(content, self.grammar):
             return Continue()
-        if _CLARIFYING_QUESTION_RE.search(content):
+        # Same §-gate as MissingCitationHook above: exempt
+        # clarifying-question replies only when no `§` is present.
+        # bare-§ + clarifying question is a malformed-citation
+        # fabrication, not a pure clarifier.
+        if _CLARIFYING_QUESTION_RE.search(content) and "§" not in content:
             return Continue()
         # Short scope-redirects pass through. Longer marker-bearing
         # replies are the redirect-then-answer fabrication shape.
-        if _SCOPE_REDIRECT_MARKER_RE.search(content) and len(content) <= _SCOPE_REDIRECT_SOFT_LIMIT:
+        # Same §-gate: don't exempt a reply that combines redirect
+        # phrasing with a §-shaped citation attempt.
+        if (
+            _SCOPE_REDIRECT_MARKER_RE.search(content)
+            and len(content) <= _SCOPE_REDIRECT_SOFT_LIMIT
+            and "§" not in content
+        ):
             return Continue()
         reply = ctx.reply
         return Halt(
