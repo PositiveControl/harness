@@ -199,7 +199,11 @@ citation_grammar:
 # "paste-only" boundary: fetch_url is in the tool set so a pilot CAN
 # hand over a tfr.faa.gov URL, but the guard blocks speculative calls
 # the model invents from priors when the user only pasted NOTAM text.
+# assemble_context_once skips redundant re-calls after the forced
+# grounding (observed: small model invents `role='TFR_interpreter'`
+# even though airton_c_tfr is the only registered contract).
 catchers:
   - scope_redirect
   - ambiguous_context
   - fetch_url_guard
+  - assemble_context_once

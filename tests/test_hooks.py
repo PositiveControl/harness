@@ -17,6 +17,7 @@ from harness.orchestrator.hooks import (
     AbFabricationHook,
     AmbiguousContextHook,
     ArgumentGroundingHook,
+    AssembleContextOnceHook,
     BailContext,
     Continue,
     DuplicateCallHook,
@@ -621,6 +622,73 @@ def test_fetch_url_guard_wires_into_pipeline_when_opted_in() -> None:
     assert "fetch_url_guard" in on.names()
     off = default_hook_pipeline(catchers=())
     assert "fetch_url_guard" not in off.names()
+
+
+# ---------- assemble_context_once (harness-ygvg follow-up) ----------
+
+
+def test_assemble_context_once_skips_when_forced_call_already_ran() -> None:
+    """harness-ygvg follow-up: airton_c_tfr observed 2026-05-15 issuing
+    its own assemble_context call with role='TFR_interpreter' after
+    the orchestrator's forced-grounding prelude had already run with
+    role='airton_c_tfr'. The forced call adds (name, args) to
+    seen_calls before round 0; the hook must see that and Skip the
+    redundant call regardless of the new call's role argument."""
+    forced_key = ("assemble_context", '{"role":"airton_c_tfr","variables":{"...":""}}')
+    bad_call = ToolCall(
+        name="assemble_context",
+        arguments={"role": "TFR_interpreter", "variables": {"notam_text": "..."}},
+    )
+    ctx = PreToolContext(
+        call=bad_call,
+        seen_calls=frozenset({forced_key}),
+        user_message="FDC 5/2809 ZMA PALM BEACH FL TFR ...",
+    )
+    outcome = AssembleContextOnceHook().check(ctx)
+    assert isinstance(outcome, Skip)
+    assert outcome.result.success is False
+    assert outcome.result.error == "assemble_context_once"
+    assert "already ran" in outcome.result.output
+
+
+def test_assemble_context_once_passes_on_first_call() -> None:
+    """Truthful counterfactual: if assemble_context has NOT run yet
+    this turn (seen_calls empty or has only other tool names), the
+    hook stays out of the way. Otherwise the forced-grounding prelude
+    itself would be blocked."""
+    call = ToolCall(name="assemble_context", arguments={"role": "airton_c_tfr"})
+    ctx = PreToolContext(
+        call=call,
+        seen_calls=frozenset({("search_memory", "{}")}),  # different tool ran
+        user_message="some notam text",
+    )
+    outcome = AssembleContextOnceHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_assemble_context_once_ignores_other_tool_names() -> None:
+    """The hook only checks assemble_context calls. Other tools (even
+    if they're being re-issued) pass through — duplicate_call handles
+    that broader case."""
+    for tool_name in ("search_memory", "fetch_url", "read_file"):
+        call = ToolCall(name=tool_name, arguments={"x": "y"})
+        ctx = PreToolContext(
+            call=call,
+            seen_calls=frozenset({("assemble_context", "{}")}),
+            user_message="hi",
+        )
+        outcome = AssembleContextOnceHook().check(ctx)
+        assert isinstance(outcome, Continue), (
+            f"hook fired on non-assemble_context tool {tool_name!r}"
+        )
+
+
+def test_assemble_context_once_wires_into_pipeline_when_opted_in() -> None:
+    """Pipeline composition pin: opt-in via the catchers roster."""
+    on = default_hook_pipeline(catchers=("assemble_context_once",))
+    assert "assemble_context_once" in on.names()
+    off = default_hook_pipeline(catchers=())
+    assert "assemble_context_once" not in off.names()
 
 
 # ---------- finalize hook ----------

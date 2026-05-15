@@ -1889,6 +1889,67 @@ class ArgumentGroundingHook:
 _URL_IN_TEXT_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
 
+# Skip-result body for the assemble_context-once guard. Phrased so the
+# model knows the grounding bundle is already in its working thread —
+# don't re-call, just answer from the existing context.
+_ASSEMBLE_CONTEXT_ONCE_OUTPUT = (
+    "assemble_context already ran successfully this turn — the context "
+    "package is already in your working message thread. Do NOT call "
+    "assemble_context again with a different role or different "
+    "variables; the registered role is the ONE listed in the tool "
+    "description's 'Available contracts' section. Answer from the "
+    "grounding you already have."
+)
+
+
+@dataclass(frozen=True)
+class AssembleContextOnceHook:
+    """Skip model-issued `assemble_context` re-calls when the forced
+    grounding already ran this turn.
+
+    Failure mode this catches: characters with `require_assemble_context:
+    true` get a forced `assemble_context(role=<default>)` call before
+    round 0 — the result is already in the model's working thread. But
+    small models sometimes treat the resulting context block as 'I
+    should call this tool too' and issue their own `assemble_context`
+    call, often with a hallucinated role name (observed 2026-05-15
+    with airton_c_tfr: model invented `role='TFR_interpreter'` after
+    the forced call with `role='airton_c_tfr'` succeeded). The unknown-
+    role error then pollutes the working thread with a misleading
+    'Available: airton_c_tfr' message the model may interpret as a
+    correction it should retry.
+
+    Rule:
+      1. Only checks calls whose name is `assemble_context`.
+      2. Inspects `seen_calls` for any prior entry with that name. The
+         forced-grounding prelude adds its (name, args) key before
+         round 0, so a model-issued call in round 1+ will see it.
+      3. If yes → Skip with a result that names the rule and tells
+         the model the bundle is already attached.
+
+    Opt-in via the character's `catchers:` roster as
+    `assemble_context_once`. Multi-contract characters that legitimately
+    chain assemble_context across roles in one turn (none today, but
+    not impossible) leave it off."""
+
+    name: str = "assemble_context_once"
+
+    def check(self, ctx: PreToolContext) -> PreToolOutcome:
+        if ctx.call.name != "assemble_context":
+            return Continue()
+        already_ran = any(name == "assemble_context" for name, _args in ctx.seen_calls)
+        if not already_ran:
+            return Continue()
+        return Skip(
+            ToolResult(
+                tool_name=ctx.call.name,
+                output=_ASSEMBLE_CONTEXT_ONCE_OUTPUT,
+                success=False,
+                error="assemble_context_once",
+            )
+        )
+
+
 # Skip-result body when fetch_url is gated. Phrased as a tool result
 # (success=False) so the model sees a clean, actionable instruction
 # instead of a halt. The message names the reason ('user did not paste
@@ -2690,6 +2751,7 @@ _OPT_IN_CATCHERS: frozenset[str] = frozenset(
         "scope_redirect",
         "reserved_squawk_code",
         "fetch_url_guard",
+        "assemble_context_once",
     }
 )
 
@@ -2814,6 +2876,13 @@ def default_hook_pipeline(
     # allowlist + the grounding check).
     if "fetch_url_guard" in catchers_set:
         pre_tool.append(FetchUrlGuardHook())
+    # assemble_context_once: characters with require_assemble_context
+    # get a forced grounding prelude before round 0. Small models
+    # sometimes re-issue their own assemble_context with a hallucinated
+    # role; this hook Skips those redundant calls so the model answers
+    # from the already-attached context bundle.
+    if "assemble_context_once" in catchers_set:
+        pre_tool.append(AssembleContextOnceHook())
 
     return HookPipeline(
         bail=bail,
