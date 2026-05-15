@@ -56,6 +56,8 @@ from harness.tools import (
     DEFAULT_PROFILE,
     TOOL_PROFILES,
     AssembleContextTool,
+    CalcTool,
+    DateMathTool,
     EditFileTool,
     FetchUrlTool,
     GitDiffTool,
@@ -66,7 +68,9 @@ from harness.tools import (
     IntrospectContext,
     IntrospectTool,
     ListDirTool,
+    NowTool,
     PhraseologyLintTool,
+    PythonEvalTool,
     ReadFileTool,
     RememberEventTool,
     RememberFactTool,
@@ -1541,6 +1545,13 @@ def _build_tool_registry_for_tui(
         "git_status": lambda: GitStatusTool(root=workspace_path),
         "git_diff": lambda: GitDiffTool(root=workspace_path),
         "git_log": lambda: GitLogTool(root=workspace_path),
+        # Reckon-profile primitives. All four are stateless,
+        # workspace-independent, and need no stores — they construct
+        # cheaply per session (harness-1u2h).
+        "now": lambda: NowTool(),
+        "date_math": lambda: DateMathTool(),
+        "calc": lambda: CalcTool(),
+        "python_eval": lambda: PythonEvalTool(),
         "search_memory": lambda: (
             SearchMemoryTool(store=memory_store, user_id=speaker, expander=query_expander)
             if memory_store is not None

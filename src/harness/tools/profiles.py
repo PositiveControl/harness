@@ -205,6 +205,21 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "remember_event",
         "introspect",
     ),
+    # airton_g (the reckoner) — deterministic time + compute. The
+    # four primitives kill date and math hallucinations across every
+    # character that loads this profile. Companion memory + introspect
+    # tools so the reckoner can record context across sessions and
+    # explain its own roster on request. No fs / shell / git / web —
+    # reckoning never needs the filesystem or network (harness-1u2h).
+    "reckon": (
+        "now",
+        "date_math",
+        "calc",
+        "python_eval",
+        "search_memory",
+        "search_facts",
+        "introspect",
+    ),
     # Kitchen-sink — every built-in tool the registry knows about.
     # Intended as the starting point for scripts/chat.sh + power users
     # who prefer to prune with --tools-drop rather than opt in to each
@@ -235,6 +250,10 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "introspect",
         "spawn_subagent",
         "assemble_context",
+        "now",
+        "date_math",
+        "calc",
+        "python_eval",
     ),
 }
 

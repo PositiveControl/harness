@@ -43,7 +43,9 @@ from harness.store.bd_adapter import BeadsAdapter
 from harness.store.transcript import Transcript
 from harness.tools import (
     AssembleContextTool,
+    CalcTool,
     ConsolidateMemoryTool,
+    DateMathTool,
     EditFileTool,
     FetchUrlTool,
     GitDiffTool,
@@ -52,6 +54,8 @@ from harness.tools import (
     GlobTool,
     GrepTool,
     ListDirTool,
+    NowTool,
+    PythonEvalTool,
     ReadFileTool,
     RememberEventTool,
     RememberFactTool,
@@ -253,6 +257,13 @@ def build_classic_registry(
         "git_status": lambda: GitStatusTool(root=workspace_path),
         "git_diff": lambda: GitDiffTool(root=workspace_path),
         "git_log": lambda: GitLogTool(root=workspace_path),
+        # Reckon-profile primitives. Stateless, workspace-independent
+        # — registered alongside fs/git so any profile can pick them up
+        # via --tools-add (harness-1u2h).
+        "now": lambda: NowTool(),
+        "date_math": lambda: DateMathTool(),
+        "calc": lambda: CalcTool(),
+        "python_eval": lambda: PythonEvalTool(),
         "search_memory": (
             lambda: (
                 SearchMemoryTool(store=memory_store, user_id=speaker, expander=query_expander)

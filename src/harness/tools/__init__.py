@@ -16,6 +16,8 @@ from harness.tools.base import (
     ToolResult,
     ToolSpec,
 )
+from harness.tools.calc import CalcTool
+from harness.tools.date_math import DateMathTool
 from harness.tools.edit_file import EditFileTool
 from harness.tools.fetch_url import FetchUrlTool
 from harness.tools.git import GitDiffTool, GitLogTool, GitStatusTool
@@ -23,6 +25,7 @@ from harness.tools.glob import GlobTool
 from harness.tools.grep import GrepTool
 from harness.tools.introspect import IntrospectContext, IntrospectTool
 from harness.tools.list_dir import ListDirTool
+from harness.tools.now import NowTool
 from harness.tools.ops import ConsolidateMemoryTool, ScribeSessionTool
 from harness.tools.phraseology_lint import (
     PhraseologyLintTool,
@@ -34,6 +37,7 @@ from harness.tools.profiles import (
     TOOL_PROFILES,
     resolve_tool_names,
 )
+from harness.tools.python_eval import PythonEvalTool
 from harness.tools.read_file import ReadFileTool
 from harness.tools.remember import RememberEventTool, RememberFactTool
 from harness.tools.search_facts import SearchFactsTool
@@ -49,7 +53,9 @@ __all__ = [
     "DEFAULT_PROFILE",
     "TOOL_PROFILES",
     "AssembleContextTool",
+    "CalcTool",
     "ConsolidateMemoryTool",
+    "DateMathTool",
     "EditFileTool",
     "FetchUrlTool",
     "GitDiffTool",
@@ -61,8 +67,10 @@ __all__ = [
     "IntrospectTool",
     "ListDirTool",
     "ModelReply",
+    "NowTool",
     "PhraseologyLintTool",
     "PhraseologyVerdict",
+    "PythonEvalTool",
     "ReadFileTool",
     "RememberEventTool",
     "RememberFactTool",
