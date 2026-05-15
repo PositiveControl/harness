@@ -303,6 +303,7 @@ def build_classic_registry(
                     ),
                     contracts_dir=settings.character_path / "contracts",
                     user_id=speaker,
+                    error_log_path=settings.data_path / "logs" / "assemble_context_errors.log",
                 )
                 if character is not None
                 else None

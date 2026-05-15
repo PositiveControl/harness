@@ -613,6 +613,7 @@ def _build_assemble_context_tool(
         stores=bundle,
         contracts_dir=contracts_dir,
         user_id=speaker,
+        error_log_path=settings.data_path / "logs" / "assemble_context_errors.log",
     )
 
 

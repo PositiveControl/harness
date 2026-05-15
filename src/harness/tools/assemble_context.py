@@ -43,6 +43,7 @@ import sys
 import traceback
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from harness.retrieval.context_package import AccessPolicy, PackagedHit
@@ -119,6 +120,14 @@ class AssembleContextTool:
     contracts_dir: Path
     user_id: str | None = None
     role_default: str | None = None
+    # Optional path where caught ValueError tracebacks are appended.
+    # The CLI threads this through (defaults to <data_path>/logs/
+    # assemble_context_errors.log) so TUI sessions — which swallow
+    # stderr to the alt-screen — still keep a forensic trail of
+    # intermittent failures like the 2026-05-14 'bad value(s) in
+    # fds_to_keep' regression. None disables file logging (stderr-
+    # only); tests pass None to avoid touching disk.
+    error_log_path: Path | None = None
     _contracts: dict[str, _ContractEntry] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -179,6 +188,28 @@ class AssembleContextTool:
             high_noise=True,
         )
 
+    def _append_error_log(
+        self, *, role: str, variables: Mapping[str, str], exc: BaseException
+    ) -> None:
+        """Append the caught traceback to `error_log_path`. Silent on
+        disk-write failure — losing the log line is strictly better
+        than crashing the chat turn on top of an already-failed tool
+        call. The timestamp is UTC + ISO-8601 so log lines sort
+        lexicographically."""
+        if self.error_log_path is None:
+            return
+        try:
+            self.error_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.error_log_path.open("a", encoding="utf-8") as f:
+                f.write(f"--- {datetime.now(UTC).isoformat()} ---\n")
+                f.write(f"role={role!r}\n")
+                f.write(f"variables_keys={sorted(variables)}\n")
+                f.write(f"exception={type(exc).__name__}: {exc}\n")
+                f.write(traceback.format_exc())
+                f.write("\n")
+        except OSError:
+            return
+
     def call(self, *, role: str, variables: Mapping[str, str] | None = None) -> str:
         entry = self._contracts.get(role)
         if entry is None:
@@ -203,10 +234,12 @@ class AssembleContextTool:
             # embed/search pipeline with no stack visible because we
             # swallowed it to a one-line tool result.
             #
-            # Always dump the traceback to stderr so the next intermittent
-            # failure is localizable from the running session, while
-            # keeping the model-facing tool result a clean one-liner.
+            # Dump the traceback to stderr (classic REPL) AND append to
+            # `error_log_path` (TUI swallows stderr to the alt-screen,
+            # so without the file the forensic trail is lost). The
+            # model-facing tool result stays a clean one-liner.
             traceback.print_exc(file=sys.stderr)
+            self._append_error_log(role=role, variables=vars_dict, exc=exc)
             return f"assemble_context error: {exc}"
         return _render_package(
             role=role,

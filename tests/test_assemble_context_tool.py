@@ -224,6 +224,45 @@ def test_call_prints_traceback_to_stderr_on_assemble_failure(
     assert "customer_id" in err
 
 
+def test_call_appends_traceback_to_error_log_when_configured(tmp_path: Path) -> None:
+    """harness-ygvg follow-up #2: TUI sessions swallow stderr to the
+    alt-screen, so the stderr-only trail is invisible there. When
+    `error_log_path` is wired, the caught traceback also appends to
+    that file so a forensic record survives across both surfaces."""
+    _write_contract(tmp_path, _MINIMAL_CONTRACT)
+    stores, _ = _seed_stores(tmp_path)
+    log_path = tmp_path / "logs" / "assemble_context_errors.log"
+    tool = AssembleContextTool(
+        stores=stores,
+        contracts_dir=tmp_path / "contracts",
+        error_log_path=log_path,
+    )
+    tool.call(role="test_role", variables={})  # missing customer_id → ValueError
+    assert log_path.exists(), "error log file should have been created lazily"
+    body = log_path.read_text(encoding="utf-8")
+    assert "Traceback" in body
+    assert "role='test_role'" in body
+    assert "customer_id" in body
+    # Second failure appends rather than overwrites. Count the per-
+    # call timestamp marker rather than 'Traceback' (chained
+    # exceptions emit multiple Traceback lines per call).
+    tool.call(role="test_role", variables={})
+    body2 = log_path.read_text(encoding="utf-8")
+    assert body2.count("--- ") == 2
+
+
+def test_call_skips_error_log_when_path_unset(tmp_path: Path) -> None:
+    """Default construction (no `error_log_path`) must not create a
+    log file — keeps tests + ephemeral subagent calls from littering
+    the working tree."""
+    _write_contract(tmp_path, _MINIMAL_CONTRACT)
+    stores, _ = _seed_stores(tmp_path)
+    tool = AssembleContextTool(stores=stores, contracts_dir=tmp_path / "contracts")
+    tool.call(role="test_role", variables={})
+    # No path means no file. Walk the tmp_path looking for any *.log.
+    assert not list(tmp_path.rglob("*.log"))
+
+
 def test_call_with_no_variables_renders_none_placeholder(tmp_path: Path) -> None:
     """A contract whose templates don't have variables can be called
     with `variables=None` and the renderer says so explicitly."""
