@@ -3148,6 +3148,47 @@ def test_post_search_grounding_silent_on_short_reply() -> None:
     assert isinstance(outcome, Continue)
 
 
+def test_post_search_grounding_fires_when_search_scholar_ran_but_no_followup() -> None:
+    """JEPA smoke repro 2026-05-15 (search_scholar variant): the model
+    called search_scholar, got 5 real papers back, then produced
+    "you might want to search the web" with no citations and no
+    substance. Hook must fire on search_scholar the same way it
+    fires on search_web — both are "search-and-ground" tools."""
+    reply = _reply(
+        "The corpus doesn't cover JEPA in the context of predictive "
+        "models. To proceed, you might want to search the web or "
+        "academic papers for more information on JEPA."
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"assemble_context", "search_scholar"}),
+        user_message="Search and review what JEPA is in the context of predictive models.",
+    )
+    outcome = PostSearchGroundingHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+
+
+def test_post_search_grounding_allows_search_scholar_with_inline_citation() -> None:
+    """When search_scholar ran and the reply summarizes with a
+    `[scholar:...]` / `[arxiv:...]` / `[doi:...]` citation, the hook
+    stays out of the way — that's the legitimate grounding move."""
+    reply = _reply(
+        "JEPA (Joint-Embedding Predictive Architecture) is a self-supervised "
+        "learning framework. The original I-JEPA paper "
+        "[arxiv:2301.08243] introduces it for image representation; "
+        "V-JEPA [doi:10.x/vjepa] extends the framework to video."
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"assemble_context", "search_scholar"}),
+        user_message="Search and review what JEPA is.",
+    )
+    outcome = PostSearchGroundingHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
 def test_post_search_grounding_wires_into_pipeline_when_opted_in() -> None:
     """Composition pin."""
     on = default_hook_pipeline(catchers=("post_search_grounding",))

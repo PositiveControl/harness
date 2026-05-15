@@ -2166,44 +2166,65 @@ _URL_CITATION_RE = re.compile(
 
 
 _POST_SEARCH_GROUNDING_NUDGE = (
-    "You called `search_web` but your reply did not fetch, refine, "
-    "or cite. Take ONE of these THREE actions NOW — by ISSUING the "
-    "corresponding tool call, NOT by describing it in prose:\n"
+    "You called a search tool (`search_web` or `search_scholar`) "
+    "but your reply did not cite any of its results, fetch a URL, "
+    "or refine the search. Take ONE of these actions NOW — by "
+    "ISSUING the corresponding tool call OR by SUMMARIZING the "
+    "search results inline with citations:\n"
     "\n"
-    "ACTION 1 — Issue a `fetch_url` tool call with the URL of a "
+    "ACTION 1 — Summarize the search results in prose with URL "
+    "citations: `[scholar:<paperId>]`, `[arxiv:<id>]`, "
+    "`[doi:<id>]`, or `[wiki:<article>]`. Use the URLs the tool "
+    "returned. This is the right move when the user asked you to "
+    "'review', 'summarize', 'explain', or 'find' — they want "
+    "content, not just a list.\n"
+    "ACTION 2 — Issue a `fetch_url` tool call with the URL of a "
     "search result. Prefer tier-1 hosts (scholar.google.com, "
     "arxiv.org).\n"
-    "ACTION 2 — Issue a `search_web` tool call again, adding a "
-    "`site:` operator to your previous query (e.g. add "
-    "`site:scholar.google.com` to the end).\n"
-    "ACTION 3 — Reply with ONLY this sentence and NO other content: "
+    "ACTION 3 — Issue a `search_web` or `search_scholar` tool "
+    "call again with a refined query (e.g. add a `site:` operator "
+    "or narrower terms).\n"
+    "ACTION 4 — Reply with ONLY this sentence and NO other content: "
     "'No allowlisted source covered this query — want to broaden "
     "the allowlist?'\n"
     "\n"
-    "DO NOT write 'Let's refine the search...' or 'I should fetch...' "
-    "— that is describing an action, not taking it. ISSUE THE TOOL "
-    "CALL. The user does not need narration of what you would do; "
-    "they need the grounded result of you actually doing it."
+    "DO NOT write 'you might want to search the web...' or 'Let's "
+    "refine the search...' — that hands the work back to the user "
+    "instead of doing it. DO NOT label content summaries as "
+    "'Opinion:'; a summary of search results is content, not "
+    "opinion."
 )
+
+
+# Tools that count as a "search ran" for the post-search grounding
+# check. search_web (DDG general web) and search_scholar (Semantic
+# Scholar + OpenAlex academic) both produce result lists the model is
+# expected to ground its reply in. Adding a future search tool
+# (PubMed, etc.) means adding its name here.
+_SEARCH_TOOLS: frozenset[str] = frozenset({"search_web", "search_scholar"})
 
 
 @dataclass(frozen=True)
 class PostSearchGroundingHook:
-    """Nudge a reply that called `search_web` but didn't follow up
-    with a fetch, a refined search, or an explicit no-allowlisted-
-    source statement.
+    """Nudge a reply that called a search tool but didn't follow up
+    with a fetch, a refined search, an inline summary with URL
+    citations, or an explicit no-allowlisted-source statement.
 
     Failure mode this catches: scholar-style characters declare
-    "after search_web, ground or refine, never paraphrase" in their
-    constitution. Smoke 2026-05-15: search_web returned a Wikipedia
-    hit; model didn't fetch_url it, didn't cite `[wiki:…]`, didn't
-    refine with `site:scholar.google.com` — went straight to
-    training-data prose. Tool fired, reply ungrounded. Same regression
-    on two consecutive smokes. Constitution-only enforcement
-    insufficient → structural hook.
+    "after a search, ground or refine, never paraphrase" in their
+    constitution. Smoke 2026-05-15 (search_web repro): search_web
+    returned a Wikipedia hit; model didn't fetch_url it, didn't cite
+    `[wiki:…]`, didn't refine — went straight to training-data prose.
+    JEPA repro (search_scholar): search_scholar returned 5 real
+    papers; model labeled its summary `Opinion:`; opinion_no_trigger
+    nudged it away; the retry produced "you might want to search the
+    web" with NO citations and NO substance. Both shapes have the
+    same root: a search tool fired but the reply isn't grounded in
+    its output.
 
     Trigger conditions (ALL must hold):
-      1. `search_web` in `ctx.tools_ran` this turn.
+      1. At least one tool from `_SEARCH_TOOLS` (search_web,
+         search_scholar) in `ctx.tools_ran` this turn.
       2. `fetch_url` NOT in `ctx.tools_ran` (no follow-up fetch).
       3. Reply is substantive (>= 80 chars). Short refusals like
          "no results, broaden?" don't need a URL.
@@ -2211,18 +2232,19 @@ class PostSearchGroundingHook:
          `[scholar:…]`, `[doi:…]`, `[wiki:…]`) AND NO raw http(s)://
          URL. Either form counts as grounding-after-search.
 
-    Action: Nudge the model to take one of the three valid next
-    moves. Retry-able.
+    Action: Nudge the model to take one of the four valid next moves
+    (summarize-with-citations, fetch, refine, or no-source refusal).
+    Retry-able.
 
     Opt-in via the character's `catchers:` roster as
-    `post_search_grounding`. Characters that use search_web for
-    its own sake (e.g. general-web-research personas without a
+    `post_search_grounding`. Characters that use search tools for
+    their own sake (e.g. general-web-research personas without a
     citation discipline) leave it off."""
 
     name: str = "post_search_grounding"
 
     def check(self, ctx: BailContext) -> BailOutcome:
-        if "search_web" not in ctx.tools_ran:
+        if not (ctx.tools_ran & _SEARCH_TOOLS):
             return Continue()
         if "fetch_url" in ctx.tools_ran:
             return Continue()
