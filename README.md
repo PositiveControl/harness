@@ -57,7 +57,7 @@ The harness ships with several characters, each shaped by a different tool surfa
 | **airton_c_tfr** | TFR/NOTAM explainer — narrowed airton_c for plain-English NOTAM interpretation | `atc` | `HARNESS_CHARACTER_NAME=airton_c_tfr uv run harness chat …` |
 | **airton_d** | notes curator — capture / query / triage over `character/airton_d/workspace/` | `notes` | `scripts/chat_d.sh` |
 | **airton_e** | RESERVED — placeholder slot for a future character (see `character/airton_e/RESERVED.md`) | — | — |
-| **airton_f** | scholar — generic markdown doc-tree reader on the contract primitive | `contract` | `scripts/chat_f.sh` |
+| **airton_f** | scholar — generic markdown doc-tree reader on the contract primitive; bounded external lookup via Google Scholar / arXiv / DOI | `scholar` | `scripts/chat_f.sh` |
 | **returns_handler** | tabular-decision demo — refund decisions over policy seeds + order rows | `contract` | `HARNESS_CHARACTER_NAME=returns_handler uv run harness chat …` |
 
 Each character's data lives under `character/<name>/` — `core.yaml`, `constitution.md`, `voice/`, `seed_memories/`, plus optional `contracts/`, `seed_documents/`, `data/`, and `workspace/` subdirs depending on archetype. Character data is configuration, not code: nothing in `src/` hardcodes a character's rules.

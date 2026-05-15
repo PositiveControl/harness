@@ -177,6 +177,23 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_facts",
         "introspect",
     ),
+    # airton_f (scholar) — contract over a markdown doc tree, plus
+    # bounded external lookup (search_web + fetch_url). fetch_url is
+    # host-allowlisted in the character's core.yaml (scholar.google.com,
+    # arxiv.org, doi.org); search_web is unbounded. Pair with
+    # citation_grammar + lead_with_citation: the corpus path emits
+    # §<path> (<doc>) citations, the external path emits
+    # [arxiv:…] / [scholar:…] / [doi:…] tags (constitution defines the
+    # form). No shell / git / write-tier fs — scholar reads, doesn't
+    # author.
+    "scholar": (
+        "assemble_context",
+        "search_memory",
+        "search_facts",
+        "search_web",
+        "fetch_url",
+        "introspect",
+    ),
     # Kitchen-sink — every built-in tool the registry knows about.
     # Intended as the starting point for scripts/chat.sh + power users
     # who prefer to prune with --tools-drop rather than opt in to each

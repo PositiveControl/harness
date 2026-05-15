@@ -49,6 +49,37 @@ default_contract_role: airton_f
 # visible up front for any reader skimming the answer.
 lead_with_citation: true
 
+# Citation grammar pairs with lead_with_citation: the rewriter needs
+# regex patterns to recognize a citation in the draft so it can hoist
+# the anchor to the front. MissingCitationHook (bail phase, auto-wired
+# when citation_grammar is present) consults document_reference to
+# nudge any reply that mentions the corpus substantively but omits
+# a §-anchor.
+#
+# Surface shape: `§<path> (<document>):` — for example,
+# `§3.1 (01-example-rfc-style):` or `§Chapter 4 / Frame Format
+# (01-example-rfc-style):`. The doc-name segment comes from the
+# `name:` field in document_trees and is alphanumeric + hyphens.
+citation_grammar:
+  surface_patterns:
+    - '§\s*[\w][\w./ \-]*?\s*\([\w][\w./\-]*\)'
+  anchor_pattern: '§\s*([\w][\w./ \-]*?)\s*\('
+  document_reference: '\([\w][\w./\-]*\)'
+  document_name: 'the corpus'
+  example_anchor: '§3.1'
+
+# External lookup allowlist (harness-thk7 follow-up). Scholar lives in
+# the corpus by default, but the user can ask it to broaden — pull a
+# paper from Google Scholar, fetch an arXiv preprint, resolve a DOI.
+# Only HTTPS, only these hosts. Anything else is refused at the tool
+# layer. URL-cited claims use a separate citation form from §-anchors
+# (see constitution.md → "External lookup").
+fetch_url:
+  allowed_hosts:
+    - scholar.google.com
+    - arxiv.org
+    - doi.org
+
 values:
   - id: cite_every_claim
     rule: Every claim about the corpus names the section it came from.
