@@ -946,6 +946,21 @@ _COUNT_CLAIM_RE = re.compile(
 )
 
 
+# Tokens that, when present inside a _COUNT_CLAIM_RE match span,
+# disqualify the match as a real count claim. Legal/document
+# citations like '14 CFR §99.7, ... operations are prohibited' fit
+# the count-claim shape but '14' is a section prefix, not an item
+# count. Observed 2026-05-15 with airton_c_tfr decoding a §99.7 UAS
+# NOTAM — the post-cite gap to 'are prohibited' was inside the 120-
+# char window. Adding § / CFR / USC / U.S.C. / AIM / JO / AC tokens
+# as exclusions filters citation patterns without blocking real
+# count claims like 'the 14 sections are listed below.'
+_CITATION_TOKEN_IN_CLAIM_RE = re.compile(
+    r"\b(?:CFR|USC|U\.S\.C\.|AIM|JO|AC)\b|§",
+    re.IGNORECASE,
+)
+
+
 # Matches the start of a numbered or bulleted list item. Requires
 # punctuation after digits (`.`, `)`, or `]`) so stray numbers in
 # prose don't count. Bullet characters (`-`, `*`, `•`) are standard
@@ -1578,10 +1593,21 @@ class ListCountMismatchHook:
             re.IGNORECASE,
         ):
             return Continue()
-        claim_matches = _COUNT_CLAIM_RE.findall(content)
-        if len(claim_matches) != 1:
+        # Walk every regex match and reject ones whose span contains
+        # legal/document citation tokens (§ / CFR / USC / AIM / JO /
+        # AC). Observed 2026-05-15 with airton_c_tfr: '14 CFR §99.7,
+        # ... operations are prohibited' matched the count-claim
+        # shape, with '14' treated as a 14-item count. Filtering
+        # citation spans keeps real count claims ('the 14 sections
+        # are ...') while killing false positives from cited rules.
+        valid_claims: list[str] = []
+        for match in _COUNT_CLAIM_RE.finditer(content):
+            if _CITATION_TOKEN_IN_CLAIM_RE.search(match.group(0)):
+                continue
+            valid_claims.append(match.group(1))
+        if len(valid_claims) != 1:
             return Continue()
-        claimed = _parse_count_word(claim_matches[0])
+        claimed = _parse_count_word(valid_claims[0])
         if claimed is None:
             return Continue()
         list_count = len(_LIST_ITEM_RE.findall(content))

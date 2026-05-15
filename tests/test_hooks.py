@@ -1869,6 +1869,66 @@ def test_list_count_mismatch_matches_bullet_lists() -> None:
     assert isinstance(outcome, Nudge)
 
 
+def test_list_count_mismatch_ignores_cfr_citation_digits() -> None:
+    """harness-ygvg follow-up #2: airton_c_tfr observed 2026-05-15
+    discarding a clean §99.7 UAS TFR decode with two restricted areas.
+    The model's paraphrase line was 'According to 14 CFR §99.7, all
+    UAS flight operations are prohibited' — the count-claim regex
+    matched '14 CFR §99.7, all UAS flight operations are' with '14'
+    treated as a count, then compared to the 12-bullet two-area list
+    and fired the mismatch. Citation patterns (§ / CFR / USC / AIM /
+    JO / AC) inside a count-claim span are now filtered."""
+    reply_text = (
+        "Lead with the verdict: All UAS flight operations are prohibited.\n\n"
+        "Geometry:\n\n"
+        "- First Restricted Area:\n"
+        "  - Center: 403946N0735805W\n"
+        "  - Radius: 1 NM\n"
+        "  - Floor: SFC\n"
+        "  - Ceiling: 400FT AGL\n"
+        "  - Active Window: 2605161000 UTC to 2605161500 UTC\n"
+        "- Second Restricted Area:\n"
+        "  - Center: 403502N0735801W\n"
+        "  - Radius: 1 NM\n"
+        "  - Floor: SFC\n"
+        "  - Ceiling: 400FT AGL\n"
+        "  - Active Window: 2605161130 UTC to 2605161800 UTC\n\n"
+        "According to 14 CFR §99.7, all UAS flight operations are prohibited "
+        "within the defined areas during the specified times."
+    )
+    outcome = ListCountMismatchHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"assemble_context"}),
+        )
+    )
+    assert isinstance(outcome, Continue), (
+        "'14 CFR §99.7' must not be matched as a count claim of 14 items"
+    )
+
+
+def test_list_count_mismatch_ignores_usc_citation_digits() -> None:
+    """'Per 49 USC 40103(B)(3), the relevant restrictions are listed
+    below' fits the count-claim shape if you read '49' as a count.
+    USC inside the matched span filters it out, matching the CFR
+    behaviour. The list has 5 bullets; without the filter the hook
+    would fire on 49 ≠ 5."""
+    reply_text = (
+        "Some prose.\n\n"
+        "Per 49 USC 40103(B)(3), the relevant restrictions are listed below.\n\n"
+        "- alpha\n- beta\n- gamma\n- delta\n- epsilon\n"
+    )
+    outcome = ListCountMismatchHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"assemble_context"}),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
 def test_list_count_mismatch_ignores_phone_and_frequency_digits() -> None:
     """harness-ygvg follow-up: airton_c_tfr observed 2026-05-15
     discarding a clean TFR decode because the model echoed the NOTAM's
