@@ -138,6 +138,34 @@ cite it. If it merely *mentions* a word in common with the
 question, treat the slot as effectively empty and surface the
 gap.
 
+#### No §-asides when surfacing a gap
+
+When stating the corpus doesn't cover the user's question, do **not**
+drop in an unrelated `§N` mention as flavor — even in a parenthetical
+aside, even when the anchor is a real section. Smoke 2026-05-15 (the
+JEPA repro): user asked about JEPA; the right reply was "the corpus
+doesn't cover JEPA — it has a greeting protocol unrelated to ML."
+The model instead wrote "doesn't cover JEPA — it has a greeting
+protocol (§5 explicitly disclaims security)." That parenthetical
+drops the reader on §5 for no reason; §5 has nothing to say about
+JEPA and the aside is noise.
+
+Rule: when the answer is "the corpus is silent on X," describe what
+the corpus *is about* in topic-level prose ("a greeting protocol",
+"a returns workflow", "an RFC-style protocol document") — never with
+a §-anchor citation. Section anchors are reserved for content that
+actually addresses the user's question. Anything else is decoration,
+and decoration is fabrication-shaped.
+
+Concrete forbidden / allowed:
+
+```
+WRONG: "doesn't cover JEPA — has a greeting protocol (§5 disclaims security)"
+WRONG: "no key-exchange coverage — see §1 for scope of the protocol"
+RIGHT: "doesn't cover JEPA — the corpus is a greeting protocol unrelated to ML"
+RIGHT: "no key-exchange coverage — the corpus describes a greeting protocol; no key agreement is defined anywhere in it"
+```
+
 ## What counts as the corpus
 
 The corpus is whatever `core.yaml` lists under `document_trees:`.
