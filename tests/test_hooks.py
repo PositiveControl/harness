@@ -37,6 +37,7 @@ from harness.orchestrator.hooks import (
     NumericFabricationHook,
     OpinionWithoutTriggerHook,
     PairedMetaConfirmStripHook,
+    PersistBodyCitationsHook,
     PostModelContext,
     PostResearchPersistHook,
     PostSearchGroundingHook,
@@ -3433,3 +3434,130 @@ def test_post_research_persist_fires_when_no_recall_lead() -> None:
     )
     outcome = _persist_hook().check(ctx)
     assert isinstance(outcome, Nudge)
+
+
+# ---------- PersistBodyCitationsHook (harness-gumn) ----------
+
+
+def _persist_body_call(body: str) -> ToolCall:
+    return ToolCall(
+        name="remember_event",
+        arguments={"title": "JEPA in predictive models", "body": body},
+    )
+
+
+def test_persist_body_citations_skips_when_body_strips_url_tokens() -> None:
+    """harness-gumn smoke: model wrote a remember_event body using
+    parenthetical author descriptions only, dropping every [doi:..]
+    token from the reply. Hook must Skip the call (pre-write) so the
+    bad row never reaches the user's approval dialog."""
+    body = (
+        "Captured: 2026-05-15 — JEPA spans diverse self-supervised "
+        "learning tasks. Cross-validated papers:  (Choi et al, GNNs "
+        "for brain networks),  (Li et al, trajectory similarity), "
+        " (Skenderi et al, graph-level representation),  (Hu et al, "
+        "3D representation),  (Pilataki et al, music transcription)."
+    )
+    call = _persist_body_call(body)
+    ctx = PreToolContext(
+        call=call,
+        seen_calls=frozenset({("search_scholar", '{"query":"jepa"}')}),
+        user_message="research JEPA",
+    )
+    outcome = PersistBodyCitationsHook().check(ctx)
+    assert isinstance(outcome, Skip)
+    assert outcome.result.success is False
+    assert outcome.result.error == "persist_body_citations"
+    assert "URL citation tokens" in outcome.result.output
+
+
+def test_persist_body_citations_allows_when_body_has_url_tokens() -> None:
+    """Happy path: body carries every [doi:..]/[arxiv:..] token from
+    the reply verbatim. Hook stays out — the row is fully sourceable
+    from its body alone, which is the contract the rule enforces."""
+    body = (
+        "Captured: 2026-05-15 — JEPA spans diverse self-supervised "
+        "learning tasks. [doi:10.48550/arxiv.2403.06432] (Choi et al, "
+        "brain networks), [doi:10.1145/3678717.3691271] (Li et al, "
+        "trajectory similarity), [arxiv:2309.16014] (Skenderi et al, "
+        "graph-level)."
+    )
+    call = _persist_body_call(body)
+    ctx = PreToolContext(
+        call=call,
+        seen_calls=frozenset({("search_scholar", '{"query":"jepa"}')}),
+        user_message="research JEPA",
+    )
+    outcome = PersistBodyCitationsHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_persist_body_citations_allows_single_token_path_to_post_research() -> None:
+    """Threshold pins at _PERSIST_BODY_MIN_URL_TOKENS=2 (matches
+    post_research_persist). A body with exactly 1 URL token is below
+    threshold — but a body with exactly 2 passes. Boundary check."""
+    body_one_url = "Captured: 2026-05-15 — Single paper recap [arxiv:1]."
+    body_two_urls = "Captured: 2026-05-15 — Two papers: [arxiv:1] (A) and [doi:2] (B)."
+    ctx_one = PreToolContext(
+        call=_persist_body_call(body_one_url),
+        seen_calls=frozenset({("search_scholar", "{}")}),
+        user_message="x",
+    )
+    ctx_two = PreToolContext(
+        call=_persist_body_call(body_two_urls),
+        seen_calls=frozenset({("search_scholar", "{}")}),
+        user_message="x",
+    )
+    assert isinstance(PersistBodyCitationsHook().check(ctx_one), Skip)
+    assert isinstance(PersistBodyCitationsHook().check(ctx_two), Continue)
+
+
+def test_persist_body_citations_silent_when_no_search_scholar_in_turn() -> None:
+    """The hook only enforces the citation contract on the research
+    persist path (search_scholar ran). User-asked 'remember that ...'
+    chit-chat persists without URL citations are fine."""
+    body = "Captured: 2026-05-15 — Mark prefers MLX over Ollama for daily chat."
+    call = _persist_body_call(body)
+    ctx = PreToolContext(
+        call=call,
+        seen_calls=frozenset({("assemble_context", '{"role":"airton_f"}')}),
+        user_message="remember that I prefer MLX",
+    )
+    outcome = PersistBodyCitationsHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_persist_body_citations_ignores_other_tool_names() -> None:
+    """Hook only checks remember_event. remember_fact, scribe, etc.
+    pass through untouched."""
+    for tool_name in ("remember_fact", "scribe_session", "search_scholar", "fetch_url"):
+        call = ToolCall(name=tool_name, arguments={"x": "y"})
+        ctx = PreToolContext(
+            call=call,
+            seen_calls=frozenset({("search_scholar", "{}")}),
+            user_message="x",
+        )
+        outcome = PersistBodyCitationsHook().check(ctx)
+        assert isinstance(outcome, Continue), f"hook fired on {tool_name!r}"
+
+
+def test_persist_body_citations_handles_non_string_body() -> None:
+    """Defensive: a malformed call where body isn't a string (model
+    drift, tokenizer mishap) — don't crash, just pass through. The
+    tool's own schema validation will reject it."""
+    call = ToolCall(name="remember_event", arguments={"body": 12345})
+    ctx = PreToolContext(
+        call=call,
+        seen_calls=frozenset({("search_scholar", "{}")}),
+        user_message="x",
+    )
+    outcome = PersistBodyCitationsHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_persist_body_citations_wires_into_pipeline_when_opted_in() -> None:
+    """Composition pin."""
+    on = default_hook_pipeline(catchers=("persist_body_citations",))
+    assert "persist_body_citations" in on.names()
+    off = default_hook_pipeline(catchers=())
+    assert "persist_body_citations" not in off.names()

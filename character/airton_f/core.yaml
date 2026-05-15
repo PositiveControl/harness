@@ -155,7 +155,7 @@ document_trees:
     format: markdown
 
 # Opt-in fabrication catchers (harness-qvwq). airton_f ships the
-# three scholar-shaped checks the smoke tests surfaced:
+# four scholar-shaped checks the smoke tests surfaced:
 #
 # - opinion_no_trigger: nudges when the reply contains `Opinion:`
 #   but the user's message has no trigger word
@@ -172,10 +172,17 @@ document_trees:
 #   for the constitution's "Persisting research" rule — without
 #   the write, future turns can't recall the work via the
 #   contract's prior_discussion slot.
+# - persist_body_citations: pre-tool gate that BLOCKS a
+#   `remember_event` call whose body is missing URL citation tokens
+#   when search_scholar ran this turn. Fires before the write-tier
+#   confirm so the bad row never reaches the approval dialog.
+#   Constitution-only enforcement of "URL tokens verbatim in body"
+#   failed three smoke cycles (harness-gumn); needed structural.
 catchers:
   - opinion_no_trigger
   - post_search_grounding
   - post_research_persist
+  - persist_body_citations
 
 # bd-graph identity. airton_f is a non-ops character; inherits the
 # project default.

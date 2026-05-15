@@ -2094,6 +2094,86 @@ class FetchUrlGuardHook:
         )
 
 
+# Persist-body citation enforcement. The constitution forbids stripping
+# URL citation tokens (`[arxiv:..]` / `[doi:..]` / etc) when persisting
+# research summaries, but small-model drift keeps reducing them to
+# parenthetical author descriptions ("(Choi et al, brain networks)").
+# Three smoke cycles in a row demonstrated the constitution +
+# nudge-text tightening were insufficient — needed a structural gate.
+# This hook blocks `remember_event` PRE-execution when search_scholar
+# ran this turn AND the body has fewer than this many URL tokens.
+# Matches the post_research_persist threshold so the two gates align.
+_PERSIST_BODY_MIN_URL_TOKENS: int = 2
+
+_PERSIST_BODY_STRIP_NUDGE = (
+    "Your `remember_event` body has fewer than 2 URL citation tokens "
+    "(`[arxiv:..]` / `[doi:..]` / `[scholar:..]` / `[wiki:..]`), but "
+    "`search_scholar` ran this turn — the persisted row MUST be re-"
+    "fetchable from its body alone. Re-issue `remember_event` with "
+    "the body rewritten so every paper you cite carries its full URL "
+    "token verbatim, not just a parenthetical author description. "
+    "If they don't all fit in 1-3 sentences, drop one or two papers "
+    "rather than truncating the URL tokens — fewer fully-cited "
+    "entries beats five tokenless ones. The row was NOT written; "
+    "your previous call was rejected by the persist-body gate."
+)
+
+
+@dataclass(frozen=True)
+class PersistBodyCitationsHook:
+    """Block a `remember_event` call whose body is missing URL citation
+    tokens, when `search_scholar` ran this turn.
+
+    Failure mode this catches: airton_f's persist path strips URL
+    tokens from the body, keeping only parenthetical author
+    descriptions. Three smoke cycles repeated the pattern despite
+    the constitution rule (458cf87) and the nudge-text tightening.
+    Pre-tool enforcement so the bad write never reaches the user's
+    write-tier approval dialog — Skip feeds an error result back to
+    the model and it retries with a corrected body.
+
+    Trigger conditions (ALL must hold):
+      1. Call name is `remember_event`.
+      2. `search_scholar` appears in `seen_calls` this turn — i.e.
+         this is the new-research persist path, not some other
+         memory-write flow. Other persist calls (e.g. user-asked
+         "remember that …" chit-chat) don't carry the citation
+         contract.
+      3. `body` argument is a string with fewer than
+         `_PERSIST_BODY_MIN_URL_TOKENS` URL citation tokens
+         (matches the post_research_persist trigger threshold).
+
+    Action: Skip with a `success=False` ToolResult carrying the
+    re-issue instructions. The model sees the failure as a tool-
+    role message and retries.
+
+    Opt-in via the character's `catchers:` roster as
+    `persist_body_citations`."""
+
+    name: str = "persist_body_citations"
+
+    def check(self, ctx: PreToolContext) -> PreToolOutcome:
+        if ctx.call.name != "remember_event":
+            return Continue()
+        search_scholar_ran = any(n == "search_scholar" for n, _ in ctx.seen_calls)
+        if not search_scholar_ran:
+            return Continue()
+        body = ctx.call.arguments.get("body", "")
+        if not isinstance(body, str):
+            return Continue()
+        url_count = len(_URL_CITATION_RE.findall(body))
+        if url_count >= _PERSIST_BODY_MIN_URL_TOKENS:
+            return Continue()
+        return Skip(
+            ToolResult(
+                tool_name=ctx.call.name,
+                output=_PERSIST_BODY_STRIP_NUDGE,
+                success=False,
+                error="persist_body_citations",
+            )
+        )
+
+
 # Trigger words that legitimize an `Opinion:` paragraph in the reply.
 # When the user's most recent message contains none of these, a reply
 # that nonetheless produces an Opinion: paragraph is constitution-
@@ -3143,6 +3223,7 @@ _OPT_IN_CATCHERS: frozenset[str] = frozenset(
         "opinion_no_trigger",
         "post_search_grounding",
         "post_research_persist",
+        "persist_body_citations",
     }
 )
 
@@ -3296,6 +3377,14 @@ def default_hook_pipeline(
     # from the already-attached context bundle.
     if "assemble_context_once" in catchers_set:
         pre_tool.append(AssembleContextOnceHook())
+    # persist_body_citations: scholar-style characters block a
+    # `remember_event` call whose body is missing URL citation tokens
+    # when search_scholar ran this turn. Three smoke cycles repeated
+    # the strip-tokens drift; the constitution + nudge tightening were
+    # insufficient — structural backstop fires pre-write so the bad
+    # row never reaches the user's approval dialog.
+    if "persist_body_citations" in catchers_set:
+        pre_tool.append(PersistBodyCitationsHook())
 
     return HookPipeline(
         bail=bail,
