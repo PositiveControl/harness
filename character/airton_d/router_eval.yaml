@@ -1,0 +1,59 @@
+# Router eval fixture for airton_d — prompts the intent router should
+# classify correctly when HARNESS_CHARACTER_NAME=airton_d and the notes
+# tool profile is active. Loaded by `harness eval router`.
+#
+# Tool names match the notes tool set. Null entries catch over-routing
+# on casual acks and ambiguous prompts that should fall through to a
+# clarifying turn rather than firing a write.
+
+# Capture intents — inbox: prefix routes to write_file.
+- prompt: "inbox: boss wants the onboarding rework proposal by friday"
+  expected_tool: write_file
+
+- prompt: "inbox: sarah has analytics for the drop-off at step 3"
+  expected_tool: write_file
+
+- prompt: "inbox: idea — embedder swap behind a feature flag"
+  expected_tool: write_file
+
+# Query intents — content search routes to grep; folder listing to list_dir;
+# filename shape to glob.
+- prompt: what's in my inbox
+  expected_tool: list_dir
+
+- prompt: show me everything in decisions
+  expected_tool: list_dir
+
+- prompt: find notes about onboarding
+  expected_tool: grep
+
+- prompt: search for "router rewrite" across the workspace
+  expected_tool: grep
+
+- prompt: any notes from a 2026-05 file
+  expected_tool: glob
+
+- prompt: list files matching *router*
+  expected_tool: glob
+
+# Triage intents — read first so the model confirms the file exists
+# before proposing a move.
+- prompt: move onboarding-rework to ideas
+  expected_tool: read_file
+
+- prompt: promote the api-redesign inbox item to a decision
+  expected_tool: read_file
+
+# Recall over prior captures — should hit episodic, not the filesystem.
+- prompt: what did we capture about onboarding last week
+  expected_tool: search_memory
+
+# Null / falls-through — casual acks, no tool fires.
+- prompt: thanks
+  expected_tool: null
+
+- prompt: ok
+  expected_tool: null
+
+- prompt: good morning
+  expected_tool: null

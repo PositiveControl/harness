@@ -127,6 +127,27 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_memory",
         "introspect",
     ),
+    # airton_d (notes character) — curator-over-filesystem tool set.
+    # Read-tier fs to query the notes tree (grep/glob/list_dir/read_file),
+    # write-tier fs scoped to the workspace for capture + triage
+    # (edit_file/write_file). search_memory + search_facts for "what did
+    # we capture about X last week" recall across sessions.
+    # remember_event lets the character commit a capture summary to
+    # episodic so future sessions can find it. introspect for self-
+    # inspection. No shell / git / web / subagent — notes are a closed
+    # workspace, not a general-purpose agent.
+    "notes": (
+        "read_file",
+        "list_dir",
+        "grep",
+        "glob",
+        "edit_file",
+        "write_file",
+        "search_memory",
+        "search_facts",
+        "remember_event",
+        "introspect",
+    ),
     # Memory-curation sessions. supersede_fact will join once
     # implemented (see bd issue harness-5tz).
     "memory": (

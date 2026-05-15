@@ -37,6 +37,16 @@ character/*/atc_audio/*
 !character/*/atc_audio/utt/
 character/airton_c/workspace/*
 !character/airton_c/workspace/.gitkeep
+# airton_d (notes) workspace: keep the subdir skeleton (inbox/,
+# stakeholders/, ideas/, decisions/, templates/) tracked via
+# per-folder .gitkeep but ignore all captured note content. Notes
+# are user-private data, not source.
+character/airton_d/workspace/*/*
+!character/airton_d/workspace/inbox/.gitkeep
+!character/airton_d/workspace/stakeholders/.gitkeep
+!character/airton_d/workspace/ideas/.gitkeep
+!character/airton_d/workspace/decisions/.gitkeep
+!character/airton_d/workspace/templates/.gitkeep
 data/
 # Retrieval-eval fixtures need their CSV-backed corpora versioned even
 # though they live under a data/ subdir (harness-kj2a).
