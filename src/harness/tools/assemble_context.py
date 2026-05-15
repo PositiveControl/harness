@@ -39,6 +39,8 @@ mid-turn.
 from __future__ import annotations
 
 import re
+import sys
+import traceback
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -192,6 +194,19 @@ class AssembleContextTool:
                 stores=self.stores,
             )
         except ValueError as exc:
+            # Expected ValueErrors from assemble_package describe contract
+            # misconfiguration: missing template variable, slot's store
+            # not in the bundle. Unexpected ValueErrors bubble up from
+            # deeper layers (embedder, subprocess machinery during
+            # tokenizer load, etc.) — observed 2026-05-14 chat session
+            # firing 'bad value(s) in fds_to_keep' from inside the
+            # embed/search pipeline with no stack visible because we
+            # swallowed it to a one-line tool result.
+            #
+            # Always dump the traceback to stderr so the next intermittent
+            # failure is localizable from the running session, while
+            # keeping the model-facing tool result a clean one-liner.
+            traceback.print_exc(file=sys.stderr)
             return f"assemble_context error: {exc}"
         return _render_package(
             role=role,

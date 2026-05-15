@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from harness.retrieval.contract import StoreBundle, load_contract
 from harness.store.episodic import EpisodicStore
@@ -199,6 +200,28 @@ def test_call_returns_error_string_on_missing_template_variable(tmp_path: Path) 
     out = tool.call(role="test_role", variables={})  # missing customer_id
     assert "assemble_context error" in out
     assert "customer_id" in out
+
+
+def test_call_prints_traceback_to_stderr_on_assemble_failure(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """harness-ygvg follow-up: when assemble_package raises (caught as
+    ValueError), the tool returns a clean one-liner to the model but
+    MUST also dump the traceback to stderr so an intermittent failure
+    like 'bad value(s) in fds_to_keep' (observed 2026-05-14) is
+    diagnosable from the running session. Without this, the swallowed
+    ValueError leaves no trail."""
+    _write_contract(tmp_path, _MINIMAL_CONTRACT)
+    stores, _ = _seed_stores(tmp_path)
+    tool = AssembleContextTool(stores=stores, contracts_dir=tmp_path / "contracts")
+    # Force a ValueError out of assemble_package by omitting the
+    # required `customer_id` template variable.
+    out = tool.call(role="test_role", variables={})
+    assert "assemble_context error" in out
+    err = capsys.readouterr().err
+    assert "Traceback" in err, "expected the swallowed ValueError to surface a traceback on stderr"
+    assert "customer_id" in err
 
 
 def test_call_with_no_variables_renders_none_placeholder(tmp_path: Path) -> None:
