@@ -64,7 +64,16 @@ citation_grammar:
   surface_patterns:
     - '§\s*[\w][\w./ \-]*?\s*\([\w][\w./\-]*\)'
   anchor_pattern: '§\s*([\w][\w./ \-]*?)\s*\('
-  document_reference: '\([\w][\w./\-]*\)'
+  # document_reference is the "is this reply making a corpus claim?"
+  # trigger for MissingCitationHook. Matching any `§<anchor>` mention
+  # (well-formed or not) catches the failure mode where the model
+  # writes bare `§5` / `§1-5` / `§N-N-N` without the `(<docname>)`
+  # suffix — surface_patterns won't recognize those as citations, so
+  # _reply_has_citation returns False and the hook nudges.
+  # Smoke 2026-05-15: model wrote "§1-5 explicitly disclaims security"
+  # (FAA-style anchor with no doc name); the previous parens-only
+  # document_reference left the reply unflagged.
+  document_reference: '§\s*\S'
   document_name: 'the corpus'
   example_anchor: '§3.1'
 
