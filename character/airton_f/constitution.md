@@ -114,6 +114,30 @@ collapsing siblings), cite the parent — that's the right
 granularity. **Never abbreviate the form to drop the document
 name.** Every citation, every time.
 
+### Cite the relevant section, not the bundled one
+
+The contract bundle may return a section that the doc tree
+keyword-matched but that doesn't actually address the user's
+question. *Don't cite it.* A correctly-formed citation to an
+irrelevant section is worse than no citation at all — it makes
+the reader trust content that isn't responsive to what they
+asked.
+
+Smoke 2026-05-15 example: user asked about *modern cryptographic
+key exchange*. The contract returned §5 (Security Considerations
+of the greeting protocol) because "security" appears in both the
+user's question and that section. §5 disclaims security in a
+*greeting* protocol — it has nothing to say about key exchange.
+The right reply was "the corpus doesn't cover key exchange — it
+has a greeting protocol; want me to search the web instead?"
+**Not** "§5 (01-example-rfc-style) explicitly disclaims security."
+
+The test for a citation is *topical fit*, not *presence in the
+bundle*. If the bundled section answers the user's question,
+cite it. If it merely *mentions* a word in common with the
+question, treat the slot as effectively empty and surface the
+gap.
+
 ## What counts as the corpus
 
 The corpus is whatever `core.yaml` lists under `document_trees:`.

@@ -2055,6 +2055,154 @@ class FetchUrlGuardHook:
         )
 
 
+# Trigger words that legitimize an `Opinion:` paragraph in the reply.
+# When the user's most recent message contains none of these, a reply
+# that nonetheless produces an Opinion: paragraph is constitution-
+# violating and trips OpinionWithoutTriggerHook. Case-insensitive
+# match against the user message; the literal "Opinion:" token in the
+# reply stays case-sensitive (it's the canonical form the constitution
+# documents).
+_OPINION_TRIGGER_WORDS: tuple[str, ...] = (
+    "opinion",
+    "opinions",
+    "thoughts",
+    "what do you think",
+    "your view",
+    "your take",
+)
+
+
+_OPINION_NO_TRIGGER_NUDGE = (
+    "Your reply contains an `Opinion:` paragraph but the user's "
+    "message didn't ask for one. Opinion paragraphs are gated on the "
+    "user using one of these trigger phrases: opinion(s), thoughts, "
+    "what do you think, your view, your take. Re-answer with the "
+    "requested content only — no Opinion paragraph."
+)
+
+
+@dataclass(frozen=True)
+class OpinionWithoutTriggerHook:
+    """Nudge a reply that produced an `Opinion:` paragraph without
+    the user explicitly asking for an opinion.
+
+    Failure mode this catches: airton_f's constitution gates
+    `Opinion:` paragraphs on explicit user request — the user has
+    to use words like "opinion", "thoughts", "what do you think",
+    or "your view". Smoke 2026-05-15: user asked "Search the web
+    to find modern key exchange mechanisms and contrast them with
+    diffie-hellman" — no trigger words. Model produced an `Opinion:`
+    paragraph anyway, twice in a row, even after the constitution
+    was tightened with the explicit trigger-word list. Constitution-
+    only enforcement insufficient → structural hook.
+
+    Trigger conditions (ALL must hold):
+      1. The reply contains the literal token `Opinion:` (case-
+         sensitive — that's the canonical form the constitution
+         documents; "opinion" inside other prose is fine).
+      2. `user_message` is non-None and contains NONE of
+         `_OPINION_TRIGGER_WORDS` (case-insensitive substring).
+
+    Action: Nudge the model to drop the opinion paragraph and
+    re-answer with content only. Retry-able.
+
+    Opt-in via the character's `catchers:` roster as
+    `opinion_no_trigger`. Characters that allow unprompted opinions
+    (most non-scholar personas) leave it off."""
+
+    name: str = "opinion_no_trigger"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if "Opinion:" not in ctx.reply.content:
+            return Continue()
+        user_msg = (ctx.user_message or "").lower()
+        if not user_msg:
+            # No user message threaded through (bootstrap / subagent
+            # contexts). Conservative: don't nudge — better to let a
+            # legitimate opinion through than to false-positive on a
+            # context the hook can't reason about.
+            return Continue()
+        for trigger in _OPINION_TRIGGER_WORDS:
+            if trigger in user_msg:
+                return Continue()
+        return Nudge(text=_OPINION_NO_TRIGGER_NUDGE)
+
+
+# URL citation forms airton_f and similar scholar personas use:
+# [arxiv:2401.12345], [scholar:Author Year], [doi:10.1145/...],
+# [wiki:Article_Name]. Matches the four tier-aware forms the
+# constitution documents. The first capture group is the source
+# kind; the bracket boundary anchors the match so prose mentions of
+# "arxiv" alone don't trip it.
+_URL_CITATION_RE = re.compile(
+    r"\[(arxiv|scholar|doi|wiki):[^\]]+\]",
+    re.IGNORECASE,
+)
+
+
+_POST_SEARCH_GROUNDING_NUDGE = (
+    "search_web ran this turn but your reply doesn't fetch a result, "
+    "refine the search, or cite a URL. After search_web you have "
+    "three valid next moves: (1) call `fetch_url` on a result (prefer "
+    "a tier-1 host: scholar.google.com, arxiv.org), (2) refine the "
+    "search with a `site:` operator (e.g. `site:scholar.google.com`), "
+    "or (3) explicitly say no allowlisted source covered the question "
+    "and ask whether to broaden. Producing a training-data summary "
+    "after a search call is ungrounded — the tool fired but the "
+    "content isn't tied to any source the user can verify. Re-answer "
+    "with one of the three moves."
+)
+
+
+@dataclass(frozen=True)
+class PostSearchGroundingHook:
+    """Nudge a reply that called `search_web` but didn't follow up
+    with a fetch, a refined search, or an explicit no-allowlisted-
+    source statement.
+
+    Failure mode this catches: scholar-style characters declare
+    "after search_web, ground or refine, never paraphrase" in their
+    constitution. Smoke 2026-05-15: search_web returned a Wikipedia
+    hit; model didn't fetch_url it, didn't cite `[wiki:…]`, didn't
+    refine with `site:scholar.google.com` — went straight to
+    training-data prose. Tool fired, reply ungrounded. Same regression
+    on two consecutive smokes. Constitution-only enforcement
+    insufficient → structural hook.
+
+    Trigger conditions (ALL must hold):
+      1. `search_web` in `ctx.tools_ran` this turn.
+      2. `fetch_url` NOT in `ctx.tools_ran` (no follow-up fetch).
+      3. Reply is substantive (>= 80 chars). Short refusals like
+         "no results, broaden?" don't need a URL.
+      4. Reply contains NO URL citation pattern (`[arxiv:…]`,
+         `[scholar:…]`, `[doi:…]`, `[wiki:…]`) AND NO raw http(s)://
+         URL. Either form counts as grounding-after-search.
+
+    Action: Nudge the model to take one of the three valid next
+    moves. Retry-able.
+
+    Opt-in via the character's `catchers:` roster as
+    `post_search_grounding`. Characters that use search_web for
+    its own sake (e.g. general-web-research personas without a
+    citation discipline) leave it off."""
+
+    name: str = "post_search_grounding"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if "search_web" not in ctx.tools_ran:
+            return Continue()
+        if "fetch_url" in ctx.tools_ran:
+            return Continue()
+        content = ctx.reply.content
+        if len(content) < 80:
+            return Continue()
+        if _URL_CITATION_RE.search(content):
+            return Continue()
+        if _URL_IN_TEXT_RE.search(content):
+            return Continue()
+        return Nudge(text=_POST_SEARCH_GROUNDING_NUDGE)
+
+
 # ---------- finalize hooks ----------
 
 
@@ -2789,6 +2937,8 @@ _OPT_IN_CATCHERS: frozenset[str] = frozenset(
         "reserved_squawk_code",
         "fetch_url_guard",
         "assemble_context_once",
+        "opinion_no_trigger",
+        "post_search_grounding",
     }
 )
 
@@ -2901,6 +3051,20 @@ def default_hook_pipeline(
     # otherwise in-scope.
     if "ambiguous_context" in catchers_set:
         bail.append(AmbiguousContextHook())
+    # opinion_no_trigger: scholar-style characters gate `Opinion:`
+    # paragraphs on explicit user request. Reply with an Opinion
+    # paragraph but no trigger word in the user message → Nudge.
+    # Self-gates on the literal "Opinion:" token plus the trigger-
+    # word check, so non-scholar characters opting in are safe.
+    if "opinion_no_trigger" in catchers_set:
+        bail.append(OpinionWithoutTriggerHook())
+    # post_search_grounding: scholar-style characters must follow
+    # search_web with a fetch_url, a refined search, or an explicit
+    # "no allowlisted source" reply. search_web ran but no fetch,
+    # no URL citation, no raw URL → Nudge. Self-gates on
+    # `search_web in tools_ran`, so non-search characters never fire.
+    if "post_search_grounding" in catchers_set:
+        bail.append(PostSearchGroundingHook())
 
     # Pre-tool catchers. Built mutably so opt-in characters can
     # tack on FetchUrlGuardHook without forcing every non-paste-only

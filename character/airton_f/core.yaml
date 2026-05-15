@@ -149,6 +149,22 @@ document_trees:
     source: seed_documents/01-example-rfc-style.md
     format: markdown
 
+# Opt-in fabrication catchers (harness-qvwq). airton_f ships the
+# two scholar-shaped checks the smoke tests surfaced:
+#
+# - opinion_no_trigger: nudges when the reply contains `Opinion:`
+#   but the user's message has no trigger word
+#   (opinion/thoughts/view/what do you think/your take). Structural
+#   backstop for the constitution's "Opinion gating" rule.
+# - post_search_grounding: nudges when search_web ran but the reply
+#   produced training-data prose instead of a fetch_url follow-up,
+#   a refined site:-scoped search, or an explicit "no allowlisted
+#   source covered this" reply. Structural backstop for "after
+#   search_web: ground or refine, never paraphrase".
+catchers:
+  - opinion_no_trigger
+  - post_search_grounding
+
 # bd-graph identity. airton_f is a non-ops character; inherits the
 # project default.
 bd:

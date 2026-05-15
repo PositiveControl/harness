@@ -35,8 +35,10 @@ from harness.orchestrator.hooks import (
     MissingCitationHook,
     Nudge,
     NumericFabricationHook,
+    OpinionWithoutTriggerHook,
     PairedMetaConfirmStripHook,
     PostModelContext,
+    PostSearchGroundingHook,
     PreToolContext,
     Replace,
     ReservedSquawkCodeHook,
@@ -2872,3 +2874,229 @@ def test_default_pipeline_silent_on_empty_anchors_for_invented_cite() -> None:
     # No fabricated_section nudge; ListCountMismatch / others won't
     # match either. Continue.
     assert isinstance(outcome, Continue)
+
+
+# ---------- OpinionWithoutTriggerHook ----------
+
+
+def test_opinion_no_trigger_fires_on_unprompted_opinion() -> None:
+    """Reply contains `Opinion:` paragraph but user's message has none
+    of the trigger words. Nudge.
+
+    Reproduces the 2026-05-15 airton_f smoke: user said "Search the web
+    to find modern key exchange mechanisms and contrast them with
+    diffie-hellman" — no `opinion` / `thoughts` / `view`. Model produced
+    an Opinion paragraph anyway."""
+    reply = _reply(
+        "§5 (01-example-rfc-style): the document disclaims security.\n\n"
+        "Opinion: the disclaimer is doing too much work for two sentences."
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"assemble_context", "search_web"}),
+        user_message=(
+            "Search the web to find modern cryptographic key exchange "
+            "mechanisms and contrast them with diffie-hellman"
+        ),
+    )
+    outcome = OpinionWithoutTriggerHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "Opinion" in outcome.text
+
+
+def test_opinion_no_trigger_allows_when_trigger_word_present() -> None:
+    """User asks for an opinion explicitly → Opinion paragraph is
+    legitimate. Hook stays out of the way regardless of substance."""
+    reply = _reply(
+        "§5 (01-example-rfc-style): the document disclaims security.\n\n"
+        "Opinion: the disclaimer is doing too much work for two sentences."
+    )
+    for trigger in (
+        "what's your opinion on this disclaimer?",
+        "thoughts?",
+        "what do you think of section 5?",
+        "your view on the security model?",
+        "your take?",
+    ):
+        ctx = BailContext(
+            reply=reply,
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"assemble_context"}),
+            user_message=trigger,
+        )
+        outcome = OpinionWithoutTriggerHook().check(ctx)
+        assert isinstance(outcome, Continue), f"hook fired on legitimate trigger {trigger!r}"
+
+
+def test_opinion_no_trigger_silent_when_no_opinion_paragraph() -> None:
+    """Reply has no `Opinion:` token → hook stays quiet. The token is
+    the canonical paragraph header; lowercase "opinion" inside prose
+    is fine and shouldn't trip the check."""
+    reply = _reply(
+        "§5 (01-example-rfc-style): the document explicitly disclaims "
+        "any security model. It names unauthenticated names, replay "
+        "susceptibility, and unencrypted transport as known gaps. "
+        "There is a public opinion on this kind of disclaimer pattern."
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"assemble_context"}),
+        user_message="what does section 5 say?",
+    )
+    outcome = OpinionWithoutTriggerHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_opinion_no_trigger_continues_when_user_message_missing() -> None:
+    """Bootstrap / subagent contexts may not thread user_message
+    through. Conservative default: don't nudge — better to let a
+    legitimate opinion through than to false-positive on a context the
+    hook can't reason about."""
+    reply = _reply("§5 (01-example-rfc-style): summary.\n\nOpinion: thoughts.")
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=False,
+        tools_ran=frozenset(),
+        user_message=None,
+    )
+    outcome = OpinionWithoutTriggerHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_opinion_no_trigger_wires_into_pipeline_when_opted_in() -> None:
+    """Composition pin: 'opinion_no_trigger' in catchers installs the
+    hook; absence keeps it out. Non-scholar characters aren't affected."""
+    on = default_hook_pipeline(catchers=("opinion_no_trigger",))
+    assert "opinion_no_trigger" in on.names()
+    off = default_hook_pipeline(catchers=())
+    assert "opinion_no_trigger" not in off.names()
+
+
+# ---------- PostSearchGroundingHook ----------
+
+
+def test_post_search_grounding_fires_when_search_ran_but_no_followup() -> None:
+    """search_web ran, no fetch_url, substantive reply, no URL citation,
+    no raw URL → Nudge.
+
+    Reproduces the 2026-05-15 airton_f smoke: search_web returned a
+    Wikipedia hit; model didn't fetch, didn't cite, just produced
+    training-data prose."""
+    reply = _reply(
+        "Diffie-Hellman is a foundational protocol for establishing a "
+        "shared secret over an insecure channel. Modern variants build "
+        "on it with forward secrecy and MITM-resistance via additional "
+        "authentication binding."
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"assemble_context", "search_web"}),
+        user_message="find papers on modern key exchange",
+    )
+    outcome = PostSearchGroundingHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "search_web" in outcome.text
+
+
+def test_post_search_grounding_allows_when_fetch_url_followed() -> None:
+    """Model did the right thing: search_web → fetch_url → answer.
+    fetch_url in tools_ran means the model grounded the search.
+    Hook stays out."""
+    reply = _reply(
+        "[arxiv:2401.12345] The authors report a 12% improvement on the "
+        "standard benchmark, replacing the affine layer with…"
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"assemble_context", "search_web", "fetch_url"}),
+        user_message="find papers on the topic",
+    )
+    outcome = PostSearchGroundingHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_post_search_grounding_allows_url_citation() -> None:
+    """Reply with a `[arxiv:…]` / `[scholar:…]` / `[doi:…]` / `[wiki:…]`
+    citation counts as grounding even when fetch_url didn't run this
+    turn (the model may be citing from search_web snippet directly)."""
+    for cite in (
+        "[arxiv:2401.12345] the paper proves…",
+        "[scholar:Diffie-Hellman 1976] the original…",
+        "[doi:10.1145/12345.67890] the standard binds…",
+        "[wiki:Diffie-Hellman_key_exchange] the overview names…",
+    ):
+        reply = _reply(
+            cite + " " + ("filler " * 20)  # > 80 chars
+        )
+        ctx = BailContext(
+            reply=reply,
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"assemble_context", "search_web"}),
+            user_message="find papers on key exchange",
+        )
+        outcome = PostSearchGroundingHook().check(ctx)
+        assert isinstance(outcome, Continue), f"hook fired on legit citation {cite!r}"
+
+
+def test_post_search_grounding_allows_raw_url() -> None:
+    """Raw http(s) URL in the reply counts as grounding-after-search.
+    The model may surface a search-result URL inline rather than in
+    bracket-citation form."""
+    reply = _reply(
+        "The top search result was https://arxiv.org/abs/2401.12345, "
+        "which covers exactly this question. Let me know if you want "
+        "me to fetch it."
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"assemble_context", "search_web"}),
+        user_message="find papers on key exchange",
+    )
+    outcome = PostSearchGroundingHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_post_search_grounding_silent_when_search_did_not_run() -> None:
+    """No search_web in tools_ran → hook out of scope. Other tools
+    running (assemble_context, search_memory) are irrelevant; this
+    catcher pairs specifically with the search-then-stay-ungrounded
+    failure mode."""
+    reply = _reply(
+        "I have nothing from the corpus to cite for this question. "
+        "Want me to narrow the question or search the web?"
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"assemble_context"}),
+        user_message="what's the modern key exchange?",
+    )
+    outcome = PostSearchGroundingHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_post_search_grounding_silent_on_short_reply() -> None:
+    """Short refusals like 'no allowlisted results, want to broaden?'
+    don't need a URL — the user is being asked to take the next move."""
+    reply = _reply("No allowlisted source covered the query. Broaden?")
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"assemble_context", "search_web"}),
+        user_message="find papers on key exchange",
+    )
+    outcome = PostSearchGroundingHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_post_search_grounding_wires_into_pipeline_when_opted_in() -> None:
+    """Composition pin."""
+    on = default_hook_pipeline(catchers=("post_search_grounding",))
+    assert "post_search_grounding" in on.names()
+    off = default_hook_pipeline(catchers=())
+    assert "post_search_grounding" not in off.names()
