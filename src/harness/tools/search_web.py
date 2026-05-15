@@ -36,6 +36,11 @@ _SNIPPET_RE = re.compile(
 )
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
+# Detect a `site:` operator anywhere in the query — case-insensitive,
+# anchored on word boundary so "website:foo" doesn't false-positive.
+# Used by SearchWebTool to skip the default_site_filter prepend when
+# the caller already named a site scope (the override path).
+_SITE_OPERATOR_RE = re.compile(r"\bsite\s*:", re.IGNORECASE)
 
 
 def _strip_tags(fragment: str) -> str:
@@ -85,9 +90,26 @@ class SearchWebTool:
     default_max_results: int = 5
     timeout_s: int = _DEFAULT_TIMEOUT_S
     allowed_hosts: frozenset[str] | None = None
+    # When set, every query gets `site:<filter> ` prepended unless
+    # the query already includes a `site:` operator. Lets scholar-
+    # style characters scope their default search to one host
+    # (airton_f → scholar.google.com) without forcing the model to
+    # remember the operator on every call. Override path: the model
+    # writes `query site:<other>` and the prepend is skipped.
+    default_site_filter: str | None = None
 
     @property
     def spec(self) -> ToolSpec:
+        scope_note = ""
+        if self.default_site_filter:
+            scope_note = (
+                f" This character's default search scope is "
+                f"`site:{self.default_site_filter}` — every query is "
+                f"prepended with that operator unless your query already "
+                f"contains a `site:` clause. To search outside that "
+                f"scope, include a different `site:` operator (e.g. "
+                f"`site:arxiv.org`) directly in the query string."
+            )
         return ToolSpec(
             name="search_web",
             description=(
@@ -100,7 +122,7 @@ class SearchWebTool:
                 "follow up with fetch_url on the most promising one "
                 "or two URLs when the snippets aren't enough. Do not "
                 "set max_results to 1 unless the user explicitly asked "
-                "for a single top result."
+                "for a single top result." + scope_note
             ),
             parameters={
                 "type": "object",
@@ -133,7 +155,16 @@ class SearchWebTool:
         if n <= 0:
             raise ValueError("max_results must be > 0")
 
-        data = urllib.parse.urlencode({"q": query}).encode()
+        # Auto-prepend `site:<filter>` for scholar-style characters
+        # whose default search is scoped to one host. Skipped when the
+        # caller already named a `site:` operator — that's the
+        # override path. Case-insensitive match on the operator only;
+        # the host portion is preserved verbatim.
+        effective_query = query
+        if self.default_site_filter and not _SITE_OPERATOR_RE.search(query):
+            effective_query = f"site:{self.default_site_filter} {query}"
+
+        data = urllib.parse.urlencode({"q": effective_query}).encode()
         req = urllib.request.Request(  # noqa: S310 — https only, validated literal host
             _HTML_ENDPOINT,
             data=data,

@@ -1521,12 +1521,18 @@ def _build_tool_registry_for_tui(
         # allowlisted hosts surface first with `[allowlisted]` markers;
         # external hits stay visible. Keeps the agent's view of the
         # web honest about what's fetchable without hiding the rest.
+        # default_site_filter scopes the character's *default* search
+        # to one host (airton_f → scholar.google.com); the model can
+        # still override by including its own `site:` operator.
         "search_web": lambda: SearchWebTool(
             allowed_hosts=(
                 frozenset(character.fetch_url_allowed_hosts)
                 if character is not None and character.fetch_url_allowed_hosts
                 else None
-            )
+            ),
+            default_site_filter=(
+                character.search_web_default_site_filter if character is not None else None
+            ),
         ),
         "fetch_url": lambda: FetchUrlTool(
             allowed_hosts=(

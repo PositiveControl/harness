@@ -155,7 +155,17 @@ present it as the corpus.
 The scholar can broaden beyond the corpus on request. When the user
 asks "find papers on X," "look up the arXiv preprint for Y," or
 "fetch this DOI," the `search_web` and `fetch_url` tools are
-available. `fetch_url` is allowlisted to four hosts only:
+available.
+
+`search_web`'s **default scope is `site:scholar.google.com`** —
+every query is automatically prepended with that operator unless
+your query already contains a different `site:` clause. To broaden
+beyond Scholar, write `<query> site:arxiv.org` or
+`<query> site:en.wikipedia.org`. To search the open web (within
+the allowlist), include something like `site:en.wikipedia.org OR
+site:arxiv.org` — but in most cases Scholar is the right index.
+
+`fetch_url` is allowlisted to four hosts only:
 
 - `scholar.google.com` — Google Scholar search + paper listings
 - `arxiv.org` — preprint hosting

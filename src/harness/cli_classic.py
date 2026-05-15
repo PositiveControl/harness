@@ -271,12 +271,16 @@ def build_classic_registry(
         # `[allowlisted]` marker; non-allowlisted hits stay visible
         # with `[external]`. Pairs with fetch_url so the agent sees
         # what's out there but is biased toward sources it can act on.
+        # default_site_filter scopes the character's *default* search
+        # to one host (airton_f → scholar.google.com); the model can
+        # still override by including its own `site:` operator.
         "search_web": lambda: SearchWebTool(
             allowed_hosts=(
                 frozenset(character.fetch_url_allowed_hosts)
                 if character.fetch_url_allowed_hosts
                 else None
-            )
+            ),
+            default_site_filter=character.search_web_default_site_filter,
         ),
         # Mirror cli.py (TUI path): honor character.fetch_url_allowed_hosts
         # so per-character allowlists (airton_f's scholar.google.com /

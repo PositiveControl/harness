@@ -251,6 +251,15 @@ class Character:
     # list so the tutoring surface stays bounded; non-corpus
     # characters leave it empty.
     fetch_url_allowed_hosts: tuple[str, ...] = ()
+    # Default `site:` filter for SearchWebTool. When set, every
+    # search_web query has `site:<filter> ` prepended unless the
+    # query already contains a `site:` operator. Lets scholar-style
+    # characters scope their default search to a single host
+    # (airton_f → scholar.google.com) without forcing the model to
+    # remember to add the operator every time. Empty / None =
+    # unrestricted (the default). Loaded from
+    # `core.yaml: search_web.default_site_filter:`.
+    search_web_default_site_filter: str | None = None
     # Citation grammar (harness-jaqe). Compiled regex set + nudge-text
     # tokens for the corpus this character speaks against. None when
     # the character has no citation discipline (Airton, ab, echo);
@@ -524,6 +533,12 @@ def load_character(path: Path) -> Character:
             (core.get("fetch_url") or {}).get("allowed_hosts"),
             path,
             "fetch_url.allowed_hosts",
+        ),
+        search_web_default_site_filter=_opt_str(
+            core.get("search_web") or {},
+            "default_site_filter",
+            path=path,
+            parent_name="search_web",
         ),
         citation_grammar=load_citation_grammar(core.get("citation_grammar"), path),
         catchers=_load_str_tuple(core.get("catchers"), path, "catchers"),

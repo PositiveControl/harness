@@ -222,6 +222,109 @@ def test_no_allowlist_preserves_unmarked_format(monkeypatch: pytest.MonkeyPatch)
     assert lines[1].startswith("2. mlx on GitHub")
 
 
+# ---------- default_site_filter (scholar-as-default-search) ----------
+
+
+def _capture_urlopen_query() -> tuple[list[str], Any]:
+    """Build a urlopen stub that records the urlencoded query body it
+    was invoked with. Lets tests assert the actual outgoing query
+    string after the default_site_filter prepend."""
+    captured: list[str] = []
+
+    def _stub(req: Any, timeout: int = 10) -> _FakeResponse:
+        # urllib.request.Request.data is the urlencoded form body.
+        raw = req.data if isinstance(req.data, bytes) else req.data.encode()
+        parsed = urllib.parse.parse_qs(raw.decode())
+        captured.extend(parsed.get("q", []))
+        # Return an empty results body so the test exits cleanly.
+        return _FakeResponse(b"<html></html>")
+
+    return captured, _stub
+
+
+def test_default_site_filter_prepends_when_query_has_no_site_operator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """airton_f's spec: scholar.google.com is the default scope.
+    A bare query gets `site:scholar.google.com ` prepended before
+    DDG sees it."""
+    captured, stub = _capture_urlopen_query()
+    monkeypatch.setattr(urllib.request, "urlopen", stub)
+    tool = SearchWebTool(default_site_filter="scholar.google.com")
+    tool.call(query="diffie-hellman alternatives")
+    assert captured == ["site:scholar.google.com diffie-hellman alternatives"]
+
+
+def test_default_site_filter_skipped_when_query_already_has_site(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The override path: when the model wants to search elsewhere
+    (arxiv, wikipedia, etc.), it includes `site:<other>` in its query
+    and the default-filter prepend is skipped. The model's named
+    scope wins."""
+    captured, stub = _capture_urlopen_query()
+    monkeypatch.setattr(urllib.request, "urlopen", stub)
+    tool = SearchWebTool(default_site_filter="scholar.google.com")
+    tool.call(query="key exchange site:arxiv.org")
+    # Default scholar filter NOT prepended; the arxiv site: stays.
+    assert captured == ["key exchange site:arxiv.org"]
+
+
+def test_default_site_filter_case_insensitive_site_detection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Uppercase / mixed-case `SITE:` and `Site:` are detected as the
+    override path. DDG normalizes case server-side; the tool should
+    too rather than double-prepending."""
+    captured, stub = _capture_urlopen_query()
+    monkeypatch.setattr(urllib.request, "urlopen", stub)
+    tool = SearchWebTool(default_site_filter="scholar.google.com")
+    tool.call(query="topic SITE:arxiv.org")
+    assert captured == ["topic SITE:arxiv.org"]
+
+
+def test_default_site_filter_word_boundary_not_substring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`website:foo` (no boundary before `site`) is NOT the override
+    path — that's a search FOR the word 'website:'. Default scope
+    still applies."""
+    captured, stub = _capture_urlopen_query()
+    monkeypatch.setattr(urllib.request, "urlopen", stub)
+    tool = SearchWebTool(default_site_filter="scholar.google.com")
+    tool.call(query="my favorite website: example.com")
+    assert captured == ["site:scholar.google.com my favorite website: example.com"]
+
+
+def test_default_site_filter_none_leaves_query_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the character doesn't declare a default scope (the open-web
+    default), the query passes through unmodified."""
+    captured, stub = _capture_urlopen_query()
+    monkeypatch.setattr(urllib.request, "urlopen", stub)
+    tool = SearchWebTool()
+    tool.call(query="anything")
+    assert captured == ["anything"]
+
+
+def test_default_site_filter_reflected_in_tool_description() -> None:
+    """The tool spec's description must surface the default scope so
+    the model knows what's happening. Without the note, the model
+    might write its own `site:` clause assuming the default is the
+    open web."""
+    tool = SearchWebTool(default_site_filter="scholar.google.com")
+    assert "site:scholar.google.com" in tool.spec.description
+    assert "default search scope" in tool.spec.description.lower()
+
+
+def test_default_site_filter_absent_in_description_when_none() -> None:
+    """The scope note only appears when default_site_filter is set;
+    non-scholar characters get the original unscoped description."""
+    tool = SearchWebTool()
+    assert "site:" not in tool.spec.description
+
+
 def test_allowlist_surfaces_late_hits_within_max_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

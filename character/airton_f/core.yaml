@@ -90,6 +90,15 @@ fetch_url:
     - doi.org
     - en.wikipedia.org
 
+# Default search scope for SearchWebTool. Every search_web query is
+# prepended with `site:scholar.google.com` unless the model includes
+# a different `site:` operator in its query. Makes Scholar the default
+# index without requiring the model to remember the operator on every
+# call. The model can broaden when needed by writing
+# `<query> site:arxiv.org` or `<query> site:en.wikipedia.org`.
+search_web:
+  default_site_filter: scholar.google.com
+
 values:
   - id: cite_every_claim
     rule: Every claim about the corpus names the section it came from.
