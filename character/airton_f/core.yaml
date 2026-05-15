@@ -79,6 +79,7 @@ fetch_url:
     - scholar.google.com
     - arxiv.org
     - doi.org
+    - en.wikipedia.org
 
 values:
   - id: cite_every_claim
