@@ -3368,3 +3368,68 @@ def test_post_research_persist_wires_into_pipeline_when_opted_in() -> None:
     assert "post_research_persist" in on.names()
     off = default_hook_pipeline(catchers=())
     assert "post_research_persist" not in off.names()
+
+
+def test_post_research_persist_silent_on_recall_lead() -> None:
+    """harness-i5pk smoke: model led with 'From prior discussion
+    (captured 2026-05-15):' — a recall, not new research. Hook must
+    skip even though search_scholar ran (router-fronted) and the
+    reply quoted memory URL tokens, because writing remember_event
+    again would create a duplicate row."""
+    reply = _reply(
+        "From prior discussion (captured 2026-05-15): JEPA spans "
+        "diverse SSL tasks. [doi:10.48550/arxiv.2403.06432] (Choi et al, "
+        "brain networks), [doi:10.1145/3678717.3691271] (Li et al, "
+        "trajectory similarity), [arxiv:2309.16014] (Skenderi et al, "
+        "graph-level), [arxiv:2409.15803] (Hu et al, 3D), "
+        "[doi:10.1109/waspaa66052.2025.11230951] (Pilataki et al, music)."
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"assemble_context", "search_scholar"}),
+        user_message="what do you know about JEPA?",
+    )
+    outcome = _persist_hook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_post_research_persist_silent_on_recall_lead_variants() -> None:
+    """The recall-lead regex accepts 'From prior session', 'From a
+    prior discussion', 'Found in prior discussion' — same intent,
+    minor phrasing variation. Case-insensitive."""
+    for lead in (
+        "From prior session (captured 2026-05-15): JEPA spans diverse tasks. ",
+        "From a prior discussion (captured 2026-05-15): JEPA spans diverse tasks. ",
+        "from PRIOR Discussion (captured 2026-05-15): JEPA spans diverse tasks. ",
+        "Found in prior discussion (captured 2026-05-15): JEPA spans diverse tasks. ",
+    ):
+        reply = _reply(lead + "[arxiv:1] (A), [doi:2] (B), [arxiv:3] (C).")
+        ctx = BailContext(
+            reply=reply,
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_scholar"}),
+            user_message="what do you know about X?",
+        )
+        outcome = _persist_hook().check(ctx)
+        assert isinstance(outcome, Continue), f"hook fired on recall lead {lead!r}"
+
+
+def test_post_research_persist_fires_when_no_recall_lead() -> None:
+    """Negative-of-negative pin: a reply that does NOT lead with a
+    recall marker still trips persist when the other gates apply.
+    This is the genuine-new-research path — the hook should keep
+    nudging, the recall gate must not break the happy path."""
+    reply = _reply(
+        "JEPA spans several domains. [arxiv:2403.00504] frames it for "
+        "world-model SSL; [doi:10.1016/j.isprsjprs.2024.09.013] applies "
+        "it to SAR ATR; [arxiv:2502.03933] extends to HEP collider data."
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_scholar"}),
+        user_message="research JEPA",
+    )
+    outcome = _persist_hook().check(ctx)
+    assert isinstance(outcome, Nudge)

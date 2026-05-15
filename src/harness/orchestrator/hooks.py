@@ -2285,6 +2285,22 @@ class PostSearchGroundingHook:
 _POST_RESEARCH_PERSIST_TOOL: str = "search_scholar"
 _POST_RESEARCH_PERSIST_MIN_CITATIONS: int = 2
 
+# Recall-lead marker: when the reply leads with one of these phrases,
+# the model is rendering from `prior_discussion` (per the constitution's
+# workflow Step 2 — harness-thhy). No new research was synthesized —
+# the work is already in episodic memory — so PostResearchPersistHook
+# must NOT nudge for a remember_event call. Persisting again would
+# create a duplicate row. Constitution paired with this gate: airton_f
+# explicitly tells the model to lead recall replies with "From prior
+# discussion (captured <YYYY-MM-DD>):" — anchoring this regex on the
+# documented form. Case-insensitive; accepts a leading whitespace
+# prefix so model formatting variations (markdown bullet, blockquote)
+# don't slip past.
+_RECALL_LEAD_RE: re.Pattern[str] = re.compile(
+    r"\s*(?:From\s+(?:a\s+)?prior\s+(?:discussion|session)|Found\s+in\s+prior\s+(?:discussion|session))",
+    re.IGNORECASE,
+)
+
 
 def _build_post_research_persist_nudge(today: str) -> str:
     return (
@@ -2335,6 +2351,17 @@ class PostResearchPersistHook:
       3. Reply contains >= `_POST_RESEARCH_PERSIST_MIN_CITATIONS`
          URL citation tokens. Multi-source synthesis is worth
          persisting; single-paper drill-down stays in transcript.
+      4. Reply is NOT a `prior_discussion` recall — `_RECALL_LEAD_RE`
+         doesn't match at the start of the reply (harness-i5pk).
+         Smoke 2026-05-15: constitution Step 2 worked — model led
+         with "From prior discussion (captured 2026-05-15):" — but
+         search_scholar had ALSO been called (router fronted) and
+         the reply quoted 5 URL tokens from the recalled memory, so
+         the hook nudged anyway. Result: model retried, conflated
+         this-turn search results with the prior recall, persisted
+         a duplicate memory. Skipping recall replies prevents that
+         loop. The constitution paired with this gate forbids
+         calling `remember_event` on a recall path.
 
     Action: Nudge the model to call `remember_event` with a stamped
     body (`Captured: <YYYY-MM-DD> — ...`). Today's date is injected
@@ -2354,6 +2381,8 @@ class PostResearchPersistHook:
         if _POST_RESEARCH_PERSIST_TOOL not in ctx.tools_ran:
             return Continue()
         if "remember_event" in ctx.tools_ran:
+            return Continue()
+        if _RECALL_LEAD_RE.match(ctx.reply.content):
             return Continue()
         citations = _URL_CITATION_RE.findall(ctx.reply.content)
         if len(citations) < _POST_RESEARCH_PERSIST_MIN_CITATIONS:
