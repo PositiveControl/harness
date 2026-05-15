@@ -139,7 +139,13 @@ if TYPE_CHECKING:
 # model-splitting); this ceiling is just an anti-runaway guard, not a design
 # target.
 _MAX_TOKENS_CEILING = 32768
-_BAIL_RETRIES_PER_TURN = 2
+# Bumped from 2 → 3 after airton_f smoke 2026-05-15: the model
+# tripped two distinct catchers in sequence (opinion_no_trigger,
+# then list_count_mismatch) on a single search-grounding failure,
+# exhausting the budget before post_search_grounding could enforce.
+# Three retries gives an opinionated character with multiple bail
+# catchers enough room to converge on one clean draft.
+_BAIL_RETRIES_PER_TURN = 3
 
 
 def _has_lexicon_hit(user_message: str, lexicon: tuple[str, ...]) -> bool:

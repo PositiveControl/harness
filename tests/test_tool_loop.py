@@ -1612,31 +1612,36 @@ def test_loop_catches_capture_fabrication_end_to_end() -> None:
 
 
 def test_loop_caps_bail_retries() -> None:
-    """If the model keeps bailing, give up after the per-turn cap (2)
-    rather than consuming the full max_rounds budget. Each retry emits
-    a bail_retry event (harness-24xj) so renderers can drop the
-    in-flight stream buffer, and the final exhausted reply is replaced
-    with a canned fallback rather than surfacing the still-fabricated
-    teaser as the answer."""
-    from harness.orchestrator.tool_loop import _EXHAUSTED_FABRICATION_FALLBACK
+    """If the model keeps bailing, give up after the per-turn cap
+    (`_BAIL_RETRIES_PER_TURN`) rather than consuming the full
+    max_rounds budget. Each retry emits a bail_retry event
+    (harness-24xj) so renderers can drop the in-flight stream
+    buffer, and the final exhausted reply is replaced with a canned
+    fallback rather than surfacing the still-fabricated teaser as
+    the answer."""
+    from harness.orchestrator.tool_loop import (
+        _BAIL_RETRIES_PER_TURN,
+        _EXHAUSTED_FABRICATION_FALLBACK,
+    )
 
     teaser = ModelReply(content="Let me check:")
-    adapter = _ScriptedAdapter(replies=[teaser, teaser, teaser, teaser, teaser])
+    # Enough replies to outlast any reasonable retry budget.
+    adapter = _ScriptedAdapter(replies=[teaser] * (_BAIL_RETRIES_PER_TURN + 4))
     result = run_tool_loop(
         adapter,
         [ChatMessage(role="user", content="go")],
         ToolRegistry(),
         max_rounds=8,
     )
-    # 1 initial + 2 retries = 3 rounds, then terminate.
-    assert result.rounds == 3
+    # 1 initial + N retries = N+1 rounds, then terminate.
+    assert result.rounds == _BAIL_RETRIES_PER_TURN + 1
     # Exhaustion fallback — NOT the fabricated teaser (harness-24xj).
     assert result.content == _EXHAUSTED_FABRICATION_FALLBACK
-    # One bail_retry per retry (2 total): renderers use it to drop the
-    # partial stream buffer so retries replace rather than stack.
+    # One bail_retry per retry: renderers use it to drop the partial
+    # stream buffer so retries replace rather than stack.
     bail_events = [e for e in result.events if e.kind == "bail_retry"]
-    assert len(bail_events) == 2
-    assert [e.round_index for e in bail_events] == [0, 1]
+    assert len(bail_events) == _BAIL_RETRIES_PER_TURN
+    assert [e.round_index for e in bail_events] == list(range(_BAIL_RETRIES_PER_TURN))
 
 
 def test_loop_bail_retry_event_fires_for_fabrication() -> None:
@@ -1674,11 +1679,14 @@ def test_loop_exhausted_fabrication_replaced_with_fallback() -> None:
     hallucinated content. Before the fix we returned the fabricated
     plan verbatim and the user saw 'Today — 2026-04-18 Shall: 1
     [prof/web-gateway] ...' as airton_b's final answer."""
-    from harness.orchestrator.tool_loop import _EXHAUSTED_FABRICATION_FALLBACK
+    from harness.orchestrator.tool_loop import (
+        _BAIL_RETRIES_PER_TURN,
+        _EXHAUSTED_FABRICATION_FALLBACK,
+    )
 
     fab = ModelReply(content="Today — 2026-04-18. Nothing scheduled today.")
-    # All three attempts fabricate; retries exhaust.
-    adapter = _ScriptedAdapter(replies=[fab, fab, fab, fab])
+    # All attempts fabricate; retries exhaust.
+    adapter = _ScriptedAdapter(replies=[fab] * (_BAIL_RETRIES_PER_TURN + 2))
     result = run_tool_loop(
         adapter,
         [ChatMessage(role="user", content="what is the date?")],
@@ -1688,8 +1696,8 @@ def test_loop_exhausted_fabrication_replaced_with_fallback() -> None:
     )
     assert result.content == _EXHAUSTED_FABRICATION_FALLBACK
     # Substitution doesn't swallow the original — events trace shows
-    # the model ran 3 times (1 + 2 retries).
-    assert result.rounds == 3
+    # the model ran 1 + N retries times.
+    assert result.rounds == _BAIL_RETRIES_PER_TURN + 1
 
 
 def test_loop_handles_unknown_tool_gracefully() -> None:

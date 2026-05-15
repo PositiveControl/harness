@@ -94,18 +94,33 @@ def _build_hook_pipeline(
     orchestrator falls back to its module default.
 
     `valid_section_anchors` (harness-aise) is loaded once at startup
-    from `<character>/corpus/chunks/*.jsonl`. Empty for characters
-    without that directory, which keeps FabricatedSectionHook silent
-    on airton, airton_b, airton_c — only airton_c1 currently ships a
-    chunks JSONL. The cost is one set-up file walk; no embedder.
+    from two sources, unioned:
+
+      * `<character>/corpus/chunks/*.jsonl` — chunked corpora used by
+        FAA personas (airton_c{,1,_tfr}). Rows carry a `section`
+        field stamped by the chunker.
+      * `<character>/document_trees:` markdown sources — used by
+        markdown-corpus personas (airton_f). Numeric section
+        headings (`## 1. Scope`, `### 2.1 Greeter`) become §N / §N.N
+        anchors.
+
+    Empty for characters with neither, which keeps FabricatedSectionHook
+    silent. The cost is one file walk per source; no embedder.
 
     The summarizer reuses the router's adapter when available — it's
     a small MLX model already loaded into the process. Otherwise we
     build a fresh MLX adapter from `router_repo`. Either way the
     extra model cost is bounded (~1 GB for a 3B-4bit router)."""
-    from harness.orchestrator.section_index import collect_valid_anchors
+    from harness.orchestrator.section_index import (
+        collect_valid_anchors,
+        collect_valid_anchors_from_markdown,
+    )
 
     valid_anchors = collect_valid_anchors(character_path / "corpus" / "chunks")
+    if character.document_trees:
+        valid_anchors = valid_anchors | collect_valid_anchors_from_markdown(
+            character.document_trees
+        )
     grammar = character.citation_grammar
     catchers = character.catchers
     if not summarize_tool_results and not valid_anchors and grammar is None and not catchers:

@@ -135,3 +135,117 @@ def test_returns_frozenset_not_mutable(tmp_path: Path) -> None:
     )
     anchors = collect_valid_anchors(chunks_dir)
     assert isinstance(anchors, frozenset)
+
+
+# ---------- collect_valid_anchors_from_markdown ----------
+
+
+class _StubTreeSpec:
+    """Minimal shape that satisfies `DocumentTreeSpec`-shaped duck-typing
+    inside `collect_valid_anchors_from_markdown` (it reads `source_path`
+    + `source_format` via getattr). Avoids importing the real Character
+    / DocumentTreeSpec just to stand up a test fixture."""
+
+    def __init__(self, source_path: Path, source_format: str = "markdown") -> None:
+        self.source_path = source_path
+        self.source_format = source_format
+
+
+def test_markdown_walker_extracts_numeric_headings(tmp_path: Path) -> None:
+    """Numeric section headings at any depth (## or ###) contribute
+    `§N` / `§N.N` anchors. Section title text is irrelevant."""
+    from harness.orchestrator.section_index import collect_valid_anchors_from_markdown
+
+    doc = tmp_path / "doc.md"
+    doc.write_text(
+        "# Example: A Short RFC-Style Document\n"
+        "\n"
+        "## 1. Scope\n"
+        "Some body text.\n"
+        "\n"
+        "## 2. Terminology\n"
+        "\n"
+        "### 2.1 Greeter\n"
+        "Body.\n"
+        "### 2.2 Greetee\n"
+        "More body.\n"
+        "\n"
+        "## 3. Frame Format\n"
+        "### 3.1 HELLO\n"
+        "### 3.2 HELLO-ACK\n"
+        "## 4. Timeouts\n"
+        "## 5. Security Considerations\n"
+    )
+    anchors = collect_valid_anchors_from_markdown((_StubTreeSpec(source_path=doc),))  # type: ignore[arg-type]
+    assert anchors == frozenset({"§1", "§2", "§2.1", "§2.2", "§3", "§3.1", "§3.2", "§4", "§5"})
+
+
+def test_markdown_walker_skips_non_numeric_headings(tmp_path: Path) -> None:
+    """Headings without a numeric prefix are not section anchors — the
+    document title (`# Title`), reference subheads (`## References`)
+    and prose H2 (`## Implementation Notes`) all skipped."""
+    from harness.orchestrator.section_index import collect_valid_anchors_from_markdown
+
+    doc = tmp_path / "doc.md"
+    doc.write_text(
+        "# Document Title\n"
+        "## 1. Real Section\n"
+        "## References\n"
+        "## Implementation Notes\n"
+        "## 2. Another Real Section\n"
+    )
+    anchors = collect_valid_anchors_from_markdown((_StubTreeSpec(source_path=doc),))  # type: ignore[arg-type]
+    assert anchors == frozenset({"§1", "§2"})
+
+
+def test_markdown_walker_skips_non_markdown_format(tmp_path: Path) -> None:
+    """`source_format != 'markdown'` trees are ignored — they go
+    through the JSONL chunks walker instead."""
+    from harness.orchestrator.section_index import collect_valid_anchors_from_markdown
+
+    doc = tmp_path / "doc.md"
+    doc.write_text("## 1. Section\n")
+    anchors = collect_valid_anchors_from_markdown(
+        (_StubTreeSpec(source_path=doc, source_format="jsonl"),)  # type: ignore[arg-type]
+    )
+    assert anchors == frozenset()
+
+
+def test_markdown_walker_skips_missing_source(tmp_path: Path) -> None:
+    """Missing source file → silent skip. Same resilience contract
+    as the JSONL walker."""
+    from harness.orchestrator.section_index import collect_valid_anchors_from_markdown
+
+    anchors = collect_valid_anchors_from_markdown(
+        (_StubTreeSpec(source_path=tmp_path / "does-not-exist.md"),)  # type: ignore[arg-type]
+    )
+    assert anchors == frozenset()
+
+
+def test_markdown_walker_unions_multiple_docs(tmp_path: Path) -> None:
+    """Multiple doc trees contribute their anchors to a single union."""
+    from harness.orchestrator.section_index import collect_valid_anchors_from_markdown
+
+    a = tmp_path / "a.md"
+    b = tmp_path / "b.md"
+    a.write_text("## 1. A\n## 2. B\n")
+    b.write_text("## 3. C\n### 3.1 D\n")
+    anchors = collect_valid_anchors_from_markdown(
+        (_StubTreeSpec(source_path=a), _StubTreeSpec(source_path=b)),  # type: ignore[arg-type]
+    )
+    assert anchors == frozenset({"§1", "§2", "§3", "§3.1"})
+
+
+def test_markdown_walker_picks_up_airton_f_seed_doc() -> None:
+    """End-to-end pin against the real airton_f seed document. Catches
+    regressions if either the markdown layout drifts or the heading
+    regex starts rejecting the canonical shape."""
+    from harness.character import load_character
+    from harness.orchestrator.section_index import collect_valid_anchors_from_markdown
+
+    repo = Path(__file__).resolve().parents[1]
+    character = load_character(repo / "character" / "airton_f")
+    anchors = collect_valid_anchors_from_markdown(character.document_trees)
+    # All the headings in 01-example-rfc-style.md. If the seed doc
+    # changes, update this expectation alongside the doc.
+    assert anchors == frozenset({"§1", "§2", "§2.1", "§2.2", "§3", "§3.1", "§3.2", "§4", "§5"})
