@@ -195,7 +195,11 @@ citation_grammar:
 # — it bounces operational questions to scope_redirect_template before
 # the model can fabricate. ambiguous_context is retained for cases where
 # the pasted NOTAM text is itself ambiguous (e.g. mixed AGL/MSL without
-# clear reference frame).
+# clear reference frame). fetch_url_guard enforces the constitution's
+# "paste-only" boundary: fetch_url is in the tool set so a pilot CAN
+# hand over a tfr.faa.gov URL, but the guard blocks speculative calls
+# the model invents from priors when the user only pasted NOTAM text.
 catchers:
   - scope_redirect
   - ambiguous_context
+  - fetch_url_guard

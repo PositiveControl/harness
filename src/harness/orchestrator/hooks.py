@@ -1881,6 +1881,82 @@ class ArgumentGroundingHook:
         )
 
 
+# Matches any http(s) URL inside a user message. Used by
+# FetchUrlGuardHook to decide whether the user's turn carries an
+# explicit URL the model should fetch. Greedy and case-insensitive;
+# stops at whitespace because tool args / pasted bodies rarely contain
+# URLs followed by other URL-fragment characters without whitespace.
+_URL_IN_TEXT_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+
+
+# Skip-result body when fetch_url is gated. Phrased as a tool result
+# (success=False) so the model sees a clean, actionable instruction
+# instead of a halt. The message names the reason ('user did not paste
+# a URL') and tells the model what to do instead (answer from the
+# already-pasted content).
+_FETCH_URL_GUARD_OUTPUT = (
+    "fetch_url skipped — the user's message did not contain a URL. "
+    "This character only fetches external pages when the user "
+    "explicitly pastes a link to source material; otherwise it works "
+    "from the text the user already provided. Re-plan: answer from "
+    "the user's pasted content + the grounding context you already "
+    "have. Do NOT retry fetch_url unless the user's NEXT message "
+    "actually contains a URL."
+)
+
+
+@dataclass(frozen=True)
+class FetchUrlGuardHook:
+    """Skip speculative `fetch_url` calls when the user hasn't pasted a URL.
+
+    Failure mode this catches: airton_c_tfr (and similar paste-only
+    personas) ship `fetch_url` in their tool set so a pilot can hand
+    over a `tfr.faa.gov` link instead of NOTAM text. But the model
+    sometimes speculates — observed 2026-05-15 with a Palm Beach TFR
+    where the model invented a guessed FAA listing URL
+    (`/air_traffic/air_facts/notams/?state=fl&city=Palm+Beach`),
+    got a 403, and prefixed the actual decode with an error-recovery
+    preamble. The constitution says fetch_url is for the
+    user-pasted-URL case only; this hook enforces it structurally.
+
+    Rule:
+      1. Only checks calls to `fetch_url` (or `fetch_url_text`,
+         `fetch_url_json` — any tool whose name starts with
+         `fetch_url`). Other tools pass through.
+      2. Requires `user_message` to contain at least one http(s)://
+         URL. Missing user_message OR no URL → Skip with the canned
+         re-plan tool result.
+      3. URL present → Continue; downstream grounding hook
+         (argument_grounding) and the tool's own host allowlist
+         decide whether the specific URL is allowed.
+
+    Skip is preferred over Halt: the model gets the error-shaped
+    tool result and naturally pivots in its next round. Halt would
+    end the turn with a canned message, dropping the actual decode
+    work the user wants.
+
+    Opt-in via the character's `catchers:` roster (member name
+    `fetch_url_guard`). Non-paste-only characters who DO want
+    speculative web research (e.g. ab's open-ended planning) leave
+    the catcher off and keep the freer behaviour."""
+
+    name: str = "fetch_url_guard"
+
+    def check(self, ctx: PreToolContext) -> PreToolOutcome:
+        if not ctx.call.name.startswith("fetch_url"):
+            return Continue()
+        if ctx.user_message and _URL_IN_TEXT_RE.search(ctx.user_message):
+            return Continue()
+        return Skip(
+            ToolResult(
+                tool_name=ctx.call.name,
+                output=_FETCH_URL_GUARD_OUTPUT,
+                success=False,
+                error="fetch_url_guard",
+            )
+        )
+
+
 # ---------- finalize hooks ----------
 
 
@@ -2613,6 +2689,7 @@ _OPT_IN_CATCHERS: frozenset[str] = frozenset(
         "ambiguous_context",
         "scope_redirect",
         "reserved_squawk_code",
+        "fetch_url_guard",
     }
 )
 
@@ -2726,6 +2803,18 @@ def default_hook_pipeline(
     if "ambiguous_context" in catchers_set:
         bail.append(AmbiguousContextHook())
 
+    # Pre-tool catchers. Built mutably so opt-in characters can
+    # tack on FetchUrlGuardHook without forcing every non-paste-only
+    # persona to inherit it.
+    pre_tool: list[PreToolHook] = [DuplicateCallHook(), ArgumentGroundingHook()]
+    # fetch_url_guard: airton_c_tfr-style paste-only characters block
+    # speculative fetch_url calls (those without a URL in the user's
+    # message). Placed after argument_grounding so a real URL still
+    # has its host validated by downstream wiring (the tool's own
+    # allowlist + the grounding check).
+    if "fetch_url_guard" in catchers_set:
+        pre_tool.append(FetchUrlGuardHook())
+
     return HookPipeline(
         bail=bail,
         post_model=[PairedMetaConfirmStripHook()],
@@ -2734,7 +2823,7 @@ def default_hook_pipeline(
         # spends cycles analyzing it (and so the user sees the
         # "duplicate — skipped" nudge, not a grounding complaint,
         # when both would fire).
-        pre_tool=[DuplicateCallHook(), ArgumentGroundingHook()],
+        pre_tool=pre_tool,
         post_tool=[],
         # Order matters inside finalize: ungrounded_citation runs first so
         # it can Halt with a scope-aware refusal for fabricated-citation

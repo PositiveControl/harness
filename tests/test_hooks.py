@@ -25,6 +25,7 @@ from harness.orchestrator.hooks import (
     FabricatedSectionHook,
     FabricationFallbackHook,
     FalseSuccessHook,
+    FetchUrlGuardHook,
     FinalizeContext,
     Halt,
     HookPipeline,
@@ -538,6 +539,88 @@ def test_argument_grounding_hook_passes_mixed_grounded_and_prose_args() -> None:
     )
     outcome = ArgumentGroundingHook().check(ctx)
     assert isinstance(outcome, Continue)
+
+
+# ---------- fetch_url_guard (harness-ygvg follow-up) ----------
+
+
+def test_fetch_url_guard_skips_speculative_call_without_user_url() -> None:
+    """harness-ygvg follow-up: airton_c_tfr observed 2026-05-15
+    speculatively calling fetch_url with a guessed FAA listing URL
+    after the user pasted only NOTAM text. The constitution says
+    fetch_url is paste-a-URL-only. The guard must Skip with a
+    re-plan tool result so the model pivots to decoding the pasted
+    text instead of treating the 403 as authoritative."""
+    call = ToolCall(
+        name="fetch_url",
+        arguments={"url": "https://www.faa.gov/air_traffic/air_facts/notams/"},
+    )
+    ctx = PreToolContext(
+        call=call,
+        seen_calls=frozenset(),
+        user_message="FDC 5/2809 ZMA PALM BEACH FL TFR 14 CFR 99.7 ...",
+    )
+    outcome = FetchUrlGuardHook().check(ctx)
+    assert isinstance(outcome, Skip)
+    assert outcome.result.success is False
+    assert outcome.result.error == "fetch_url_guard"
+    assert "did not contain a URL" in outcome.result.output
+
+
+def test_fetch_url_guard_allows_call_when_user_pastes_url() -> None:
+    """Truthful counterfactual: when the user DOES paste an http(s)
+    URL the design intent (paste a tfr.faa.gov link) is exercised
+    and the guard stays out of the way. Downstream argument_grounding
+    + the tool's host allowlist remain in charge of validating which
+    URL is acceptable."""
+    call = ToolCall(
+        name="fetch_url",
+        arguments={"url": "https://tfr.faa.gov/save_pages/detail_5_2809.html"},
+    )
+    ctx = PreToolContext(
+        call=call,
+        seen_calls=frozenset(),
+        user_message=("Decode this TFR for me: https://tfr.faa.gov/save_pages/detail_5_2809.html"),
+    )
+    outcome = FetchUrlGuardHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_fetch_url_guard_ignores_other_tool_names() -> None:
+    """The guard only checks fetch_url-family calls. read_file, grep,
+    assemble_context, etc. pass through untouched even when the user
+    message lacks a URL."""
+    for tool_name in ("read_file", "grep", "assemble_context", "search_memory"):
+        call = ToolCall(name=tool_name, arguments={"x": "y"})
+        ctx = PreToolContext(
+            call=call,
+            seen_calls=frozenset(),
+            user_message="no urls in this message",
+        )
+        outcome = FetchUrlGuardHook().check(ctx)
+        assert isinstance(outcome, Continue), f"guard fired on unrelated tool {tool_name!r}"
+
+
+def test_fetch_url_guard_skips_when_user_message_missing() -> None:
+    """Bootstrap / subagent contexts may not thread a user_message
+    through. Default to skipping the call rather than allowing it —
+    paste-only characters never have a legitimate fetch_url without a
+    user-pasted URL."""
+    call = ToolCall(name="fetch_url", arguments={"url": "https://example.com"})
+    ctx = PreToolContext(call=call, seen_calls=frozenset(), user_message=None)
+    outcome = FetchUrlGuardHook().check(ctx)
+    assert isinstance(outcome, Skip)
+
+
+def test_fetch_url_guard_wires_into_pipeline_when_opted_in() -> None:
+    """Pipeline composition pin: passing 'fetch_url_guard' in the
+    catchers roster installs the hook in the pre_tool list. Absence
+    keeps the pre_tool surface to (duplicate_call, argument_grounding)
+    so non-paste-only characters aren't affected."""
+    on = default_hook_pipeline(catchers=("fetch_url_guard",))
+    assert "fetch_url_guard" in on.names()
+    off = default_hook_pipeline(catchers=())
+    assert "fetch_url_guard" not in off.names()
 
 
 # ---------- finalize hook ----------
