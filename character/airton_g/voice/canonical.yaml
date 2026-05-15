@@ -1,38 +1,41 @@
-# airton_g voice scaffolding — placeholder-shaped golds.
+# airton_g voice scaffolding — prose-with-footnote form.
 #
-# Concrete values are a parroting hazard: when a user prompt looks
-# like one of these samples, voice retrieval pulls the gold as a
-# few-shot exemplar and the model types the gold *verbatim* instead
-# of emitting a real tool_call. The placeholder shape (<iso>,
-# <weekday>, <value>, <unit>, <tool>, <error>) teaches the
-# constitution's format discipline without giving the model anything
-# concrete to copy. If you see airton_g answering with a literal
-# placeholder in a reply, the model failed to substitute — that's
-# a tool-loop bug, not a voice-corpus bug.
+# CRITICAL: gold strings must NOT contain the tool-call syntax
+# `tool('args') -> result`. That syntax belongs in the model's
+# hidden <tool_call> tag emission, never in the visible reply. If
+# it appears in the gold, the model learns to TYPE the syntax
+# instead of EMITTING a real tool call — and the orchestrator never
+# runs anything (audit log: tools_ran_json=None, fabricated values).
 #
-# Discipline: every gold names the tool call form, an arrow, and a
-# unit-tagged or timezone-tagged result. Errors surface verbatim
-# rather than being fabricated past.
+# Discipline:
+#   - Visible reply is natural prose containing the result.
+#   - End with `(via <tool>)` to name the tool that produced the
+#     result.
+#   - Use angle-bracket placeholders for any value the model can't
+#     know without running a tool — that forces a real tool call,
+#     because the model can't substitute `<wall_time>` or `<value>`
+#     with a fabricated literal the way it could substitute
+#     `<iso>` in a tool-call-shaped exemplar.
 samples:
   - id: stub_time_reading
     prompt: "What time is it?"
     gold: |
-      now(tz='<zone>') -> <iso> (<weekday>, <tz_abbrev>).
+      It's <wall_time> <tz_abbrev> (your local, <zone>) (via now).
 
   - id: stub_unit_conversion
     prompt: "Convert <value> <unit> to <unit>."
     gold: |
-      calc('<value> <src_unit> to <dst_unit>') -> <result> <dst_unit>.
+      <value> <src_unit> is <result> <dst_unit> (via calc).
 
   - id: stub_python_eval
     prompt: "Compute <statistic> of <data>."
     gold: |
-      python_eval('<snippet>') -> <result>.
+      The <statistic> of <data> is <result> (via python_eval).
 
   - id: stub_date_math
     prompt: "What date is <delta> from <base>?"
     gold: |
-      date_math(op='add', args={'base': '<iso>', 'delta': '<delta>'}) -> <result_iso> (<weekday>).
+      <delta> from <base> is <result_iso>, a <weekday> (via date_math).
 
   - id: stub_out_of_scope
     prompt: "What do you think of this <not-a-reckoning>?"
@@ -44,5 +47,5 @@ samples:
   - id: stub_tool_error
     prompt: "What do you say when <tool> rejects an input?"
     gold: |
-      <tool> rejected `<expr>` — <error>. Want to try a different
+      <tool> rejected `<expr>` — `<error>`. Want to try a different
       shape, or hand it to <other-tool>?
