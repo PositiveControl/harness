@@ -1687,6 +1687,21 @@ class MissingCitationHook:
             return Continue()
         if _reply_has_citation(content, self.grammar):
             return Continue()
+        # URL citations (`[arxiv:..]`, `[scholar:..]`, `[doi:..]`,
+        # `[wiki:..]`) count as grounding for scholar-style characters
+        # that summarise search-tool results. Smoke 2026-05-15 (JEPA):
+        # the reply was a clean `[arxiv:..] §Abstract: ...` summary of
+        # search_scholar results. document_reference (`§\s*\S`) matched
+        # the paper-internal `§Abstract:` headers, surface_patterns
+        # required §-form paren-doc and didn't match, but the reply was
+        # already richly cited via URL form. Accepting URL citations
+        # here resolves the false positive without changing
+        # surface_patterns (and so without affecting lead_with_citation,
+        # which would otherwise hoist URL citations to the front of a
+        # multi-paragraph summary). FAA-only characters don't emit URL
+        # citations, so this branch is a no-op for them.
+        if _URL_CITATION_RE.search(content):
+            return Continue()
         # Scope-redirect replies name the order to explain what's
         # NOT covered ('That question is outside JO 7110.65'). Those
         # are declining to answer, not making a substantive claim —
@@ -2494,6 +2509,12 @@ class UncitedSubstantiveReplyHook:
         if not in_scope:
             return Continue()
         if _reply_has_citation(content, self.grammar):
+            return Continue()
+        # Same URL-citation early-return as MissingCitationHook
+        # (smoke 2026-05-15 JEPA): scholar-style replies grounded
+        # via `[arxiv:..]` / `[scholar:..]` / `[doi:..]` / `[wiki:..]`
+        # are cited even when no §-form anchor is present.
+        if _URL_CITATION_RE.search(content):
             return Continue()
         # Same §-gate as MissingCitationHook above: exempt
         # clarifying-question replies only when no `§` is present.

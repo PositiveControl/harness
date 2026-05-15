@@ -1600,6 +1600,43 @@ def test_missing_citation_silent_on_clarifying_question_reply() -> None:
     assert isinstance(outcome, Continue)
 
 
+def test_missing_citation_silent_when_reply_has_url_citations() -> None:
+    """JEPA smoke repro 2026-05-15 (search_scholar variant): the model
+    summarised search_scholar results with `[arxiv:..]` / `[doi:..]`
+    URL citations, with `§Abstract:` paper-internal section markers
+    inside each cited paragraph. document_reference (`\\bsection\\b`)
+    matched the `§Abstract` token, surface_patterns required §-form
+    paren-doc and didn't match — false-positive Nudge. URL citations
+    are valid grounding for scholar-style characters; the hook now
+    accepts them as evidence of citation."""
+    af = load_character(_REPO / "character" / "airton_f").citation_grammar
+    assert af is not None
+    reply_text = (
+        "The corpus doesn't cover JEPA in the context of predictive models — "
+        "it has a greeting protocol unrelated to ML.\n\n"
+        "[arxiv:2305.17493] §Abstract: Dynamic / ME-JEPA v2.0.0-rc1 is an "
+        "audited single-binary JEPA-style world-model runtime that runs three "
+        "domains by TOML manifest alone. Every persisted operation flows "
+        "through 25 typed RocksDB families.\n\n"
+        "[arxiv:2403.00504] §Abstract: Joint-Embedding Predictive Architecture "
+        "(JEPA) has emerged as a promising self-supervised approach that learns "
+        "by leveraging a world model. We explore how to generalize the JEPA "
+        "prediction task to a broader set of corruptions."
+    )
+    outcome = MissingCitationHook(grammar=af).check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"assemble_context", "search_scholar"}),
+        )
+    )
+    assert isinstance(outcome, Continue), (
+        "URL citations should satisfy the citation-required check — the "
+        "reply is grounded in [arxiv:..] / [doi:..] form even though it "
+        "doesn't use §-form paren-doc syntax"
+    )
+
+
 def test_missing_citation_fires_on_bare_anchor_for_non_faa_character() -> None:
     """Smoke 2026-05-15 repro (airton_f): the model wrote `§1-5
     explicitly disclaims security` — bare FAA-style hyphen anchor, no
