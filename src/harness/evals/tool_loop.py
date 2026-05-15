@@ -313,6 +313,14 @@ def _run_scenario(scenario: dict[str, Any]) -> ToolLoopCase:
     scope_redirect_template = scenario.get("scope_redirect_template")
     if scope_redirect_template is not None:
         scope_redirect_template = str(scope_redirect_template)
+    # Optional per-scenario character_name (harness-ygvg). Threads into
+    # ScopeRedirectHook so its bail nudge names the right persona
+    # instead of inheriting the legacy airton_c1 hardcoded text. Most
+    # fixtures leave this unset — the nudge falls back to a generic
+    # version that doesn't leak a specific character identity.
+    character_name = scenario.get("character_name")
+    if character_name is not None:
+        character_name = str(character_name)
     if (
         valid_section_anchors
         or citation_grammar is not None
@@ -326,6 +334,7 @@ def _run_scenario(scenario: dict[str, Any]) -> ToolLoopCase:
             citation_grammar=citation_grammar,
             catchers=catchers_tuple,
             scope_redirect_template=scope_redirect_template,
+            character_name=character_name,
         )
     else:
         hooks_override = None

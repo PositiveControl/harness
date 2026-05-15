@@ -1539,6 +1539,36 @@ def test_missing_citation_fires_on_redirect_then_answer_shape() -> None:
     assert isinstance(outcome, Nudge)
 
 
+def test_missing_citation_accepts_cfr_dot_form_via_character_grammar() -> None:
+    """harness-ygvg regression: airton_c_tfr cites 14 CFR sections in
+    dot-form (§91.141, §91.137 etc.). The hardcoded
+    `_CITATION_PRESENT_RE` only knows the JO/AIM hyphen-form, so a
+    correctly-cited TFR decode was falsely tripping missing_citation
+    and getting discarded. The hook must consult the character's own
+    `citation_grammar.surface_patterns` so each persona's native shape
+    counts as 'cited'."""
+    tfr_grammar = load_character(_REPO / "character" / "airton_c_tfr").citation_grammar
+    assert tfr_grammar is not None
+    reply_text = (
+        "Per 14 CFR §91.141, this NOTAM is a VIP movement TFR. The "
+        "restriction defines a 5 NM radius cylinder centered at "
+        "390333N0771929W from 1230Z to 1800Z on 2026-05-16, surface "
+        "to 9999 ft MSL. Part 91 operations inside the inner core "
+        "are prohibited except for the approved categories the NOTAM "
+        "enumerates."
+    )
+    outcome = MissingCitationHook(grammar=tfr_grammar).check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"assemble_context"}),
+        )
+    )
+    assert isinstance(outcome, Continue), (
+        "14 CFR §91.141 dot-form must count as a citation via airton_c_tfr's grammar"
+    )
+
+
 def test_missing_citation_respects_disabled_toggle() -> None:
     """Attribution eval disables catchers by name. Pipeline must honor
     'missing_citation' in the disabled frozenset."""
@@ -2227,6 +2257,77 @@ def test_scope_redirect_respects_disabled_toggle() -> None:
     assert isinstance(enabled, Nudge)
     disabled = pipe.run_bail(ctx, disabled=frozenset({"scope_redirect"}))
     assert isinstance(disabled, Continue)
+
+
+def test_scope_redirect_passes_geometry_in_tfr_reply() -> None:
+    """harness-ygvg regression: airton_c_tfr's core.yaml directive
+    explicitly tells the model to 'Surface the geometry (center,
+    radius, floor, ceiling)' when decoding a NOTAM. The reply mixes
+    that word with aviation vocab. Before the fix, 'geometry' was
+    in `_CLEARLY_NON_AVIATION_RE` (intended to flag math-class) and
+    Signal C tripped on every TFR decode."""
+    user = (
+        "FDC 6/0550 ZDC VA..AIRSPACE STERLING, VIRGINIA..TEMPORARY "
+        "FLIGHT RESTRICTIONS. MAY 16, 2026 LOCAL."
+    )
+    reply = (
+        "Per 14 CFR §91.141, this is a VIP movement TFR. Surface the "
+        "geometry: center at 390333N0771929W, radius 5 NM, surface to "
+        "9999 ft MSL. All Part 91 aircraft flight operations inside the "
+        "inner core are prohibited from 1230Z to 1800Z on 2026-05-16."
+    )
+    outcome = ScopeRedirectHook().check(_scope_ctx(user, reply))
+    assert isinstance(outcome, Continue), (
+        "scope_redirect must not fire on a TFR decode that uses the in-domain word 'geometry'"
+    )
+
+
+def test_scope_redirect_nudge_uses_character_template() -> None:
+    """harness-ygvg regression: when scope_redirect fires for a non-
+    airton_c1 character, the nudge text must NOT contain airton_c1's
+    'JO 7110.65 specialist' identity. Instead it must quote the
+    character's own `scope_redirect_template` so the model has a
+    correct example refusal to emit."""
+    tfr_template = (
+        "I only decode published TFR/NOTAM text. That question is "
+        "outside my scope. For operational decisions, check with your "
+        "CFI or call 1-800-WX-BRIEF."
+    )
+    hook = ScopeRedirectHook(
+        character_name="airton_c_tfr",
+        scope_redirect_template=tfr_template,
+    )
+    outcome = hook.check(
+        _scope_ctx(
+            "tell me a joke about a rooster and an egg",
+            "Per JO 7110.65 §7-6-11, radar service is terminated...",
+        )
+    )
+    assert isinstance(outcome, Nudge)
+    assert "airton_c_tfr" in outcome.text
+    assert "1-800-WX-BRIEF" in outcome.text, (
+        "nudge must echo the character's scope_redirect_template so the "
+        "model has the correct refusal sentence to emit"
+    )
+    assert "JO 7110.65 specialist" not in outcome.text, (
+        "nudge must not leak airton_c1's identity into other characters"
+    )
+
+
+def test_scope_redirect_nudge_falls_back_to_generic_without_template() -> None:
+    """When no character_name / scope_redirect_template is threaded
+    through (e.g. legacy callers, the bare `_DEFAULT_PIPELINE`), the
+    nudge is generic — no airton_c1-specific phrasing leaks through."""
+    hook = ScopeRedirectHook()
+    outcome = hook.check(
+        _scope_ctx(
+            "tell me a joke about a rooster and an egg",
+            "Per JO 7110.65 §7-6-11, radar service is terminated...",
+        )
+    )
+    assert isinstance(outcome, Nudge)
+    assert "JO 7110.65 specialist" not in outcome.text
+    assert "scope mismatch" in outcome.text
 
 
 # ---------- ambiguous_context (harness-5uq follow-up #5) ----------

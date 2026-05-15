@@ -121,6 +121,7 @@ def _build_hook_pipeline(
         citation_grammar=grammar,
         catchers=catchers,
         scope_redirect_template=character.scope_redirect_template,
+        character_name=character.name,
     )
 
     if not summarize_tool_results:
@@ -363,6 +364,7 @@ def build_classic_registry(
                     citation_grammar=character.citation_grammar,
                     catchers=character.catchers,
                     scope_redirect_template=character.scope_redirect_template,
+                    character_name=character.name,
                 ),
                 router=router,
             )

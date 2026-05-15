@@ -821,6 +821,13 @@ _JO_PHRASEOLOGY_MARKERS_RE = re.compile(
 # Tolerant of the hyphen / en-dash / unicode-minus variants in the
 # corpus. Reuses UNGROUNDED_SECTION_CITATION_RE's shape for the §-form
 # so the two hooks can't disagree about what counts as a citation.
+#
+# This fallback covers the JO/AIM hyphen-form. Characters whose corpora
+# use other shapes (e.g. airton_c_tfr citing 14 CFR §91.141 in dot-
+# form) are handled by `_reply_has_citation`, which also consults the
+# character's `CitationGrammar.surface_patterns` so each persona's
+# native citation shape counts as 'cited' for the missing_citation
+# check.
 _CITATION_PRESENT_RE = re.compile(
     # §N-N-N (primary — chapter-section-paragraph) or §N-N (broader
     # chapter-section reference, e.g. '§9-6' for the entire Unmanned
@@ -831,6 +838,25 @@ _CITATION_PRESENT_RE = re.compile(
     r"|\b(?:TBL|Table|FIG|Figure)\s+\d+[-–−]\d+[-–−]\d+\b",  # noqa: RUF001
     re.IGNORECASE,
 )
+
+
+def _reply_has_citation(content: str, grammar: CitationGrammar | None) -> bool:
+    """Return True when the reply contains a recognizable citation
+    in either the global hyphen-form shape OR any of the character's
+    declared `surface_patterns`.
+
+    The global `_CITATION_PRESENT_RE` was authored against the JO/AIM
+    hyphen-form (§N-N-N, TBL N-N-N). Characters whose corpus uses
+    other shapes (14 CFR §91.141 dot-form for airton_c_tfr, future
+    legal / RFC personas) plug in their own `surface_patterns` via
+    `citation_grammar` in core.yaml. Asking the grammar AS WELL keeps
+    each persona honest against its own corpus while preserving the
+    JO/AIM fallback for compatibility."""
+    if _CITATION_PRESENT_RE.search(content):
+        return True
+    if grammar is None:
+        return False
+    return any(pattern.search(content) for pattern in grammar.surface_patterns)
 
 
 # A reply that's asking the user to clarify between variants isn't
@@ -1005,8 +1031,12 @@ _CLEARLY_NON_AVIATION_RE = re.compile(
     # acronyms (MAC = Military Airlift Command / mean aerodynamic
     # chord; flight-data computer). These terms don't collide.
     r"iphone|ipad|ipod|android\s+phone|smartphone|laptop|"
-    # Math / science (unrelated to ATC domain)
-    r"equation|theorem|calculus|algebra|geometry|physics|chemistry|"
+    # Math / science (unrelated to ATC domain). 'geometry' is
+    # intentionally omitted — it collides with TFR / chart / radar
+    # vocabulary (e.g. airton_c_tfr's directive "Surface the geometry
+    # (center, radius, floor, ceiling)" for NOTAM cylinders). 'history'
+    # is kept because no in-scope FAA reply needs the bare word.
+    r"equation|theorem|calculus|algebra|physics|chemistry|"
     r"astronomy|biology|history|literature|philosophy|"
     # Personal / chat / meta
     r"how\s+are\s+you|tell\s+me\s+about\s+yourself|what(?:'s|\sis)\s+your\s+name|"
@@ -1087,16 +1117,44 @@ _SCOPE_REDIRECT_MARKER_RE = re.compile(
 _SCOPE_REDIRECT_SOFT_LIMIT = 300
 
 
-_SCOPE_REDIRECT_NUDGE = (
-    "[scope mismatch — the user's message has no aviation or ATC "
-    "terminology, but your reply is discussing JO 7110.65 / ATC "
-    "content. airton_c1 is scoped to FAA JO 7110.65 (Air Traffic "
-    "Control) only. Respond with an explicit scope-redirect: 'That "
-    "question is outside JO 7110.65. I'm a JO 7110.65 specialist — "
-    "I can't answer it.' Do NOT answer from priors, do NOT continue "
-    "a prior turn's topic into this new unrelated question, and do "
-    "NOT fabricate an in-scope interpretation.]"
+_SCOPE_REDIRECT_NUDGE_DEFAULT = (
+    "[scope mismatch — the user's message is out of scope for this "
+    "character, but your reply is discussing in-scope content. "
+    "Respond with an explicit scope-redirect: name your scope and "
+    "decline. Do NOT answer from priors, do NOT continue a prior "
+    "turn's topic into this new unrelated question, and do NOT "
+    "fabricate an in-scope interpretation.]"
 )
+
+
+def _build_scope_redirect_nudge(
+    character_name: str | None,
+    scope_redirect_template: str | None,
+) -> str:
+    """Compose the scope-redirect bail nudge.
+
+    Threads the character's name and `scope_redirect_template` into the
+    nudge so the model is told exactly how THIS character refuses out-
+    of-scope prompts. Without parameterization the nudge would leak
+    airton_c1's identity ('I'm a JO 7110.65 specialist') into every
+    persona that ships scope_redirect — observed in airton_c_tfr
+    sessions where the model parroted the example sentence verbatim.
+
+    When either input is missing, falls back to the generic default.
+    Strips the template aggressively so a multi-line refusal block
+    stays readable inside the bracketed nudge."""
+    if not scope_redirect_template or not scope_redirect_template.strip():
+        return _SCOPE_REDIRECT_NUDGE_DEFAULT
+    example = " ".join(scope_redirect_template.split())
+    name = character_name or "this character"
+    return (
+        f"[scope mismatch — the user's message is out of scope for "
+        f"{name}, but your reply is continuing in-scope content. "
+        f"Respond with an explicit scope-redirect along the lines of: "
+        f"'{example}' Do NOT answer from priors, do NOT continue a "
+        f"prior turn's topic into this new unrelated question, and do "
+        f"NOT fabricate an in-scope interpretation.]"
+    )
 
 
 # Ambiguous-term dictionary: maps a user-side term regex to a tuple
@@ -1277,6 +1335,14 @@ class ScopeRedirectHook:
     (fabrication / count / citation / reserved-code) run first on
     in-scope replies."""
 
+    # Per-character nudge inputs. When the hook fires, the nudge text
+    # is composed via `_build_scope_redirect_nudge` so the example
+    # refusal sentence comes from THIS character's scope_redirect_
+    # template, not airton_c1's hardcoded "I'm a JO 7110.65
+    # specialist" line. `_DEFAULT_PIPELINE` and other call sites that
+    # don't thread these through fall back to a generic nudge.
+    character_name: str | None = None
+    scope_redirect_template: str | None = None
     name: str = "scope_redirect"
 
     def check(self, ctx: BailContext) -> BailOutcome:
@@ -1300,7 +1366,7 @@ class ScopeRedirectHook:
         )
         if not (signal_user_vocab or signal_joke_frame or signal_reply_bleed):
             return Continue()
-        return Nudge(_SCOPE_REDIRECT_NUDGE)
+        return Nudge(_build_scope_redirect_nudge(self.character_name, self.scope_redirect_template))
 
 
 # Reserved transponder codes are pilot-initiated emergency signals.
@@ -1576,7 +1642,7 @@ class MissingCitationHook:
         )
         if not in_scope:
             return Continue()
-        if _CITATION_PRESENT_RE.search(content):
+        if _reply_has_citation(content, self.grammar):
             return Continue()
         # Scope-redirect replies name the order to explain what's
         # NOT covered ('That question is outside JO 7110.65'). Those
@@ -2050,7 +2116,7 @@ class UncitedSubstantiveReplyHook:
         )
         if not in_scope:
             return Continue()
-        if _CITATION_PRESENT_RE.search(content):
+        if _reply_has_citation(content, self.grammar):
             return Continue()
         if _CLARIFYING_QUESTION_RE.search(content):
             return Continue()
@@ -2557,6 +2623,7 @@ def default_hook_pipeline(
     citation_grammar: CitationGrammar | None = None,
     catchers: tuple[str, ...] = (),
     scope_redirect_template: str | None = None,
+    character_name: str | None = None,
 ) -> HookPipeline:
     """Build the shipping pipeline. Order mirrors the pre-refactor
     `_diagnose_bail` branch order so first-match semantics stay
@@ -2640,9 +2707,17 @@ def default_hook_pipeline(
     # scope_redirect: user's question has no aviation vocabulary, but
     # the reply is talking ATC. Catches context-bleed and
     # out-of-scope fabrication ('do roosters lay eggs' getting
-    # answered with phraseology content).
+    # answered with phraseology content). character_name +
+    # scope_redirect_template thread into the nudge so each persona
+    # gets its OWN example refusal sentence instead of airton_c1's
+    # hardcoded JO 7110.65 specialist line.
     if "scope_redirect" in catchers_set:
-        bail.append(ScopeRedirectHook())
+        bail.append(
+            ScopeRedirectHook(
+                character_name=character_name,
+                scope_redirect_template=scope_redirect_template,
+            )
+        )
     # ambiguous_context: user asked about a term whose JO handling
     # depends on an unspecified variant ('balloon' = manned vs.
     # unmanned free), and the reply silently picked a variant.
