@@ -1309,6 +1309,39 @@ def _topic_boundary_suffix(
     return ""
 
 
+def _append_retrieval_error_log(*, source: str, user_input: str, exc: BaseException) -> None:
+    """Append a retrieval-pipeline failure to the shared log file.
+
+    Episodic / semantic / voice search all swallow exceptions with a
+    one-time warn() and a state flag that disables the source. That's
+    right for the chat surface but it loses the stack — observed
+    2026-05-15 with three sessions in a row tripping 'bad value(s) in
+    fds_to_keep' across all three sources at session start (embedder
+    first-load path). Writes to the SAME file the assemble_context
+    tool uses so a single `tail` covers the whole retrieval surface.
+    Silent on disk-write failure — losing the log is strictly better
+    than crashing the chat turn on top of an already-failed search."""
+    import sys as _sys
+    import traceback as _tb
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
+
+    log_path = settings.data_path / "logs" / "assemble_context_errors.log"
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(f"--- {_datetime.now(_UTC).isoformat()} ---\n")
+            f.write(f"source={source!r}\n")
+            f.write(f"user_input_prefix={user_input[:120]!r}\n")
+            f.write(f"exception={type(exc).__name__}: {exc}\n")
+            f.write(_tb.format_exc())
+            f.write("\n")
+    except OSError:
+        pass
+    # Mirror to stderr too — classic-REPL users will see it inline.
+    _tb.print_exc(file=_sys.stderr)
+
+
 def _retrieve_turn_context(
     *,
     user_input: str,
@@ -1345,6 +1378,7 @@ def _retrieve_turn_context(
             examples = retriever.top_k(user_input, k=top_k)
         except Exception as exc:
             state.voice_ok = False
+            _append_retrieval_error_log(source="voice", user_input=user_input, exc=exc)
             warn(f"voice retrieval disabled for this session: {exc}")
 
     recalled: list[EpisodicRecord] = []
@@ -1362,6 +1396,7 @@ def _retrieve_turn_context(
             recalled = [rec for rec, _score in hits]
         except Exception as exc:
             state.episodic_ok = False
+            _append_retrieval_error_log(source="episodic", user_input=user_input, exc=exc)
             warn(f"episodic memory disabled for this session: {exc}")
 
     known_facts: list[SemanticFact] = []
@@ -1379,6 +1414,7 @@ def _retrieve_turn_context(
             known_facts = [f for f, _score in fact_hits]
         except Exception as exc:
             state.semantic_ok = False
+            _append_retrieval_error_log(source="semantic", user_input=user_input, exc=exc)
             warn(f"semantic facts disabled for this session: {exc}")
 
     return examples, recalled, known_facts
