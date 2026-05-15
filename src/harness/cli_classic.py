@@ -252,7 +252,18 @@ def build_classic_registry(
             )
         ),
         "search_web": lambda: SearchWebTool(),
-        "fetch_url": lambda: FetchUrlTool(),
+        # Mirror cli.py (TUI path): honor character.fetch_url_allowed_hosts
+        # so per-character allowlists (airton_f's scholar.google.com /
+        # arxiv.org / doi.org, atc's aviation sources, etc.) actually
+        # apply in the classic REPL. Empty tuple → None → no allowlist
+        # (open web).
+        "fetch_url": lambda: FetchUrlTool(
+            allowed_hosts=(
+                frozenset(character.fetch_url_allowed_hosts)
+                if character.fetch_url_allowed_hosts
+                else None
+            )
+        ),
         "remember_fact": (
             lambda: (
                 RememberFactTool(store=semantic_store, user_id=speaker, session_id=session)

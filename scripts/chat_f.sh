@@ -30,12 +30,26 @@ export HF_HUB_OFFLINE TRANSFORMERS_OFFLINE
 
 export HARNESS_CHARACTER_NAME=airton_f
 
+# Workspace pinned to the per-character dir so the chat header
+# shows the correct sandbox. The scholar profile doesn't include
+# workspace-bound fs tools (read_file/write_file/shell), but the
+# header is wrong-looking when --workspace defaults to the repo
+# root. Override via HARNESS_AIRTON_F_WORKSPACE if you want a
+# different sandbox.
+NOTES_DIR="${HARNESS_AIRTON_F_WORKSPACE:-$PWD/character/airton_f/workspace}"
+if [[ ! -d "$NOTES_DIR" ]]; then
+    echo "airton_f: workspace not found at $NOTES_DIR" >&2
+    echo "  set HARNESS_AIRTON_F_WORKSPACE=<path> or create the directory." >&2
+    exit 1
+fi
+
 exec uv run harness chat \
     --model mlx \
     --persona \
     --tools \
     --tool-set scholar \
     --router \
+    --workspace "$NOTES_DIR" \
     --memories 3 \
     --facts 5 \
     "$@"
