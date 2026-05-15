@@ -1,0 +1,50 @@
+# Router eval fixture for airton_f — prompts the intent router should
+# classify correctly when HARNESS_CHARACTER_NAME=airton_f and the
+# contract tool profile is active. Loaded by `harness eval router`.
+#
+# The scholar character runs on the forced-assemble_context primitive,
+# so most turns shouldn't surface an explicit tool call from the
+# router — the orchestrator injects assemble_context before the model
+# round. These fixtures mostly exercise the "no router intervention"
+# path (null) and the rare cases where the router should still
+# preempt with a memory search.
+
+# Corpus-grounded queries — contract handles these; router stays out
+# of the way (null = fall through to the normal loop, which will
+# trigger the forced assemble_context call).
+- prompt: what does the example RFC say about timeouts
+  expected_tool: null
+
+- prompt: summarize section 3
+  expected_tool: null
+
+- prompt: what's the frame format
+  expected_tool: null
+
+- prompt: who initiates the greeting
+  expected_tool: null
+
+# Cross-session recall — should hit search_memory rather than
+# assuming the prior_discussion slot will cover it from the contract.
+- prompt: what did we conclude last session about the security model
+  expected_tool: search_memory
+
+- prompt: remind me what we said about retries
+  expected_tool: search_memory
+
+# Self-inspection — introspect, not a corpus lookup.
+- prompt: what tools do you have
+  expected_tool: introspect
+
+- prompt: what character are you
+  expected_tool: introspect
+
+# Null / falls-through — casual acks, no tool fires.
+- prompt: thanks
+  expected_tool: null
+
+- prompt: ok
+  expected_tool: null
+
+- prompt: good morning
+  expected_tool: null

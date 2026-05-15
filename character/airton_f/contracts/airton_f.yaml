@@ -1,0 +1,41 @@
+# airton_f contract — scholar lookup over the doc tree.
+#
+# Resolved at the start of every turn via the forced assemble_context
+# mechanism (harness-jkmk). The forced call passes role=airton_f and
+# variables={request_summary: <latest user message>}; the slots below
+# reference {request_summary} in their query templates.
+#
+# Two slots fan over different stores:
+#
+# - applicable_section (tree, required): pulls section-shaped hits
+#   from the doc tree. Provenance carries `<document>:<path>` so
+#   the agent quotes "01-example-rfc-style:3.1" with audit.
+#
+# - prior_discussion (episodic, optional): pulls episodic memory
+#   about past turns on this corpus, when prior sessions exist.
+#   Helpful for "what did we conclude last time" style follow-ups
+#   without forcing the agent to fabricate continuity.
+
+role: airton_f
+intent: Find the corpus section(s) that answer the question and cite them
+budget_tokens: 2500
+
+slots:
+  - name: applicable_section
+    store: tree
+    query_template: "{request_summary}"
+    required: true
+    min_cardinality: 1
+    max_hits: 5
+    # Sibling-merge: if 2+ leaves under the same parent appear in
+    # the hits, replace the cluster with the parent anchor. Gives
+    # the agent a parent-level citation when the question scopes to
+    # a topic rather than a specific sub-section.
+    auto_merge: true
+
+  - name: prior_discussion
+    store: episodic
+    query_template: "{request_summary}"
+    required: false
+    min_cardinality: 0
+    max_hits: 2

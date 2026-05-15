@@ -44,6 +44,26 @@ Primary runtime is **MLX on Apple Silicon** (tested on M4 Pro 48 GB). A local **
 
 ---
 
+## Characters
+
+The harness ships with several characters, each shaped by a different tool surface and constitution. The active character is selected via `HARNESS_CHARACTER_NAME` (default: `airton`). Naming convention: `airton_<single-letter>` for top-level archetypes; `airton_<letter><suffix>` for nested specializations under an existing archetype (e.g. `airton_c1`, `airton_c_tfr`).
+
+| Name | Archetype — one-line premise | Tool profile | Launcher |
+|------|------------------------------|--------------|----------|
+| **airton** | engineer-mentor — gruff ex-defense embedded engineer dragged into web work; TDD-first | `coding` / `full` | `scripts/chat.sh` |
+| **airton_b** (ab) | personal operations lead — holds the shape of your week; bd-routed only | `ops` | `HARNESS_CHARACTER_NAME=airton_b uv run harness chat …` |
+| **airton_c** | FAA NAS generalist — student-pilot-facing reference over JO + AIM + CFR + PCG + PHAK | `atc` | `HARNESS_CHARACTER_NAME=airton_c uv run harness chat …` |
+| **airton_c1** | FAA controller-side — JO 7110.65 only, paired with `phraseology_lint` | `atc` / `phraseology` | `HARNESS_CHARACTER_NAME=airton_c1 uv run harness chat …` |
+| **airton_c_tfr** | TFR/NOTAM explainer — narrowed airton_c for plain-English NOTAM interpretation | `atc` | `HARNESS_CHARACTER_NAME=airton_c_tfr uv run harness chat …` |
+| **airton_d** | notes curator — capture / query / triage over `character/airton_d/workspace/` | `notes` | `scripts/chat_d.sh` |
+| **airton_e** | RESERVED — placeholder slot for a future character (see `character/airton_e/RESERVED.md`) | — | — |
+| **airton_f** | scholar — generic markdown doc-tree reader on the contract primitive | `contract` | `scripts/chat_f.sh` |
+| **returns_handler** | tabular-decision demo — refund decisions over policy seeds + order rows | `contract` | `HARNESS_CHARACTER_NAME=returns_handler uv run harness chat …` |
+
+Each character's data lives under `character/<name>/` — `core.yaml`, `constitution.md`, `voice/`, `seed_memories/`, plus optional `contracts/`, `seed_documents/`, `data/`, and `workspace/` subdirs depending on archetype. Character data is configuration, not code: nothing in `src/` hardcodes a character's rules.
+
+---
+
 ## Setup
 
 Requirements: macOS (Apple Silicon for MLX), Python 3.11+, [`uv`](https://docs.astral.sh/uv/).
