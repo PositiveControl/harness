@@ -59,7 +59,7 @@ failure mode that has burned pilots on ChatGPT.
                             │   (regex/coords/times → JSON)
                             │
                             ▼
-                     [ airton_tfr character ]
+                     [ airton_c_tfr character ]
                             │   forced search_memory
                             │   lead_with_citation
                             │   UngroundedCitationHook
@@ -72,20 +72,41 @@ failure mode that has burned pilots on ChatGPT.
 
 Key picks:
 
-1. **New character `airton_tfr`** — clone airton_c, scope corpus to
-   §91.137-145 + AIM 3-5 + TFR-relevant PCG entries, tighten
-   `scope_redirect` so operational questions ("should I fly?", "is this
-   safe?") are refused — explanation only.
-2. **Two-stage pipeline.** Parser first (regex + pyproj) extracts geometry
-   and window deterministically. Explainer second (LLM) reasons over the
-   parsed structure + retrieved chunks. The LLM never parses coordinates —
-   it would hallucinate digits.
-3. **Pluggable `ModelAdapter`.** Dev: MLX on the Mac. Prod: hosted
-   (Anthropic). Adapter boundary already exists in the harness; this is a
-   config flag, not a rewrite.
-4. **Stateless backend.** No DB, no session. Each request is a clean run.
-5. **Tiny SPA.** One HTML + one JS file, vanilla, mobile-first. No
-   SvelteKit for a single form.
+1. **New character `airton_c_tfr`** — clone airton_c, scope corpus to
+   §91.137–145 + AIM 3-5-1…3-5-5 + AIM 5-6 (national security &
+   interceptions) + TFR-relevant PCG entries, tighten `scope_redirect`
+   so operational questions ("should I fly?", "is this safe?") are
+   refused — explanation only.
+2. **Two-stage pipeline.** Deterministic NOTAM parser (regex + `pyproj`
+   for geodetic math) extracts geometry and window. Explainer (LLM)
+   reasons over the parsed struct + retrieved chunks. The LLM never
+   parses coordinates — it would hallucinate digits.
+3. **Local-first inference.** Dev: MLX on Mac (Qwen 2.5 7B/32B 4-bit,
+   the model family the anti-fabrication catchers are tuned against).
+   Prod: Ollama on the DGX Spark when that hardware is authorized for
+   this project — same Qwen 4-bit, no new adapter, no catcher
+   revalidation. Hosted-API adapter (Anthropic/OpenAI) is deferred until
+   sustained traffic genuinely exceeds local capacity.
+4. **Stateless backend, request-scoped tool registry.** No DB, no
+   session. Per request: parse NOTAM → bind parsed struct into a
+   `read_parsed_notam` tool the model can introspect → forced
+   `search_memory` prelude → reply. Tool surface = `search_memory` +
+   `read_parsed_notam` only (no `fetch_url`, no `search_web` — paste-only
+   input contract holds).
+5. **Buffered JSON reply.** Gateway returns one complete JSON object;
+   reply size is ~1–2KB so buffered latency is bounded. Rich
+   request-level logging (raw model completion + parsed object) captured
+   under a debug-dir env flag for replay and `tfr_eval` fixture growth.
+   Streaming considered for v1.5 only if perceived-latency feedback
+   warrants it.
+6. **Tailscale-only ingress.** Invite-the-audience model — Mac (now) /
+   Spark (later) sits inside the tailnet, no public domain, no
+   Cloudflare Tunnel, no port forward. Matches the 10s-of-users target
+   audience and zero home-network exposure. Public-domain launch is a
+   v2 promotion path, not a v1 requirement.
+7. **Tiny SPA.** One HTML + one JS file, vanilla, mobile-first. No
+   SvelteKit for a single form. Loaded over the tailnet by invited
+   users.
 
 ## JSON contract
 
@@ -118,33 +139,58 @@ just consumers.
 
 | Bead | Phase | Notes |
 |---|---|---|
-| `harness-3jz1.1` | airton_tfr character + scoped corpus | foundation |
-| `harness-3jz1.2` | tfr_eval.yaml + `harness eval tfr` | depends on .1 |
-| `harness-3jz1.3` | NOTAM text parser | independent — fan out |
-| `harness-3jz1.4` | FastAPI `POST /explain` gateway | depends on .1, .3 |
-| `harness-3jz1.5` | Hosted `ModelAdapter` (Anthropic) | independent — fan out |
-| `harness-3jz1.6` | SPA frontend | depends on .4 |
-| `harness-3jz1.7` | Public launch + ops | depends on .2, .4, .5, .6 |
+| `harness-3jz1.1` | airton_c_tfr character + scoped corpus (incl. AIM 5-6, PCG) | foundation |
+| `harness-3jz1.2` | tfr_eval.yaml + `harness eval tfr` (hybrid det + judge) | depends on .1 |
+| `harness-3jz1.3` | NOTAM text parser (regex + pyproj) | independent — fan out |
+| `harness-3jz1.4` | FastAPI `POST /explain` gateway (Tailscale-only, buffered JSON, request-scoped tool registry) | depends on .1, .3 |
+| `harness-3jz1.5` | Validate Ollama runtime for airton_c_tfr + DGX Spark deployment plan | independent — fan out |
+| `harness-3jz1.6` | SPA frontend (Tailscale-loaded, buffered JSON consumer) | depends on .4 |
+| `harness-3jz1.7` | Invite-audience launch: Tailscale onboarding doc, disclaimer, basic ops | depends on .2, .4, .5, .6 |
 | `harness-3jz1.8` | [v2 deferred] Live TFR feed | parking lot |
 
 Three parallel paths into a single launch join. Start `3jz1.1` / `3jz1.3`
 / `3jz1.5` concurrently as soon as you want to fan out.
 
-## Open forks
+## Resolved decisions (2026-05-14 refinement pass)
 
-1. **Hosted model or local MLX for public traffic?** Local-on-Mac via
-   Tailscale works for friends; falls over at ~tens of concurrent users
-   and dies when the Mac sleeps. Hosted (Claude) scales but costs ~$0.005-
-   0.02/request. **Pick:** hosted for public, MLX for dev/eval. Adapter
-   boundary makes this a config flag.
-2. **v1 scope strictness: TFRs only, or all NOTAMs?** **Pick:** TFRs only.
-   Brand is "TFR explainer." Expanding dilutes value prop and balloons
-   eval surface.
-3. **Brand / domain?** Affects positioning more than engineering. To be
-   resolved during launch phase (`3jz1.7`).
-4. **Live feed in v1 or v2?** **Pick:** v2. Paste-only ships faster; the
-   use case ("decode this thing my briefer mentioned") is intact without
-   a feed.
+1. **Inference: local-first.** MLX on Mac (dev/now) → Ollama on DGX Spark
+   (prod/when authorized) — same Qwen 2.5 32B 4-bit family the catcher
+   roster is tuned against. Hosted-API adapter deferred. Rationale: cheap-
+   to-own > rent-for-life productization values; avoids re-validating the
+   anti-fabrication stack against a different model's failure modes.
+2. **v1 scope: TFRs only.** Brand is "TFR explainer." Expanding dilutes
+   value prop and balloons eval surface.
+3. **Live feed: v2.** Paste-only ships faster; use case intact.
+4. **Corpus: §91.137–145 + AIM 3-5-1…3-5-5 + AIM 5-6 + PCG.** AIM 5-6
+   added for §91.139 prohibited / NORAD interception cases.
+5. **Eval scoring: hybrid.** Deterministic citations (anchors must appear
+   in retrieved chunks) + deterministic geometry (lat±0.005°,
+   radius±0.1NM, altitude exact) — then LLM-judge gated behind det≥0.9 to
+   distinguish "right-shaped + correct" from "right-shaped + wrong
+   meaning." Judge model orthogonal to runtime model (same pattern as
+   voice eval).
+6. **Parser deps: pyproj.** Proper geodetic math for great-circle
+   distance, cylinder rendering, point-in-cylinder checks. Worth the C
+   dep.
+7. **Ingress: Tailscale-only, invite the audience.** No public domain in
+   v1. Matches 10s-of-users target. Public ingress (Cloudflare Tunnel /
+   VPS reverse-proxy) is a v2 promotion path.
+8. **Reply shape: buffered JSON.** Gateway returns complete JSON object;
+   reply is small (~1-2KB) so latency is bounded. NDJSON streaming
+   considered and rejected for v1 (UX-only win, debug-only harm). Rich
+   gateway logging — raw completion + parsed object — captured under a
+   debug-dir env flag for replay and `tfr_eval` fixture growth.
+9. **Tool surface: `search_memory` + `read_parsed_notam`.** Forced
+   `search_memory` prelude for retrieval grounding. Per-request tool
+   registry binds the parsed NOTAM struct into a `read_parsed_notam` tool
+   the model can introspect (no `fetch_url`, no `search_web` — paste-only
+   input contract).
+
+## Still open
+
+1. **Brand / domain.** Parked until v2 promotion path is on the table. No
+   v1 decision needed (Tailscale-only ingress doesn't require a public
+   domain).
 
 ## Estimate
 
@@ -154,7 +200,7 @@ Three parallel paths into a single launch join. Start `3jz1.1` / `3jz1.3`
 | `3jz1.2` eval set + subcommand | 2-3 |
 | `3jz1.3` NOTAM parser | 5-7 (text is gnarly) |
 | `3jz1.4` FastAPI gateway | 2-3 |
-| `3jz1.5` hosted adapter | 3-4 |
+| `3jz1.5` validate Ollama + Spark plan | 2-3 |
 | `3jz1.6` SPA | 2 |
 | `3jz1.7` launch | 2-3 |
 
@@ -163,7 +209,9 @@ independent paths.
 
 ## Close criterion
 
-Public free web tool live at a domain. `tfr_eval.yaml` passes at ≥0.85
-citation accuracy with zero fabricated section numbers. Rate-limited
-under basic load. Mobile-tested on iOS Safari + Android Chrome. JSON
-contract stable and documented.
+Tool live on the tailnet, invite-onboarded for the first wave of
+pilot-friend users. `tfr_eval.yaml` passes at ≥0.85 citation accuracy
+with zero fabricated section numbers (UngroundedCitationHook clean).
+Mobile-tested on iOS Safari + Android Chrome over Tailscale. JSON
+contract stable and documented. Spark deployment plan written and ready
+to execute when hardware is authorized.
