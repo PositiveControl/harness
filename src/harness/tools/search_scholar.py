@@ -464,18 +464,25 @@ class SearchScholarTool:
         return ToolSpec(
             name="search_scholar",
             description=(
-                "Search academic papers across Semantic Scholar and OpenAlex "
-                "(free, no-auth). Returns a numbered list of papers with "
-                "title, authors, year, citation count, source badges "
-                "(`[s2]`, `[openalex]`, `[s2+openalex]`), abstract excerpt, "
-                "and DOI / arXiv URL. Use for research-paper queries: "
-                "'recent papers on X', 'who first proposed Y', 'find the "
-                "original paper on Z'. Prefer this over search_web for any "
-                "academic / scientific question — search_web is for general "
-                "web orientation (Wikipedia, blogs, news). Follow up with "
-                "fetch_url on a paper's DOI or arXiv URL when you need the "
-                "full content. Citation form: [doi:<id>] or [arxiv:<id>]; "
-                "use the URL the tool returned, not a fabricated identifier."
+                "ACADEMIC / SCIENTIFIC SEARCH. **Default for any query "
+                "about a research topic, scientific concept, technical "
+                "acronym, or recent academic work.** Use for phrasings "
+                "like 'search and summarize articles about X', 'find "
+                "papers on Y', 'recent work on Z', 'research about <topic>', "
+                "'who proposed <method>', 'what is <acronym>' when the "
+                "acronym names an algorithm / model / scientific concept "
+                "(JEPA, BERT, RLHF, CRISPR, mRNA, transformer, etc.). "
+                "Searches Semantic Scholar and OpenAlex (free, no-auth). "
+                "Returns a numbered list of papers with title, authors, "
+                "year, citation count, source badges (`[s2]`, `[openalex]`, "
+                "`[s2+openalex]`), abstract excerpt, and DOI / arXiv URL. "
+                "Prefer this over search_web for ANY academic / scientific / "
+                "research-shaped question; search_web is for general web "
+                "orientation (Wikipedia, blogs, news, vendor docs). Follow "
+                "up with fetch_url on a paper's DOI or arXiv URL when you "
+                "need the full content. Citation form: [doi:<id>] or "
+                "[arxiv:<id>]; use the URL the tool returned, not a "
+                "fabricated identifier."
             ),
             parameters={
                 "type": "object",

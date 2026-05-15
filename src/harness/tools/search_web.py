@@ -113,15 +113,20 @@ class SearchWebTool:
         return ToolSpec(
             name="search_web",
             description=(
-                "Search the public web for a query via DuckDuckGo. "
-                "Returns a numbered list of `TITLE — URL — SNIPPET` "
-                "triples. Use when the user asks a factual question "
-                "you can't answer from memory or the workspace. "
-                "Prefer a broad fetch (default 5 results) so you can "
-                "compare sources and pick the best candidates, then "
-                "follow up with fetch_url on the most promising one "
-                "or two URLs when the snippets aren't enough. Do not "
-                "set max_results to 1 unless the user explicitly asked "
+                "GENERAL-WEB SEARCH via DuckDuckGo. Returns a numbered "
+                "list of `TITLE — URL — SNIPPET` triples. Use for "
+                "general factual queries: definitions, current events, "
+                "blog posts, vendor docs, product info, news, "
+                "Wikipedia overview material. **For academic papers, "
+                "research articles, or scientific topics (including "
+                "acronyms like JEPA / BERT / RLHF / CRISPR), prefer "
+                "search_scholar if available — it returns structured "
+                "paper metadata that search_web cannot.** Prefer a "
+                "broad fetch (default 5 results) so you can compare "
+                "sources and pick the best candidates, then follow "
+                "up with fetch_url on the most promising one or two "
+                "URLs when the snippets aren't enough. Do not set "
+                "max_results to 1 unless the user explicitly asked "
                 "for a single top result." + scope_note
             ),
             parameters={
