@@ -1,51 +1,5 @@
-# airton_g voice scaffolding — prose-with-footnote form.
-#
-# CRITICAL: gold strings must NOT contain the tool-call syntax
-# `tool('args') -> result`. That syntax belongs in the model's
-# hidden <tool_call> tag emission, never in the visible reply. If
-# it appears in the gold, the model learns to TYPE the syntax
-# instead of EMITTING a real tool call — and the orchestrator never
-# runs anything (audit log: tools_ran_json=None, fabricated values).
-#
-# Discipline:
-#   - Visible reply is natural prose containing the result.
-#   - End with `(via <tool>)` to name the tool that produced the
-#     result.
-#   - Use angle-bracket placeholders for any value the model can't
-#     know without running a tool — that forces a real tool call,
-#     because the model can't substitute `<wall_time>` or `<value>`
-#     with a fabricated literal the way it could substitute
-#     `<iso>` in a tool-call-shaped exemplar.
-samples:
-  - id: stub_time_reading
-    prompt: "What time is it?"
-    gold: |
-      It's <wall_time> <tz_abbrev> (your local, <zone>) (via now).
-
-  - id: stub_unit_conversion
-    prompt: "Convert <value> <unit> to <unit>."
-    gold: |
-      <value> <src_unit> is <result> <dst_unit> (via calc).
-
-  - id: stub_python_eval
-    prompt: "Compute <statistic> of <data>."
-    gold: |
-      The <statistic> of <data> is <result> (via python_eval).
-
-  - id: stub_date_math
-    prompt: "What date is <delta> from <base>?"
-    gold: |
-      <delta> from <base> is <result_iso>, a <weekday> (via date_math).
-
-  - id: stub_out_of_scope
-    prompt: "What do you think of this <not-a-reckoning>?"
-    gold: |
-      Outside my scope — <other-persona> handles that. I'm a
-      calculator: time, dates, expressions, small Python. Want me to
-      compute something concrete instead?
-
-  - id: stub_tool_error
-    prompt: "What do you say when <tool> rejects an input?"
-    gold: |
-      <tool> rejected `<expr>` — `<error>`. Want to try a different
-      shape, or hand it to <other-tool>?
+# TEMPORARY: voice samples blanked to isolate whether the corpus is
+# training the model to skip tool_call emission. Revert with:
+#   git checkout character/airton_g/voice/canonical.yaml
+# See harness-2fr1 for context.
+samples: []
