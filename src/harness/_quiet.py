@@ -6,8 +6,8 @@ place when those libraries read them during their own import. The CLI
 entrypoint does this at the very top of `cli.py`; other consumers
 should do the same.
 
-Also warms a few process-global resources whose lazy first-use would
-otherwise blow up inside the chat loop:
+Also short-circuits one process-global lazy initializer whose first
+use would otherwise blow up inside the chat loop:
 
   - `tqdm`'s multiprocessing RLock: sentence-transformers' `encode()`
     calls `tqdm.trange(...)` even when progress bars are disabled.
@@ -16,11 +16,14 @@ otherwise blow up inside the chat loop:
     which calls `_posixsubprocess.fork_exec()` with a list of fds to
     pass to the spawned tracker. By the time the embedder runs inside
     a chat session, MLX has opened Metal-related fds whose validation
-    fails (`ValueError: bad value(s) in fds_to_keep`). Pre-creating
-    the lock at import time — BEFORE MLX/torch touch anything —
-    makes the tracker spawn while fds are still clean, then reuse
-    forever. Observed 2026-05-15 with airton_c_tfr; see harness-ygvg
-    follow-up.
+    fails (`ValueError: bad value(s) in fds_to_keep`).
+    Replacing tqdm's class-level lock with a `threading.RLock` at
+    import time bypasses the multiprocessing path entirely — correct
+    for our single-process harness. Observed 2026-05-15 with
+    airton_c_tfr; see harness-ygvg follow-up. An earlier attempt
+    pre-warmed the multiprocessing tracker at import time but didn't
+    survive into chat-session embedder calls (tracker invalidated
+    somewhere between startup and first encode()).
 
 Uses `setdefault` so a user who wants the full firehose can override
 any of these via their shell env.
@@ -53,33 +56,41 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="sentence_trans
 warnings.filterwarnings("ignore", category=FutureWarning, module="transformers.*")
 
 
-def _warm_multiprocessing_resource_tracker() -> None:
-    """Pre-spawn `multiprocessing.resource_tracker` while fds are clean.
+def _install_tqdm_threading_lock() -> None:
+    """Pre-install a `threading.RLock` on tqdm so it never tries to
+    construct a `multiprocessing.RLock` lazily.
 
-    See the module docstring for the failure mode. The first call to
-    `multiprocessing.RLock()` triggers `resource_tracker.ensure_running()`
-    which fork-execs the tracker process; doing this here, before any
-    MLX/torch/HF code runs, means the tracker is alive and the lock is
-    cached before the chat loop's first embedder query.
+    See the module docstring for the failure mode. The original chain
+    fires because `tqdm.tqdm.get_lock()` lazily constructs a
+    multiprocessing lock the first time `trange(...)` runs inside the
+    embedder, which forces `resource_tracker.ensure_running()` to
+    fork-exec while MLX-tainted fds are open.
 
-    Catches any exception so a hostile env (no /tmp, sandboxed runtime,
-    forbidden fork) doesn't break import — the failure surfaces later
-    at the embedder boundary just as it did before this fix landed."""
+    A pre-warming approach (eagerly call `multiprocessing.RLock()` at
+    import time) was tried first but didn't survive: by the time the
+    embedder is reached in a live chat session, something between
+    process startup and first encode() invalidates the tracker, and
+    the next lock construction re-spawns into the bad-fds state.
+
+    Setting a threading.RLock as tqdm's class-level `_lock` short-
+    circuits the lazy path entirely — `get_lock()` returns the
+    threading lock, never touches multiprocessing. This is correct
+    for our use: the harness is single-process; tqdm's mp-lock would
+    only matter if multiple Python processes shared one terminal.
+
+    Catches the import error so installing tqdm into a hostile env
+    can't break harness startup."""
     try:
-        import multiprocessing
+        import threading
 
-        # Just constructing a lock is enough; resource_tracker.register
-        # is what triggers the fork_exec. We don't need to hold the
-        # lock — let it drop and be garbage-collected, the tracker
-        # process stays alive for the rest of the harness lifetime.
-        multiprocessing.RLock()
-    except (OSError, ValueError, ImportError):
-        # Failing here just defers to the pre-fix lazy behaviour —
-        # the embedder will still try the multiprocessing lock on
-        # first use, and the chat session will surface the error
-        # via the retrieval-error-log path instead of silently
-        # warming. Strictly better than crashing import.
+        import tqdm  # type: ignore[import-untyped]  # tqdm has no stubs; treated as Any here is fine
+
+        tqdm.tqdm.set_lock(threading.RLock())
+    except (ImportError, AttributeError):
+        # Failing here just defers to tqdm's default behaviour. If
+        # tqdm later trips multiprocessing the retrieval error log
+        # path captures the trace — same as before this fix.
         pass
 
 
-_warm_multiprocessing_resource_tracker()
+_install_tqdm_threading_lock()
