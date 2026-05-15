@@ -1,0 +1,427 @@
+# tfr_eval.yaml — golden TFR/NOTAM cases for airton_c_tfr (harness-3jz1.2).
+#
+# 23 cases spanning the six TFR categories under 14 CFR §91.137–145 plus
+# three edge cases. NOTAM texts are realistic-shape (FAA phrasing,
+# DDMMSS coords, NMR radius, YYMMDDHHMM windows) but synthesized — they
+# do not reference actual current TFRs.
+#
+# Fields per case:
+#   id                : kebab-case identifier
+#   raw_notam         : the published NOTAM text (multi-line scalar)
+#   expected_verdict  : one-sentence plain-English explanation (judge-axis target)
+#   expected_type     : one of stadium/vip/disaster/space/security/hazard/other
+#   expected_citations: list of §-anchors expected to appear in parser output
+#   expected_geometry : center{lat,lon}, radius_nm, floor{value,reference}, ceiling{value,reference}
+#   expected_active   : {from, to} (ISO-8601 UTC)
+#   caveats           : optional list of plain-English caveats
+#
+# Geometry tolerances applied by scorer:
+#   - lat/lon : ±0.005°  (≈500 m)
+#   - radius  : ±0.1 NM
+#   - altitude: exact (value + reference frame)
+#
+# Citation accuracy uses set-equality (order-independent).
+
+# --- Stadium TFRs (§91.145) ---
+
+- id: stadium-globe-life-field
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.145 TEMPORARY FLIGHT RESTRICTIONS FOR
+    MAJOR SPORTING EVENT AT GLOBE LIFE FIELD, ARLINGTON TX. AIRCRAFT
+    FLIGHT OPERATIONS ARE PROHIBITED WITHIN AN AREA DEFINED AS 3 NMR OF
+    324504N/0970454W SFC TO 3000FT AGL. EFFECTIVE 2605142305-2605150330 UTC.
+  expected_verdict: >
+    Stadium TFR — no transit within the 3 NM cylinder from surface to
+    3,000 ft AGL while the restriction is active.
+  expected_type: stadium
+  expected_citations: ["§91.145"]
+  expected_geometry:
+    center: {lat: 32.7511, lon: -97.0817}
+    radius_nm: 3.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 3000, reference: AGL}
+  expected_active: {from: "2026-05-14T23:05:00+00:00", to: "2026-05-15T03:30:00+00:00"}
+
+- id: stadium-soldier-field
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.145 TFR FOR MAJOR SPORTING EVENT AT
+    SOLDIER FIELD, CHICAGO IL. WITHIN 3 NMR OF 415133N/0873659W SFC TO
+    3000FT AGL. EFFECTIVE 2609131800-2609132300 UTC.
+  expected_verdict: >
+    Stadium TFR at Soldier Field — 3 NM cylinder, surface to 3,000 ft AGL.
+  expected_type: stadium
+  expected_citations: ["§91.145"]
+  expected_geometry:
+    center: {lat: 41.8592, lon: -87.6164}
+    radius_nm: 3.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 3000, reference: AGL}
+  expected_active: {from: "2026-09-13T18:00:00+00:00", to: "2026-09-13T23:00:00+00:00"}
+
+- id: stadium-daytona-int-speedway
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.145 TFR FOR MAJOR SPORTING EVENT AT
+    DAYTONA INTERNATIONAL SPEEDWAY. AIRCRAFT FLIGHT OPERATIONS PROHIBITED
+    WITHIN 3 NMR OF 291101N/0810254W SFC TO 3000FT AGL.
+    EFFECTIVE 2602171800-2602172300 UTC.
+  expected_verdict: >
+    Stadium TFR for NASCAR event — 3 NM cylinder, surface to 3,000 ft AGL.
+  expected_type: stadium
+  expected_citations: ["§91.145"]
+  expected_geometry:
+    center: {lat: 29.1836, lon: -81.0483}
+    radius_nm: 3.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 3000, reference: AGL}
+  expected_active: {from: "2026-02-17T18:00:00+00:00", to: "2026-02-17T23:00:00+00:00"}
+
+- id: stadium-rose-bowl
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.145 TEMPORARY FLIGHT RESTRICTIONS
+    FOR MAJOR SPORTING EVENT AT ROSE BOWL STADIUM, PASADENA CA.
+    WITHIN 3 NMR OF 340910N/1180937W SFC TO 3000FT AGL.
+    EFFECTIVE 2601011900-2601012359 UTC. SEE AIM 3-5-3.
+  expected_verdict: >
+    Stadium TFR for the Rose Bowl game — 3 NM cylinder, surface to 3,000 ft AGL.
+  expected_type: stadium
+  expected_citations: ["§91.145", "AIM 3-5-3"]
+  expected_geometry:
+    center: {lat: 34.1528, lon: -118.1603}
+    radius_nm: 3.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 3000, reference: AGL}
+  expected_active: {from: "2026-01-01T19:00:00+00:00", to: "2026-01-01T23:59:00+00:00"}
+
+- id: stadium-augusta-national
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.145 TFR FOR MAJOR SPORTING EVENT AT
+    AUGUSTA NATIONAL GOLF CLUB. AIRCRAFT FLIGHT OPERATIONS ARE PROHIBITED
+    WITHIN 3 NMR OF 332957N/0815031W SFC TO 3000FT AGL.
+    EFFECTIVE 2604061200-2604062200 UTC.
+  expected_verdict: >
+    Stadium TFR for golf major — 3 NM cylinder, surface to 3,000 ft AGL.
+  expected_type: stadium
+  expected_citations: ["§91.145"]
+  expected_geometry:
+    center: {lat: 33.4992, lon: -81.8419}
+    radius_nm: 3.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 3000, reference: AGL}
+  expected_active: {from: "2026-04-06T12:00:00+00:00", to: "2026-04-06T22:00:00+00:00"}
+
+# --- VIP / POTUS TFRs (§91.141) ---
+
+- id: vip-potus-residence
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.141 TEMPORARY FLIGHT RESTRICTIONS DUE TO
+    VIP MOVEMENT. AIRCRAFT FLIGHT OPERATIONS ARE PROHIBITED WITHIN
+    10 NMR OF 384154N/0863912W SFC TO FL180.
+    EFFECTIVE 2606010000-2606012359 UTC.
+  expected_verdict: >
+    VIP/POTUS TFR — 10 NM inner ring, surface to FL180. Outer ring
+    typically extends further; confirm geometry against current source.
+  expected_type: vip
+  expected_citations: ["§91.141"]
+  expected_geometry:
+    center: {lat: 38.6983, lon: -86.6533}
+    radius_nm: 10.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 18000, reference: FL}
+  expected_active: {from: "2026-06-01T00:00:00+00:00", to: "2026-06-01T23:59:00+00:00"}
+  caveats:
+    - "VIP TFRs typically have an outer ring; this source text shows only the inner."
+
+- id: vip-vpotus-fundraiser
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.141 TFR DUE TO VIP TRAVEL.
+    WITHIN 10 NMR OF 410054N/0735937W SFC TO 3000FT AGL.
+    EFFECTIVE 2607150100-2607150500 UTC.
+  expected_verdict: >
+    VIP TFR — 10 NM cylinder, surface to 3,000 ft AGL.
+  expected_type: vip
+  expected_citations: ["§91.141"]
+  expected_geometry:
+    center: {lat: 41.0150, lon: -73.9936}
+    radius_nm: 10.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 3000, reference: AGL}
+  expected_active: {from: "2026-07-15T01:00:00+00:00", to: "2026-07-15T05:00:00+00:00"}
+
+- id: vip-foreign-head-of-state
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.141 TFR DUE TO VIP MOVEMENT.
+    AIRCRAFT FLIGHT OPERATIONS ARE PROHIBITED WITHIN 30 NMR OF
+    385328N/0770155W SFC TO FL180. EFFECTIVE 2609201400-2609212200 UTC.
+  expected_verdict: >
+    VIP TFR — 30 NM outer ring, surface to FL180. Inner ring rules
+    apply within a tighter inner radius typically specified separately.
+  expected_type: vip
+  expected_citations: ["§91.141"]
+  expected_geometry:
+    center: {lat: 38.8911, lon: -77.0319}
+    radius_nm: 30.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 18000, reference: FL}
+  expected_active: {from: "2026-09-20T14:00:00+00:00", to: "2026-09-21T22:00:00+00:00"}
+
+- id: vip-state-funeral
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.141 TFR DUE TO DIGNITARY EVENT.
+    WITHIN 10 NMR OF 385328N/0770155W SFC TO 3000FT AGL.
+    EFFECTIVE 2611100800-2611102000 UTC.
+  expected_verdict: >
+    VIP TFR (dignitary event) — 10 NM cylinder, surface to 3,000 ft AGL.
+  expected_type: vip
+  expected_citations: ["§91.141"]
+  expected_geometry:
+    center: {lat: 38.8911, lon: -77.0319}
+    radius_nm: 10.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 3000, reference: AGL}
+  expected_active: {from: "2026-11-10T08:00:00+00:00", to: "2026-11-10T20:00:00+00:00"}
+
+# --- Disaster relief TFRs (§91.137) ---
+
+- id: disaster-wildfire
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.137(a)(1) TEMPORARY FLIGHT RESTRICTIONS
+    FOR DISASTER RELIEF OPERATIONS DUE TO WILDFIRE.
+    AIRCRAFT FLIGHT OPERATIONS PROHIBITED WITHIN 5 NM RADIUS OF
+    390000N/1200000W SFC TO 8500FT MSL.
+    EFFECTIVE 2607010000-2607080000 UTC. SEE AIM 3-5-3.
+  expected_verdict: >
+    Disaster relief TFR for wildfire — 5 NM cylinder, surface to 8,500 ft MSL.
+    Only disaster-relief aircraft authorized inside.
+  expected_type: disaster
+  expected_citations: ["§91.137(a)(1)", "AIM 3-5-3"]
+  expected_geometry:
+    center: {lat: 39.0, lon: -120.0}
+    radius_nm: 5.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 8500, reference: MSL}
+  expected_active: {from: "2026-07-01T00:00:00+00:00", to: "2026-07-08T00:00:00+00:00"}
+
+- id: disaster-hurricane-response
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.137(a)(2) TFR FOR DISASTER RELIEF
+    OPERATIONS DUE TO HURRICANE. WITHIN 10 NMR OF 300000N/0900000W
+    SFC TO 5000FT MSL. EFFECTIVE 2608120000-2608200000 UTC.
+  expected_verdict: >
+    Disaster relief TFR for hurricane response — 10 NM cylinder, surface to 5,000 ft MSL.
+  expected_type: disaster
+  expected_citations: ["§91.137(a)(2)"]
+  expected_geometry:
+    center: {lat: 30.0, lon: -90.0}
+    radius_nm: 10.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 5000, reference: MSL}
+  expected_active: {from: "2026-08-12T00:00:00+00:00", to: "2026-08-20T00:00:00+00:00"}
+
+- id: disaster-tornado-recovery
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.137 TFR FOR DISASTER RELIEF
+    OPERATIONS DUE TO TORNADO. AIRCRAFT FLIGHT OPERATIONS PROHIBITED
+    WITHIN 5 NMR OF 354700N/0944000W SFC TO 3000FT AGL.
+    EFFECTIVE 2605051200-2605120000 UTC.
+  expected_verdict: >
+    Disaster relief TFR for tornado response — 5 NM cylinder,
+    surface to 3,000 ft AGL.
+  expected_type: disaster
+  expected_citations: ["§91.137"]
+  expected_geometry:
+    center: {lat: 35.7833, lon: -94.6667}
+    radius_nm: 5.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 3000, reference: AGL}
+  expected_active: {from: "2026-05-05T12:00:00+00:00", to: "2026-05-12T00:00:00+00:00"}
+
+- id: disaster-flood-response
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.137 TFR FOR DISASTER RELIEF
+    OPERATIONS DUE TO FLOOD. WITHIN 7 NMR OF 380000N/0900000W
+    SFC TO 4000FT MSL. EFFECTIVE 2604200000-2604300000 UTC.
+  expected_verdict: >
+    Disaster relief TFR for flood response — 7 NM cylinder, surface to 4,000 ft MSL.
+  expected_type: disaster
+  expected_citations: ["§91.137"]
+  expected_geometry:
+    center: {lat: 38.0, lon: -90.0}
+    radius_nm: 7.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 4000, reference: MSL}
+  expected_active: {from: "2026-04-20T00:00:00+00:00", to: "2026-04-30T00:00:00+00:00"}
+
+# --- Space-flight TFRs (§91.143) ---
+
+- id: space-rocket-launch
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.143 SPACE FLIGHT OPERATIONS.
+    AIRCRAFT FLIGHT OPERATIONS PROHIBITED IN AREA WITHIN 30 NMR OF
+    281245N/0803156W SFC TO UNLIMITED. ROCKET LAUNCH WINDOW
+    2605160100-2605160300 UTC.
+  expected_verdict: >
+    Space-flight TFR for a rocket launch — 30 NM cylinder, surface to unlimited.
+  expected_type: space
+  expected_citations: ["§91.143"]
+  expected_geometry:
+    center: {lat: 28.2125, lon: -80.5322}
+    radius_nm: 30.0
+    floor: {value: 0, reference: SFC}
+  expected_active: {from: "2026-05-16T01:00:00+00:00", to: "2026-05-16T03:00:00+00:00"}
+  caveats:
+    - "Ceiling not specified in source — listed as UNLIMITED."
+
+- id: space-reentry-window
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.143 SPACE FLIGHT OPERATIONS.
+    AIRCRAFT FLIGHT OPERATIONS PROHIBITED WITHIN 50 NMR OF
+    340000N/1190000W SFC TO FL600. REENTRY WINDOW 2607220900-2607221100 UTC.
+  expected_verdict: >
+    Space-flight TFR for reentry — 50 NM cylinder, surface to FL600.
+  expected_type: space
+  expected_citations: ["§91.143"]
+  expected_geometry:
+    center: {lat: 34.0, lon: -119.0}
+    radius_nm: 50.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 60000, reference: FL}
+  expected_active: {from: "2026-07-22T09:00:00+00:00", to: "2026-07-22T11:00:00+00:00"}
+
+- id: space-recovery-ops
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.143 SPACE FLIGHT OPERATIONS RECOVERY.
+    WITHIN 20 NMR OF 305500N/0805500W SFC TO 5000FT MSL.
+    EFFECTIVE 2608101500-2608101900 UTC.
+  expected_verdict: >
+    Space-flight TFR for recovery operations — 20 NM cylinder, surface to 5,000 ft MSL.
+  expected_type: space
+  expected_citations: ["§91.143"]
+  expected_geometry:
+    center: {lat: 30.9167, lon: -80.9167}
+    radius_nm: 20.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 5000, reference: MSL}
+  expected_active: {from: "2026-08-10T15:00:00+00:00", to: "2026-08-10T19:00:00+00:00"}
+
+# --- Security / prohibited area TFRs (§91.139) ---
+
+- id: security-nuclear-facility
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.139 EMERGENCY AIR TRAFFIC RULES.
+    AIRCRAFT FLIGHT OPERATIONS PROHIBITED WITHIN AN AREA DEFINED AS
+    2 NMR OF 333412N/0813845W SFC TO 5000FT MSL. NATIONAL SECURITY.
+    EFFECTIVE 2605200000-2605270000 UTC.
+  expected_verdict: >
+    Security TFR — 2 NM prohibited cylinder, surface to 5,000 ft MSL.
+  expected_type: security
+  expected_citations: ["§91.139"]
+  expected_geometry:
+    center: {lat: 33.5700, lon: -81.6458}
+    radius_nm: 2.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 5000, reference: MSL}
+  expected_active: {from: "2026-05-20T00:00:00+00:00", to: "2026-05-27T00:00:00+00:00"}
+
+- id: security-prohibited-area
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.139 TFR FOR PROHIBITED AREA.
+    WITHIN 3 NMR OF 390456N/0770345W SFC TO FL180.
+    EFFECTIVE 2607010000-2607012359 UTC.
+  expected_verdict: >
+    Security TFR for prohibited area — 3 NM cylinder, surface to FL180.
+  expected_type: security
+  expected_citations: ["§91.139"]
+  expected_geometry:
+    center: {lat: 39.0822, lon: -77.0625}
+    radius_nm: 3.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 18000, reference: FL}
+  expected_active: {from: "2026-07-01T00:00:00+00:00", to: "2026-07-01T23:59:00+00:00"}
+
+# --- Hazardous-condition TFRs (§91.144) ---
+
+- id: hazard-explosive-ops
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.144 TEMPORARY FLIGHT RESTRICTION
+    FOR HAZARDOUS OPERATIONS. AIRCRAFT FLIGHT OPERATIONS PROHIBITED
+    WITHIN 3 NMR OF 320000N/1100000W SFC TO 8000FT MSL.
+    EXPLOSIVE TESTING. EFFECTIVE 2606200800-2606201600 UTC.
+  expected_verdict: >
+    Hazard TFR for explosive operations — 3 NM cylinder, surface to 8,000 ft MSL.
+  expected_type: hazard
+  expected_citations: ["§91.144"]
+  expected_geometry:
+    center: {lat: 32.0, lon: -110.0}
+    radius_nm: 3.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 8000, reference: MSL}
+  expected_active: {from: "2026-06-20T08:00:00+00:00", to: "2026-06-20T16:00:00+00:00"}
+
+- id: hazard-toxic-release
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.144 TFR DUE TO HAZARDOUS CONDITIONS.
+    WITHIN 5 NMR OF 290000N/0950000W SFC TO 6000FT MSL.
+    TOXIC GAS RELEASE. EFFECTIVE 2608051400-2608060000 UTC.
+  expected_verdict: >
+    Hazard TFR for toxic-gas release — 5 NM cylinder, surface to 6,000 ft MSL.
+  expected_type: hazard
+  expected_citations: ["§91.144"]
+  expected_geometry:
+    center: {lat: 29.0, lon: -95.0}
+    radius_nm: 5.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 6000, reference: MSL}
+  expected_active: {from: "2026-08-05T14:00:00+00:00", to: "2026-08-06T00:00:00+00:00"}
+
+# --- Edge cases ---
+
+- id: edge-missing-ceiling
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.145 TFR FOR MAJOR SPORTING EVENT.
+    WITHIN 3 NMR OF 405011N/0735927W. EFFECTIVE 2606131800-2606132300 UTC.
+  expected_verdict: >
+    Stadium TFR — 3 NM cylinder. Floor and ceiling not specified in
+    source text — confirm with current briefing.
+  expected_type: stadium
+  expected_citations: ["§91.145"]
+  expected_geometry:
+    center: {lat: 40.8364, lon: -73.9908}
+    radius_nm: 3.0
+  expected_active: {from: "2026-06-13T18:00:00+00:00", to: "2026-06-13T23:00:00+00:00"}
+  caveats:
+    - "Floor and ceiling not present in source — neither SFC nor altitude markers found."
+
+- id: edge-partial-geometry-no-radius
+  raw_notam: |
+    TFR PER 14 CFR SECTION 91.137 CENTERED AT 380000N/0900000W.
+    SFC TO 3000FT AGL. EFFECTIVE 2607010000-2607020000 UTC.
+  expected_verdict: >
+    Disaster relief TFR — radius not specified in source text. Confirm
+    cylinder size with current briefing before relying on this geometry.
+  expected_type: disaster
+  expected_citations: ["§91.137"]
+  expected_geometry:
+    center: {lat: 38.0, lon: -90.0}
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 3000, reference: AGL}
+  expected_active: {from: "2026-07-01T00:00:00+00:00", to: "2026-07-02T00:00:00+00:00"}
+  caveats:
+    - "Radius not present in source — cylinder extent unknown."
+
+- id: edge-citation-only-no-keywords
+  raw_notam: |
+    PURSUANT TO 14 CFR SECTION 91.138 TFR. WITHIN 5 NMR OF
+    210000N/1570000W SFC TO 5000FT MSL.
+    EFFECTIVE 2609010000-2609080000 UTC.
+  expected_verdict: >
+    Hawaii disaster-relief TFR — 5 NM cylinder, surface to 5,000 ft MSL.
+  expected_type: disaster
+  expected_citations: ["§91.138"]
+  expected_geometry:
+    center: {lat: 21.0, lon: -157.0}
+    radius_nm: 5.0
+    floor: {value: 0, reference: SFC}
+    ceiling: {value: 5000, reference: MSL}
+  expected_active: {from: "2026-09-01T00:00:00+00:00", to: "2026-09-08T00:00:00+00:00"}
+  caveats:
+    - "Type guessed from §91.138 citation alone — no descriptive keywords in source."

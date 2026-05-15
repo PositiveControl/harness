@@ -2843,6 +2843,91 @@ def eval_session_resume(
     )
 
 
+@eval_app.command("tfr")
+def eval_tfr(
+    fixture_path: Path | None = typer.Option(
+        None,
+        "--fixture",
+        help="Path to a tfr eval YAML file. Defaults to `character/<name>/tfr_eval.yaml`.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+) -> None:
+    """Replay the tfr_eval fixture through the deterministic NOTAM parser
+    and score each case on geometry, type, and citations (harness-3jz1.2).
+
+    This is the parser-axis half of the hybrid scoring spec. Model-axis
+    scoring (citation grounded in retrieved chunks + LLM verdict judge)
+    arrives when the FastAPI gateway (harness-3jz1.4) wires the request-
+    scoped read_parsed_notam tool and the airton_c_tfr corpus is ingested.
+    """
+    from harness.evals.tfr import (
+        default_fixture_path as _tfr_default_fixture,
+    )
+    from harness.evals.tfr import (
+        load_fixture as _tfr_load,
+    )
+    from harness.evals.tfr import (
+        run_tfr_eval as _tfr_run,
+    )
+
+    character = load_character(settings.character_path)
+    path = fixture_path or _tfr_default_fixture(settings.character_path)
+    if not path.exists():
+        raise typer.BadParameter(f"tfr eval fixture not found: {path}")
+    rows = _tfr_load(path)
+    result = _tfr_run(rows)
+
+    if as_json:
+        payload = {
+            "character": character.name,
+            "pass_rate": result.pass_rate,
+            "geometry_accuracy": result.geometry_accuracy,
+            "type_accuracy": result.type_accuracy,
+            "citation_accuracy": result.citation_accuracy,
+            "cases": [
+                {
+                    "id": c.case_id,
+                    "type_correct": c.type_correct,
+                    "geometry_correct": c.geometry_correct,
+                    "citations_correct": c.citations_correct,
+                    "parsed_type": c.parsed.type_guess,
+                    "parsed_citations": list(c.parsed.cited_sections),
+                }
+                for c in result.cases
+            ],
+        }
+        console.print_json(json.dumps(payload))
+        return
+
+    table = Table(title=f"TFR eval — {character.name}", show_lines=False)
+    table.add_column("✓", style="bold", width=2)
+    table.add_column("id")
+    table.add_column("type")
+    table.add_column("geometry")
+    table.add_column("citations")
+    for c in result.cases:
+        mark = "[green]✓[/green]" if c.passed else "[red]✗[/red]"
+        type_cell = (
+            "[green]✓[/green]" if c.type_correct else f"[red]✗[/red] got {c.parsed.type_guess}"
+        )
+        geom_cell = "[green]✓[/green]" if c.geometry_correct else "[red]✗[/red]"
+        cite_cell = (
+            "[green]✓[/green]"
+            if c.citations_correct
+            else f"[red]✗[/red] got {list(c.parsed.cited_sections)}"
+        )
+        table.add_row(mark, c.case_id, type_cell, geom_cell, cite_cell)
+    console.print(table)
+    passed = sum(1 for c in result.cases if c.passed)
+    total = len(result.cases)
+    console.print(
+        f"[bold]{passed}/{total} passed · {result.pass_rate * 100:.1f}% · "
+        f"geometry {result.geometry_accuracy * 100:.1f}% · "
+        f"type {result.type_accuracy * 100:.1f}% · "
+        f"citations {result.citation_accuracy * 100:.1f}%[/bold]"
+    )
+
+
 @eval_app.command("atc")
 def eval_atc(
     fixture_path: Path | None = typer.Option(

@@ -23,6 +23,7 @@ _EXPECTED_COMMANDS: tuple[str, ...] = (
     "eval phraseology",
     "eval router",
     "eval session-resume",
+    "eval tfr",
     "eval tool-loop",
     "eval voice",
     "memory consolidate",
