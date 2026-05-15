@@ -333,13 +333,23 @@ def _maybe_retriever(character: Character, top_k: int) -> VoiceRetriever | None:
         return VoiceRetriever(embedder=embedder, character=character)  # type: ignore[arg-type]
 
 
-def _open_episodic_store(character: Character, *, ingest: bool = True) -> EpisodicStore | None:
+def _open_episodic_store(
+    character: Character,
+    *,
+    ingest: bool = True,
+    db_path: Path | None = None,
+) -> EpisodicStore | None:
     """Open the episodic store, ingesting seeds on first run. Returns
-    None if the retrieval extra isn't installed."""
+    None if the retrieval extra isn't installed.
+
+    `db_path` overrides the default `settings.character_db_path` — used
+    by the `memory` subcommands when `--character` redirects the
+    target store to a non-default silo (harness-5t53)."""
     embedder = _load_embedder()
     if embedder is None:
         return None
-    store = EpisodicStore(settings.character_db_path, embedder=embedder)  # type: ignore[arg-type]
+    path = db_path if db_path is not None else settings.character_db_path
+    store = EpisodicStore(path, embedder=embedder)  # type: ignore[arg-type]
     if ingest:
         inserted = ensure_seeds_ingested(character, store)
         if inserted > 0:
@@ -347,11 +357,34 @@ def _open_episodic_store(character: Character, *, ingest: bool = True) -> Episod
     return store
 
 
-def _open_semantic_store() -> SemanticStore | None:
+def _open_semantic_store(*, db_path: Path | None = None) -> SemanticStore | None:
+    """Open the semantic-facts store. `db_path` overrides the default
+    `settings.character_db_path` for the same reason as
+    `_open_episodic_store` (harness-5t53)."""
     embedder = _load_embedder()
     if embedder is None:
         return None
-    return SemanticStore(settings.character_db_path, embedder=embedder)  # type: ignore[arg-type]
+    path = db_path if db_path is not None else settings.character_db_path
+    return SemanticStore(path, embedder=embedder)  # type: ignore[arg-type]
+
+
+def _resolve_memory_target(override: str | None) -> tuple[Character, Path]:
+    """Resolve the (Character, db_path) pair a memory subcommand should
+    operate on. `override` is the `--character` flag value; None falls
+    back to `settings.character_name` (default 'airton' unless
+    HARNESS_CHARACTER_NAME is set). Prints a one-line header showing
+    the resolved target so the implicit default is never silent
+    (harness-5t53). Raises typer.BadParameter when the character
+    directory doesn't exist."""
+    name = override or settings.character_name
+    char_path = settings.root / "character" / name
+    if not char_path.exists():
+        raise typer.BadParameter(f"character {name!r} not found at {char_path}")
+    character = load_character(char_path)
+    db_path = settings.db_path_for(name)
+    rel = db_path.relative_to(settings.root) if db_path.is_relative_to(settings.root) else db_path
+    console.print(f"[dim](memory: {name} store at {rel})[/dim]")
+    return character, db_path
 
 
 def _open_audit_store() -> AuditStore:
@@ -4456,10 +4489,15 @@ def eval_tool_loop(
 @memory_app.command("list")
 def memory_list(
     tier: str | None = typer.Option(None, help="Filter by tier: seed | consolidated | working"),
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character whose store to list. Default: HARNESS_CHARACTER_NAME env or 'airton'.",
+    ),
 ) -> None:
     """List every record in the episodic store."""
-    character = load_character(settings.character_path)
-    store = _open_episodic_store(character)
+    char, db_path = _resolve_memory_target(character)
+    store = _open_episodic_store(char, db_path=db_path)
     if store is None:
         raise typer.Exit(code=1)
     try:
@@ -4483,10 +4521,15 @@ def memory_list(
 def memory_search(
     query: str = typer.Argument(..., help="What to search for"),
     k: int = typer.Option(3, help="How many matches to return"),
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character whose store to search. Default: HARNESS_CHARACTER_NAME env or 'airton'.",
+    ),
 ) -> None:
     """Search episodic memory by semantic similarity."""
-    character = load_character(settings.character_path)
-    store = _open_episodic_store(character)
+    char, db_path = _resolve_memory_target(character)
+    store = _open_episodic_store(char, db_path=db_path)
     if store is None:
         raise typer.Exit(code=1)
     try:
@@ -4510,9 +4553,15 @@ def memory_search(
 def memory_fact_list(
     tier: str | None = typer.Option(None, help="Filter by tier: seed | consolidated | working"),
     subject: str | None = typer.Option(None, help="Filter by subject"),
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character whose store to list. Default: HARNESS_CHARACTER_NAME env or 'airton'.",
+    ),
 ) -> None:
     """List facts in the semantic store."""
-    store = _open_semantic_store()
+    _, db_path = _resolve_memory_target(character)
+    store = _open_semantic_store(db_path=db_path)
     if store is None:
         raise typer.Exit(code=1)
     try:
@@ -4564,9 +4613,15 @@ def memory_fact_search(
         "Facts whose validity window doesn't contain this moment are filtered out. "
         "Defaults to now.",
     ),
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character whose store to search. Default: HARNESS_CHARACTER_NAME env or 'airton'.",
+    ),
 ) -> None:
     """Semantic-search the fact store."""
-    store = _open_semantic_store()
+    _, db_path = _resolve_memory_target(character)
+    store = _open_semantic_store(db_path=db_path)
     if store is None:
         raise typer.Exit(code=1)
     try:
@@ -4615,9 +4670,15 @@ def memory_fact_add(
         help="When the fact was communicated (vs. when the row was created). "
         "Useful for backfill: user describes something that happened last year.",
     ),
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character whose store to write to. Default: HARNESS_CHARACTER_NAME env or 'airton'.",
+    ),
 ) -> None:
     """Add a single fact to the semantic store."""
-    store = _open_semantic_store()
+    _, db_path = _resolve_memory_target(character)
+    store = _open_semantic_store(db_path=db_path)
     if store is None:
         raise typer.Exit(code=1)
     try:
@@ -4666,21 +4727,27 @@ def memory_scribe(
         help="LoRA adapter directory (from `mlx_lm.lora` training). Requires --model mlx.",
     ),
     window_size: int = typer.Option(20, help="Turns per extraction window"),
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character whose store to scribe into. "
+        "Default: HARNESS_CHARACTER_NAME env or 'airton'.",
+    ),
 ) -> None:
     """Walk unprocessed transcript turns and extract candidate memories."""
-    character = load_character(settings.character_path)
+    char, db_path = _resolve_memory_target(character)
     adapter = _resolve_adapter(model, model_repo=model_repo, lora_path=lora_path)
-    episodic = _open_episodic_store(character)
-    semantic = _open_semantic_store()
+    episodic = _open_episodic_store(char, db_path=db_path)
+    semantic = _open_semantic_store(db_path=db_path)
     if episodic is None or semantic is None:
         raise typer.Exit(code=1)
-    transcript = Transcript(settings.character_db_path)
+    transcript = Transcript(db_path)
     try:
         user_id = None if shared else user
         with Status(f"scribe running on session={session}…", console=console):
             summary = run_scribe(
                 adapter,
-                character,
+                char,
                 transcript,
                 episodic,
                 semantic,
@@ -4710,13 +4777,19 @@ def memory_consolidate(
         0.80,
         help="Cosine-similarity threshold for clustering near-duplicate episodes.",
     ),
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character whose store to consolidate. "
+        "Default: HARNESS_CHARACTER_NAME env or 'airton'.",
+    ),
 ) -> None:
     """Promote working-tier memories to consolidated. Clusters similar
     episodes; groups semantic facts by (subject, predicate); marks
     superseded rows so they drop out of retrieval. Idempotent."""
-    character = load_character(settings.character_path)
-    episodic = _open_episodic_store(character, ingest=False)
-    semantic = _open_semantic_store()
+    char, db_path = _resolve_memory_target(character)
+    episodic = _open_episodic_store(char, ingest=False, db_path=db_path)
+    semantic = _open_semantic_store(db_path=db_path)
     if episodic is None or semantic is None:
         raise typer.Exit(code=1)
     try:
@@ -4740,22 +4813,28 @@ def memory_consolidate(
 
 
 @memory_app.command("rebuild-embeddings")
-def memory_rebuild_embeddings() -> None:
+def memory_rebuild_embeddings(
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character whose store to rebuild. Default: HARNESS_CHARACTER_NAME env or 'airton'.",
+    ),
+) -> None:
     """Re-embed every active episodic and semantic record with the
     current embedder. Use after switching embedder models so existing
     data participates in search again."""
-    character = load_character(settings.character_path)
-    episodic = _open_episodic_store(character, ingest=False)
-    semantic = _open_semantic_store()
+    char, db_path = _resolve_memory_target(character)
+    episodic = _open_episodic_store(char, ingest=False, db_path=db_path)
+    semantic = _open_semantic_store(db_path=db_path)
     if episodic is None or semantic is None:
         raise typer.Exit(code=1)
     # harness-pzpy: also rebuild the character's tabular schema
     # embeddings when one is wired. The store ID is the same — same
     # embedder feeds all three stores, and an embedder swap drifts
     # the tabular dim the same way it drifts episodic / semantic.
-    tabular_store = _build_tabular_store_for_session(character, episodic)
+    tabular_store = _build_tabular_store_for_session(char, episodic)
     # harness-px7k: same treatment for the document-tree store.
-    tree_store_for_rebuild = _build_document_tree_store_for_session(character, episodic)
+    tree_store_for_rebuild = _build_document_tree_store_for_session(char, episodic)
     from harness.store.document_tree import DocumentTreeStore
     from harness.store.tabular import TabularStore  # local for type narrowing
 
@@ -4804,10 +4883,16 @@ def memory_rebuild_embeddings() -> None:
 @memory_app.command("wipe")
 def memory_wipe(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character whose store to wipe. Default: HARNESS_CHARACTER_NAME env or 'airton'.",
+    ),
 ) -> None:
     """Clear episodic, semantic, and scribe-watermark data. Transcripts
     and character data are preserved. Use after switching embedder
     dimensions, or when you want to re-ingest from scratch."""
+    _, db_path = _resolve_memory_target(character)
     if not yes:
         typer.confirm(
             "This wipes all episodic, semantic, and scribe-watermark data. Proceed?",
@@ -4819,7 +4904,7 @@ def memory_wipe(
     # Hardcoded whitelist — not user input, so S608 is a false positive
     # for this interpolation, but we keep the table names fixed anyway.
     tables = ("episodic", "semantic", "scribe_watermark")
-    conn = sqlite3.connect(settings.character_db_path)
+    conn = sqlite3.connect(db_path)
     try:
         for table in tables:
             with contextlib.suppress(sqlite3.OperationalError):
@@ -4831,16 +4916,23 @@ def memory_wipe(
 
 
 @memory_app.command("ingest")
-def memory_ingest() -> None:
+def memory_ingest(
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character whose store to ingest into. "
+        "Default: HARNESS_CHARACTER_NAME env or 'airton'.",
+    ),
+) -> None:
     """Force an ingestion pass of the character's seed memories.
     Idempotent — existing records with matching external_id are
     preserved."""
-    character = load_character(settings.character_path)
-    store = _open_episodic_store(character, ingest=False)
+    char, db_path = _resolve_memory_target(character)
+    store = _open_episodic_store(char, ingest=False, db_path=db_path)
     if store is None:
         raise typer.Exit(code=1)
     try:
-        inserted = ensure_seeds_ingested(character, store)
+        inserted = ensure_seeds_ingested(char, store)
         total = len(store.all())
         console.print(f"[bold]{inserted}[/bold] new, [bold]{total}[/bold] total in episodic store.")
     finally:
@@ -4863,6 +4955,12 @@ def memory_harvest_skills(
         "'thought:decision,thought:observation'. Use this to run a one-off "
         "sweep over hypotheses / questions for diagnostic purposes.",
     ),
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character whose store to harvest into. "
+        "Default: HARNESS_CHARACTER_NAME env or 'airton'.",
+    ),
 ) -> None:
     """Harvest ab's bd thought-graph into the episodic store as
     tier='procedural' records so relevant decisions / observations
@@ -4870,15 +4968,15 @@ def memory_harvest_skills(
     beads close picks up only the new ones."""
     from harness.skills import DEFAULT_HARVEST_LABELS, harvest_bd_skills
 
-    character = load_character(settings.character_path)
-    ab_adapter = _maybe_bd_adapter(character, include_internal=True)
+    char, db_path = _resolve_memory_target(character)
+    ab_adapter = _maybe_bd_adapter(char, include_internal=True)
     if ab_adapter is None:
         console.print(
             "[red]no bd adapter available — set HARNESS_AB_BD_DIR to ab's "
             "bd working directory first[/red]"
         )
         raise typer.Exit(code=1)
-    store = _open_episodic_store(character)
+    store = _open_episodic_store(char, db_path=db_path)
     if store is None:
         console.print("[red]episodic store not enabled[/red]")
         raise typer.Exit(code=1)
@@ -4907,7 +5005,14 @@ def memory_harvest_skills(
 
 
 @memory_app.command("harvest-memories")
-def memory_harvest_bd_memories() -> None:
+def memory_harvest_bd_memories(
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character whose store to harvest into. "
+        "Default: HARNESS_CHARACTER_NAME env or 'airton'.",
+    ),
+) -> None:
     """Mirror bd's persistent memories (bd remember / retro record)
     into the episodic store as tier='procedural' records so the main
     retrieval path surfaces them on identity / biographical questions.
@@ -4915,15 +5020,15 @@ def memory_harvest_bd_memories() -> None:
     `bd remember` calls picks up only the new keys (harness-9yd)."""
     from harness.skills import harvest_bd_memories
 
-    character = load_character(settings.character_path)
-    ab_adapter = _maybe_bd_adapter(character, include_internal=True)
+    char, db_path = _resolve_memory_target(character)
+    ab_adapter = _maybe_bd_adapter(char, include_internal=True)
     if ab_adapter is None:
         console.print(
             "[red]no bd adapter available — set HARNESS_AB_BD_DIR to ab's "
             "bd working directory first[/red]"
         )
         raise typer.Exit(code=1)
-    store = _open_episodic_store(character)
+    store = _open_episodic_store(char, db_path=db_path)
     if store is None:
         console.print("[red]episodic store not enabled[/red]")
         raise typer.Exit(code=1)
