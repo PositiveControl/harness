@@ -1,0 +1,40 @@
+# Tool description overrides for airton_c_tfr. Profile-scoped, same
+# shape as airton_c's tool_descriptions.yaml.
+#
+# Rationale: airton_c_tfr's primary retrieval target is the FAA TFR
+# corpus (§91.137-145 + AIM 3-5 + 5-6 + PCG), not autobiographical
+# memory. The generic search_memory description ("past events and
+# lessons") would push the small-model router toward search_facts on
+# rule-shaped questions. The reworded description names the rulebook
+# explicitly so the router picks search_memory when it must go hunt a
+# section.
+#
+# read_parsed_notam is wired by harness-3jz1.4 (FastAPI gateway builds
+# a request-scoped tool registry that binds the parsed NOTAM struct
+# into this tool's response). Its description is authored here so the
+# character config carries the canonical framing.
+
+profiles:
+  tfr:
+    search_memory: >-
+      Search the FAA TFR rule corpus — 14 CFR §91.137 through .145,
+      AIM 3-5 (Special Use Airspace + TFRs), AIM 5-6 (national security
+      & interceptions), and the Pilot/Controller Glossary. Use for ANY
+      rule-shaped question about a TFR (which § governs this kind, what
+      altitudes apply, what counts as a stadium TFR). NOT for the
+      structured fields of the pasted NOTAM itself — use
+      read_parsed_notam for those. NOT for user-relationship facts —
+      use search_facts for those.
+    read_parsed_notam: >-
+      Return the deterministic parse of the pasted NOTAM text — center
+      coordinates, radius (NM), floor + ceiling altitudes with
+      reference frame (SFC/AGL/MSL/FL), active time window (UTC), type
+      guess (stadium/vip/disaster/space/security/hazard/other), and
+      cited sections from the source text. Read-only; bound at request
+      time by the gateway, no side effects. Use to surface geometry
+      and window without paraphrasing — never restate a coordinate or
+      altitude that didn't come from this tool.
+    search_facts: >-
+      Search atomic facts about the user. Returns (subject, predicate,
+      object) triples. NOT for TFR rules or NOTAM parse fields — use
+      search_memory or read_parsed_notam for those.

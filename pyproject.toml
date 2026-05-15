@@ -61,6 +61,15 @@ asr = [
     # with --model on the script CLI.
     "mlx-whisper>=0.4",
 ]
+notam = [
+    # NOTAM/TFR text parser (harness-3jz1.3). pyproj provides WGS84
+    # great-circle math for ParsedNOTAM.to_polygon — renders the cylinder
+    # geometry as an N-point polygon for downstream SPA mapping. Pulled
+    # behind its own extra (compiled C dep) so a base install stays lean
+    # and the parser module itself stays import-clean (pyproj is imported
+    # lazily inside to_polygon, not at module top).
+    "pyproj>=3.6",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -114,6 +123,7 @@ ignore = [
 "scripts/atc_chunk.py" = ["RUF001", "RUF002", "RUF003"]  # U+2212 in regex + docstring is intentional (FAA corpus anchors)
 "src/harness/persona/rewriter.py" = ["RUF001", "RUF002", "RUF003"]  # U+2212 in citation regexes is intentional — corpus uses it
 "src/harness/persona/banter.py" = ["RUF001"]  # en-dash (U+2013) in §-citation regex is intentional
+"src/harness/notam/parser.py" = ["RUF001"]  # U+2013 in NOTAM time-window regex is intentional (FAA publish pipelines auto-substitute)
 "tests/test_persona.py" = ["RUF001"]  # U+2212 in citation-fold test
 "tests/test_banter.py" = ["S311"]  # random.Random for deterministic non-crypto pick tests
 "tests/**" = ["PLR2004"]           # magic numbers are fine in tests
@@ -174,4 +184,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["mlx_whisper", "mlx_whisper.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["pyproj", "pyproj.*"]
 ignore_missing_imports = true

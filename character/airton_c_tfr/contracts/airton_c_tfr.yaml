@@ -1,0 +1,31 @@
+# airton_c_tfr contract — TFR/NOTAM section lookup (harness-3jz1.1).
+#
+# Mirrors airton_c's contract pattern: forced assemble_context at turn
+# start (harness-jkmk) pulls section-shaped hits from the 4-document
+# tree store (AIM + CFR Vol2 + JO 7110.65 + PCG). The corpus is the same
+# physical chunk files as airton_c (referenced via `../airton_c/...` in
+# core.yaml), but the tree store is per-character so retrieval is
+# isolated.
+#
+# Single slot — `applicable_section` — required, hits the tree. Behavior
+# narrows via the character's deep_domains + scope_redirect_template,
+# not via a slot filter (the contract primitive doesn't carry path
+# filters in v1; behavioral scoping is what does the work).
+
+role: airton_c_tfr
+intent: Find the TFR section that grounds the decoded NOTAM
+budget_tokens: 3000
+
+slots:
+  - name: applicable_section
+    store: tree
+    query_template: "{request_summary}"
+    required: true
+    min_cardinality: 1
+    max_hits: 5
+    # Parent-section auto-merge (harness-0t7a). When two sibling leaves
+    # under the same §-parent appear, collapse to the parent — TFR
+    # answers commonly span 3-5 subparagraphs of one § (e.g. §91.137
+    # (a)(1) through (a)(3)), and the parent-section view reads
+    # better than fragments.
+    auto_merge: true

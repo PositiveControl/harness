@@ -1,0 +1,8 @@
+version: 2
+purpose: |
+  Samples harvested from live chat edits via /capture or
+  `uv run harness voice capture`. Same schema as canonical.yaml —
+  loaded alongside it at runtime. Review periodically and promote
+  durable samples into canonical.yaml.
+
+samples: []
