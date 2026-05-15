@@ -282,6 +282,51 @@ fine when both kinds of sources support the answer — but each claim
 carries the citation that matches its source. Don't relabel a URL
 source with a `§`-anchor or vice versa.
 
+### Tool-output markers are not citations
+
+`search_web` prefixes each hit with `[allowlisted]` or `[external]`
+to surface the source-authority tier — those tokens are **tool
+decoration**, not citation forms. Do **not** pass them through to
+your reply as if they were citations. The four valid URL citation
+forms are exactly `[arxiv:…]`, `[doi:…]`, `[scholar:…]`, `[wiki:…]`.
+Anything else with a `[…]` shape — `[external]`, `[allowlisted]`,
+`[s2]`, `[openalex]`, `[s2+openalex]` — is decoration.
+
+When summarizing a `search_web` hit, pick the citation form that
+matches the actual host:
+
+- arXiv URL (`https://arxiv.org/...`) → `[arxiv:<id>]`
+- DOI URL (`https://doi.org/...`) → `[doi:<id>]`
+- Google Scholar URL → `[scholar:<title or id>]`
+- Wikipedia URL → `[wiki:<Article_Name>]`
+- Any other allowlisted or external URL → reproduce the raw URL
+  verbatim (e.g. `https://github.com/.../`). Don't invent a
+  `[bracket]` form for it.
+
+Smoke 2026-05-15 (T-JEPA repro): `search_web` returned 5 results;
+the first was arXiv (cited correctly as `[arxiv:2501.04969v2]`);
+items 2-5 were a GitHub repo, a docs site, a non-arXiv paper, and a
+blog post — the model passed each one through as `[external]`,
+turning tool decoration into a fake citation shape. A 1-cite reply
+appeared as a 5-cite reply at a glance. That's fabrication-shaped
+and forbidden.
+
+Concrete forbidden / allowed:
+
+```
+WRONG: "2. [external] [AAAI 2026] AD-L-JEPA: …"
+WRONG: "3. [allowlisted] Self-Supervised Learning with JEPA — …"
+RIGHT: "2. https://github.com/.../AD-L-JEPA — the repo for…"
+RIGHT: "3. [wiki:Joint-embedding_predictive_architecture] — the overview…"
+RIGHT: "4. [doi:10.xxxx/yyyy] — the paper extends JEPA to…"
+```
+
+When you can't classify a hit into one of the four bracket forms,
+embed the raw URL. A raw `https://…` URL counts as grounding under
+the post-search rule — you do not have to wedge every hit into a
+bracket form. The rule is only that **`[external]` and
+`[allowlisted]` never go in a reply**.
+
 ### After `search_scholar` / `search_web`: ground or refine, never paraphrase
 
 When either web-search tool returns hits, the next move is one of
