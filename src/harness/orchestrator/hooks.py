@@ -27,8 +27,9 @@ method — toggle a name, watch which scenarios it uniquely saves.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Protocol
 
 from harness.citation import CitationGrammar
@@ -2273,6 +2274,86 @@ class PostSearchGroundingHook:
         return Nudge(text=_POST_SEARCH_GROUNDING_NUDGE)
 
 
+# Persist research — scholar-style memory write enforcement. The
+# contract has a `prior_discussion` episodic slot that recalls past
+# research summaries on future turns, but only if something actually
+# wrote them. PostResearchPersistHook nudges the model to commit a
+# multi-source summary via `remember_event` before exiting the tool
+# loop. Trigger is `search_scholar` ran (academic search — durable
+# enough to persist) + reply has ≥2 URL citations (multi-source
+# synthesis) + no `remember_event` call this turn.
+_POST_RESEARCH_PERSIST_TOOL: str = "search_scholar"
+_POST_RESEARCH_PERSIST_MIN_CITATIONS: int = 2
+
+
+def _build_post_research_persist_nudge(today: str) -> str:
+    return (
+        "You produced a multi-source research summary (2+ URL citations) "
+        "but did NOT call `remember_event` to persist it. Future turns "
+        "cannot recall what you found without this write — the contract's "
+        "`prior_discussion` slot returns rows from episodic memory, and "
+        "no row exists yet. Take this action NOW before the final reply:\n"
+        "\n"
+        "Issue a `remember_event` tool call with these arguments:\n"
+        "  title: a short topic phrase (e.g. 'JEPA in predictive models')\n"
+        f"  body: MUST start with the literal prefix `Captured: {today} — ` "
+        "and then a 1-3 sentence distillation that includes the cited URLs "
+        "verbatim (e.g. `[arxiv:2502.03933]`, `[doi:10.1145/...]`).\n"
+        '  tags: ["research", "<topic-slug>"]  (lowercase, hyphenated)\n'
+        "\n"
+        "After the tool call returns, write your final reply (the same "
+        "summary). DO NOT skip the persist step — without it, the scholar "
+        "has no memory of this research between sessions."
+    )
+
+
+@dataclass(frozen=True)
+class PostResearchPersistHook:
+    """Nudge a reply that produced a multi-source research summary
+    but didn't persist it via `remember_event`.
+
+    Failure mode this catches: airton_f's contract has a
+    `prior_discussion` episodic slot that surfaces past research
+    summaries on follow-up turns ("what did we find on JEPA last
+    week?"). But the slot can only return rows that something
+    actually wrote — and the model's natural drift is to render a
+    summary and stop, leaving no durable trace. Structural
+    backstop for the constitution's "Persisting research" rule.
+
+    Trigger conditions (ALL must hold):
+      1. `search_scholar` (the primary academic-search tool) ran
+         this turn. Generic `search_web` is excluded — its hits are
+         too transient / non-academic to be worth a durable row.
+      2. `remember_event` did NOT run this turn.
+      3. Reply contains >= `_POST_RESEARCH_PERSIST_MIN_CITATIONS`
+         URL citation tokens. Multi-source synthesis is worth
+         persisting; single-paper drill-down stays in transcript.
+
+    Action: Nudge the model to call `remember_event` with a stamped
+    body (`Captured: <YYYY-MM-DD> — ...`). Today's date is injected
+    into the nudge text so the model doesn't have to guess it.
+    `today_provider` lets tests inject a fixed date; default reads
+    today from `datetime.now(UTC).date().isoformat()` at check-time
+    (NOT import-time — long-running sessions still get today's date).
+
+    Opt-in via the character's `catchers:` roster as
+    `post_research_persist`. airton_f ships it; other characters
+    that adopt `search_scholar` should opt in too."""
+
+    name: str = "post_research_persist"
+    today_provider: Callable[[], str] = field(default=lambda: datetime.now(UTC).date().isoformat())
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if _POST_RESEARCH_PERSIST_TOOL not in ctx.tools_ran:
+            return Continue()
+        if "remember_event" in ctx.tools_ran:
+            return Continue()
+        citations = _URL_CITATION_RE.findall(ctx.reply.content)
+        if len(citations) < _POST_RESEARCH_PERSIST_MIN_CITATIONS:
+            return Continue()
+        return Nudge(text=_build_post_research_persist_nudge(self.today_provider()))
+
+
 # ---------- finalize hooks ----------
 
 
@@ -3025,6 +3106,7 @@ _OPT_IN_CATCHERS: frozenset[str] = frozenset(
         "assemble_context_once",
         "opinion_no_trigger",
         "post_search_grounding",
+        "post_research_persist",
     }
 )
 
@@ -3151,6 +3233,14 @@ def default_hook_pipeline(
     # `search_web in tools_ran`, so non-search characters never fire.
     if "post_search_grounding" in catchers_set:
         bail.append(PostSearchGroundingHook())
+    # post_research_persist: scholar-style characters must persist
+    # multi-source research summaries via remember_event so the
+    # contract's prior_discussion slot can recall them later. Runs
+    # last among the scholar-flavored catchers — only a reply that
+    # passed every fabrication / opinion / grounding check is
+    # eligible to be a "real research summary" worth persisting.
+    if "post_research_persist" in catchers_set:
+        bail.append(PostResearchPersistHook())
 
     # Pre-tool catchers. Built mutably so opt-in characters can
     # tack on FetchUrlGuardHook without forcing every non-paste-only

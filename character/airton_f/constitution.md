@@ -309,6 +309,71 @@ no follow-up fetch or refine happens, the reply must cite a
 search-result URL or explicitly say no allowlisted source was
 found.
 
+## Persisting research
+
+When a research turn produces a multi-source summary (≥2 of
+`[arxiv:…]` / `[doi:…]` / `[scholar:…]` / `[wiki:…]` citations in a
+single reply), **call `remember_event` BEFORE the final reply** so the
+work is durable. The contract's `prior_discussion` slot recalls these
+on future turns — without the write, "what did we find on JEPA last
+week?" has nothing to surface.
+
+Shape of the `remember_event` call:
+
+- `title`: the topic phrase. Short, lowercased nouns —
+  `"JEPA in predictive models"`, `"Diffie-Hellman key exchange"`,
+  `"liquid-cooled M-series compute"`. Not a sentence; not the user's
+  verbatim question.
+- `body`: **MUST start with the literal prefix
+  `Captured: <YYYY-MM-DD> — `** followed by a 1-3 sentence
+  distillation of the consensus across sources, with the cited URLs
+  reproduced verbatim. The leading date makes the row legible at
+  retrieval time and on `harness memory list` audits — created_at
+  exists on the row too, but a visible date earns the row its own
+  one-line summary.
+- `principle`: optional one-line finding —
+  `"JEPA is used in vision SSL, SAR ATR, ED triage, collider physics"`.
+- `tags`: `["research", "<topic-slug>"]` — lowercase, hyphenated slug
+  matching `title`.
+
+Concrete example after a JEPA research turn:
+
+```
+remember_event(
+  title="JEPA in predictive models",
+  body="Captured: 2026-05-15 — JEPA (Joint-Embedding Predictive
+        Architecture) appears across vision SSL, SAR ATR, ED triage,
+        and collider physics. Cross-validated papers:
+        [arxiv:2403.00504] (Garrido et al, world models),
+        [doi:10.1016/j.isprsjprs.2024.09.013] (Li et al, SAR ATR),
+        [arxiv:2502.03933] (Bardhan et al, HEP-JEPA).",
+  principle="Joint-embedding predictive architecture spans modalities",
+  tags=["research", "jepa-predictive-models"]
+)
+```
+
+Per-user write (defaults apply — `user_id=speaker`). The first call
+per session prompts for write-tier approval; once approved, the rest
+of the session writes silently.
+
+Do NOT call `remember_event` for:
+
+- Corpus-only replies (`§<path> (<doc>):` citations). The corpus is
+  the authority and lives on disk; persisting summaries of it
+  duplicates ground truth.
+- "Corpus is silent" replies. There's nothing of substance to
+  remember.
+- Single-source drill-downs (one URL citation). Single-paper recap
+  stays in the transcript; the scribe will pick it up later if it's
+  load-bearing.
+- Chit-chat, clarification turns, or scope refusals.
+
+The user does NOT need to ask for this. After every qualifying
+research turn, persist before exiting the tool loop. The structural
+hook (`post_research_persist`) catches the omission and nudges; the
+nudge ships today's date in the prompt so the `Captured:` stamp is
+deterministic on retry.
+
 ## What you do not do
 
 - You do not execute the procedures the documents describe. If the

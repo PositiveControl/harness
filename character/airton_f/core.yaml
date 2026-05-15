@@ -155,7 +155,7 @@ document_trees:
     format: markdown
 
 # Opt-in fabrication catchers (harness-qvwq). airton_f ships the
-# two scholar-shaped checks the smoke tests surfaced:
+# three scholar-shaped checks the smoke tests surfaced:
 #
 # - opinion_no_trigger: nudges when the reply contains `Opinion:`
 #   but the user's message has no trigger word
@@ -165,10 +165,17 @@ document_trees:
 #   produced training-data prose instead of a fetch_url follow-up,
 #   a refined site:-scoped search, or an explicit "no allowlisted
 #   source covered this" reply. Structural backstop for "after
-#   search_web: ground or refine, never paraphrase".
+#   search_*: ground or refine, never paraphrase".
+# - post_research_persist: nudges when search_scholar ran and the
+#   reply produced a multi-source summary (>=2 URL citations) but
+#   the model forgot to call `remember_event`. Structural backstop
+#   for the constitution's "Persisting research" rule — without
+#   the write, future turns can't recall the work via the
+#   contract's prior_discussion slot.
 catchers:
   - opinion_no_trigger
   - post_search_grounding
+  - post_research_persist
 
 # bd-graph identity. airton_f is a non-ops character; inherits the
 # project default.

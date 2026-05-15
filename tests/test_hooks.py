@@ -38,6 +38,7 @@ from harness.orchestrator.hooks import (
     OpinionWithoutTriggerHook,
     PairedMetaConfirmStripHook,
     PostModelContext,
+    PostResearchPersistHook,
     PostSearchGroundingHook,
     PreToolContext,
     Replace,
@@ -3232,3 +3233,138 @@ def test_post_search_grounding_wires_into_pipeline_when_opted_in() -> None:
     assert "post_search_grounding" in on.names()
     off = default_hook_pipeline(catchers=())
     assert "post_search_grounding" not in off.names()
+
+
+# ---------- PostResearchPersistHook ----------
+
+
+def _persist_hook() -> PostResearchPersistHook:
+    """Fixed-date hook for deterministic nudge-text assertions."""
+    return PostResearchPersistHook(today_provider=lambda: "2026-05-15")
+
+
+def test_post_research_persist_fires_on_multi_source_summary_without_remember() -> None:
+    """search_scholar ran, the reply has 3 URL citations (multi-source
+    synthesis), but the model never called remember_event. Hook nudges
+    with the persist instructions — today's date stamped in."""
+    reply = _reply(
+        "JEPA spans several domains. [arxiv:2403.00504] frames it for "
+        "world-model SSL; [doi:10.1016/j.isprsjprs.2024.09.013] applies "
+        "it to SAR ATR; [arxiv:2502.03933] extends to HEP collider data."
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"assemble_context", "search_scholar"}),
+        user_message="Search and review what JEPA is in the context of predictive models.",
+    )
+    outcome = _persist_hook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "remember_event" in outcome.text
+    assert "Captured: 2026-05-15" in outcome.text
+
+
+def test_post_research_persist_silent_when_remember_event_ran() -> None:
+    """Happy path: model called remember_event after search_scholar.
+    Hook stays out — the work was persisted."""
+    reply = _reply(
+        "JEPA spans several domains. [arxiv:2403.00504] (world models); "
+        "[arxiv:2502.03933] (HEP-JEPA)."
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"assemble_context", "search_scholar", "remember_event"}),
+        user_message="Search and review JEPA",
+    )
+    outcome = _persist_hook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_post_research_persist_silent_on_single_citation_drill_down() -> None:
+    """One URL citation = single-paper recap, not multi-source synthesis.
+    Single-source replies stay in transcript; the hook only catches the
+    multi-source omissions worth durable storage."""
+    reply = _reply(
+        "[arxiv:2301.08243] introduces I-JEPA. The paper proposes joint "
+        "embedding for self-supervised image representation, training "
+        "the predictor and target encoders in a single pass."
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"assemble_context", "search_scholar"}),
+        user_message="What is I-JEPA?",
+    )
+    outcome = _persist_hook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_post_research_persist_silent_when_search_scholar_did_not_run() -> None:
+    """search_web alone is not enough — its hits are too transient to
+    earn a durable row. Only search_scholar (academic-paper search)
+    triggers the persist requirement."""
+    reply = _reply(
+        "Modern key exchange uses ECDH variants. [wiki:Diffie-Hellman_key_exchange] "
+        "and [wiki:Elliptic-curve_Diffie-Hellman] both cover the topic."
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"assemble_context", "search_web"}),
+        user_message="What's the modern key exchange?",
+    )
+    outcome = _persist_hook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_post_research_persist_silent_when_no_tools_ran() -> None:
+    """Bootstrap / no-tool turns are out of scope."""
+    reply = _reply(
+        "Multi-paper claim with [arxiv:1] and [arxiv:2] citations would "
+        "trigger persist — but no search ran this turn so nothing to save."
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=False,
+        tools_ran=frozenset(),
+        user_message="anything",
+    )
+    outcome = _persist_hook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_post_research_persist_today_provider_injects_date_into_nudge() -> None:
+    """The nudge text MUST quote today's date verbatim so the model has
+    no excuse to guess. today_provider is the injection seam."""
+    hook = PostResearchPersistHook(today_provider=lambda: "2099-12-31")
+    reply = _reply("Two-source summary: [arxiv:1234.5678] one paper; [doi:10/abc] another.")
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_scholar"}),
+        user_message="Search and find papers on topic X",
+    )
+    outcome = hook.check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "Captured: 2099-12-31" in outcome.text
+
+
+def test_post_research_persist_default_today_provider_returns_iso_date() -> None:
+    """The default provider reads `datetime.now(UTC).date().isoformat()`
+    at check-time (not import-time), so long-running sessions still get
+    today's date. Format pin: YYYY-MM-DD only — no time component, no
+    timezone suffix in the body stamp."""
+    import re as _re
+
+    hook = PostResearchPersistHook()
+    today = hook.today_provider()
+    assert _re.fullmatch(r"\d{4}-\d{2}-\d{2}", today)
+
+
+def test_post_research_persist_wires_into_pipeline_when_opted_in() -> None:
+    """Composition pin."""
+    on = default_hook_pipeline(catchers=("post_research_persist",))
+    assert "post_research_persist" in on.names()
+    off = default_hook_pipeline(catchers=())
+    assert "post_research_persist" not in off.names()

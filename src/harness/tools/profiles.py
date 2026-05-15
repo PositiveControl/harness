@@ -191,7 +191,10 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
     # path emits §<path> (<doc>) citations, the external path emits
     # [arxiv:…] / [scholar:…] / [doi:…] / [wiki:…] tags (constitution
     # defines the form). No shell / git / write-tier fs — scholar
-    # reads, doesn't author.
+    # reads, doesn't author. `remember_event` is the one write-tier
+    # tool in the roster: scholar uses it to persist multi-source
+    # research summaries so the contract's `prior_discussion` slot
+    # can recall them on future turns instead of re-searching.
     "scholar": (
         "assemble_context",
         "search_memory",
@@ -199,6 +202,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_scholar",
         "search_web",
         "fetch_url",
+        "remember_event",
         "introspect",
     ),
     # Kitchen-sink — every built-in tool the registry knows about.
