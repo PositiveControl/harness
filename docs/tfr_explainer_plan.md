@@ -52,22 +52,43 @@ failure mode that has burned pilots on ChatGPT.
 ## Architecture
 
 ```
-[ static SPA ]  ──POST /explain──▶  [ FastAPI gateway ]
+[ static SPA ] ──POST /explain──▶ [ harness.web factory · airton_c_tfr router ]
                                         │
-                                        ▼
+                                        ├──── BASE (harness.web — any character)
+                                        │      GET /healthz
+                                        │      GET /character
+                                        │      POST /chat   (single-turn, full grounding stack)
+                                        │      GET /capabilities
+                                        │
+                                        ├──── EXTENSION (airton_c_tfr)
+                                        │      POST /explain
+                                        │      GET /tfr_list
+                                        │      GET /debug/parse
+                                        │
+                                        ▼  POST /explain pipeline
                             ┌─ deterministic NOTAM parser
-                            │   (regex/coords/times → JSON)
+                            │   (regex/coords/times → struct)
                             │
                             ▼
-                     [ airton_c_tfr character ]
-                            │   forced search_memory
-                            │   lead_with_citation
+                     [ airton_c_tfr character via orchestrator ]
+                            │   forced assemble_context (contract)
+                            │   request-scoped read_parsed_notam tool
+                            │   lead_with_citation rewriter
                             │   UngroundedCitationHook
                             ▼
-                       structured JSON
-                          │
-                          ▼
-                     SPA renders
+                  grammar-constrained model output
+                  (prose fields only: verdict, what_it_means, caveats)
+                            │
+                            ▼
+                  endpoint stitches:
+                    parser-owned fields (geometry / active / type / citations)
+                    + model-owned prose fields
+                            │
+                            ▼
+                       buffered JSON contract
+                            │
+                            ▼
+                       SPA renders
 ```
 
 Key picks:
@@ -87,26 +108,45 @@ Key picks:
    this project — same Qwen 4-bit, no new adapter, no catcher
    revalidation. Hosted-API adapter (Anthropic/OpenAI) is deferred until
    sustained traffic genuinely exceeds local capacity.
-4. **Stateless backend, request-scoped tool registry.** No DB, no
+4. **Generalizable `harness.web` factory.** `harness web --character <name>`
+   serves any character via the same primitive (`harness-3jz1.9`). Base
+   endpoints (`/healthz`, `/character`, `/chat`, `/capabilities`) are
+   character-agnostic. Character extensions (TFR's `/explain`, future
+   characters' analogues) live at `src/harness/web/characters/<name>.py`
+   and get auto-discovered + mounted. New characters get a working web
+   surface without touching the harness primitive.
+5. **Stateless backend, request-scoped tool registry.** No DB, no
    session. Per request: parse NOTAM → bind parsed struct into a
-   `read_parsed_notam` tool the model can introspect → forced
-   `search_memory` prelude → reply. Tool surface = `search_memory` +
-   `read_parsed_notam` only (no `fetch_url`, no `search_web` — paste-only
-   input contract holds).
-5. **Buffered JSON reply.** Gateway returns one complete JSON object;
+   `read_parsed_notam` tool via the generalizable request-scoped tool
+   registry helper → forced `assemble_context` prelude (the character's
+   contract) → grammar-constrained reply. Tool surface for `/explain`:
+   `search_memory` (assemble_context contract path) + `read_parsed_notam`
+   only (no `fetch_url`, no `search_web` — paste-only input contract
+   holds).
+6. **Grammar-constrained model output (prose fields only).** Model emits
+   only the prose fields (verdict, what_it_means, caveats) under a JSON
+   schema enforced via `outlines`. The endpoint stitches in the parser-
+   owned fields (geometry, active, type, citations) deterministically
+   before returning. The model can never hallucinate a coordinate — that
+   slot in the contract is filled by the parser, not the LLM.
+7. **Buffered JSON reply.** Gateway returns one complete JSON object;
    reply size is ~1–2KB so buffered latency is bounded. Rich
-   request-level logging (raw model completion + parsed object) captured
-   under a debug-dir env flag for replay and `tfr_eval` fixture growth.
-   Streaming considered for v1.5 only if perceived-latency feedback
-   warrants it.
-6. **Tailscale-only ingress.** Invite-the-audience model — Mac (now) /
+   request-level logging (raw completion + parsed object) captured under
+   `HARNESS_WEB_DEBUG_DIR` (generalizable, not TFR-specific) for replay
+   and `tfr_eval` fixture growth. Streaming considered for v1.5 only if
+   perceived-latency feedback warrants it.
+8. **Tailscale-only ingress.** Invite-the-audience model — Mac (now) /
    Spark (later) sits inside the tailnet, no public domain, no
-   Cloudflare Tunnel, no port forward. Matches the 10s-of-users target
-   audience and zero home-network exposure. Public-domain launch is a
-   v2 promotion path, not a v1 requirement.
-7. **Tiny SPA.** One HTML + one JS file, vanilla, mobile-first. No
-   SvelteKit for a single form. Loaded over the tailnet by invited
-   users.
+   Cloudflare Tunnel, no port forward. `harness web` defaults to
+   `--host 0.0.0.0`; the Mac firewall + Tailscale ACLs constrain who
+   can reach the port. Standard Tailscale pattern. Matches the
+   10s-of-users target audience and zero home-network exposure. Public-
+   domain launch is a v2 promotion path, not a v1 requirement.
+9. **Tiny SPA.** One HTML + one JS file, vanilla, mobile-first. No
+   SvelteKit for a single form. Reads `GET /capabilities` at load and
+   renders the available actions — so a future character served on the
+   same factory gets a usable SPA shell without code changes. Loaded
+   over the tailnet by invited users.
 
 ## JSON contract
 
@@ -142,14 +182,17 @@ just consumers.
 | `harness-3jz1.1` | airton_c_tfr character + scoped corpus (incl. AIM 5-6, PCG) | foundation |
 | `harness-3jz1.2` | tfr_eval.yaml + `harness eval tfr` (hybrid det + judge) | depends on .1 |
 | `harness-3jz1.3` | NOTAM text parser (regex + pyproj) | independent — fan out |
-| `harness-3jz1.4` | FastAPI `POST /explain` gateway (Tailscale-only, buffered JSON, request-scoped tool registry) | depends on .1, .3 |
+| `harness-3jz1.9` | `harness.web` factory: base endpoints, request-scoped tools, grammar reply | independent — fan out |
+| `harness-3jz1.4` | airton_c_tfr web extension: `/explain` + `/tfr_list` + `/debug/parse` | depends on .1, .3, .9 |
 | `harness-3jz1.5` | Validate Ollama runtime for airton_c_tfr + DGX Spark deployment plan | independent — fan out |
-| `harness-3jz1.6` | SPA frontend (Tailscale-loaded, buffered JSON consumer) | depends on .4 |
+| `harness-3jz1.6` | SPA frontend (Tailscale-loaded, capabilities-driven, buffered JSON consumer) | depends on .4 |
 | `harness-3jz1.7` | Invite-audience launch: Tailscale onboarding doc, disclaimer, basic ops | depends on .2, .4, .5, .6 |
 | `harness-3jz1.8` | [v2 deferred] Live TFR feed | parking lot |
 
-Three parallel paths into a single launch join. Start `3jz1.1` / `3jz1.3`
-/ `3jz1.5` concurrently as soon as you want to fan out.
+Four parallel paths into a single launch join. Start `3jz1.1` / `3jz1.3`
+/ `3jz1.5` / `3jz1.9` concurrently as soon as you want to fan out. The
+TFR-specific gateway (`3jz1.4`) joins after `3jz1.9` (the generalizable
+web factory) lands.
 
 ## Resolved decisions (2026-05-14 refinement pass)
 
@@ -199,13 +242,17 @@ Three parallel paths into a single launch join. Start `3jz1.1` / `3jz1.3`
 | `3jz1.1` character + corpus | 3-5 |
 | `3jz1.2` eval set + subcommand | 2-3 |
 | `3jz1.3` NOTAM parser | 5-7 (text is gnarly) |
-| `3jz1.4` FastAPI gateway | 2-3 |
+| `3jz1.9` harness.web factory + base endpoints | 3-5 |
+| `3jz1.4` TFR character extension (/explain + /tfr_list + /debug/parse) | 2-3 |
 | `3jz1.5` validate Ollama + Spark plan | 2-3 |
 | `3jz1.6` SPA | 2 |
 | `3jz1.7` launch | 2-3 |
 
-**~2.5-3.5 weeks** of focused work to public launch with fan-out on the
-independent paths.
+**~3-4.5 weeks** of focused work to invite-launch with fan-out on the
+independent paths (`.1` / `.3` / `.5` / `.9`). `.1`, `.2`, `.3` already
+landed (2026-05-14 / 2026-05-15); remaining work centers on `.9` (the
+generalizable web factory), `.4` (TFR character extension), and the
+`.5` / `.6` / `.7` path.
 
 ## Close criterion
 
