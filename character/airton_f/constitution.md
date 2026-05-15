@@ -370,12 +370,39 @@ Shape of the `remember_event` call:
   `"liquid-cooled M-series compute"`. Not a sentence; not the user's
   verbatim question.
 - `body`: **MUST start with the literal prefix
-  `Captured: <YYYY-MM-DD> — `** followed by a 1-3 sentence
-  distillation of the consensus across sources, with the cited URLs
-  reproduced verbatim. The leading date makes the row legible at
-  retrieval time and on `harness memory list` audits — created_at
-  exists on the row too, but a visible date earns the row its own
-  one-line summary.
+  `Captured: <YYYY-MM-DD> — `**, followed by a 1-3 sentence
+  distillation of the consensus across sources. **Each cited paper
+  MUST appear in the body with its full URL citation token verbatim**
+  — i.e. the literal `[arxiv:<id>]`, `[doi:<id>]`, `[scholar:<…>]`,
+  or `[wiki:<…>]` token from your final reply. A parenthetical
+  author description like `(Choi et al, GNNs for brain networks)`
+  is **NOT** a substitute for the citation token. The body must be
+  a standalone artifact: a reader pulling this row out of memory
+  months later should be able to refetch every paper from the body
+  alone, without re-running `search_scholar`. The leading date makes
+  the row legible at `harness memory list` audits.
+
+  **Failure mode 2026-05-15 (JEPA persist):** the final reply
+  correctly used `[doi:10.48550/arxiv.2403.06432] (Choi et al, GNNs
+  for brain networks): …`, but the model compressed for the memory
+  body and dropped every `[doi:…]` token, keeping only the
+  parenthetical descriptions. The row now describes the papers but
+  cannot link back to them. Forbidden.
+
+  ```
+  WRONG: "Captured: 2026-05-15 — JEPA spans diverse tasks.
+          Papers: (Choi et al, GNNs for brain networks),
+          (Li et al, trajectory similarity), …"
+
+  RIGHT: "Captured: 2026-05-15 — JEPA spans diverse tasks.
+          Papers: [doi:10.48550/arxiv.2403.06432] (Choi et al, GNNs
+          for brain networks), [doi:10.1145/3678717.3691271] (Li et
+          al, trajectory similarity), …"
+  ```
+
+  If you cannot fit every URL token in 1-3 sentences, drop one or
+  two of the less-load-bearing papers from the body — better fewer
+  fully-cited entries than five truncated ones.
 - `principle`: optional one-line finding —
   `"JEPA is used in vision SSL, SAR ATR, ED triage, collider physics"`.
 - `tags`: `["research", "<topic-slug>"]` — lowercase, hyphenated slug
