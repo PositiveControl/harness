@@ -45,6 +45,7 @@ _EXPECTED_COMMANDS: tuple[str, ...] = (
     "session show",
     "voice capture",
     "voice list-captured",
+    "web serve",
 )
 
 

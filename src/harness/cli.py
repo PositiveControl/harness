@@ -284,6 +284,11 @@ phraseology_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(phraseology_app, name="phraseology")
+web_app = typer.Typer(
+    help="Serve the current character over HTTP (harness.web factory).",
+    no_args_is_help=True,
+)
+app.add_typer(web_app, name="web")
 console = Console()
 
 
@@ -5258,6 +5263,72 @@ def session_compact_reset_cmd(
         )
     finally:
         store.close()
+
+
+@web_app.command("serve")
+def web_serve(
+    host: str = typer.Option(
+        "0.0.0.0",  # noqa: S104 — Tailscale-only ingress relies on host firewall + ACLs
+        "--host",
+        help=(
+            "Bind interface. Default 0.0.0.0; Tailscale-only enforcement "
+            "is provided by the Mac firewall + Tailscale ACLs (standard "
+            "tailnet pattern). Override to '127.0.0.1' for local-only "
+            "development."
+        ),
+    ),
+    port: int = typer.Option(8080, "--port", help="TCP port to bind."),
+    model: str = typer.Option(
+        "mlx",
+        "--model",
+        help="Adapter: echo | mlx | ollama. Echo is the fastest smoke test.",
+    ),
+    model_repo: str | None = typer.Option(
+        None, "--model-repo", help="HF repo override for the chosen adapter."
+    ),
+    rate_limit: str = typer.Option(
+        "120/minute",
+        "--rate-limit",
+        help=(
+            "Per-IP rate-limit budget (slowapi syntax). Generous default "
+            "for invite-list tailnet audiences."
+        ),
+    ),
+    reload: bool = typer.Option(False, "--reload", help="Run uvicorn with auto-reload (dev only)."),
+) -> None:
+    """Serve the resolved character over HTTP via the harness.web
+    factory (harness-3jz1.9). Mounts the base endpoints (/healthz,
+    /character, /chat, /capabilities) plus any character-specific
+    extension at harness.web.characters.<name>."""
+    character = load_character(settings.character_path)
+    if model == "mlx" and model_repo:
+        from harness.model.mlx import MLXAdapter
+
+        adapter: ModelAdapter = MLXAdapter(repo=model_repo)
+    elif model == "ollama" and model_repo:
+        from harness.model.ollama import OllamaAdapter
+
+        adapter = OllamaAdapter(model=model_repo)
+    else:
+        try:
+            adapter = make_adapter(cast(AdapterName, model))
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+    loader = getattr(adapter, "load", None)
+    if callable(loader):
+        with Status(f"loading {adapter.id}…", console=console):
+            loader()
+
+    from harness.web import build_character_app
+
+    web_app_instance = build_character_app(character, adapter, rate_limit=rate_limit)
+    console.print(
+        f"[bold green]◈ {character.name}[/bold green] → http://{host}:{port}  (model={adapter.id})"
+    )
+
+    import uvicorn
+
+    uvicorn.run(web_app_instance, host=host, port=port, reload=reload)
 
 
 if __name__ == "__main__":

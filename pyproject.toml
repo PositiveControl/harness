@@ -70,6 +70,22 @@ notam = [
     # lazily inside to_polygon, not at module top).
     "pyproj>=3.6",
 ]
+web = [
+    # Generalizable harness.web factory (harness-3jz1.9). Turns any
+    # character into a FastAPI app served via `harness web --character
+    # <name>`. Stays optional so a base install / CI / headless deploy
+    # doesn't pull a web server stack.
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    # IP-keyed rate limiting middleware. The tailnet-only ingress
+    # already shrinks the threat surface, but slowapi makes the
+    # generous default explicit + tunable per character extension.
+    "slowapi>=0.1.9",
+    # httpx is hard-required by FastAPI's TestClient + lets character
+    # extensions proxy upstream FAA endpoints (e.g. /tfr_list under
+    # harness-3jz1.4) without adding their own dep.
+    "httpx>=0.27",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
