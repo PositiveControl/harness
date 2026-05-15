@@ -8,7 +8,16 @@
 #                                                    (allowlisted to scholar.google.com,
 #                                                    arxiv.org, doi.org via core.yaml)
 #   --persona --tools                             — voice on, tool loop on
-#   --router                                      — small-model intent router fronts the loop
+#
+# Note: --router is INTENTIONALLY off (harness-gt70). The router
+# only sees (system_prompt, user_message) — never the
+# assemble_context bundle. With router on, the recall path is
+# broken: "what do you know about JEPA?" routes straight to
+# search_scholar even when prior_discussion has the answer.
+# Letting the main model pick the tool costs ~5s/turn but lets
+# the constitution's prior_discussion-first workflow govern.
+# Re-enable once the router becomes memory-aware (harness-gt70
+# option B).
 #
 # The forced assemble_context call (require_assemble_context=true)
 # pulls section-shaped hits from character/airton_f/data/document_tree.sqlite,
@@ -48,7 +57,6 @@ exec uv run harness chat \
     --persona \
     --tools \
     --tool-set scholar \
-    --router \
     --workspace "$NOTES_DIR" \
     --memories 3 \
     --facts 5 \
