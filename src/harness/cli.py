@@ -1517,7 +1517,17 @@ def _build_tool_registry_for_tui(
             if semantic_store is not None
             else None
         ),
-        "search_web": lambda: SearchWebTool(),
+        # search_web reuses fetch_url's allowlist to rerank results so
+        # allowlisted hosts surface first with `[allowlisted]` markers;
+        # external hits stay visible. Keeps the agent's view of the
+        # web honest about what's fetchable without hiding the rest.
+        "search_web": lambda: SearchWebTool(
+            allowed_hosts=(
+                frozenset(character.fetch_url_allowed_hosts)
+                if character is not None and character.fetch_url_allowed_hosts
+                else None
+            )
+        ),
         "fetch_url": lambda: FetchUrlTool(
             allowed_hosts=(
                 frozenset(character.fetch_url_allowed_hosts)

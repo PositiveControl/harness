@@ -71,10 +71,20 @@ def _unwrap_ddg_redirect(url: str) -> str:
 @dataclass
 class SearchWebTool:
     """Search the public web via DuckDuckGo's HTML endpoint. Returns
-    title + URL + snippet for the top results."""
+    title + URL + snippet for the top results.
+
+    When `allowed_hosts` is supplied (typically `character.
+    fetch_url_allowed_hosts`), results from those hosts float to the
+    top of the output with a `[allowlisted]` marker; non-allowlisted
+    hits stay visible below with `[external]`. Pairs with FetchUrlTool
+    on a scoped corpus: the agent sees what's out there, but the
+    sources it can actually fetch land first. None (default) means
+    no reranking and no markers — the unbounded-web behavior for
+    general-purpose characters."""
 
     default_max_results: int = 5
     timeout_s: int = _DEFAULT_TIMEOUT_S
+    allowed_hosts: frozenset[str] | None = None
 
     @property
     def spec(self) -> ToolSpec:
@@ -141,15 +151,70 @@ class SearchWebTool:
         if not titles:
             return f"(no results for {query!r})"
 
-        lines: list[str] = []
-        for i, (url, title_html) in enumerate(titles[:n], start=1):
+        # Unwrap + classify every result BEFORE slicing. If we sliced
+        # first, an allowlisted hit at position 8 would be cut off
+        # and the agent would never see a source it can fetch — even
+        # though one exists. Reranking-then-slicing surfaces them.
+        classified: list[_Result] = []
+        for idx, (url, title_html) in enumerate(titles):
             url_clean = _unwrap_ddg_redirect(url)
-            title = _strip_tags(title_html)
-            snippet = ""
-            if i - 1 < len(snippets):
-                snippet = _strip_tags(snippets[i - 1])
-            entry = f"{i}. {title} — {url_clean}"
-            if snippet:
-                entry += f"\n   {snippet}"
+            host = (urllib.parse.urlparse(url_clean).hostname or "").lower()
+            is_allowlisted = self.allowed_hosts is not None and _host_matches_allowlist(
+                host, self.allowed_hosts
+            )
+            snippet = _strip_tags(snippets[idx]) if idx < len(snippets) else ""
+            classified.append(
+                _Result(
+                    is_allowlisted=is_allowlisted,
+                    original_idx=idx,
+                    url=url_clean,
+                    title=_strip_tags(title_html),
+                    snippet=snippet,
+                )
+            )
+
+        if self.allowed_hosts is not None:
+            # Stable sort: allowlisted hits float to the top while
+            # preserving DDG's intra-group ranking. Python's sort is
+            # stable so the secondary key (original_idx) only matters
+            # when two results share is_allowlisted.
+            classified.sort(key=lambda r: (not r.is_allowlisted, r.original_idx))
+
+        lines: list[str] = []
+        for display_idx, result in enumerate(classified[:n], start=1):
+            marker = ""
+            if self.allowed_hosts is not None:
+                marker = " [allowlisted]" if result.is_allowlisted else " [external]"
+            entry = f"{display_idx}.{marker} {result.title} — {result.url}"
+            if result.snippet:
+                entry += f"\n   {result.snippet}"
             lines.append(entry)
         return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class _Result:
+    """Parsed search result plus allowlist classification. Internal —
+    keeps the call() body readable + the sort key correct (Python
+    can't sort dicts; named-tuple / dataclass is the clean answer)."""
+
+    is_allowlisted: bool
+    original_idx: int
+    url: str
+    title: str
+    snippet: str
+
+
+def _host_matches_allowlist(host: str, allowed_hosts: frozenset[str]) -> bool:
+    """Match `host` (lowercased netloc) against `allowed_hosts` using
+    exact match OR registrable-suffix match. `en.wikipedia.org`
+    declared in the allowlist matches `en.wikipedia.org` exactly;
+    `arxiv.org` matches `arxiv.org` AND `www.arxiv.org` (a common
+    DDG-result variant). Empty host → never matches."""
+    if not host:
+        return False
+    for allowed in allowed_hosts:
+        a = allowed.lower()
+        if host == a or host.endswith("." + a):
+            return True
+    return False

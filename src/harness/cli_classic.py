@@ -266,7 +266,18 @@ def build_classic_registry(
                 else None
             )
         ),
-        "search_web": lambda: SearchWebTool(),
+        # search_web reuses the same allowlist as fetch_url to rerank
+        # results: hosts in the allowlist surface first with an
+        # `[allowlisted]` marker; non-allowlisted hits stay visible
+        # with `[external]`. Pairs with fetch_url so the agent sees
+        # what's out there but is biased toward sources it can act on.
+        "search_web": lambda: SearchWebTool(
+            allowed_hosts=(
+                frozenset(character.fetch_url_allowed_hosts)
+                if character.fetch_url_allowed_hosts
+                else None
+            )
+        ),
         # Mirror cli.py (TUI path): honor character.fetch_url_allowed_hosts
         # so per-character allowlists (airton_f's scholar.google.com /
         # arxiv.org / doi.org, atc's aviation sources, etc.) actually

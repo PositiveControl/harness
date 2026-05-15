@@ -123,3 +123,133 @@ def _offline_guard(monkeypatch: pytest.MonkeyPatch) -> None:
         raise RuntimeError("test tried to call urllib.request.urlopen without stubbing it")
 
     monkeypatch.setattr(urllib.request, "urlopen", _forbid)
+
+
+# ---------- allowlist rerank (scholar pairing with fetch_url) ----------
+
+
+def _mixed_results_body() -> bytes:
+    """Canned DDG-shape HTML with 4 results: external, allowlisted,
+    external, allowlisted. Confirms the rerank surfaces allowlisted
+    sources even when they're past the first slot."""
+    return (
+        b"<html><body>"
+        # Position 1: external (crypto.stackexchange.com)
+        b'<div class="result">'
+        b'<a class="result__a" href="https://crypto.stackexchange.com/q/77">'
+        b"DH in TLS handshake</a>"
+        b'<a class="result__snippet">Q&amp;A about DH alternatives.</a>'
+        b"</div>"
+        # Position 2: allowlisted (arxiv.org)
+        b'<div class="result">'
+        b'<a class="result__a" href="https://arxiv.org/abs/2401.12345">'
+        b"PQDH preprint</a>"
+        b'<a class="result__snippet">Quantum-safe replacement for DH.</a>'
+        b"</div>"
+        # Position 3: external (researchgate.net)
+        b'<div class="result">'
+        b'<a class="result__a" href="https://www.researchgate.net/publication/X">'
+        b"Alternative DH Protocol</a>"
+        b'<a class="result__snippet">Floating-point variant.</a>'
+        b"</div>"
+        # Position 4: allowlisted (scholar.google.com)
+        b'<div class="result">'
+        b'<a class="result__a" href="https://scholar.google.com/scholar?q=DH">'
+        b"Scholar results for Diffie-Hellman</a>"
+        b'<a class="result__snippet">Citation index.</a>'
+        b"</div>"
+        b"</body></html>"
+    )
+
+
+def _stub_urlopen_for(body: bytes) -> Any:
+    """Build a urlopen stub returning the given body. Inlines the
+    FakeResponse pattern used elsewhere in this file."""
+
+    def _stub(_req: Any, timeout: int = 10) -> _FakeResponse:
+        return _FakeResponse(body)
+
+    return _stub
+
+
+def test_allowlist_floats_allowlisted_results_to_top(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two allowlisted hits (arxiv.org pos2, scholar.google.com
+    pos4) become positions 1 and 2; the two external hits become
+    positions 3 and 4. Stable-sort preserves intra-group ranking."""
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen_for(_mixed_results_body()))
+    tool = SearchWebTool(allowed_hosts=frozenset({"arxiv.org", "scholar.google.com"}))
+    out = tool.call(query="DH alternatives")
+    lines = out.splitlines()
+    # Allowlisted at positions 1 and 2.
+    assert lines[0].startswith("1. [allowlisted] PQDH preprint")
+    # Position 2 is the snippet line for result 1 (4-space indent).
+    # Find the next numbered entry.
+    numbered = [line for line in lines if line[:2] in ("1.", "2.", "3.", "4.")]
+    assert numbered[0].startswith("1. [allowlisted] PQDH preprint")
+    assert numbered[1].startswith("2. [allowlisted] Scholar results for Diffie-Hellman")
+    assert numbered[2].startswith("3. [external] DH in TLS handshake")
+    assert numbered[3].startswith("4. [external] Alternative DH Protocol")
+
+
+def test_allowlist_subdomain_matches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`arxiv.org` in the allowlist matches `www.arxiv.org` results too —
+    DDG often returns the `www.`-prefixed host."""
+    body = (
+        b"<html><body>"
+        b'<div class="result">'
+        b'<a class="result__a" href="https://www.arxiv.org/abs/2401">paper</a>'
+        b'<a class="result__snippet">Preprint.</a>'
+        b"</div></body></html>"
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen_for(body))
+    tool = SearchWebTool(allowed_hosts=frozenset({"arxiv.org"}))
+    out = tool.call(query="anything")
+    assert "[allowlisted] paper" in out
+
+
+def test_no_allowlist_preserves_unmarked_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When `allowed_hosts` is None (default), no markers + no rerank
+    — the open-web behavior for general-purpose characters."""
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    out = SearchWebTool().call(query="MLX")
+    assert "[allowlisted]" not in out
+    assert "[external]" not in out
+    # Original order: ml-explore docs first, github wrap second.
+    lines = [line for line in out.splitlines() if line[:2] in ("1.", "2.")]
+    assert lines[0].startswith("1. MLX Documentation")
+    assert lines[1].startswith("2. mlx on GitHub")
+
+
+def test_allowlist_surfaces_late_hits_within_max_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 5-result fetch where the only allowlisted hit is at position
+    4 of the raw DDG output: rerank floats it to position 1 in the
+    sliced output. Without rerank-then-slice the agent would never
+    see it under max_results=3."""
+    body = (
+        b"<html><body>"
+        b'<div class="result"><a class="result__a" href="https://example.com/a">A</a>'
+        b'<a class="result__snippet">snip-a</a></div>'
+        b'<div class="result"><a class="result__a" href="https://example.com/b">B</a>'
+        b'<a class="result__snippet">snip-b</a></div>'
+        b'<div class="result"><a class="result__a" href="https://example.com/c">C</a>'
+        b'<a class="result__snippet">snip-c</a></div>'
+        b'<div class="result"><a class="result__a" href="https://arxiv.org/abs/X">D</a>'
+        b'<a class="result__snippet">snip-d</a></div>'
+        b'<div class="result"><a class="result__a" href="https://example.com/e">E</a>'
+        b'<a class="result__snippet">snip-e</a></div>'
+        b"</body></html>"
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen_for(body))
+    tool = SearchWebTool(allowed_hosts=frozenset({"arxiv.org"}))
+    out = tool.call(query="something", max_results=3)
+    # Position 1 is the allowlisted hit (originally 4th).
+    assert out.startswith("1. [allowlisted] D — https://arxiv.org/abs/X")
+    # Only one allowlisted; positions 2 and 3 are externals (A, B).
+    assert "2. [external] A" in out
+    assert "3. [external] B" in out
+    # E shouldn't appear (sliced off).
+    assert "snip-e" not in out
