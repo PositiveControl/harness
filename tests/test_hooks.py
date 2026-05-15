@@ -1869,6 +1869,38 @@ def test_list_count_mismatch_matches_bullet_lists() -> None:
     assert isinstance(outcome, Nudge)
 
 
+def test_list_count_mismatch_ignores_phone_and_frequency_digits() -> None:
+    """harness-ygvg follow-up: airton_c_tfr observed 2026-05-15
+    discarding a clean TFR decode because the model echoed the NOTAM's
+    'TEL 406-444-4242 OR FREQ 123.725 JERICHO CREEK IS IN CHARGE'
+    contact line. The old regex matched '4242 or … is' as a count
+    claim of 4242 items against the reply's 5-bullet geometry list.
+    Capping the digit group to 1-2 chars rules out phone numbers,
+    frequencies, timestamps, and other multi-digit runs without
+    losing legitimate count claims like 'the 12 sections are'."""
+    reply_text = (
+        "Lead with the verdict: TFR is in effect per 14 CFR §91.137(a)(2).\n\n"
+        "Geometry:\n\n"
+        "- Center: 462830N1122030W\n"
+        "- Radius: 3NM\n"
+        "- Floor: SFC\n"
+        "- Ceiling: 8000FT MSL\n"
+        "- Active window: 2605151548-2605180400\n\n"
+        "The Helena Interagency Dispatch Center at 406-444-4242 or on the "
+        "frequency 123.725 is in charge. Salt Lake City ARTCC is 801-320-2560."
+    )
+    outcome = ListCountMismatchHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"assemble_context"}),
+        )
+    )
+    assert isinstance(outcome, Continue), (
+        "phone/frequency digits must not be matched as a count claim"
+    )
+
+
 def test_list_count_mismatch_respects_disabled_toggle() -> None:
     """Attribution eval disables catchers by name."""
     pipe = default_hook_pipeline()

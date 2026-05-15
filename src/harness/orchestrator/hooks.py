@@ -923,7 +923,18 @@ _NUMBER_WORDS: dict[str, int] = {
 # 'are' / 'include' / 'comprise' pins it to a list intro — avoids
 # matching narrative prose that happens to contain a number elsewhere.
 _COUNT_CLAIM_RE = re.compile(
-    r"\b(\d+|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b"
+    # Digit-count is capped at 1-2 chars (≤ 99). Real chat-reply count
+    # claims never exceed two digits — the `_NUMBER_WORDS` table caps
+    # at 12 for a reason — and the cap also prevents phone numbers,
+    # frequencies, timestamps, and other multi-digit runs from being
+    # matched as a count claim. Observed 2026-05-15 with airton_c_tfr:
+    # NOTAM echoed '406-444-4242 OR FREQ 123.725 JERICHO CREEK IS IN
+    # CHARGE', and the old `\d+` matched '4242 or … is' as a count
+    # claim of 4242 items, then fired list_count_mismatch against the
+    # reply's actual 5-bullet geometry list. The word-boundary on the
+    # digit run means '4242' (4 contiguous digits) is bounded only at
+    # start/end, so `\b\d{1,2}\b` can't match an interior pair.
+    r"\b(\d{1,2}|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b"
     # Require whitespace then a letter after the count word. Excludes
     # section numbers ('7110.65', '2-1-1'), list item markers ('1.'),
     # dates, phone numbers — anything where the digit is immediately
