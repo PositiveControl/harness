@@ -38,6 +38,7 @@ from harness.tools.read_file import ReadFileTool
 from harness.tools.remember import RememberEventTool, RememberFactTool
 from harness.tools.search_facts import SearchFactsTool
 from harness.tools.search_memory import SearchMemoryTool
+from harness.tools.search_scholar import SearchScholarTool
 from harness.tools.search_web import SearchWebTool
 from harness.tools.shell import ShellTool
 from harness.tools.subagent import SpawnSubagentTool
@@ -68,6 +69,7 @@ __all__ = [
     "ScribeSessionTool",
     "SearchFactsTool",
     "SearchMemoryTool",
+    "SearchScholarTool",
     "SearchWebTool",
     "ShellTool",
     "SpawnSubagentTool",

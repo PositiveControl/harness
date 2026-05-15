@@ -72,6 +72,7 @@ from harness.tools import (
     RememberFactTool,
     SearchFactsTool,
     SearchMemoryTool,
+    SearchScholarTool,
     SearchWebTool,
     ShellTool,
     Tool,
@@ -1517,6 +1518,11 @@ def _build_tool_registry_for_tui(
             if semantic_store is not None
             else None
         ),
+        # search_scholar: structured academic-paper search across
+        # Semantic Scholar + OpenAlex. No allowlist plumbing — both
+        # APIs are hardcoded endpoints, not user-configurable hosts.
+        # The character profile decides whether to include it.
+        "search_scholar": lambda: SearchScholarTool(),
         # search_web reuses fetch_url's allowlist to rerank results so
         # allowlisted hosts surface first with `[allowlisted]` markers;
         # external hits stay visible. Keeps the agent's view of the

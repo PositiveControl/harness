@@ -178,18 +178,25 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "introspect",
     ),
     # airton_f (scholar) — contract over a markdown doc tree, plus
-    # bounded external lookup (search_web + fetch_url). fetch_url is
-    # host-allowlisted in the character's core.yaml (scholar.google.com,
-    # arxiv.org, doi.org); search_web is unbounded. Pair with
-    # citation_grammar + lead_with_citation: the corpus path emits
-    # §<path> (<doc>) citations, the external path emits
-    # [arxiv:…] / [scholar:…] / [doi:…] tags (constitution defines the
-    # form). No shell / git / write-tier fs — scholar reads, doesn't
-    # author.
+    # bounded external lookup. Two web surfaces:
+    #   - search_scholar: structured paper search across Semantic
+    #     Scholar + OpenAlex (free APIs, no auth required for
+    #     personal use). Primary tool for academic / research
+    #     queries.
+    #   - search_web: general DDG search for non-academic
+    #     orientation (Wikipedia, blogs, news).
+    # fetch_url is host-allowlisted in the character's core.yaml
+    # (scholar.google.com, arxiv.org, doi.org, en.wikipedia.org).
+    # Pair with citation_grammar + lead_with_citation: the corpus
+    # path emits §<path> (<doc>) citations, the external path emits
+    # [arxiv:…] / [scholar:…] / [doi:…] / [wiki:…] tags (constitution
+    # defines the form). No shell / git / write-tier fs — scholar
+    # reads, doesn't author.
     "scholar": (
         "assemble_context",
         "search_memory",
         "search_facts",
+        "search_scholar",
         "search_web",
         "fetch_url",
         "introspect",

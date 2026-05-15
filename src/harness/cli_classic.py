@@ -58,6 +58,7 @@ from harness.tools import (
     ScribeSessionTool,
     SearchFactsTool,
     SearchMemoryTool,
+    SearchScholarTool,
     SearchWebTool,
     ShellTool,
     Tool,
@@ -266,6 +267,10 @@ def build_classic_registry(
                 else None
             )
         ),
+        # search_scholar: structured academic-paper search across
+        # Semantic Scholar + OpenAlex. Hardcoded API endpoints; the
+        # character profile decides whether to include it.
+        "search_scholar": lambda: SearchScholarTool(),
         # search_web reuses the same allowlist as fetch_url to rerank
         # results: hosts in the allowlist surface first with an
         # `[allowlisted]` marker; non-allowlisted hits stay visible
