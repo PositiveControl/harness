@@ -162,35 +162,14 @@ class ToolSearchTool:
         if family is not None:
             candidates = [e for e in candidates if e.family == family]
 
-        # Phase 3a: if query was over-specific and yielded zero but the
-        # caller also passed tag or family, retry with just those.
-        # Small models routinely pass a verbatim user-prompt fragment
-        # as the query AND a relevant tag — we'd rather surface the
-        # tag/family match than dead-end on the literal phrase
-        # (harness-wwki).
+        # Phase 3b (preferred): if the intersection yielded zero, retry
+        # with just the query. The agent's tag/family is often
+        # over-restrictive or fabricated, while the query carries the
+        # actual intent — `tool_search(query='sunset', tag='time')`
+        # should land on `sun` even though `sun` isn't tagged 'time'.
+        # 3b runs BEFORE 3a (harness-8rqw): when both rescues are
+        # possible, prefer the one that respects the query.
         fallback_note = ""
-        if not candidates and query.strip() and (tag is not None or family is not None):
-            if tag is not None:
-                candidates = self.catalog.by_tag(tag)
-            elif family is not None:
-                candidates = self.catalog.by_family(family)
-            if family is not None and tag is not None:
-                candidates = [e for e in candidates if e.family == family]
-            if candidates:
-                dropped = f"query={query!r}"
-                fallback_note = f"\n(no match for {dropped}; fell back to "
-                if tag is not None:
-                    fallback_note += f"tag={tag!r}"
-                elif family is not None:
-                    fallback_note += f"family={family!r}"
-                fallback_note += ")"
-
-        # Phase 3b: if BOTH the query-and-filter AND the filter-alone
-        # paths yielded zero, drop the (likely-fabricated) tag/family
-        # and retry with just the query. Small models reach for
-        # plausible-sounding tag names like 'fs-read' or 'weather-api'
-        # that don't exist in the catalog — refusing to recover from
-        # that costs the agent the round entirely.
         if not candidates and query.strip() and (tag is not None or family is not None):
             candidates = self.catalog.search(query)
             if candidates:
@@ -205,6 +184,26 @@ class ToolSearchTool:
                 fallback_note = (
                     f"\n(no match for query+{dropped}; fell back to query={query!r} only)"
                 )
+
+        # Phase 3a (final fallback): if the query is so over-specific
+        # that even alone it returns nothing AND a tag/family was set,
+        # surface the tag/family-alone matches. This is the original
+        # wwki rescue — kept as a last resort after 3b so a real query
+        # match takes priority.
+        if not candidates and query.strip() and (tag is not None or family is not None):
+            if tag is not None:
+                candidates = self.catalog.by_tag(tag)
+            elif family is not None:
+                candidates = self.catalog.by_family(family)
+            if family is not None and tag is not None:
+                candidates = [e for e in candidates if e.family == family]
+            if candidates:
+                fallback_note = f"\n(no match for query={query!r}; fell back to "
+                if tag is not None:
+                    fallback_note += f"tag={tag!r}"
+                elif family is not None:
+                    fallback_note += f"family={family!r}"
+                fallback_note += ")"
 
         if not candidates:
             constraints = []

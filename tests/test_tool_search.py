@@ -305,6 +305,48 @@ def test_query_falls_back_to_tag_when_query_yields_zero() -> None:
     assert "fell back to tag='web'" in out
 
 
+def test_query_alone_fallback_wins_over_tag_alone_when_both_have_hits() -> None:
+    """harness-8rqw: Mark's 'sunset + time' repro. Query 'sunset'
+    matches sun (via the 'sunset' tag); tag 'time' matches now and
+    tz_convert. The intersection is empty (sun isn't 'time'-tagged).
+    Old fallback ordering surfaced the tag-alone hits, dropping the
+    correct query match. New ordering: query-alone wins.
+
+    Reasoning: when the agent passes a real query, that's the better
+    signal of intent. Tag/family is often over-restrictive."""
+    cat = ToolCatalog()
+    cat.register(
+        ToolCatalogEntry(
+            name="sun",
+            family="reckon",
+            description="Compute sunrise / sunset / civil twilight.",
+            tags=("astronomy", "sunrise", "sunset", "twilight"),
+        )
+    )
+    cat.register(
+        ToolCatalogEntry(
+            name="now",
+            family="reckon",
+            description="Current wall-clock.",
+            tags=("time", "clock"),
+        )
+    )
+    cat.register(
+        ToolCatalogEntry(
+            name="tz_convert",
+            family="reckon",
+            description="Timezone conversion.",
+            tags=("time", "timezone"),
+        )
+    )
+    tool = ToolSearchTool(catalog=cat)
+    out = tool.call(query="sunset", tag="time")
+    assert "sun" in out
+    assert "now" not in out
+    assert "tz_convert" not in out
+    assert "fell back to query='sunset' only" in out
+
+
 def test_query_falls_back_to_query_alone_when_filter_is_fabricated() -> None:
     """Mark's recurring transcript: agent passes a real query plus a
     fabricated tag like 'fs-read' that exists in no catalog entry.
