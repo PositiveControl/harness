@@ -1756,7 +1756,40 @@ def _build_tool_registry_for_tui(
     from harness.tools.profiles import apply_profile_descriptions
 
     apply_profile_descriptions(registry, tool_set, character=character)
+
+    # Hot-reload synthesized tools (harness-t5kx). Failures here don't
+    # block boot — they surface via warnings_out and quarantine the
+    # broken catalog entry so `harness tool list` shows the carryover.
+    _hot_reload_synthesized(registry, character, warnings_out=warnings_out)
+
     return registry
+
+
+def _hot_reload_synthesized(
+    registry: ToolRegistry,
+    character: Character | None,
+    *,
+    warnings_out: list[str] | None,
+) -> None:
+    """Load every non-quarantined synthesized tool from the catalog
+    into the registry. Idempotent across sessions: quarantined entries
+    skip without retry; loaded names collide-check against the live
+    registry."""
+    from harness.tools.catalog import load_catalog
+    from harness.tools.loader import load_synthesized_tools
+
+    character_name = character.name if character is not None else None
+    catalog_path = _resolve_catalog_path(character_name)
+    if not catalog_path.exists():
+        return  # never-synthesised character; nothing to hot-reload
+    catalog = load_catalog(catalog_path)
+    report = load_synthesized_tools(catalog=catalog, catalog_path=catalog_path, registry=registry)
+    if warnings_out is not None:
+        for name, reason in report.quarantined:
+            warnings_out.append(f"tool {name!r} quarantined during hot-reload: {reason}")
+        if report.already_quarantined:
+            joined = ", ".join(report.already_quarantined)
+            warnings_out.append(f"skipping quarantined synthesised tools (carryover): {joined}")
 
 
 def _make_introspect_tool(
