@@ -64,6 +64,18 @@ Move from "bd is the source of truth" to "runtime has typed plans/subgoals/activ
 
 Touches: new `src/harness/plan/`, `src/harness/orchestrator/tool_loop.py`, `src/harness/store/bd_adapter.py` (becomes one backend among N).
 
+**Migration path (harness-snn2):** existing bd state becomes a Plan via the bootstrap CLI.
+
+```
+uv run harness plan bootstrap [--character NAME] [--assignee mark]
+                              [--plan-id main] [--plans-dir DIR]
+                              [--include-closed] [--dry-run]
+```
+
+`build_plan_from_bd` materializes the assignee's in_progress + open + blocked beads (plus closed when `--include-closed`) as Subgoals under a synthesized root. Bd dependencies with `dependency_type='blocks'` become `bd_closed` preconditions on the dependent Subgoal. The default Plan id is `bd:<assignee>` so re-running on the same assignee produces the same anchor; `JsonPlanStore.save` writes atomically (`.tmp` + rename), so a crash mid-bootstrap leaves either the previous file or nothing — never a partial write.
+
+**Idempotency:** structural identity holds across reruns (same Plan id, same Subgoal ids, same statuses, same precondition edges). Timestamps update on each write — they're metadata, not content. The bootstrap is the one-shot setup; ongoing sync between bd and the Plan flows through `revise_plan` (read-side, from a `WorldSnapshot` of bd state) + `diff_plans` + `apply_writeback` (write-side), all of which the Phase 3 heartbeat task (`rbj9`) composes once it lands.
+
 ### Phase 3 — Agent heartbeat loop
 
 Clock-driven loop separate from user turns. Runs compaction, consolidation, plan revision, drift checks, scheduled tool calls. The diff between reactive tool-user and goal-pursuing agent. `/loop` and `/schedule` exist for the user; this builds the agent's version.

@@ -297,6 +297,11 @@ web_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(web_app, name="web")
+plan_app = typer.Typer(
+    help="Inspect, bootstrap, and manage runtime-typed plans (harness-ptdw).",
+    no_args_is_help=True,
+)
+app.add_typer(plan_app, name="plan")
 console = Console()
 
 
@@ -2880,6 +2885,92 @@ def daemon_status(
             "yes" if rec.quarantined else "no",
         )
     console.print(table)
+
+
+@plan_app.command("bootstrap")
+def plan_bootstrap(
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character whose bd state to read. Default: HARNESS_CHARACTER_NAME.",
+    ),
+    plan_id: str | None = typer.Option(
+        None,
+        "--plan-id",
+        help="Explicit Plan id. Defaults to 'bd:<assignee>' so re-running on the "
+        "same assignee produces the same Plan id.",
+    ),
+    assignee: str = typer.Option(
+        "mark",
+        "--assignee",
+        help="Bd assignee whose beads enter the Plan. Use 'airton_b' for the ab data-plane.",
+    ),
+    plans_dir: Path | None = typer.Option(
+        None,
+        "--plans-dir",
+        help="Where the JsonPlanStore writes plan files. Default: <character>/data/plans/.",
+    ),
+    include_closed: bool = typer.Option(
+        False,
+        "--include-closed",
+        help="Include closed beads as `achieved` Subgoals (default excludes them).",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print the would-be Plan and exit; don't write anything.",
+    ),
+) -> None:
+    """Read the character's bd state and write the resulting Plan to a
+    JsonPlanStore. Idempotent — re-running on the same bd state produces
+    structurally-identical Plans (timestamps update on each write).
+    Harness-snn2."""
+    from harness.plan import (
+        JsonPlanStore,
+        build_plan_from_bd,
+    )
+
+    char_path = settings.character_path
+    if character:
+        char_path = char_path.parent / character
+    char = load_character(char_path)
+    bd_dir = settings.bd_dir_for(char.name)
+
+    adapter = BeadsAdapter(
+        bd_dir,
+        default_exclude_assignee=char.bd_exclude_assignee,
+        ab_assignee=char.bd_assignee,
+    )
+    try:
+        adapter.verify()
+    except BeadsAdapterError as exc:
+        console.print(f"[red]bd not available at {bd_dir}: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    plan = build_plan_from_bd(
+        adapter,
+        assignee=assignee,
+        plan_id=plan_id,
+        include_closed=include_closed,
+    )
+
+    subgoal_count = sum(1 for sid in plan.subgoals if sid != plan.root_subgoal_id)
+    console.print(
+        f"[bold]plan bootstrap[/bold] {char.name} → {plan.id} "
+        f"({subgoal_count} subgoals from bd assignee={assignee!r})"
+    )
+
+    if dry_run:
+        console.print("[yellow](dry-run; nothing written)[/yellow]")
+        from rich.json import JSON
+
+        console.print(JSON.from_data(plan.to_dict()))
+        return
+
+    resolved_dir = plans_dir or (char_path / "data" / "plans")
+    store = JsonPlanStore(resolved_dir)
+    store.save(plan)
+    console.print(f"[green]wrote {resolved_dir / (plan.id + '.json')}[/green]")
 
 
 @app.command()

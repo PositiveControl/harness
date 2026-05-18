@@ -41,6 +41,7 @@ _EXPECTED_COMMANDS: tuple[str, ...] = (
     "memory search",
     "memory wipe",
     "phraseology lint",
+    "plan bootstrap",
     "session compact-reset",
     "session list",
     "session reset",
