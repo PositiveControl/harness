@@ -20,11 +20,19 @@ from harness.plan.model import (
     new_plan,
     new_subgoal,
 )
+from harness.plan.store import (
+    JsonPlanStore,
+    PlanStore,
+    PlanStoreError,
+)
 
 __all__ = [
     "STATUS_VALUES",
     "Action",
+    "JsonPlanStore",
     "Plan",
+    "PlanStore",
+    "PlanStoreError",
     "Precondition",
     "Status",
     "Subgoal",
