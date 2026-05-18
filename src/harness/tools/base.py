@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, runtime_checkable
 
@@ -157,6 +158,14 @@ class ToolRegistry:
         # `character/<name>/tool_descriptions.yaml` (e.g. atc's
         # search_memory targets a rulebook, not "past events").
         self._description_overrides: dict[str, str] = {}
+        # Working-set protocol (harness-fzvg). When None, specs()
+        # renders every registered tool (existing behavior). When a
+        # set, specs() renders only the named subset — the catalog
+        # is the superset of *available* tools; the working set is
+        # what the model sees this turn. Tools registered after
+        # set_active() stay inactive until added explicitly. Reset
+        # to all-active via clear_active().
+        self._active_names: set[str] | None = None
 
     def register(self, tool: Tool) -> None:
         name = tool.spec.name
@@ -183,9 +192,43 @@ class ToolRegistry:
             raise KeyError(f"no tool named {name!r}")
         self._description_overrides[name] = description
 
+    # --- working-set protocol (harness-fzvg) ----------------------------
+
+    def set_active(self, names: Iterable[str]) -> None:
+        """Restrict specs() to the named subset of registered tools.
+
+        Names that aren't registered are silently dropped — the caller
+        (typically `resolve_active` in profiles.py) may resolve a tag
+        or profile to names that the current registry doesn't know
+        about (e.g. a tag the catalog lists but no tool implements
+        yet). Better than raising: lets the working set be expressed
+        in catalog-level terms without coupling to which tools the
+        session happened to register.
+        """
+        self._active_names = {n for n in names if n in self._tools}
+
+    def clear_active(self) -> None:
+        """Reset to all-active — every registered tool's spec renders.
+        Same effect as never calling set_active. Idempotent."""
+        self._active_names = None
+
+    def active_names(self) -> tuple[str, ...]:
+        """Names currently in the working set, sorted. When no working
+        set is set, returns every registered tool (matches what
+        specs() would render)."""
+        if self._active_names is None:
+            return tuple(sorted(self._tools))
+        return tuple(sorted(self._active_names))
+
     def specs(self) -> list[ToolSpec]:
+        """Tool specs the model sees this turn. When a working set is
+        active, only names in it render — names registered later stay
+        inactive until added (set_active again or clear_active to
+        return to all-active)."""
         out: list[ToolSpec] = []
-        for tool in self._tools.values():
+        for name, tool in self._tools.items():
+            if self._active_names is not None and name not in self._active_names:
+                continue
             spec = tool.spec
             override = self._description_overrides.get(spec.name)
             out.append(replace(spec, description=override) if override else spec)

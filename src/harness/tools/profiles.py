@@ -383,3 +383,49 @@ def resolve_tool_names(
     names.update(_expand(add))
     names.difference_update(_expand(drop))
     return tuple(sorted(names))
+
+
+def resolve_active(
+    *,
+    catalog: object | None = None,
+    profile: str | None = None,
+    names: tuple[str, ...] = (),
+    tags: tuple[str, ...] = (),
+    families: tuple[str, ...] = (),
+) -> set[str]:
+    """Resolve a working-set spec into a concrete set of tool names —
+    harness-fzvg.
+
+    Three selection layers, unioned:
+      1. Profile membership: every tool in TOOL_PROFILES[profile].
+         Skipped when profile is None.
+      2. Explicit names: passed through verbatim.
+      3. Catalog tags + families: every catalog entry matching any
+         supplied tag or family contributes its name. Skipped when
+         catalog is None or tags+families are both empty.
+
+    The result is the union; callers decide whether to further
+    restrict (e.g. by intersecting with the registered set). Designed
+    for ToolRegistry.set_active(resolve_active(...)) at session
+    start.
+
+    `catalog` is typed as `object` to avoid an import cycle with
+    `harness.tools.catalog`. The duck-typed surface this function
+    uses: `.by_tag(tag) -> Iterable` and `.by_family(family) -> Iterable`,
+    each returning records with a `.name` attribute. Either method
+    failing (catalog wrong type) raises at call time.
+    """
+    out: set[str] = set()
+    if profile is not None:
+        if profile not in TOOL_PROFILES:
+            raise ValueError(f"unknown profile {profile!r}; available: {sorted(TOOL_PROFILES)}")
+        out.update(TOOL_PROFILES[profile])
+    out.update(names)
+    if catalog is not None and (tags or families):
+        for tag in tags:
+            for entry in catalog.by_tag(tag):  # type: ignore[attr-defined]
+                out.add(entry.name)
+        for family in families:
+            for entry in catalog.by_family(family):  # type: ignore[attr-defined]
+                out.add(entry.name)
+    return out

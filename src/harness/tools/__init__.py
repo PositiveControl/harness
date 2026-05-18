@@ -44,6 +44,7 @@ from harness.tools.phraseology_lint import (
 from harness.tools.profiles import (
     DEFAULT_PROFILE,
     TOOL_PROFILES,
+    resolve_active,
     resolve_tool_names,
 )
 from harness.tools.python_eval import PythonEvalTool
@@ -113,6 +114,7 @@ __all__ = [
     "WriteFileTool",
     "lint_utterance",
     "load_catalog",
+    "resolve_active",
     "resolve_tool_names",
     "save_catalog",
     "seed_builtins_into",
