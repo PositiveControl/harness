@@ -36,6 +36,7 @@ def test_reckon_profile_members() -> None:
         "search_memory",
         "search_facts",
         "introspect",
+        "tool_search",
     )
 
 

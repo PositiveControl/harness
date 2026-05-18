@@ -44,6 +44,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_web",
         "fetch_url",
         "spawn_subagent",
+        "tool_search",
     ),
     # Read-only everyday chat: open a file, find files, grep, recall.
     # The three highest-leverage reckon primitives (now / date_math /
@@ -65,6 +66,13 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "now",
         "date_math",
         "calc",
+        # tool_search rides in every non-minimal profile so the agent
+        # can always answer "is there a tool for X?" before fabricating
+        # (harness-ozx1 + the always-available decision documented in
+        # harness-atsz's discussion of load_tool — until load_tool ships,
+        # tool_search is read-only discovery + operator runs
+        # --tools-add to actually expand the working set).
+        "tool_search",
     ),
     # Active code collaboration — full read/write/shell/memory/git +
     # the same three reckon primitives (now/date_math/calc) so quick
@@ -91,6 +99,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "now",
         "date_math",
         "calc",
+        "tool_search",
     ),
     # ab's personal-operations tool set — harness-inj.5. Every tool
     # dispatches through the BeadsAdapter to ab's isolated beads DB
@@ -119,6 +128,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "find_duplicates",
         "persist_focus_note",
         "introspect",
+        "tool_search",
     ),
     # atc (airton_c) — educational FAA-documentation expert. Read-tier
     # filesystem + scoped write (sandboxed to character/airton_c/workspace/
@@ -144,6 +154,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "fetch_url",
         "introspect",
         "spawn_subagent",
+        "tool_search",
     ),
     # Phraseology-lint focused profile (harness-q35t). Single-purpose
     # mode for ATC controllers (or training scenarios) verifying
@@ -157,6 +168,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "phraseology_lint",
         "search_memory",
         "introspect",
+        "tool_search",
     ),
     # airton_d (notes character) — curator-over-filesystem tool set.
     # Read-tier fs to query the notes tree (grep/glob/list_dir/read_file),
@@ -178,6 +190,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_facts",
         "remember_event",
         "introspect",
+        "tool_search",
     ),
     # Memory-curation sessions. supersede_fact will join once
     # implemented (see bd issue harness-5tz).
@@ -188,6 +201,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "remember_event",
         "scribe_session",
         "consolidate_memory",
+        "tool_search",
     ),
     # Self-inspection. `stats` and `transcript_recent` will join once
     # implemented (see bd issues harness-m2e, harness-2mi).
@@ -196,6 +210,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_facts",
         "introspect",
         "spawn_subagent",
+        "tool_search",
     ),
     # Contract-driven retrieval (harness-xysp). For role-specialized
     # agents whose work is contract-shaped — the contract YAML declares
@@ -207,6 +222,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_memory",
         "search_facts",
         "introspect",
+        "tool_search",
     ),
     # airton_f (scholar) — contract over a markdown doc tree, plus
     # bounded external lookup. Two web surfaces:
@@ -235,6 +251,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "fetch_url",
         "remember_event",
         "introspect",
+        "tool_search",
     ),
     # airton_g (the reckoner) — deterministic time + compute. The
     # four primitives kill date and math hallucinations across every
@@ -253,6 +270,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_memory",
         "search_facts",
         "introspect",
+        "tool_search",
     ),
     # Kitchen-sink — every built-in tool the registry knows about.
     # Intended as the starting point for scripts/chat.sh + power users
@@ -291,6 +309,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "tz_convert",
         "stats",
         "sun",
+        "tool_search",
     ),
 }
 

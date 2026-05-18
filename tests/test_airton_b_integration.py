@@ -237,7 +237,9 @@ def test_ab_path_end_to_end_shape() -> None:
 
     fake = MagicMock(spec=BeadsAdapter)
     builders = _ab_tool_builders(fake)
-    ops_profile = set(TOOL_PROFILES["ops"]) - {"introspect"}  # introspect is shared
+    # introspect + tool_search are shared meta-tools built in cli.py's
+    # main builder dict, not the ab-specific builder.
+    ops_profile = set(TOOL_PROFILES["ops"]) - {"introspect", "tool_search"}
     assert ops_profile.issubset(set(builders)), (
         f"ops profile has tools with no ab-builder: {ops_profile - set(builders)}"
     )
