@@ -2538,6 +2538,17 @@ def daemon(
         help="Adapter for compaction summarization: echo | mlx | ollama. "
         "Defaults to echo so the daemon stays cheap until you opt in to a real model.",
     ),
+    consolidation_interval: float = typer.Option(
+        3600.0,
+        "--consolidation-interval",
+        help="Periodic-consolidation tick interval in seconds. 0 disables the task.",
+    ),
+    consolidation_min_working: int = typer.Option(
+        5,
+        "--consolidation-min-working",
+        help="Skip the consolidator unless the working tier has at least this many "
+        "episodic records (avoids wasted scans on empty stores).",
+    ),
     tick_once: bool = typer.Option(
         False,
         "--tick-once",
@@ -2558,7 +2569,7 @@ def daemon(
     import signal
 
     from harness.runtime import Heartbeat
-    from harness.runtime.tasks import build_compaction_task
+    from harness.runtime.tasks import build_compaction_task, build_consolidation_task
 
     char_path = settings.character_path
     if character:
@@ -2598,6 +2609,34 @@ def daemon(
             ),
             interval_s=compaction_interval,
         )
+
+    # Consolidation task — opt-in via --consolidation-interval > 0.
+    # Uses the character's existing episodic + semantic stores (same
+    # DB the chat loop writes to). Embedder loaded once via the shared
+    # helper so multiple ticks don't reinstantiate it.
+    if consolidation_interval > 0:
+        ep_store = _open_episodic_store(character=char, ingest=False)
+        sem_store = _open_semantic_store()
+        if ep_store is None or sem_store is None:
+            console.print(
+                "[yellow]heartbeat[/yellow] consolidation disabled: "
+                "stores unavailable (embedder load failed?)"
+            )
+        else:
+
+            def _consolidation_sink(outcome: object) -> None:
+                console.print(f"[dim]heartbeat[/dim] consolidation {outcome!r}")
+
+            hb.register(
+                "consolidation",
+                build_consolidation_task(
+                    episodic_store=ep_store,
+                    semantic_store=sem_store,
+                    min_working_records=consolidation_min_working,
+                    sink=_consolidation_sink,
+                ),
+                interval_s=consolidation_interval,
+            )
 
     console.print(
         f"[bold]heartbeat[/bold] daemon starting for {char.name} "

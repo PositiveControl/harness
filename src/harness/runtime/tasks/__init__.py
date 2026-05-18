@@ -11,5 +11,14 @@ from harness.runtime.tasks.compaction import (
     CompactionTaskOutcome,
     build_compaction_task,
 )
+from harness.runtime.tasks.consolidation import (
+    ConsolidationTaskOutcome,
+    build_consolidation_task,
+)
 
-__all__ = ["CompactionTaskOutcome", "build_compaction_task"]
+__all__ = [
+    "CompactionTaskOutcome",
+    "ConsolidationTaskOutcome",
+    "build_compaction_task",
+    "build_consolidation_task",
+]

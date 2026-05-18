@@ -60,30 +60,76 @@ def _norm(s: str) -> str:
     return " ".join(s.split())
 
 
-def test_daemon_tick_once_registers_compaction_task_by_default() -> None:
-    """When --compaction-interval > 0 (default 600s), the daemon
-    registers the compaction task alongside heartbeat_alive. tick-once
-    fires both and prints the compaction outcome line."""
+def test_daemon_tick_once_registers_built_in_tasks_by_default() -> None:
+    """Default daemon registers 3 tasks: heartbeat_alive + compaction +
+    consolidation. tick-once fires all three; the alive line + each
+    task's outcome line all appear in stdout."""
     proc = subprocess.run(
         [*HARNESS_CMD, "daemon", "--tick-once"],
         capture_output=True,
         text=True,
         cwd=str(REPO_ROOT),
         env=_env(),
-        timeout=30,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0
+    out = _norm(proc.stdout)
+    assert "3 task(s) registered" in out
+    assert "heartbeat compaction" in out
+    assert "heartbeat consolidation" in out
+
+
+def test_daemon_compaction_disabled_when_interval_zero() -> None:
+    """--compaction-interval 0 drops compaction; consolidation still
+    registers."""
+    proc = subprocess.run(
+        [*HARNESS_CMD, "daemon", "--tick-once", "--compaction-interval", "0"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=_env(),
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0
+    out = _norm(proc.stdout)
+    assert "2 task(s) registered" in out
+    assert "heartbeat compaction" not in out
+    assert "heartbeat consolidation" in out
+
+
+def test_daemon_consolidation_disabled_when_interval_zero() -> None:
+    """--consolidation-interval 0 drops consolidation; compaction still
+    registers."""
+    proc = subprocess.run(
+        [*HARNESS_CMD, "daemon", "--tick-once", "--consolidation-interval", "0"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=_env(),
+        timeout=60,
         check=False,
     )
     assert proc.returncode == 0
     out = _norm(proc.stdout)
     assert "2 task(s) registered" in out
     assert "heartbeat compaction" in out
+    assert "heartbeat consolidation" not in out
 
 
-def test_daemon_compaction_disabled_when_interval_zero() -> None:
-    """--compaction-interval 0 leaves only the heartbeat_alive task
-    registered."""
+def test_daemon_both_optional_tasks_disabled_leaves_alive_only() -> None:
+    """Disable both maintenance tasks: only heartbeat_alive remains."""
     proc = subprocess.run(
-        [*HARNESS_CMD, "daemon", "--tick-once", "--compaction-interval", "0"],
+        [
+            *HARNESS_CMD,
+            "daemon",
+            "--tick-once",
+            "--compaction-interval",
+            "0",
+            "--consolidation-interval",
+            "0",
+        ],
         capture_output=True,
         text=True,
         cwd=str(REPO_ROOT),
@@ -95,6 +141,7 @@ def test_daemon_compaction_disabled_when_interval_zero() -> None:
     out = _norm(proc.stdout)
     assert "1 task(s) registered" in out
     assert "heartbeat compaction" not in out
+    assert "heartbeat consolidation" not in out
 
 
 def test_daemon_tick_once_with_explicit_character() -> None:
@@ -133,6 +180,8 @@ def test_daemon_help_lists_flags() -> None:
         "--interval-default",
         "--compaction-interval",
         "--compaction-model",
+        "--consolidation-interval",
+        "--consolidation-min-working",
         "--tick-once",
     ):
         assert flag in proc.stdout, f"missing flag {flag!r} in --help output"
