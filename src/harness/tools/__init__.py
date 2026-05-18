@@ -17,6 +17,15 @@ from harness.tools.base import (
     ToolSpec,
 )
 from harness.tools.calc import CalcTool
+from harness.tools.catalog import (
+    BUILTIN_TOOL_METADATA,
+    ToolCatalog,
+    ToolCatalogEntry,
+    ToolCatalogError,
+    load_catalog,
+    save_catalog,
+    seed_builtins_into,
+)
 from harness.tools.date_math import DateMathTool
 from harness.tools.edit_file import EditFileTool
 from harness.tools.fetch_url import FetchUrlTool
@@ -53,6 +62,7 @@ from harness.tools.tz_convert import TzConvertTool
 from harness.tools.write_file import WriteFileTool
 
 __all__ = [
+    "BUILTIN_TOOL_METADATA",
     "DEFAULT_PROFILE",
     "TOOL_PROFILES",
     "AssembleContextTool",
@@ -91,6 +101,9 @@ __all__ = [
     "SunTool",
     "Tool",
     "ToolCall",
+    "ToolCatalog",
+    "ToolCatalogEntry",
+    "ToolCatalogError",
     "ToolHit",
     "ToolRegistry",
     "ToolResult",
@@ -99,5 +112,8 @@ __all__ = [
     "TzConvertTool",
     "WriteFileTool",
     "lint_utterance",
+    "load_catalog",
     "resolve_tool_names",
+    "save_catalog",
+    "seed_builtins_into",
 ]
