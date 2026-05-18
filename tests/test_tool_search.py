@@ -285,6 +285,35 @@ def test_falls_back_to_catalog_description_when_not_in_registry() -> None:
     assert "Stored in catalog only." in out
 
 
+def test_query_falls_back_to_tag_when_query_yields_zero() -> None:
+    """harness-wwki: a verbatim user-phrase query that doesn't match
+    anything must fall back to the explicit tag/family filter rather
+    than dead-end. The fallback note tells the agent the query was
+    dropped so it can refine next time."""
+    cat = ToolCatalog()
+    cat.register(
+        ToolCatalogEntry(
+            name="search_web",
+            family="research",
+            description="Search the web.",
+            tags=("web", "search"),
+        )
+    )
+    tool = ToolSearchTool(catalog=cat)
+    out = tool.call(query="completely unrelated phrase xyz", tag="web")
+    assert "search_web" in out
+    assert "fell back to tag='web'" in out
+
+
+def test_query_fallback_does_not_fire_when_query_matches() -> None:
+    cat = ToolCatalog()
+    cat.register(ToolCatalogEntry(name="search_web", family="research", tags=("web",)))
+    tool = ToolSearchTool(catalog=cat)
+    out = tool.call(query="search_web", tag="web")
+    assert "search_web" in out
+    assert "fell back" not in out
+
+
 def test_no_registry_uses_catalog_description() -> None:
     """When no registry is supplied, the catalog description is the
     only source — empty descriptions show '(no description)'."""

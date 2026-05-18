@@ -162,6 +162,29 @@ class ToolSearchTool:
         if family is not None:
             candidates = [e for e in candidates if e.family == family]
 
+        # Phase 3: if query was over-specific and yielded zero but the
+        # caller also passed tag or family, retry with just those.
+        # Small models routinely pass a verbatim user-prompt fragment
+        # as the query AND a relevant tag — we'd rather surface the
+        # tag/family match than dead-end on the literal phrase
+        # (harness-wwki).
+        fallback_note = ""
+        if not candidates and query.strip() and (tag is not None or family is not None):
+            if tag is not None:
+                candidates = self.catalog.by_tag(tag)
+            elif family is not None:
+                candidates = self.catalog.by_family(family)
+            if family is not None and tag is not None:
+                candidates = [e for e in candidates if e.family == family]
+            if candidates:
+                dropped = f"query={query!r}"
+                fallback_note = f"\n(no match for {dropped}; fell back to "
+                if tag is not None:
+                    fallback_note += f"tag={tag!r}"
+                elif family is not None:
+                    fallback_note += f"family={family!r}"
+                fallback_note += ")"
+
         if not candidates:
             constraints = []
             if query.strip():
@@ -186,7 +209,7 @@ class ToolSearchTool:
             "\nNext step: call `load_tool(name=<one of the above>)` to "
             "activate it for the next round."
         )
-        return f"{header}:\n" + "\n".join(lines) + suffix
+        return f"{header}:{fallback_note}\n" + "\n".join(lines) + suffix
 
     def _live_description(self, name: str) -> str | None:
         """Pull the description off the registry's live spec when the

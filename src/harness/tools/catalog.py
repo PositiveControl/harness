@@ -121,26 +121,48 @@ class ToolCatalog:
         return [e for e in self.all() if e.origin == origin]
 
     def search(self, query: str) -> list[ToolCatalogEntry]:
-        """Substring match (case-folded) against name + description +
-        tags. Used by the tool_search meta-tool (rqg0.6) for
-        agent-side discovery.
+        """Tokenized substring match against name + description + tags.
 
-        Empty query returns the empty list — substring-of-everything
-        isn't a useful default. Callers that want 'show everything'
-        should use `all()`.
+        The query is split on whitespace; an entry matches if ANY
+        token substring-matches one of its fields (case-insensitive).
+        OR-of-words rather than AND because agents reach for the
+        catalog with full natural-language fragments — "weather in
+        phoenix" should land on search_web via the `weather` tag even
+        though "phoenix" matches nothing. AND-of-words would have
+        failed this case (harness-wwki).
+
+        Empty / whitespace-only query returns the empty list —
+        substring-of-everything isn't a useful default. Callers that
+        want 'show everything' should use `all()`.
         """
-        q = query.strip().lower()
-        if not q:
-            return []
+        # Drop short tokens (<3 chars) — "in", "to", "of" etc. produce
+        # noise by substring-matching unrelated tags ("in" hits "find",
+        # "diff-summary", etc.). 3 chars is the threshold below which
+        # English connectives + prepositions live.
+        tokens = [t for t in query.lower().split() if len(t) >= 3]
+        if not tokens:
+            # If every token was filtered out (e.g. query="a b c"),
+            # fall back to a single whole-phrase substring match — at
+            # least let the literal query try to land on something.
+            stripped = query.strip().lower()
+            return [
+                e
+                for e in self.all()
+                if stripped
+                and (
+                    stripped in e.name.lower()
+                    or stripped in e.description.lower()
+                    or any(stripped in t.lower() for t in e.tags)
+                )
+            ]
         out: list[ToolCatalogEntry] = []
         for entry in self.all():
-            if q in entry.name.lower():
-                out.append(entry)
-                continue
-            if q in entry.description.lower():
-                out.append(entry)
-                continue
-            if any(q in t.lower() for t in entry.tags):
+            haystacks = (
+                entry.name.lower(),
+                entry.description.lower(),
+                *(t.lower() for t in entry.tags),
+            )
+            if any(token in hay for token in tokens for hay in haystacks):
                 out.append(entry)
         return out
 

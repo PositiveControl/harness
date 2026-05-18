@@ -125,6 +125,46 @@ def test_search_empty_query_returns_empty() -> None:
     assert cat.search("   ") == []
 
 
+def test_search_tokenizes_multi_word_query() -> None:
+    """harness-wwki: 'weather phoenix' must land on an entry whose
+    tag includes 'weather', even though the literal phrase appears
+    nowhere. Substring-match-the-whole-query semantics would miss this."""
+    cat = ToolCatalog()
+    cat.register(
+        ToolCatalogEntry(
+            name="search_web",
+            description="Search the web for current info.",
+            tags=("weather", "news", "web"),
+        )
+    )
+    names = [e.name for e in cat.search("weather phoenix")]
+    assert names == ["search_web"]
+
+
+def test_search_drops_short_stopword_tokens() -> None:
+    """'in', 'to', 'of' etc. produce noisy hits when matched
+    individually — they substring-match unrelated tags ('in' hits
+    'find', 'diff-summary'). Tokens shorter than 3 chars are dropped
+    before the OR-match."""
+    cat = ToolCatalog()
+    cat.register(ToolCatalogEntry(name="finder", tags=("find", "files")))
+    cat.register(ToolCatalogEntry(name="search_web", description="weather", tags=("weather",)))
+    # 'in' alone would substring-match 'find' — but it's dropped.
+    names = [e.name for e in cat.search("weather in phoenix")]
+    assert names == ["search_web"]
+
+
+def test_search_falls_back_to_phrase_when_all_tokens_short() -> None:
+    """If every token is filtered out by the stopword length, fall
+    back to a single whole-phrase substring match — at least let the
+    literal query try."""
+    cat = ToolCatalog()
+    cat.register(ToolCatalogEntry(name="abc-tool", description="x"))
+    cat.register(ToolCatalogEntry(name="other", description="y"))
+    names = [e.name for e in cat.search("ab")]
+    assert names == ["abc-tool"]
+
+
 def test_search_is_case_insensitive() -> None:
     cat = ToolCatalog()
     cat.register(ToolCatalogEntry(name="Now", description="Current TIME"))
