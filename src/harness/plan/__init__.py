@@ -10,6 +10,7 @@ All records are frozen dataclasses. Mutation is done via
 in-place state.
 """
 
+from harness.plan.bd_source import build_plan_from_bd
 from harness.plan.model import (
     STATUS_VALUES,
     Action,
@@ -36,6 +37,7 @@ __all__ = [
     "Precondition",
     "Status",
     "Subgoal",
+    "build_plan_from_bd",
     "new_plan",
     "new_subgoal",
 ]
