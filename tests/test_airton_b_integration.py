@@ -239,7 +239,7 @@ def test_ab_path_end_to_end_shape() -> None:
     builders = _ab_tool_builders(fake)
     # introspect + tool_search are shared meta-tools built in cli.py's
     # main builder dict, not the ab-specific builder.
-    ops_profile = set(TOOL_PROFILES["ops"]) - {"introspect", "tool_search"}
+    ops_profile = set(TOOL_PROFILES["ops"]) - {"introspect", "tool_search", "load_tool"}
     assert ops_profile.issubset(set(builders)), (
         f"ops profile has tools with no ab-builder: {ops_profile - set(builders)}"
     )

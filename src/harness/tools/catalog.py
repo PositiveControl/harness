@@ -269,6 +269,7 @@ BUILTIN_TOOL_METADATA: dict[str, tuple[str, tuple[str, ...]]] = {
     "introspect": ("meta", ("read", "self-inspection", "capabilities")),
     "spawn_subagent": ("meta", ("read", "subagent", "delegate")),
     "tool_search": ("meta", ("read", "discovery", "search", "catalog")),
+    "load_tool": ("meta", ("read", "discovery", "activate", "working-set")),
     # ab ops (personal-operations data plane)
     "plan": ("ops", ("write", "bd", "task", "plan-issue")),
     "capture": ("ops", ("write", "bd", "task", "capture")),

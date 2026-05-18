@@ -34,6 +34,7 @@ from harness.tools.glob import GlobTool
 from harness.tools.grep import GrepTool
 from harness.tools.introspect import IntrospectContext, IntrospectTool
 from harness.tools.list_dir import ListDirTool
+from harness.tools.load_tool import LoadToolTool
 from harness.tools.now import NowTool
 from harness.tools.ops import ConsolidateMemoryTool, ScribeSessionTool
 from harness.tools.phraseology_lint import (
@@ -81,6 +82,7 @@ __all__ = [
     "IntrospectContext",
     "IntrospectTool",
     "ListDirTool",
+    "LoadToolTool",
     "ModelReply",
     "NowTool",
     "PhraseologyLintTool",

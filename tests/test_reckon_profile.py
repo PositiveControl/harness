@@ -37,6 +37,7 @@ def test_reckon_profile_members() -> None:
         "search_facts",
         "introspect",
         "tool_search",
+        "load_tool",
     )
 
 

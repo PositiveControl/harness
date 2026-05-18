@@ -45,6 +45,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "fetch_url",
         "spawn_subagent",
         "tool_search",
+        "load_tool",
     ),
     # Read-only everyday chat: open a file, find files, grep, recall.
     # The three highest-leverage reckon primitives (now / date_math /
@@ -73,6 +74,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         # tool_search is read-only discovery + operator runs
         # --tools-add to actually expand the working set).
         "tool_search",
+        "load_tool",
     ),
     # Active code collaboration — full read/write/shell/memory/git +
     # the same three reckon primitives (now/date_math/calc) so quick
@@ -100,6 +102,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "date_math",
         "calc",
         "tool_search",
+        "load_tool",
     ),
     # ab's personal-operations tool set — harness-inj.5. Every tool
     # dispatches through the BeadsAdapter to ab's isolated beads DB
@@ -129,6 +132,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "persist_focus_note",
         "introspect",
         "tool_search",
+        "load_tool",
     ),
     # atc (airton_c) — educational FAA-documentation expert. Read-tier
     # filesystem + scoped write (sandboxed to character/airton_c/workspace/
@@ -155,6 +159,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "introspect",
         "spawn_subagent",
         "tool_search",
+        "load_tool",
     ),
     # Phraseology-lint focused profile (harness-q35t). Single-purpose
     # mode for ATC controllers (or training scenarios) verifying
@@ -169,6 +174,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_memory",
         "introspect",
         "tool_search",
+        "load_tool",
     ),
     # airton_d (notes character) — curator-over-filesystem tool set.
     # Read-tier fs to query the notes tree (grep/glob/list_dir/read_file),
@@ -191,6 +197,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "remember_event",
         "introspect",
         "tool_search",
+        "load_tool",
     ),
     # Memory-curation sessions. supersede_fact will join once
     # implemented (see bd issue harness-5tz).
@@ -202,6 +209,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "scribe_session",
         "consolidate_memory",
         "tool_search",
+        "load_tool",
     ),
     # Self-inspection. `stats` and `transcript_recent` will join once
     # implemented (see bd issues harness-m2e, harness-2mi).
@@ -211,6 +219,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "introspect",
         "spawn_subagent",
         "tool_search",
+        "load_tool",
     ),
     # Contract-driven retrieval (harness-xysp). For role-specialized
     # agents whose work is contract-shaped — the contract YAML declares
@@ -223,6 +232,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_facts",
         "introspect",
         "tool_search",
+        "load_tool",
     ),
     # airton_f (scholar) — contract over a markdown doc tree, plus
     # bounded external lookup. Two web surfaces:
@@ -252,6 +262,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "remember_event",
         "introspect",
         "tool_search",
+        "load_tool",
     ),
     # airton_g (the reckoner) — deterministic time + compute. The
     # four primitives kill date and math hallucinations across every
@@ -271,6 +282,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_facts",
         "introspect",
         "tool_search",
+        "load_tool",
     ),
     # Kitchen-sink — every built-in tool the registry knows about.
     # Intended as the starting point for scripts/chat.sh + power users
@@ -310,6 +322,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "stats",
         "sun",
         "tool_search",
+        "load_tool",
     ),
 }
 

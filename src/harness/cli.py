@@ -68,6 +68,7 @@ from harness.tools import (
     IntrospectContext,
     IntrospectTool,
     ListDirTool,
+    LoadToolTool,
     NowTool,
     PhraseologyLintTool,
     PythonEvalTool,
@@ -1588,6 +1589,13 @@ def _build_tool_registry_for_tui(
         # the registry along so live spec descriptions surface rather
         # than the catalog's empty seed default.
         "tool_search": lambda: ToolSearchTool(
+            catalog=_session_tool_catalog(),
+            registry=registry,
+        ),
+        # load_tool — agent-driven working-set expansion (harness-atsz).
+        # Companion to tool_search: tool_search finds the name, load_tool
+        # brings it into the chat template for the next round.
+        "load_tool": lambda: LoadToolTool(
             catalog=_session_tool_catalog(),
             registry=registry,
         ),
