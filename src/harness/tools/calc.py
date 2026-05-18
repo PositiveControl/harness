@@ -239,19 +239,138 @@ _VOLUME_TO_L: dict[str, float] = {
 
 _TEMP_UNITS: frozenset[str] = frozenset({"c", "f", "k", "celsius", "fahrenheit", "kelvin"})
 
+# Pressure (base: Pascal). hPa is the aviation+meteorology workhorse;
+# inHg is North-American altimeter setting; psi is plumbing + tire
+# pressure; atm + bar + mmHg + torr cover lab + medical conventions.
+_PRESSURE_TO_PA: dict[str, float] = {
+    "pa": 1.0,
+    "pascal": 1.0,
+    "pascals": 1.0,
+    "hpa": 100.0,
+    "kpa": 1000.0,
+    "mpa": 1_000_000.0,
+    "bar": 100_000.0,
+    "bars": 100_000.0,
+    "atm": 101_325.0,
+    "psi": 6_894.757_293_168_36,
+    "inhg": 3_386.388_640_341,
+    "mmhg": 133.322_387_415,
+    "torr": 133.322_368_421_05,
+}
+
+# Energy (base: Joule). cal is thermochemical (4.184 J), kcal is the
+# food calorie. Wh / kWh are utility-bill units. BTU is the IT (Int.
+# Table) definition (1055.05585262 J). ft_lb is foot-pound-force.
+_ENERGY_TO_J: dict[str, float] = {
+    "j": 1.0,
+    "joule": 1.0,
+    "joules": 1.0,
+    "kj": 1000.0,
+    "mj": 1_000_000.0,
+    "cal": 4.184,
+    "kcal": 4184.0,
+    "wh": 3600.0,
+    "kwh": 3_600_000.0,
+    "btu": 1055.05585262,
+    "ft_lb": 1.355_817_948_331_4,
+}
+
+# Power (base: Watt). hp = mechanical horsepower (745.69987158227022 W).
+# BTU/hr is common HVAC sizing.
+_POWER_TO_W: dict[str, float] = {
+    "w": 1.0,
+    "watt": 1.0,
+    "watts": 1.0,
+    "kw": 1000.0,
+    "mw": 1_000_000.0,
+    "hp": 745.699_871_582_270_22,
+    "btu_per_hr": 0.293_071_070_172_222,
+}
+
+# Data (base: byte). Honor the SI/IEC split: KB = 10^3, KiB = 2^10.
+# bit (1/8 byte) lives here so 'bit -> KB' works.
+_DATA_TO_BYTE: dict[str, float] = {
+    "b": 1.0,
+    "byte": 1.0,
+    "bytes": 1.0,
+    "kb": 1000.0,
+    "mb": 1_000_000.0,
+    "gb": 1_000_000_000.0,
+    "tb": 1_000_000_000_000.0,
+    "kib": 1024.0,
+    "mib": 1024.0**2,
+    "gib": 1024.0**3,
+    "tib": 1024.0**4,
+    "bit": 0.125,
+    "bits": 0.125,
+}
+
+# Area (base: m^2). Surveyors' units (acre, hectare) join the squared-
+# length aliases. m2 / ft2 / etc. are the canonical schema names; sqm
+# / sqft are common spoken forms.
+_AREA_TO_M2: dict[str, float] = {
+    "m2": 1.0,
+    "sqm": 1.0,
+    "cm2": 0.0001,
+    "sqcm": 0.0001,
+    "mm2": 1e-6,
+    "sqmm": 1e-6,
+    "km2": 1_000_000.0,
+    "sqkm": 1_000_000.0,
+    "in2": 0.0254**2,
+    "sqin": 0.0254**2,
+    "ft2": 0.3048**2,
+    "sqft": 0.3048**2,
+    "yd2": 0.9144**2,
+    "sqyd": 0.9144**2,
+    "mi2": 1609.344**2,
+    "sqmi": 1609.344**2,
+    "acre": 4046.8564224,
+    "acres": 4046.8564224,
+    "hectare": 10_000.0,
+    "hectares": 10_000.0,
+    "ha": 10_000.0,
+}
+
+# Angle (base: radian). turn = 2π rad, grad = π/200 rad, arcmin/arcsec
+# from degree decomposition.
+_ANGLE_TO_RAD: dict[str, float] = {
+    "rad": 1.0,
+    "radian": 1.0,
+    "radians": 1.0,
+    "deg": math.pi / 180.0,
+    "degree": math.pi / 180.0,
+    "degrees": math.pi / 180.0,
+    "turn": 2.0 * math.pi,
+    "turns": 2.0 * math.pi,
+    "grad": math.pi / 200.0,
+    "gradian": math.pi / 200.0,
+    "gradians": math.pi / 200.0,
+    "arcmin": math.pi / (180.0 * 60.0),
+    "arcsec": math.pi / (180.0 * 3600.0),
+}
+
 _UNIT_FAMILIES: tuple[tuple[str, dict[str, float]], ...] = (
     ("length", _LENGTH_TO_M),
     ("mass", _MASS_TO_KG),
     ("time", _TIME_TO_S),
     ("volume", _VOLUME_TO_L),
+    ("pressure", _PRESSURE_TO_PA),
+    ("energy", _ENERGY_TO_J),
+    ("power", _POWER_TO_W),
+    ("data", _DATA_TO_BYTE),
+    ("area", _AREA_TO_M2),
+    ("angle", _ANGLE_TO_RAD),
 )
 
+# Unit tokens can carry digits + underscores (m2, ft_lb, btu_per_hr).
+# Must start with a letter so '5km' (no whitespace) doesn't snag.
 _CONVERT_PATTERN = re.compile(
     r"^\s*"
     r"(?P<value>[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)"
-    r"\s+(?P<src>[a-zA-Z]+)"
+    r"\s+(?P<src>[a-zA-Z][a-zA-Z0-9_]*)"
     r"\s+(?:to|in|->)\s+"
-    r"(?P<dst>[a-zA-Z]+)"
+    r"(?P<dst>[a-zA-Z][a-zA-Z0-9_]*)"
     r"\s*$"
 )
 
@@ -338,7 +457,10 @@ class CalcTool:
                 "Evaluate an arithmetic expression OR convert units. "
                 "Expression form: 'sqrt(50) * 12', '2 ** 10 + 24'. "
                 "Conversion form: '5 ft to m', '100 kg to lb', "
-                "'30 c to f'. Functions: "
+                "'30 c to f', '1 atm to psi', '1 kwh to j', '1 hp to w', "
+                "'1 gib to mb', '1 acre to m2', '180 deg to rad'. "
+                "Families: length, mass, time, volume, temperature, "
+                "pressure, energy, power, data, area, angle. Functions: "
                 f"{', '.join(sorted(_SAFE_FUNCS))}. "
                 f"Constants: {', '.join(sorted(_SAFE_NAMES))}."
             ),
