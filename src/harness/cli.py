@@ -2676,7 +2676,11 @@ def daemon(
 
         sched_data_dir = char_path / "data"
         sched_yaml = schedule_path or (sched_data_dir / "heartbeat_schedule.yaml")
-        sched_state = sched_data_dir / "heartbeat_schedule_state.json"
+        # Co-locate state with the schedule file so a --schedule-path
+        # override produces a self-contained pair on disk (test
+        # isolation depends on this — a tmp_path schedule shouldn't
+        # consult the character-default state file).
+        sched_state = sched_yaml.parent / (sched_yaml.stem + "_state.json")
 
         # Read-tier reckon registry only — daemon mode should never
         # exercise write-tier tools without the per-session confirm UX.
