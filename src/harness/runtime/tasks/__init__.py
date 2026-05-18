@@ -20,13 +20,27 @@ from harness.runtime.tasks.drift import (
     DriftTaskOutcome,
     build_drift_task,
 )
+from harness.runtime.tasks.scheduled_tools import (
+    ScheduledFire,
+    ScheduledToolsTaskOutcome,
+    ScheduleEntry,
+    ScheduleError,
+    build_scheduled_tools_task,
+    load_schedule,
+)
 
 __all__ = [
     "CompactionTaskOutcome",
     "ConsolidationTaskOutcome",
     "DriftIssue",
     "DriftTaskOutcome",
+    "ScheduleEntry",
+    "ScheduleError",
+    "ScheduledFire",
+    "ScheduledToolsTaskOutcome",
     "build_compaction_task",
     "build_consolidation_task",
     "build_drift_task",
+    "build_scheduled_tools_task",
+    "load_schedule",
 ]

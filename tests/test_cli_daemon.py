@@ -61,9 +61,8 @@ def _norm(s: str) -> str:
 
 
 def test_daemon_tick_once_registers_built_in_tasks_by_default() -> None:
-    """Default daemon registers 4 tasks: heartbeat_alive + compaction +
-    consolidation + drift. tick-once fires all four; the alive line +
-    each task's outcome line all appear in stdout."""
+    """Default daemon registers 5 tasks: heartbeat_alive + compaction +
+    consolidation + drift + schedule. tick-once fires all five."""
     proc = subprocess.run(
         [*HARNESS_CMD, "daemon", "--tick-once"],
         capture_output=True,
@@ -75,10 +74,66 @@ def test_daemon_tick_once_registers_built_in_tasks_by_default() -> None:
     )
     assert proc.returncode == 0
     out = _norm(proc.stdout)
-    assert "4 task(s) registered" in out
+    assert "5 task(s) registered" in out
     assert "heartbeat compaction" in out
     assert "heartbeat consolidation" in out
     assert "heartbeat drift" in out
+    assert "heartbeat schedule" in out
+
+
+def test_daemon_schedule_disabled_when_interval_zero() -> None:
+    """--schedule-interval 0 drops the schedule task; the rest stay."""
+    proc = subprocess.run(
+        [*HARNESS_CMD, "daemon", "--tick-once", "--schedule-interval", "0"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=_env(),
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0
+    out = _norm(proc.stdout)
+    assert "4 task(s) registered" in out
+    assert "heartbeat schedule" not in out
+
+
+def test_daemon_schedule_fires_entries_from_yaml(tmp_path: Path) -> None:
+    """End-to-end: write a schedule YAML, run the daemon once with
+    --schedule-path pointing at it, verify the fire line for each
+    entry shows in stdout (harness-6dnf)."""
+    sched_path = tmp_path / "sched.yaml"
+    sched_path.write_text(
+        "- tool: now\n  args: {}\n  interval: 60\n"
+        "- tool: calc\n  args: {expr: '2 + 2'}\n  interval: 60\n"
+    )
+    proc = subprocess.run(
+        [
+            *HARNESS_CMD,
+            "daemon",
+            "--tick-once",
+            "--compaction-interval",
+            "0",
+            "--consolidation-interval",
+            "0",
+            "--drift-interval",
+            "0",
+            "--schedule-path",
+            str(sched_path),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=_env(),
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = _norm(proc.stdout)
+    assert "entries_loaded=2" in out
+    assert "tool='now'" in out
+    assert "tool='calc'" in out
+    assert "'2 + 2 -> 4'" in out
 
 
 def test_daemon_drift_disabled_when_interval_zero() -> None:
@@ -94,7 +149,7 @@ def test_daemon_drift_disabled_when_interval_zero() -> None:
     )
     assert proc.returncode == 0
     out = _norm(proc.stdout)
-    assert "3 task(s) registered" in out
+    assert "4 task(s) registered" in out
     assert "heartbeat drift" not in out
 
 
@@ -112,7 +167,7 @@ def test_daemon_compaction_disabled_when_interval_zero() -> None:
     )
     assert proc.returncode == 0
     out = _norm(proc.stdout)
-    assert "3 task(s) registered" in out
+    assert "4 task(s) registered" in out
     assert "heartbeat compaction" not in out
     assert "heartbeat consolidation" in out
 
@@ -131,7 +186,7 @@ def test_daemon_consolidation_disabled_when_interval_zero() -> None:
     )
     assert proc.returncode == 0
     out = _norm(proc.stdout)
-    assert "3 task(s) registered" in out
+    assert "4 task(s) registered" in out
     assert "heartbeat compaction" in out
     assert "heartbeat consolidation" not in out
 
@@ -153,6 +208,8 @@ def test_daemon_writes_state_file_on_tick_once(tmp_path: Path) -> None:
             "--consolidation-interval",
             "0",
             "--drift-interval",
+            "0",
+            "--schedule-interval",
             "0",
         ],
         capture_output=True,
@@ -210,6 +267,8 @@ def test_daemon_status_round_trip(tmp_path: Path) -> None:
             "0",
             "--drift-interval",
             "0",
+            "--schedule-interval",
+            "0",
         ],
         capture_output=True,
         text=True,
@@ -235,7 +294,7 @@ def test_daemon_status_round_trip(tmp_path: Path) -> None:
 
 
 def test_daemon_all_optional_tasks_disabled_leaves_alive_only() -> None:
-    """Disable all three maintenance tasks: only heartbeat_alive
+    """Disable all four maintenance tasks: only heartbeat_alive
     remains."""
     proc = subprocess.run(
         [
@@ -247,6 +306,8 @@ def test_daemon_all_optional_tasks_disabled_leaves_alive_only() -> None:
             "--consolidation-interval",
             "0",
             "--drift-interval",
+            "0",
+            "--schedule-interval",
             "0",
         ],
         capture_output=True,
@@ -262,6 +323,7 @@ def test_daemon_all_optional_tasks_disabled_leaves_alive_only() -> None:
     assert "heartbeat compaction" not in out
     assert "heartbeat consolidation" not in out
     assert "heartbeat drift" not in out
+    assert "heartbeat schedule" not in out
 
 
 def test_daemon_tick_once_with_explicit_character() -> None:
@@ -306,6 +368,8 @@ def test_daemon_help_lists_flags() -> None:
         "--drift-assignee",
         "--drift-max-in-progress",
         "--drift-stale-days",
+        "--schedule-interval",
+        "--schedule-path",
         "--state-path",
         "--grace-period",
         "--tick-once",

@@ -2572,6 +2572,17 @@ def daemon(
         help="Staleness threshold: flag in_progress beads with no updated_at "
         "activity within this many days.",
     ),
+    schedule_interval: float = typer.Option(
+        300.0,
+        "--schedule-interval",
+        help="Periodic scheduled-tool-calls tick interval in seconds. 0 disables the task.",
+    ),
+    schedule_path: Path | None = typer.Option(
+        None,
+        "--schedule-path",
+        help="YAML file with scheduled tool calls. "
+        "Default: <character>/data/heartbeat_schedule.yaml.",
+    ),
     state_path: Path | None = typer.Option(
         None,
         "--state-path",
@@ -2609,6 +2620,7 @@ def daemon(
         build_compaction_task,
         build_consolidation_task,
         build_drift_task,
+        build_scheduled_tools_task,
     )
 
     char_path = settings.character_path
@@ -2651,6 +2663,51 @@ def daemon(
                 sink=_compaction_sink,
             ),
             interval_s=compaction_interval,
+        )
+
+    # Scheduled-tool-calls task — opt-in via --schedule-interval > 0.
+    # Builds a minimal read-tier registry (the reckon primitives) and
+    # routes the entry's tool+args through it. Schedule file defaults
+    # to <character>/data/heartbeat_schedule.yaml; state sidecar lives
+    # next to it. A missing schedule file is fine (empty schedule);
+    # malformed schedule surfaces via the outcome's load_error field.
+    if schedule_interval > 0:
+        from harness.runtime.tasks.scheduled_tools import ScheduledToolsTaskOutcome
+
+        sched_data_dir = char_path / "data"
+        sched_yaml = schedule_path or (sched_data_dir / "heartbeat_schedule.yaml")
+        sched_state = sched_data_dir / "heartbeat_schedule_state.json"
+
+        # Read-tier reckon registry only — daemon mode should never
+        # exercise write-tier tools without the per-session confirm UX.
+        sched_registry = ToolRegistry()
+        for tool in (
+            NowTool(),
+            DateMathTool(),
+            CalcTool(),
+            PythonEvalTool(),
+            TzConvertTool(),
+            StatsTool(),
+            SunTool(),
+        ):
+            sched_registry.register(tool)
+
+        def _schedule_executor(tool_name: str, args: dict[str, object]) -> str:
+            result = sched_registry.call(tool_name, args)
+            return result.output
+
+        def _schedule_sink(outcome: ScheduledToolsTaskOutcome) -> None:
+            console.print(f"[dim]heartbeat[/dim] schedule {outcome!r}")
+
+        hb.register(
+            "schedule",
+            build_scheduled_tools_task(
+                schedule_path=sched_yaml,
+                state_path=sched_state,
+                tool_executor=_schedule_executor,
+                sink=_schedule_sink,
+            ),
+            interval_s=schedule_interval,
         )
 
     # Drift task — bd-based heuristics; opt-in via --drift-interval > 0.
