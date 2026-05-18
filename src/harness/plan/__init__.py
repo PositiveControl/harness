@@ -21,6 +21,12 @@ from harness.plan.model import (
     new_plan,
     new_subgoal,
 )
+from harness.plan.revise import (
+    WorldSnapshot,
+    all_preconditions_satisfied,
+    evaluate_precondition,
+    revise_plan,
+)
 from harness.plan.store import (
     JsonPlanStore,
     PlanStore,
@@ -37,7 +43,11 @@ __all__ = [
     "Precondition",
     "Status",
     "Subgoal",
+    "WorldSnapshot",
+    "all_preconditions_satisfied",
     "build_plan_from_bd",
+    "evaluate_precondition",
     "new_plan",
     "new_subgoal",
+    "revise_plan",
 ]
