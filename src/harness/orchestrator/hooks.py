@@ -40,9 +40,12 @@ from harness.tools.base import ModelReply, ToolCall, ToolResult, ToolSpec
 
 
 DUPLICATE_CALL_NUDGE = (
-    "[duplicate call — identical arguments to an earlier call this turn. "
-    "Result is unchanged from the earlier tool message. Give the user your "
-    "final answer now; do NOT emit any more tool calls.]"
+    "[REJECTED — duplicate call. You already called this tool with identical "
+    "arguments earlier this turn; the previous result is in your message "
+    "history (re-read it). DO NOT emit another tool call. Either: (a) answer "
+    "the user using the data you already have, or (b) tell the user plainly "
+    "what you could not find. Emitting another tool call here will be rejected "
+    "again and waste the round.]"
 )
 
 
@@ -107,12 +110,21 @@ META_CONFIRM_RE = re.compile(
     r"(?:"
     r"would you like (?:(?:me|us|you)\s+)?to\s+"
     r"(?:add|proceed|continue|update|create|edit|write|change|append|"
-    r"remove|modify|delete|run|install|make|do|confirm|go\s+ahead)"
+    r"remove|modify|delete|run|install|make|do|confirm|go\s+ahead|"
+    # Read-ish action verbs added after Mark's Mombasa transcript:
+    # the agent finished search_web, listed 5 URLs, and asked
+    # 'Would you like to read the full details?' instead of fetching.
+    r"read|see|check|fetch|find|search|review|look|visit)"
+    r"|"
+    # 'Would you like + noun phrase' shape — caught the time-format
+    # follow-up: 'Would you like more precision or a different format?'.
+    r"would you like (?:more|a\s+different|some|the|another|further|"
+    r"additional|specific|detailed|fewer)"
     r"|"
     r"shall i\b"
     r"|"
     r"should i (?:proceed|go ahead|continue|update|add|edit|change|"
-    r"write|do|run)"
+    r"write|do|run|read|fetch|check)"
     r"|"
     r"do you want me to"
     r"|"
@@ -125,6 +137,12 @@ META_CONFIRM_RE = re.compile(
     r"we\s+need\s+to\s+make\s+sure\s+(?:the\s+user|you)\s+confirms?"
     r"|"
     r"(?:please\s+)?approve\s+(?:the\s+|this\s+)?action"
+    r"|"
+    # 'I recommend (checking|reading|reviewing|consulting|visiting)'
+    # the post-search punt: agent has results but kicks the work back
+    # to the user instead of fetching the most authoritative URL.
+    r"i\s+recommend\s+(?:checking|reading|reviewing|consulting|visiting|"
+    r"looking)"
     r")",
     re.IGNORECASE,
 )

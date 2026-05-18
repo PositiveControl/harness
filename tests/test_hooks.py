@@ -209,6 +209,53 @@ def test_fabricated_search_hook_skipped_on_result_list_after_any_tool() -> None:
     assert isinstance(FabricatedSearchHook().check(ctx), Continue)
 
 
+def test_meta_confirm_catches_post_search_read_question() -> None:
+    """Mark's repro: agent finished search_web, listed 5 URLs, asked
+    'Would you like to read the full details from one of these
+    sources?' instead of calling fetch_url. The original META_CONFIRM_RE
+    had a fixed verb list (add/proceed/edit/...) that excluded
+    read/see/fetch — adding those caught this case."""
+    ctx = BailContext(
+        reply=_reply("Would you like to read the full details from one of these sources?"),
+        tools_ran_this_turn=False,
+    )
+    assert isinstance(MetaConfirmHook().check(ctx), Nudge)
+
+
+def test_meta_confirm_catches_noun_phrase_follow_up() -> None:
+    """Same repro shape, different post-action question:
+    'Would you like more precision or a different format?'. No verb
+    in the original pattern; the new 'would you like + noun phrase'
+    alternation handles it."""
+    ctx = BailContext(
+        reply=_reply("Would you like more precision or a different format?"),
+        tools_ran_this_turn=False,
+    )
+    assert isinstance(MetaConfirmHook().check(ctx), Nudge)
+
+
+def test_meta_confirm_catches_i_recommend_punt() -> None:
+    """'I recommend checking one of these sources' is the polite
+    version of meta-confirm: agent has data but kicks the work back
+    to the user."""
+    ctx = BailContext(
+        reply=_reply("I recommend checking the most recent forecast from one of these sources."),
+        tools_ran_this_turn=False,
+    )
+    assert isinstance(MetaConfirmHook().check(ctx), Nudge)
+
+
+def test_meta_confirm_does_not_fire_on_substantive_read_mention() -> None:
+    """Negative: 'I read the file and found...' is a legitimate report,
+    not a meta-confirm. The 'read' verb only matters inside the
+    'would you like (me )? to read' shape."""
+    ctx = BailContext(
+        reply=_reply("I read your config and found three issues to address."),
+        tools_ran_this_turn=False,
+    )
+    assert isinstance(MetaConfirmHook().check(ctx), Continue)
+
+
 def test_fabricated_search_hook_fires_after_meta_tool_only() -> None:
     """harness-q7kn: load_tool / tool_search / introspect are meta-tools
     (plumbing for the discovery loop). They must NOT disarm the
