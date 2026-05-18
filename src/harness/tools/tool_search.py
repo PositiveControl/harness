@@ -178,7 +178,15 @@ class ToolSearchTool:
         if remaining > 0:
             lines.append(f"  (+{remaining} more — increase `limit` or narrow the search)")
         header = f"{len(visible)} of {len(candidates)} tool(s)"
-        return f"{header}:\n" + "\n".join(lines)
+        # Nudge the agent toward the discovery flow's next step. Without
+        # this, small models that found a candidate often replied
+        # "you'd want X but I can't run it" instead of activating it.
+        # See harness-huwj for the core_minimal reproduction.
+        suffix = (
+            "\nNext step: call `load_tool(name=<one of the above>)` to "
+            "activate it for the next round."
+        )
+        return f"{header}:\n" + "\n".join(lines) + suffix
 
     def _live_description(self, name: str) -> str | None:
         """Pull the description off the registry's live spec when the

@@ -300,7 +300,7 @@ def test_builtin_metadata_includes_every_tool_family() -> None:
     """Sanity: the BUILTIN_TOOL_METADATA table covers every family
     the harness ships today. Catches the case where someone adds a
     new family to profiles.py but forgets the catalog entry."""
-    families = {family for (family, _) in BUILTIN_TOOL_METADATA.values()}
+    families = {entry[0] for entry in BUILTIN_TOOL_METADATA.values()}
     # Pin the expected family set so a future addition is intentional.
     assert "reckon" in families
     assert "filesystem" in families
@@ -310,3 +310,22 @@ def test_builtin_metadata_includes_every_tool_family() -> None:
     assert "meta" in families
     assert "ops" in families
     assert "atc" in families
+
+
+def test_builtin_metadata_descriptions_are_non_empty() -> None:
+    """Regression for harness-huwj: when description fields were empty,
+    tool_search returned matches like `search_web (research) —
+    (no description)` and small models gave up rather than calling
+    load_tool. Pin every builtin to have a non-empty description so
+    the discovery flow works end-to-end."""
+    missing = [name for name, entry in BUILTIN_TOOL_METADATA.items() if not entry[2].strip()]
+    assert not missing, f"builtin tools without descriptions: {missing}"
+
+
+def test_builtin_metadata_tiers_are_valid() -> None:
+    """Every entry's tier must be 'read' or 'write' so the seeded
+    catalog is consistent with the orchestrator's confirm gate."""
+    bad = [
+        name for name, entry in BUILTIN_TOOL_METADATA.items() if entry[3] not in ("read", "write")
+    ]
+    assert not bad, f"builtin tools with bad tier: {bad}"

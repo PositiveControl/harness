@@ -230,74 +230,347 @@ def _entry_to_json(entry: ToolCatalogEntry) -> dict[str, object]:
 # searching for the capability: 'time' over 'clock', 'arithmetic'
 # over 'math'. Aim for 3-5 tags per tool — discoverable without
 # being noisy.
-BUILTIN_TOOL_METADATA: dict[str, tuple[str, tuple[str, ...]]] = {
+#
+# Schema: name -> (family, tags, description, tier). Description is
+# the one-line capability summary the model reads in `tool_search`
+# output to decide whether to activate the tool. Keep it under ~120
+# chars and lead with the verb ("Search the web for...", "Read a
+# file...") so partial-match queries land on the right tool.
+BUILTIN_TOOL_METADATA: dict[str, tuple[str, tuple[str, ...], str, str]] = {
     # reckon family — deterministic time + compute
-    "now": ("reckon", ("time", "clock", "timezone", "date")),
-    "date_math": ("reckon", ("date", "arithmetic", "duration", "business-days", "weekday")),
-    "calc": ("reckon", ("arithmetic", "math", "unit-convert", "expression")),
-    "python_eval": ("reckon", ("python", "sandbox", "compute", "scripting")),
-    "tz_convert": ("reckon", ("timezone", "time", "convert", "iana")),
-    "stats": ("reckon", ("statistics", "math", "percentile", "summary")),
-    "sun": ("reckon", ("astronomy", "sunrise", "sunset", "twilight", "latlon")),
+    "now": (
+        "reckon",
+        ("time", "clock", "timezone", "date"),
+        "Get the current time and date in a named timezone.",
+        "read",
+    ),
+    "date_math": (
+        "reckon",
+        ("date", "arithmetic", "duration", "business-days", "weekday"),
+        "Add/subtract durations to dates; compute weekday, business days, and date deltas.",
+        "read",
+    ),
+    "calc": (
+        "reckon",
+        ("arithmetic", "math", "unit-convert", "expression"),
+        "Evaluate an arithmetic expression with unit conversions (length, mass, temperature, etc).",
+        "read",
+    ),
+    "python_eval": (
+        "reckon",
+        ("python", "sandbox", "compute", "scripting"),
+        "Run a short Python snippet in a sandbox for compute beyond calc's grammar.",
+        "read",
+    ),
+    "tz_convert": (
+        "reckon",
+        ("timezone", "time", "convert", "iana"),
+        "Convert a time between IANA timezones.",
+        "read",
+    ),
+    "stats": (
+        "reckon",
+        ("statistics", "math", "percentile", "summary"),
+        "Compute summary statistics (mean, median, stdev, percentiles) on a list of numbers.",
+        "read",
+    ),
+    "sun": (
+        "reckon",
+        ("astronomy", "sunrise", "sunset", "twilight", "latlon"),
+        "Compute sunrise / sunset / civil twilight / solar noon at a lat-lon and date.",
+        "read",
+    ),
     # filesystem read
-    "read_file": ("filesystem", ("read", "file", "open")),
-    "list_dir": ("filesystem", ("read", "directory", "ls")),
-    "grep": ("filesystem", ("read", "search", "regex", "text-match")),
-    "glob": ("filesystem", ("read", "filename-pattern", "find")),
+    "read_file": (
+        "filesystem",
+        ("read", "file", "open"),
+        "Read a file from the workspace.",
+        "read",
+    ),
+    "list_dir": (
+        "filesystem",
+        ("read", "directory", "ls"),
+        "List the contents of a directory in the workspace.",
+        "read",
+    ),
+    "grep": (
+        "filesystem",
+        ("read", "search", "regex", "text-match"),
+        "Search workspace files for a regex pattern.",
+        "read",
+    ),
+    "glob": (
+        "filesystem",
+        ("read", "filename-pattern", "find"),
+        "Find files in the workspace matching a glob pattern.",
+        "read",
+    ),
     # filesystem write
-    "edit_file": ("filesystem", ("write", "file", "edit", "patch")),
-    "write_file": ("filesystem", ("write", "file", "create")),
-    "shell": ("filesystem", ("write", "shell", "execute", "subprocess")),
+    "edit_file": (
+        "filesystem",
+        ("write", "file", "edit", "patch"),
+        "Edit a file in the workspace by replacing old_string with new_string.",
+        "write",
+    ),
+    "write_file": (
+        "filesystem",
+        ("write", "file", "create"),
+        "Create a new file in the workspace.",
+        "write",
+    ),
+    "shell": (
+        "filesystem",
+        ("write", "shell", "execute", "subprocess"),
+        "Run a shell command in the workspace.",
+        "write",
+    ),
     # git
-    "git_status": ("git", ("read", "status", "diff-summary")),
-    "git_diff": ("git", ("read", "diff", "changes")),
-    "git_log": ("git", ("read", "log", "history")),
+    "git_status": (
+        "git",
+        ("read", "status", "diff-summary"),
+        "Show working-tree status for the workspace git repo.",
+        "read",
+    ),
+    "git_diff": (
+        "git",
+        ("read", "diff", "changes"),
+        "Show staged or unstaged changes in the workspace git repo.",
+        "read",
+    ),
+    "git_log": (
+        "git",
+        ("read", "log", "history"),
+        "Show recent commits in the workspace git repo.",
+        "read",
+    ),
     # memory + retrieval
-    "search_memory": ("memory", ("read", "search", "episodic", "retrieval")),
-    "search_facts": ("memory", ("read", "search", "semantic", "facts", "retrieval")),
-    "remember_fact": ("memory", ("write", "facts", "semantic", "store")),
-    "remember_event": ("memory", ("write", "episodic", "store", "summary")),
-    "scribe_session": ("memory", ("write", "scribe", "extract", "transcript")),
-    "consolidate_memory": ("memory", ("write", "consolidate", "promote")),
-    "transcript_ingest": ("memory", ("write", "transcript", "ingest")),
-    "assemble_context": ("memory", ("read", "contract", "retrieval-bundle")),
+    "search_memory": (
+        "memory",
+        ("read", "search", "episodic", "retrieval"),
+        "Search episodic memory (past events, seed memories) for relevant entries.",
+        "read",
+    ),
+    "search_facts": (
+        "memory",
+        ("read", "search", "semantic", "facts", "retrieval"),
+        "Search semantic facts (subject-predicate-object) for relevant entries.",
+        "read",
+    ),
+    "remember_fact": (
+        "memory",
+        ("write", "facts", "semantic", "store"),
+        "Store a semantic fact (subject, predicate, object).",
+        "write",
+    ),
+    "remember_event": (
+        "memory",
+        ("write", "episodic", "store", "summary"),
+        "Store an episodic memory (something that happened, a decision, a context note).",
+        "write",
+    ),
+    "scribe_session": (
+        "memory",
+        ("write", "scribe", "extract", "transcript"),
+        "Extract memory candidates from the current session's unprocessed transcript turns.",
+        "write",
+    ),
+    "consolidate_memory": (
+        "memory",
+        ("write", "consolidate", "promote"),
+        "Cluster near-duplicate working-tier memories and promote them to consolidated tier.",
+        "write",
+    ),
+    "transcript_ingest": (
+        "memory",
+        ("write", "transcript", "ingest"),
+        "Ingest a transcript file into the episodic store.",
+        "write",
+    ),
+    "assemble_context": (
+        "memory",
+        ("read", "contract", "retrieval-bundle"),
+        "Assemble a retrieval bundle (memory + facts) for a query.",
+        "read",
+    ),
     # research
-    "search_web": ("research", ("read", "search", "web", "ddg")),
-    "fetch_url": ("research", ("read", "http", "fetch", "url")),
-    "search_scholar": ("research", ("read", "search", "academic", "papers")),
+    "search_web": (
+        "research",
+        ("read", "search", "web", "ddg", "weather", "news", "lookup"),
+        (
+            "Search the web (DuckDuckGo) for current information — "
+            "weather, news, facts, recent events."
+        ),
+        "read",
+    ),
+    "fetch_url": (
+        "research",
+        ("read", "http", "fetch", "url"),
+        "Fetch a single HTTPS URL and return its text content.",
+        "read",
+    ),
+    "search_scholar": (
+        "research",
+        ("read", "search", "academic", "papers"),
+        "Search academic papers across Semantic Scholar and OpenAlex.",
+        "read",
+    ),
     # self / meta
-    "introspect": ("meta", ("read", "self-inspection", "capabilities")),
-    "spawn_subagent": ("meta", ("read", "subagent", "delegate")),
-    "tool_search": ("meta", ("read", "discovery", "search", "catalog")),
-    "load_tool": ("meta", ("read", "discovery", "activate", "working-set")),
+    "introspect": (
+        "meta",
+        ("read", "self-inspection", "capabilities"),
+        (
+            "Describe this session's tools, model, memory stores, "
+            "character config, or available commands."
+        ),
+        "read",
+    ),
+    "spawn_subagent": (
+        "meta",
+        ("read", "subagent", "delegate"),
+        "Spawn a depth-1 read-only subagent to handle a focused sub-task.",
+        "read",
+    ),
+    "tool_search": (
+        "meta",
+        ("read", "discovery", "search", "catalog"),
+        (
+            "Find tools available in the catalog by keyword, tag, or family. "
+            "Returns name + description matches; pair with load_tool to activate one."
+        ),
+        "read",
+    ),
+    "load_tool": (
+        "meta",
+        ("read", "discovery", "activate", "working-set"),
+        (
+            "Activate a tool from the catalog into this session's working set. "
+            "Use after tool_search reveals a candidate; next round will see its schema."
+        ),
+        "read",
+    ),
     # ab ops (personal-operations data plane)
-    "plan": ("ops", ("write", "bd", "task", "plan-issue")),
-    "capture": ("ops", ("write", "bd", "task", "capture")),
-    "status": ("ops", ("read", "bd", "ready", "open")),
-    "drift": ("ops", ("read", "bd", "drift", "stale")),
-    "reprioritize": ("ops", ("write", "bd", "priority")),
-    "close": ("ops", ("write", "bd", "close")),
-    "defer": ("ops", ("write", "bd", "defer")),
-    "retro": ("ops", ("write", "bd", "retro", "lesson")),
-    "reopen": ("ops", ("write", "bd", "reopen")),
-    "delete": ("ops", ("write", "bd", "delete")),
-    "update": ("ops", ("write", "bd", "update", "edit")),
-    "search": ("ops", ("read", "bd", "search")),
-    "list": ("ops", ("read", "bd", "list")),
-    "memories": ("ops", ("read", "bd", "memories")),
-    "remember": ("ops", ("write", "bd", "memory", "store")),
-    "forget": ("ops", ("write", "bd", "memory", "delete")),
-    "dep": ("ops", ("write", "bd", "dependency", "blocks")),
-    "label": ("ops", ("write", "bd", "label", "tag")),
-    "comments": ("ops", ("read", "bd", "comments")),
-    "find_duplicates": ("ops", ("read", "bd", "duplicate")),
-    "persist_focus_note": ("ops", ("write", "bd", "focus", "note")),
+    "plan": (
+        "ops",
+        ("write", "bd", "task", "plan-issue"),
+        "Plan a bd issue (the task tracker).",
+        "write",
+    ),
+    "capture": (
+        "ops",
+        ("write", "bd", "task", "capture"),
+        "Capture a new bd task or note.",
+        "write",
+    ),
+    "status": (
+        "ops",
+        ("read", "bd", "ready", "open"),
+        "Show ready/open bd issues for this character.",
+        "read",
+    ),
+    "drift": (
+        "ops",
+        ("read", "bd", "drift", "stale"),
+        "Show stale or drifting bd issues.",
+        "read",
+    ),
+    "reprioritize": (
+        "ops",
+        ("write", "bd", "priority"),
+        "Change priority of a bd issue.",
+        "write",
+    ),
+    "close": ("ops", ("write", "bd", "close"), "Close a bd issue.", "write"),
+    "defer": ("ops", ("write", "bd", "defer"), "Defer a bd issue to a later date.", "write"),
+    "retro": (
+        "ops",
+        ("write", "bd", "retro", "lesson"),
+        "Record a retro lesson against a bd issue.",
+        "write",
+    ),
+    "reopen": ("ops", ("write", "bd", "reopen"), "Reopen a closed bd issue.", "write"),
+    "delete": ("ops", ("write", "bd", "delete"), "Delete a bd issue.", "write"),
+    "update": (
+        "ops",
+        ("write", "bd", "update", "edit"),
+        "Update a bd issue's title, body, or assignee.",
+        "write",
+    ),
+    "search": (
+        "ops",
+        ("read", "bd", "search"),
+        "Search bd issues by keyword.",
+        "read",
+    ),
+    "list": (
+        "ops",
+        ("read", "bd", "list"),
+        "List bd issues by status / assignee.",
+        "read",
+    ),
+    "memories": (
+        "ops",
+        ("read", "bd", "memories"),
+        "List bd-remembered notes for this character.",
+        "read",
+    ),
+    "remember": (
+        "ops",
+        ("write", "bd", "memory", "store"),
+        "Store a bd memory (persistent note across sessions).",
+        "write",
+    ),
+    "forget": (
+        "ops",
+        ("write", "bd", "memory", "delete"),
+        "Delete a bd-remembered note by key.",
+        "write",
+    ),
+    "dep": (
+        "ops",
+        ("write", "bd", "dependency", "blocks"),
+        "Add or remove a dependency between two bd issues.",
+        "write",
+    ),
+    "label": (
+        "ops",
+        ("write", "bd", "label", "tag"),
+        "Add or remove a label on a bd issue.",
+        "write",
+    ),
+    "comments": ("ops", ("read", "bd", "comments"), "Read comments on a bd issue.", "read"),
+    "find_duplicates": (
+        "ops",
+        ("read", "bd", "duplicate"),
+        "Find candidate duplicate bd issues.",
+        "read",
+    ),
+    "persist_focus_note": (
+        "ops",
+        ("write", "bd", "focus", "note"),
+        "Persist a focus note for the current bd-tracked thread.",
+        "write",
+    ),
     # phraseology + atc
-    "phraseology_lint": ("atc", ("read", "atc", "phraseology", "verify")),
+    "phraseology_lint": (
+        "atc",
+        ("read", "atc", "phraseology", "verify"),
+        "Lint an utterance against FAA ATC phraseology conventions.",
+        "read",
+    ),
     # query
-    "query_table": ("research", ("read", "sqlite", "query", "table")),
+    "query_table": (
+        "research",
+        ("read", "sqlite", "query", "table"),
+        "Run a read-only SQL query against a registered SQLite table.",
+        "read",
+    ),
     # citations
-    "citation_lookup": ("research", ("read", "citation", "lookup")),
+    "citation_lookup": (
+        "research",
+        ("read", "citation", "lookup"),
+        "Resolve a citation identifier (DOI, arXiv id, etc.) to its full record.",
+        "read",
+    ),
 }
 
 
@@ -311,15 +584,15 @@ def seed_builtins_into(catalog: ToolCatalog, *, now_iso: str) -> int:
     + by tests to materialize a fresh catalog with the canonical
     built-in surface."""
     inserted = 0
-    for name, (family, tags) in BUILTIN_TOOL_METADATA.items():
+    for name, (family, tags, description, tier) in BUILTIN_TOOL_METADATA.items():
         if name in catalog.entries:
             continue
         entry = ToolCatalogEntry(
             name=name,
             family=family,
             tags=tags,
-            description="",  # filled at runtime from spec.description when convenient
-            tier="read",  # also a runtime fill; default conservative
+            description=description,
+            tier=tier,
             origin="builtin",
             source_path=None,
             registered_at=now_iso,
