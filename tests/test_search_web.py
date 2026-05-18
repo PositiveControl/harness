@@ -76,6 +76,50 @@ def test_zero_max_results_rejected() -> None:
         SearchWebTool().call(query="hi", max_results=0)
 
 
+# --- harness-q7kn: snippet-thin results → fetch_url hint -----------------
+
+
+_CANNED_NO_SNIPPETS = (
+    b"<html><body>"
+    b'<div class="result">'
+    b'<a class="result__a" href="https://example.com/a">Title A</a>'
+    b"</div>"
+    b'<div class="result">'
+    b'<a class="result__a" href="https://example.com/b">Title B</a>'
+    b"</div>"
+    b"</body></html>"
+)
+
+
+def test_results_with_no_snippets_get_fetch_url_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mark's q7kn repro: search_web returns titles + URLs but no
+    snippets. Without a hint, the agent fabricated bracket placeholders
+    ('[Check the link for the latest temperature]') as if it had data.
+    The tool now appends an explicit fetch_url chain hint when the
+    result set carries titles but zero snippet content."""
+
+    def _no_snippet_response(_req: Any, timeout: int = 10) -> _FakeResponse:
+        return _FakeResponse(_CANNED_NO_SNIPPETS)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _no_snippet_response)
+    out = SearchWebTool().call(query="anything")
+    assert "Title A" in out
+    assert "Title B" in out
+    assert "Next step: call `fetch_url" in out
+
+
+def test_results_with_any_snippet_do_not_get_fetch_url_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hint must NOT appear when at least one result has a snippet
+    — those are content-rich and the agent has enough to summarize."""
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    out = SearchWebTool().call(query="MLX")
+    assert "Next step: call `fetch_url" not in out
+
+
 def test_network_failure_returns_graceful_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

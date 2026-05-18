@@ -119,9 +119,16 @@ def test_false_success_hook_only_fires_when_no_tool_ran() -> None:
         FalseSuccessHook().check(BailContext(reply=reply, tools_ran_this_turn=False)),
         Nudge,
     )
-    # After a tool has run, completion claims are legitimate wrap-ups.
+    # After a CONTENT tool has run, completion claims are legitimate
+    # wrap-ups (harness-q7kn: meta-tools alone don't legitimize).
     assert isinstance(
-        FalseSuccessHook().check(BailContext(reply=reply, tools_ran_this_turn=True)),
+        FalseSuccessHook().check(
+            BailContext(
+                reply=reply,
+                tools_ran_this_turn=True,
+                tools_ran=frozenset({"write_file"}),
+            )
+        ),
         Continue,
     )
 
@@ -202,6 +209,69 @@ def test_fabricated_search_hook_skipped_on_result_list_after_any_tool() -> None:
     assert isinstance(FabricatedSearchHook().check(ctx), Continue)
 
 
+def test_fabricated_search_hook_fires_after_meta_tool_only() -> None:
+    """harness-q7kn: load_tool / tool_search / introspect are meta-tools
+    (plumbing for the discovery loop). They must NOT disarm the
+    fabrication catcher — the model still hasn't produced any real
+    content. Mark's repro: load_tool succeeded, the model emitted a
+    fabricated numbered list of weather sites BEFORE search_web
+    actually ran. The catcher has to fire on the fab list."""
+    fab_reply = (
+        "1. **Weather.com — <https://weather.com/weather/today/LNKN9999> — Nairobi**\n"
+        "2. **AccuWeather — <https://www.accuweather.com/en/ke/nairobi/3489/cw> — Nairobi**\n"
+        "3. **BBC Weather — <https://www.bbc.co.uk/weather/world/lnkn9999> — Nairobi**\n"
+    )
+    ctx = BailContext(
+        reply=_reply(fab_reply),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"load_tool"}),
+    )
+    assert isinstance(FabricatedSearchHook().check(ctx), Nudge)
+
+
+def test_fabricated_search_hook_skipped_after_real_search_web() -> None:
+    """The same numbered-URL-list pattern is legitimate wrap-up after
+    a real search_web run — must NOT fire."""
+    real_reply = (
+        "1. AccuWeather — https://www.accuweather.com/...\n"
+        "   Current: 65 F\n"
+        "2. Weather.com — https://weather.com/...\n"
+        "   Forecast: light rain\n"
+    )
+    ctx = BailContext(
+        reply=_reply(real_reply),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+    )
+    assert isinstance(FabricatedSearchHook().check(ctx), Continue)
+
+
+def test_fabricated_search_hook_skipped_after_meta_plus_real_tool() -> None:
+    """Mixed turn — load_tool ran THEN search_web ran. The real
+    content tool legitimizes wrap-up; meta-tool presence doesn't
+    invalidate it."""
+    real_reply = (
+        "1. AccuWeather — https://accuweather.com/...\n2. Weather.com — https://weather.com/...\n"
+    )
+    ctx = BailContext(
+        reply=_reply(real_reply),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"load_tool", "search_web"}),
+    )
+    assert isinstance(FabricatedSearchHook().check(ctx), Continue)
+
+
+def test_fabricated_itemization_hook_fires_after_meta_tool_only() -> None:
+    """Same q7kn principle for itemization-shaped fabrications:
+    meta-tool execution is transparent to the gate."""
+    ctx = BailContext(
+        reply=_reply("Here are some of the top stories on weather:\n1. Storm in...\n2. Heat..."),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"tool_search"}),
+    )
+    assert isinstance(FabricatedItemizationHook().check(ctx), Nudge)
+
+
 def test_ab_fabrication_hook_fires_on_captured_colon() -> None:
     ctx = BailContext(reply=_reply("Captured: harness-abc"), tools_ran_this_turn=False)
     assert isinstance(AbFabricationHook().check(ctx), Nudge)
@@ -245,6 +315,7 @@ def test_fabricated_itemization_hook_skipped_when_tool_ran() -> None:
     ctx = BailContext(
         reply=_reply("Here are the first 5 articles from the BBC News website: 1. ..."),
         tools_ran_this_turn=True,
+        tools_ran=frozenset({"fetch_url"}),
     )
     assert isinstance(FabricatedItemizationHook().check(ctx), Continue)
 

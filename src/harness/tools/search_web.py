@@ -217,6 +217,7 @@ class SearchWebTool:
             classified.sort(key=lambda r: (not r.is_allowlisted, r.original_idx))
 
         lines: list[str] = []
+        any_snippet = False
         for display_idx, result in enumerate(classified[:n], start=1):
             marker = ""
             if self.allowed_hosts is not None:
@@ -224,7 +225,19 @@ class SearchWebTool:
             entry = f"{display_idx}.{marker} {result.title} — {result.url}"
             if result.snippet:
                 entry += f"\n   {result.snippet}"
+                any_snippet = True
             lines.append(entry)
+        # Surface a follow-up hint when the result set is content-thin:
+        # all-empty snippets means the agent has URLs but no extracted
+        # data. The honest next step is to fetch_url one of them rather
+        # than fabricate placeholder content like "[Check the link for
+        # the latest temperature]". See harness-q7kn.
+        if not any_snippet and classified:
+            lines.append(
+                "Next step: call `fetch_url(url=<one of the above>)` to read "
+                "the page contents — these results carry titles but no "
+                "snippets, so the actual data lives behind the URLs."
+            )
         return "\n".join(lines)
 
 

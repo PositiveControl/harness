@@ -1164,12 +1164,18 @@ def test_loop_catches_fabricated_quoted_snippet_list() -> None:
     assert len(nudges) == 1
 
 
-def test_loop_allows_real_search_result_format() -> None:
-    """Guard for harness-j1d: a numbered entry that contains a real URL
-    (the shape search_web actually emits) must NOT be diagnosed as
-    fabrication. The tempered match in _FABRICATED_SEARCH_RE rejects
-    entries with `https://` inside."""
-    real_shape = (
+def test_loop_catches_numbered_url_list_without_tool_call() -> None:
+    """harness-q7kn (revising harness-j1d): a numbered list of URLs
+    emitted WITHOUT a content-producing tool call is fabrication,
+    even when the URLs look real. The model can't verify URLs without
+    fetching; presenting them as if it knows them is hallucination.
+
+    The j1d test originally protected this shape from being caught,
+    on the premise that real-looking URLs might be legitimately
+    recalled. q7kn's repro showed otherwise — the model fabricates
+    plausible-but-wrong URLs (LNKN9999_LNKN9999 etc.) in this exact
+    shape. The catcher now fires."""
+    fab_shape = (
         "1. Weber BBQ — https://weberbbq.com\n"
         '   "A local spot with great ribs."\n'
         "2. Joe's Pit — https://joespit.example-real.com\n"
@@ -1177,7 +1183,7 @@ def test_loop_allows_real_search_result_format() -> None:
     )
     adapter = _ScriptedAdapter(
         replies=[
-            ModelReply(content=real_shape),
+            ModelReply(content=fab_shape),
             ModelReply(content="retry"),
         ]
     )
@@ -1189,7 +1195,7 @@ def test_loop_allows_real_search_result_format() -> None:
     nudges = [
         m for m in result.messages if m.role == "user" and "fabricated tool output" in m.content
     ]
-    assert not nudges
+    assert nudges, "numbered-URL-list without a tool call must trip the catcher"
 
 
 def test_loop_catches_placeholder_domains() -> None:

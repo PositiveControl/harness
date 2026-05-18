@@ -185,6 +185,26 @@ FABRICATED_WEB_CLAIM_RE = re.compile(
 # FABRICATED_SEARCH_RE because the intro phrasing names articles /
 # stories / headlines rather than "results" / "what I found".
 # Alternatives listed first for regex efficiency (Python re backs off).
+# Numbered list of URL-bearing entries — 2+ entries where each entry
+# starts with `N.` and contains a URL. The classic shape the model
+# fabricates when it KNOWS it should search but reaches for memory
+# instead. Mark's q7kn repro:
+#   1. **Weather.com — <https://weather.com/...> — Nairobi Current...**
+#   2. **AccuWeather — <https://www.accuweather.com/...> — Nairobi Current...**
+#   3. **BBC Weather — <https://www.bbc.co.uk/...> — Nairobi Weather**
+# Pattern is conservative: must see at least the "1." and "2." entries
+# (with URLs) in the same reply. False-positive risk on a real
+# search_web wrap-up is mitigated by the meta-tool-only gate on
+# FabricatedSearchHook — when search_web actually ran, this whole
+# branch is skipped.
+FABRICATED_URL_LIST_RE = re.compile(
+    r"(?:\A|\n)\s*1\.\s+[^\n]*?https?://"
+    r"(?:[^\n]|\n(?!\s*\d+\.\s))*?"
+    r"\n\s*2\.\s+[^\n]*?https?://",
+    re.IGNORECASE,
+)
+
+
 FABRICATED_ITEMIZATION_RE = re.compile(
     r"(?:"
     r"here\s+are\s+(?:some|the|a\s+few)\s+"
@@ -620,7 +640,7 @@ class FalseSuccessHook:
     name: str = "false_success"
 
     def check(self, ctx: BailContext) -> BailOutcome:
-        if ctx.tools_ran_this_turn:
+        if _content_tools_ran(ctx):
             return Continue()
         if FALSE_SUCCESS_RE.search(ctx.reply.content):
             return Nudge(_FALSE_SUCCESS_NUDGE)
@@ -640,7 +660,7 @@ class MetaConfirmHook:
     name: str = "meta_confirm"
 
     def check(self, ctx: BailContext) -> BailOutcome:
-        if ctx.tools_ran_this_turn:
+        if _content_tools_ran(ctx):
             return Continue()
         if META_CONFIRM_RE.search(ctx.reply.content):
             return Nudge(_META_CONFIRM_NUDGE)
@@ -657,6 +677,26 @@ _FABRICATED_SEARCH_NUDGE = (
 
 
 _WEB_FETCH_TOOLS: frozenset[str] = frozenset({"search_web", "fetch_url"})
+
+# Meta-tools — plumbing rather than content-producing. The discovery
+# loop (tool_search → load_tool → real tool call) means a meta-tool
+# can succeed BEFORE the content tool runs; treating that as 'a tool
+# ran this turn' disarms fabrication catchers prematurely. Mark's
+# core_minimal repro (harness-q7kn): load_tool's success let the model
+# emit a fabricated numbered list of weather sites before search_web
+# ever ran. Hooks that check `tools_ran_this_turn` to disarm should
+# use `_content_tools_ran(ctx)` instead so meta-tool execution stays
+# transparent to the fabrication gate.
+_META_TOOLS: frozenset[str] = frozenset(
+    {"tool_search", "load_tool", "introspect", "spawn_subagent"}
+)
+
+
+def _content_tools_ran(ctx: BailContext) -> bool:
+    """True iff a content-producing (non-meta) tool succeeded this
+    turn. Meta-tools are excluded — they're plumbing for the discovery
+    loop, not output the model can summarize."""
+    return bool(ctx.tools_ran - _META_TOOLS)
 
 
 @dataclass(frozen=True)
@@ -682,9 +722,11 @@ class FabricatedSearchHook:
         web_ran = bool(ctx.tools_ran & _WEB_FETCH_TOOLS)
         if not web_ran and FABRICATED_WEB_CLAIM_RE.search(ctx.reply.content):
             return Nudge(_FABRICATED_SEARCH_NUDGE)
-        if ctx.tools_ran_this_turn:
+        if _content_tools_ran(ctx):
             return Continue()
         if FABRICATED_SEARCH_RE.search(ctx.reply.content):
+            return Nudge(_FABRICATED_SEARCH_NUDGE)
+        if FABRICATED_URL_LIST_RE.search(ctx.reply.content):
             return Nudge(_FABRICATED_SEARCH_NUDGE)
         return Continue()
 
@@ -705,13 +747,14 @@ class FabricatedItemizationHook:
     """Catches the follow-up-fabrication shape: user asks for more
     detail on item N from an earlier fetch, small model skips the
     index→URL lookup and regenerates a fake summary list. Gated on
-    `tools_ran_this_turn=False` so legitimate wrap-up lists after a
-    real tool ran never trip (harness-f5x)."""
+    `_content_tools_ran(ctx)=False` so legitimate wrap-up lists after
+    a real content tool ran never trip — but meta-tool execution
+    (tool_search, load_tool) doesn't disarm us (harness-f5x, q7kn)."""
 
     name: str = "fabricated_itemization"
 
     def check(self, ctx: BailContext) -> BailOutcome:
-        if ctx.tools_ran_this_turn:
+        if _content_tools_ran(ctx):
             return Continue()
         if FABRICATED_ITEMIZATION_RE.search(ctx.reply.content):
             return Nudge(_FABRICATED_ITEMIZATION_NUDGE)
@@ -732,7 +775,7 @@ class AbFabricationHook:
     name: str = "ab_fabrication"
 
     def check(self, ctx: BailContext) -> BailOutcome:
-        if ctx.tools_ran_this_turn:
+        if _content_tools_ran(ctx):
             return Continue()
         if looks_like_ab_fabrication(ctx.reply.content):
             return Nudge(_AB_FABRICATION_NUDGE)
@@ -758,7 +801,7 @@ class ToolIntentHook:
     name: str = "tool_intent"
 
     def check(self, ctx: BailContext) -> BailOutcome:
-        if ctx.tools_ran_this_turn:
+        if _content_tools_ran(ctx):
             return Continue()
         if TOOL_INTENT_RE.search(ctx.reply.content):
             return Nudge(_TOOL_INTENT_NUDGE)
