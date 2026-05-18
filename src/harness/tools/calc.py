@@ -137,6 +137,9 @@ def _eval_safe(expr: str) -> Any:
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as exc:
+        hint = _unit_token_hint(expr)
+        if hint is not None:
+            raise ValueError(f"calc: {hint}") from exc
         raise ValueError(f"calc: syntax error in {expr!r}: {exc.msg}") from exc
     _validate_tree(tree)
     # An empty globals dict + the safe names/funcs as locals keeps the
@@ -401,6 +404,34 @@ def _find_family(unit: str) -> tuple[str, dict[str, float]] | None:
     if unit_lc in _TEMP_UNITS:
         return "temperature", {}
     return None
+
+
+# Pattern scanned in _unit_token_hint — '5 kg', '5kg', '12.5 ft' all
+# expose 'kg' / 'kg' / 'ft' as the trailing-unit token.
+_UNIT_AFTER_NUMBER = re.compile(r"\d(?:\.\d+)?\s*([a-zA-Z][a-zA-Z0-9_]*)")
+
+
+def _unit_token_hint(expr: str) -> str | None:
+    """If `expr` contains '<number><unit>' tokens that name known
+    families, return a hint string steering the model toward the
+    supported shapes (binary +/- between two operands, single
+    conversion, or python_eval for arbitrary math). Returns None when
+    no recognised unit tokens are present — fall back to the generic
+    syntax-error message in that case (harness-yz4q)."""
+    matched: list[str] = []
+    for token in _UNIT_AFTER_NUMBER.findall(expr):
+        if _find_family(token) is not None and token not in matched:
+            matched.append(token)
+    if not matched:
+        return None
+    return (
+        f"expression contains unit-stamped operands ({', '.join(matched)}); "
+        f"calc supports either binary +/- between two same-family operands "
+        f"(e.g. '100 km + 50 mi', '100f - 20c'), or a single conversion "
+        f"(e.g. '5 m to ft'). For multiplication / division / >2 operands "
+        f"/ cross-family dimensional math, convert each operand first with "
+        f"separate calc calls or use python_eval."
+    )
 
 
 def _convert_temp(value: float, src: str, dst: str) -> float:

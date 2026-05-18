@@ -340,13 +340,13 @@ def test_arith_target_unit_must_match_family(tool: CalcTool) -> None:
         tool.call(expr="100 km + 50 mi to kg")
 
 
-def test_arith_multiplication_falls_through_to_eval(tool: CalcTool) -> None:
+def test_arith_multiplication_falls_through_to_unit_hint(tool: CalcTool) -> None:
     # '5 m * 2' isn't an arith match (op is *, regex requires +/-).
     # Falls through to _eval_safe; Python's parser rejects '5 m * 2'
-    # as invalid syntax (the bare 'm' after a literal isn't a valid
-    # expression). The model gets a syntax-error path so it can
-    # retry with explicit conversion or python_eval.
-    with pytest.raises(ValueError, match="syntax error"):
+    # as invalid syntax. _unit_token_hint detects 'm' and rewrites
+    # the error so the model can retry with conversion or python_eval
+    # instead of bouncing off a raw 'invalid syntax' message (harness-yz4q).
+    with pytest.raises(ValueError, match="unit-stamped operands"):
         tool.call(expr="5 m * 2")
 
 
@@ -368,6 +368,75 @@ def test_arith_negative_first_operand(tool: CalcTool) -> None:
     out = tool.call(expr="-5 m + 10 m")
     assert "5" in out
     assert "m (length)" in out
+
+
+# ----------------- unit-token hint on syntax errors (harness-yz4q) --------
+
+
+def test_unit_hint_on_multiplication_with_units(tool: CalcTool) -> None:
+    # '5 m * 2' falls past _maybe_arith (no +/-) and past _maybe_convert
+    # (no `to`). _eval_safe gets a syntax error from Python and
+    # _unit_token_hint rewrites it into something the model can act on.
+    with pytest.raises(ValueError, match="unit-stamped operands") as exc:
+        tool.call(expr="5 m * 2")
+    msg = str(exc.value)
+    assert "m" in msg
+    assert "python_eval" in msg
+
+
+def test_unit_hint_on_division_with_cross_family_units(tool: CalcTool) -> None:
+    # '5 m / 2 s' would be a velocity if we did dimensional analysis.
+    # We don't; the hint should name both units and point at python_eval.
+    with pytest.raises(ValueError, match="unit-stamped operands") as exc:
+        tool.call(expr="5 m / 2 s")
+    msg = str(exc.value)
+    assert "m" in msg
+    assert "s" in msg
+    assert "python_eval" in msg
+
+
+def test_unit_hint_on_three_operand_chain(tool: CalcTool) -> None:
+    # '5 m + 2 m + 1 m' has three operands; _maybe_arith only handles
+    # two. The trailing '+ 1 m' breaks the regex match; falls through
+    # to _eval_safe which syntax-errors and yields the hint.
+    with pytest.raises(ValueError, match="unit-stamped operands"):
+        tool.call(expr="5 m + 2 m + 1 m")
+
+
+def test_unit_hint_on_compact_multiplication(tool: CalcTool) -> None:
+    # '5kg * 9.8' raises 'invalid decimal literal' (not 'invalid
+    # syntax') because Python's tokenizer chokes earlier. The hint
+    # should still fire on the kg token (harness-yz4q).
+    with pytest.raises(ValueError, match="unit-stamped operands") as exc:
+        tool.call(expr="5kg * 9.8")
+    assert "kg" in str(exc.value)
+
+
+def test_unit_hint_does_not_fire_on_unitless_syntax_error(tool: CalcTool) -> None:
+    # Bare nonsense without any unit token: keep the original syntax-
+    # error message so the model isn't pointed at unit machinery.
+    with pytest.raises(ValueError, match="syntax error"):
+        tool.call(expr="foo bar baz")
+
+
+def test_unit_hint_does_not_fire_on_bare_arithmetic(tool: CalcTool) -> None:
+    # 'sqrt(50) * 12' is a happy path; no syntax error, no hint.
+    out = tool.call(expr="sqrt(50) * 12")
+    assert "84.85" in out
+    assert "unit-stamped" not in out
+
+
+def test_unit_hint_lists_each_unit_only_once(tool: CalcTool) -> None:
+    # Three uses of 'm' in the failing expression — the hint mentions
+    # 'm' once, not three times. The comma-sep list inside the parens
+    # has exactly one 'm'.
+    with pytest.raises(ValueError, match="unit-stamped operands") as exc:
+        tool.call(expr="5 m * 2 m * 1 m")
+    msg = str(exc.value)
+    # Pull the list of detected unit tokens (between the parens after "operands").
+    inside_parens = msg.split("(", 1)[1].split(")", 1)[0]
+    tokens = [t.strip() for t in inside_parens.split(",")]
+    assert tokens == ["m"], f"expected single 'm' token, got {tokens!r}"
 
 
 # ----------------- sandbox escape attempts -----------------
