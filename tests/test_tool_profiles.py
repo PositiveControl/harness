@@ -52,10 +52,24 @@ class _StubTool:
 
 def test_profiles_registered() -> None:
     assert "minimal" in TOOL_PROFILES
+    assert "core_minimal" in TOOL_PROFILES
     assert "core" in TOOL_PROFILES
     assert "coding" in TOOL_PROFILES
     assert "memory" in TOOL_PROFILES
     assert "diagnostic" in TOOL_PROFILES
+
+
+def test_core_minimal_is_discovery_only() -> None:
+    """harness-sbia: bootstrap profile. Just enough for the agent to
+    discover + activate tools on demand — no concrete read/write tools
+    of its own. Schema cost target ~500 tokens.
+    """
+    names = resolve_tool_names("core_minimal")
+    assert names == ("introspect", "load_tool", "tool_search")
+    # Explicitly NOT in this profile — those would defeat the
+    # 'pay-on-demand' design point.
+    for absent in ("read_file", "write_file", "shell", "calc", "now"):
+        assert absent not in names
 
 
 def test_default_profile_resolves() -> None:

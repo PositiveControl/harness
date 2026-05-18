@@ -32,6 +32,25 @@ if TYPE_CHECKING:
 
 TOOL_PROFILES: dict[str, tuple[str, ...]] = {
     "minimal": (),
+    # Discovery-only bootstrap (harness-sbia). The agent boots with
+    # almost no schema overhead (~550 tokens for these three specs vs
+    # ~2,000 for core, measured on Qwen 2.5 7B-Instruct-4bit), then
+    # drives its own tool acquisition:
+    #
+    #   1. tool_search "I need to compute X" → returns matching catalog entries
+    #   2. load_tool name=<best fit>          → expands the working set
+    #   3. <invoke the tool on the next round>
+    #
+    # The price is 1-2 extra rounds per turn the first time the agent
+    # reaches for a new tool — once a tool is in the working set, calls
+    # are free. Best for sessions where most turns are pure conversation
+    # but the model needs the option to escalate to real tools without
+    # paying for them on every prompt. See harness-atsz for the rationale.
+    "core_minimal": (
+        "tool_search",
+        "load_tool",
+        "introspect",
+    ),
     # Explicit web-research set — search_web is the new member. Not in
     # core/coding because search queries leave the trust boundary.
     "research": (
