@@ -242,6 +242,134 @@ def test_cross_family_rejected_new_families(tool: CalcTool) -> None:
         tool.call(expr="5 atm to j")
 
 
+# ----------------- unit-stamped arithmetic (harness-nqc4) -----------------
+
+
+def test_arith_length_addition_same_unit(tool: CalcTool) -> None:
+    out = tool.call(expr="5 m + 10 m")
+    assert "15" in out
+    assert "m (length)" in out
+
+
+def test_arith_length_addition_cross_unit_returns_first_unit(tool: CalcTool) -> None:
+    # 100 km + 50 mi = 100 km + 80.4672 km = 180.467 km (default = first unit).
+    out = tool.call(expr="100 km + 50 mi")
+    assert "180.467" in out
+    assert "km (length)" in out
+
+
+def test_arith_length_to_target_unit(tool: CalcTool) -> None:
+    # Same sum but report in miles. 180.467 km = 112.137 mi.
+    out = tool.call(expr="100 km + 50 mi to mi")
+    assert "112.137" in out
+    assert "mi (length)" in out
+
+
+def test_arith_pressure_atm_plus_hpa(tool: CalcTool) -> None:
+    # 1 atm + 100 hPa = 101325 Pa + 10000 Pa = 111325 Pa.
+    # In atm (default): 1.09869 atm.
+    out = tool.call(expr="1 atm + 100 hpa")
+    assert "1.09869" in out
+    assert "atm (pressure)" in out
+
+
+def test_arith_pressure_to_pa(tool: CalcTool) -> None:
+    out = tool.call(expr="1 atm + 100 hpa to pa")
+    assert "111325" in out
+    assert "pa (pressure)" in out
+
+
+def test_arith_subtraction_length(tool: CalcTool) -> None:
+    out = tool.call(expr="100 km - 50 mi")
+    # 100 km - 80.4672 km = 19.5328 km.
+    assert "19.53" in out
+    assert "km (length)" in out
+
+
+def test_arith_temperature_subtraction_default_output_is_first_unit(tool: CalcTool) -> None:
+    # 100 F - 20 C: 100 F = 37.7778 C; 37.7778 - 20 = 17.7778 C delta.
+    # Default output unit = first operand's unit (f), so the printed
+    # value is the F-delta = 17.7778 * 9/5 = 32.
+    out = tool.call(expr="100f - 20c")
+    # "32" must appear as the numeric value before the unit/delta tag.
+    assert "-> 32 f delta" in out
+    assert "(temperature interval)" in out
+
+
+def test_arith_temperature_subtraction_to_celsius_target(tool: CalcTool) -> None:
+    # Same 100 F - 20 C but request the delta in c.
+    out = tool.call(expr="100f - 20c to c")
+    assert "17.77" in out
+    assert "c delta" in out
+
+
+def test_arith_temperature_subtraction_to_kelvin(tool: CalcTool) -> None:
+    # K-delta equals C-delta (both linear scales with the same step).
+    out = tool.call(expr="100f - 20c to k")
+    assert "17.77" in out
+    assert "k delta" in out
+
+
+def test_arith_temperature_subtraction_same_unit(tool: CalcTool) -> None:
+    # 100 F - 20 F = 80 F delta. No celsius round-trip needed but our
+    # impl still goes through celsius — the answer must still match.
+    out = tool.call(expr="100 f - 20 f")
+    # 100 F = 37.78 C; 20 F = -6.667 C; delta_c = 44.444 C-delta.
+    # In F-delta: 44.444 * 9/5 = 80.
+    assert "80" in out
+    assert "f delta" in out
+
+
+def test_arith_temperature_addition_rejected(tool: CalcTool) -> None:
+    with pytest.raises(ValueError, match="temperature addition is point"):
+        tool.call(expr="100f + 20c")
+
+
+def test_arith_cross_family_rejected_with_python_eval_hint(tool: CalcTool) -> None:
+    with pytest.raises(ValueError, match="python_eval"):
+        tool.call(expr="5 m + 10 kg")
+
+
+def test_arith_unknown_unit_rejected(tool: CalcTool) -> None:
+    with pytest.raises(ValueError, match="unknown unit"):
+        tool.call(expr="5 furlongs + 2 m")
+
+
+def test_arith_target_unit_must_match_family(tool: CalcTool) -> None:
+    with pytest.raises(ValueError, match="cannot convert the result"):
+        tool.call(expr="100 km + 50 mi to kg")
+
+
+def test_arith_multiplication_falls_through_to_eval(tool: CalcTool) -> None:
+    # '5 m * 2' isn't an arith match (op is *, regex requires +/-).
+    # Falls through to _eval_safe; Python's parser rejects '5 m * 2'
+    # as invalid syntax (the bare 'm' after a literal isn't a valid
+    # expression). The model gets a syntax-error path so it can
+    # retry with explicit conversion or python_eval.
+    with pytest.raises(ValueError, match="syntax error"):
+        tool.call(expr="5 m * 2")
+
+
+def test_arith_compact_form_with_no_space_between_value_and_unit(tool: CalcTool) -> None:
+    # Real session showed the model emitting '100f - 20c' (no space).
+    # Must work now that _ARITH_PATTERN allows zero-width val/unit gap.
+    out = tool.call(expr="100f - 20c")
+    assert "delta" in out
+
+
+def test_arith_compact_conversion_form(tool: CalcTool) -> None:
+    # Same relaxation applies to standalone conversion ('100f to c').
+    out = tool.call(expr="100f to c")
+    assert "37.7" in out
+    assert "(temperature)" in out
+
+
+def test_arith_negative_first_operand(tool: CalcTool) -> None:
+    out = tool.call(expr="-5 m + 10 m")
+    assert "5" in out
+    assert "m (length)" in out
+
+
 # ----------------- sandbox escape attempts -----------------
 
 

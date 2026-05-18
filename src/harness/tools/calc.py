@@ -365,12 +365,30 @@ _UNIT_FAMILIES: tuple[tuple[str, dict[str, float]], ...] = (
 
 # Unit tokens can carry digits + underscores (m2, ft_lb, btu_per_hr).
 # Must start with a letter so '5km' (no whitespace) doesn't snag.
+# Whitespace between value and unit is optional so '100f' parses (the
+# Qwen model emits both forms in the wild — harness-2668 session).
 _CONVERT_PATTERN = re.compile(
     r"^\s*"
     r"(?P<value>[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)"
-    r"\s+(?P<src>[a-zA-Z][a-zA-Z0-9_]*)"
+    r"\s*(?P<src>[a-zA-Z][a-zA-Z0-9_]*)"
     r"\s+(?:to|in|->)\s+"
     r"(?P<dst>[a-zA-Z][a-zA-Z0-9_]*)"
+    r"\s*$"
+)
+
+# Binary +/- arithmetic between two unit-stamped operands of the same
+# family (harness-nqc4). Optional `to <unit>` suffix overrides the
+# output unit; default is the first operand's unit. Multiplication,
+# division, and >2 operands are deliberately rejected — fall back to
+# python_eval or chained conversions for those.
+_ARITH_PATTERN = re.compile(
+    r"^\s*"
+    r"(?P<a_val>[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)"
+    r"\s*(?P<a_unit>[a-zA-Z][a-zA-Z0-9_]*)"
+    r"\s*(?P<op>[+\-])\s*"
+    r"(?P<b_val>\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)"
+    r"\s*(?P<b_unit>[a-zA-Z][a-zA-Z0-9_]*)"
+    r"(?:\s+to\s+(?P<target>[a-zA-Z][a-zA-Z0-9_]*))?"
     r"\s*$"
 )
 
@@ -386,19 +404,10 @@ def _find_family(unit: str) -> tuple[str, dict[str, float]] | None:
 
 
 def _convert_temp(value: float, src: str, dst: str) -> float:
-    """Affine temperature conversion. Internal base is celsius."""
-    src_lc, dst_lc = src.lower(), dst.lower()
-    aliases = {"celsius": "c", "fahrenheit": "f", "kelvin": "k"}
-    src_lc = aliases.get(src_lc, src_lc)
-    dst_lc = aliases.get(dst_lc, dst_lc)
-    if src_lc == "c":
-        celsius = value
-    elif src_lc == "f":
-        celsius = (value - 32.0) * 5.0 / 9.0
-    elif src_lc == "k":
-        celsius = value - 273.15
-    else:
-        raise ValueError(f"unknown temperature unit {src!r}")
+    """Affine temperature conversion (point -> point). Goes through
+    celsius as the internal base; `_temp_to_celsius` is the inverse."""
+    celsius = _temp_to_celsius(value, src)
+    dst_lc = {"celsius": "c", "fahrenheit": "f", "kelvin": "k"}.get(dst.lower(), dst.lower())
     if dst_lc == "c":
         return celsius
     if dst_lc == "f":
@@ -406,6 +415,114 @@ def _convert_temp(value: float, src: str, dst: str) -> float:
     if dst_lc == "k":
         return celsius + 273.15
     raise ValueError(f"unknown temperature unit {dst!r}")
+
+
+def _temp_to_celsius(value: float, unit: str) -> float:
+    """Affine temperature → celsius point. Centralized so the temp
+    arithmetic path and the standalone conversion share one source of
+    truth."""
+    u = {"celsius": "c", "fahrenheit": "f", "kelvin": "k"}.get(unit.lower(), unit.lower())
+    if u == "c":
+        return value
+    if u == "f":
+        return (value - 32.0) * 5.0 / 9.0
+    if u == "k":
+        return value - 273.15
+    raise ValueError(f"unknown temperature unit {unit!r}")
+
+
+# Multiplicative factor that takes a celsius interval (delta) into the
+# requested temperature scale's interval. Note: this is *not* the affine
+# point conversion — for intervals, F-delta = 1.8 C-delta, K-delta = C-delta.
+_TEMP_DELTA_FACTOR: dict[str, float] = {
+    "c": 1.0,
+    "celsius": 1.0,
+    "k": 1.0,
+    "kelvin": 1.0,
+    "f": 9.0 / 5.0,
+    "fahrenheit": 9.0 / 5.0,
+}
+
+
+def _maybe_arith(expr: str) -> str | None:
+    """Detect and execute binary +/- between two unit-stamped operands.
+
+    Same-family multiplicative units: convert both to base, apply +/-,
+    convert back to the target unit (default = a_unit).
+
+    Temperature: subtraction yields a delta (interval); addition is
+    rejected because point+point has no physical interpretation. Mixed
+    temperature scales (F-C, F-K, etc.) are allowed for subtraction —
+    both points reduce to celsius, the delta is multiplied into the
+    target scale's interval factor.
+
+    Cross-family operations raise ValueError pointing at python_eval —
+    `5 m + 10 kg` isn't representable without a dimensional library.
+    """
+    m = _ARITH_PATTERN.match(expr)
+    if not m:
+        return None
+    a_val = float(m.group("a_val"))
+    a_unit = m.group("a_unit")
+    op = m.group("op")
+    b_val = float(m.group("b_val"))
+    b_unit = m.group("b_unit")
+    target_unit = m.group("target")
+
+    a_fam = _find_family(a_unit)
+    b_fam = _find_family(b_unit)
+    if a_fam is None:
+        raise ValueError(f"unknown unit {a_unit!r} — see calc unit tables")
+    if b_fam is None:
+        raise ValueError(f"unknown unit {b_unit!r} — see calc unit tables")
+    if a_fam[0] != b_fam[0]:
+        raise ValueError(
+            f"unit families differ: {a_unit!r} is {a_fam[0]}, "
+            f"{b_unit!r} is {b_fam[0]} — cannot combine. For dimensional "
+            f"products (kg*m/s^2, m/s, etc.), use python_eval."
+        )
+    family = a_fam[0]
+    target = (target_unit or a_unit).lower()
+    target_fam = _find_family(target_unit) if target_unit else a_fam
+    if target_fam is None:
+        raise ValueError(f"unknown target unit {target_unit!r} — see calc unit tables")
+    if target_fam[0] != family:
+        raise ValueError(
+            f"target unit {target_unit!r} is {target_fam[0]}, not {family} — "
+            f"cannot convert the result"
+        )
+
+    if family == "temperature":
+        if op == "+":
+            raise ValueError(
+                "temperature addition is point + point — undefined. Only "
+                "subtraction (point - point) yields a valid delta. If you "
+                "meant 'shift a temperature by N degrees', use python_eval "
+                "or apply the shift in celsius/kelvin where intervals and "
+                "points share a unit."
+            )
+        # op == "-": subtract two points, get an interval in celsius,
+        # convert to target's interval factor.
+        a_c = _temp_to_celsius(a_val, a_unit)
+        b_c = _temp_to_celsius(b_val, b_unit)
+        delta_c = a_c - b_c
+        factor = _TEMP_DELTA_FACTOR.get(target)
+        if factor is None:
+            raise ValueError(f"unknown target temperature unit {target_unit!r}")
+        result = delta_c * factor
+        return (
+            f"{a_val} {a_unit} - {b_val} {b_unit} -> "
+            f"{result:g} {target} delta (temperature interval)"
+        )
+
+    # Multiplicative families: convert both to base, apply op, convert
+    # back to target.
+    table = a_fam[1]
+    a_base = a_val * table[a_unit.lower()]
+    b_base = b_val * table[b_unit.lower()]
+    result_base = a_base + b_base if op == "+" else a_base - b_base
+    result = result_base / table[target]
+    return f"{a_val} {a_unit} {op} {b_val} {b_unit} -> {result:g} {target} ({family})"
 
 
 def _maybe_convert(expr: str) -> str | None:
@@ -454,11 +571,16 @@ class CalcTool:
         return ToolSpec(
             name="calc",
             description=(
-                "Evaluate an arithmetic expression OR convert units. "
+                "Evaluate an arithmetic expression OR convert units OR "
+                "do binary +/- between two unit-stamped operands. "
                 "Expression form: 'sqrt(50) * 12', '2 ** 10 + 24'. "
                 "Conversion form: '5 ft to m', '100 kg to lb', "
                 "'30 c to f', '1 atm to psi', '1 kwh to j', '1 hp to w', "
                 "'1 gib to mb', '1 acre to m2', '180 deg to rad'. "
+                "Unit-stamped arithmetic (same family only, binary +/-): "
+                "'100 km + 50 mi', '1 atm + 100 hpa', '100f - 20c' "
+                "(temperature subtraction yields an interval/delta). "
+                "Append ' to <unit>' to override the output unit. "
                 "Families: length, mass, time, volume, temperature, "
                 "pressure, energy, power, data, area, angle. Functions: "
                 f"{', '.join(sorted(_SAFE_FUNCS))}. "
@@ -483,6 +605,14 @@ class CalcTool:
             raise ValueError("calc: expr must be a non-empty string")
         text = expr.strip()
 
+        # Order matters: try unit-stamped arithmetic ('100f - 20c')
+        # first, then plain conversion ('100 f to c'), then fall through
+        # to the AST evaluator for bare math. Arithmetic regex includes
+        # an op, so a single-operand conversion ('100 f to c') falls
+        # through to _maybe_convert.
+        arith = _maybe_arith(text)
+        if arith is not None:
+            return arith
         converted = _maybe_convert(text)
         if converted is not None:
             return converted
