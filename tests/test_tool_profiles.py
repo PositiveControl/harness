@@ -81,6 +81,55 @@ def test_coding_is_superset_of_core() -> None:
     assert "shell" in coding
 
 
+def test_core_and_coding_carry_reckon_trio() -> None:
+    """harness-s8sw: now / date_math / calc ride along in the main
+    everyday-chat + coding profiles so the persona stops fabricating
+    dates and arithmetic. python_eval + tz_convert + stats + sun stay
+    available via --tools-add reckon, but aren't included by default —
+    the full reckon-five would add ~1260 tokens and push core out of
+    the ~1500-token schema budget.
+
+    Pin membership so a future trim has to explicitly justify dropping
+    one; pin the absence of the heavier four so a future expansion
+    has to revisit the budget conversation."""
+    for profile in ("core", "coding"):
+        names = set(resolve_tool_names(profile))
+        for tool in ("now", "date_math", "calc"):
+            assert tool in names, f"{profile!r} missing {tool!r}"
+        for tool in ("python_eval", "tz_convert", "stats", "sun"):
+            assert tool not in names, (
+                f"{profile!r} unexpectedly carries {tool!r} — "
+                f"revisit the budget calculation in profiles.py"
+            )
+
+
+def test_core_and_coding_reckon_addition_size_bounded() -> None:
+    """Tighter regression guard for harness-s8sw: the *additional* cost
+    of attaching the three reckon primitives that ship in core/coding
+    is ~2 KB raw (~500 tokens at the Qwen ratio), well inside the
+    ~1500-token-per-profile budget. Catches a future spec rewrite
+    that bloats one of the three."""
+    import json
+
+    from harness.tools import CalcTool, DateMathTool, NowTool
+
+    total = 0
+    for tool in (NowTool(), DateMathTool(), CalcTool()):
+        total += len(
+            json.dumps(
+                {
+                    "name": tool.spec.name,
+                    "description": tool.spec.description,
+                    "parameters": tool.spec.parameters,
+                }
+            )
+        )
+    # ~2 KB now; allow generous headroom for future description tweaks.
+    assert total < 3500, (
+        f"reckon trio schema cost is {total} chars — over the per-profile addition budget"
+    )
+
+
 def test_add_override() -> None:
     names = resolve_tool_names("core", add=("write_file",))
     assert "write_file" in names

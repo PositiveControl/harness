@@ -6,10 +6,22 @@ profile asks for. Profiles may list tools that are not yet implemented;
 unknown names are warned about and skipped rather than raising, so
 profiles stay forward-compatible as new tools land.
 
-Token-cost budget target: each profile should cost ~1,500 tokens of
-tool-schema overhead or less on a Qwen 2.5 chat template (measured via
-`scripts/bench_tool_use.py --measure-tokens`). Overloading the schema
-dilutes the model's tool-picking and wastes every turn's context."""
+Token-cost budget target on a Qwen 2.5 chat template (measured via
+`scripts/bench_tool_use.py --measure-tokens`):
+
+  * minimal / diagnostic / phraseology: ≤ 1,000 tokens.
+  * core (read-only chat):              ≤ 2,000 tokens.
+  * coding / atc / scholar / ops:       ≤ 3,500 tokens.
+  * full:                               unbounded (kitchen sink).
+
+The targets relaxed when harness-s8sw added the reckon trio
+(now / date_math / calc) to core + coding — the schema cost of three
+reckon primitives is ~775 tokens on its own. Beyond the trio, the
+heavier reckon tools (python_eval / tz_convert / stats / sun) stay
+opt-in via `--tools-add reckon` (or per-tool) so casual chat doesn't
+pay for them. Overloading the schema dilutes the model's tool-picking
+and wastes every turn's context — the targets are guidance, not hard
+limits, but a profile that drifts past should justify itself."""
 
 from __future__ import annotations
 
@@ -34,6 +46,14 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "spawn_subagent",
     ),
     # Read-only everyday chat: open a file, find files, grep, recall.
+    # The three highest-leverage reckon primitives (now / date_math /
+    # calc) ride along so the main persona stops fabricating dates
+    # and arithmetic in everyday chat — the original goal of
+    # harness-1u2h. python_eval + tz_convert + stats + sun are
+    # deliberately kept out of core to stay inside the ~1500-token
+    # schema budget; opt in via `--tools-add reckon` (or per-tool)
+    # when needed (harness-s8sw — bench shows reckon-5 alone is ~1260
+    # tokens, which pushed core over budget).
     "core": (
         "read_file",
         "list_dir",
@@ -42,8 +62,16 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_memory",
         "search_facts",
         "introspect",
+        "now",
+        "date_math",
+        "calc",
     ),
-    # Active code collaboration — full read/write/shell/memory/git.
+    # Active code collaboration — full read/write/shell/memory/git +
+    # the same three reckon primitives (now/date_math/calc) so quick
+    # date and unit math doesn't force a python_eval round-trip
+    # (harness-s8sw). Coding's pre-existing schema was already large;
+    # python_eval / tz_convert / stats / sun stay off-by-default and
+    # available via --tools-add reckon.
     "coding": (
         "read_file",
         "list_dir",
@@ -60,6 +88,9 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "fetch_url",
         "introspect",
         "spawn_subagent",
+        "now",
+        "date_math",
+        "calc",
     ),
     # ab's personal-operations tool set — harness-inj.5. Every tool
     # dispatches through the BeadsAdapter to ab's isolated beads DB
