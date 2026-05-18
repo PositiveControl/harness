@@ -234,19 +234,28 @@ class SearchWebTool:
         # small models tend to wrap up with what the snippet says and
         # fabricate the rest (Mark's Mombasa repro: 1 real search
         # result expanded to 5 padded sources).
+        #
+        # The phrasing is imperative + anti-meta-confirm (do NOT ask
+        # the user) because small models otherwise read "next step" as
+        # a suggestion and reply with "would you like me to read the
+        # details from one of these sources?". The user already asked.
         if classified:
             if any_snippet:
                 hint = (
-                    "snippets are previews; call `fetch_url(url=<one of the above>)` "
-                    "to read the full page when the user asked for content the "
-                    "snippet doesn't include (current data, exact figures, full text)."
+                    "snippets are previews. To answer the user's question, you MUST "
+                    "now call `fetch_url(url=<one of the above>)` to read the full "
+                    "page. Do NOT ask the user which source to pick — pick the most "
+                    "authoritative result and fetch it. Snippets do NOT contain "
+                    "current data / exact figures / full article text."
                 )
             else:
                 hint = (
                     "these results carry titles but no snippets, so the actual data "
-                    "lives behind the URLs — call `fetch_url(url=<one of the above>)`."
+                    "lives behind the URLs. You MUST now call "
+                    "`fetch_url(url=<one of the above>)` — do NOT ask the user "
+                    "which source to pick; pick the most authoritative one and fetch."
                 )
-            lines.append(f"Next step: {hint}")
+            lines.append(f"Required next step: {hint}")
         return "\n".join(lines)
 
 

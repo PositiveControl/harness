@@ -107,10 +107,12 @@ def test_results_with_no_snippets_get_fetch_url_hint(
     out = SearchWebTool().call(query="anything")
     assert "Title A" in out
     assert "Title B" in out
-    assert "Next step:" in out
+    assert "Required next step:" in out
     assert "fetch_url" in out
     # No-snippet branch explicitly says snippets are absent.
     assert "no snippets" in out
+    # Imperative phrasing pre-empts the meta-confirm pattern.
+    assert "do not ask" in out.lower()
 
 
 def test_results_with_snippets_also_get_fetch_url_hint(
@@ -123,10 +125,14 @@ def test_results_with_snippets_also_get_fetch_url_hint(
     of 5 sources from 1 snippet-bearing result rather than fetching."""
     monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
     out = SearchWebTool().call(query="MLX")
-    assert "Next step:" in out
+    assert "Required next step:" in out
     assert "fetch_url" in out
     # Snippet-bearing branch frames hint as 'snippets are previews'.
     assert "snippets are previews" in out
+    # Imperative phrasing pre-empts the meta-confirm pattern (the agent
+    # asking 'would you like me to read the details?' after a search).
+    assert "do NOT ask" in out.lower() or "do not ask" in out.lower()
+    assert "must" in out.lower()
 
 
 def test_network_failure_returns_graceful_message(
