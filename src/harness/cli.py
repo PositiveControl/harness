@@ -83,12 +83,15 @@ from harness.tools import (
     SunTool,
     Tool,
     ToolCall,
+    ToolCatalog,
     ToolRegistry,
+    ToolSearchTool,
     ToolSpec,
     TranscriptIngestTool,
     TzConvertTool,
     WriteFileTool,
     resolve_tool_names,
+    seed_builtins_into,
 )
 from harness.tools.ab_ops import (
     CaptureTool,
@@ -1466,6 +1469,18 @@ def _retrieve_turn_context(
     return examples, recalled, known_facts
 
 
+def _session_tool_catalog() -> ToolCatalog:
+    """Build a fresh ToolCatalog seeded with the built-in metadata
+    table for this session. Used by tool_search (harness-ozx1).
+
+    Persistence is deferred to the hot-reload slice (rqg0.5) — for
+    now every session starts from the built-in seed, which matches
+    the catalog's defensive load policy (missing file = empty)."""
+    cat = ToolCatalog()
+    seed_builtins_into(cat, now_iso=datetime.now(UTC).isoformat(timespec="seconds"))
+    return cat
+
+
 def _build_tool_registry_for_tui(
     *,
     tools: bool,
@@ -1563,6 +1578,14 @@ def _build_tool_registry_for_tui(
         "tz_convert": lambda: TzConvertTool(),
         "stats": lambda: StatsTool(),
         "sun": lambda: SunTool(),
+        # tool_search — discovery primitive (harness-ozx1). Constructs a
+        # session-scoped catalog seeded with built-in metadata; passes
+        # the registry along so live spec descriptions surface rather
+        # than the catalog's empty seed default.
+        "tool_search": lambda: ToolSearchTool(
+            catalog=_session_tool_catalog(),
+            registry=registry,
+        ),
         "search_memory": lambda: (
             SearchMemoryTool(store=memory_store, user_id=speaker, expander=query_expander)
             if memory_store is not None

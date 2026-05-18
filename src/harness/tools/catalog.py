@@ -265,9 +265,10 @@ BUILTIN_TOOL_METADATA: dict[str, tuple[str, tuple[str, ...]]] = {
     "search_web": ("research", ("read", "search", "web", "ddg")),
     "fetch_url": ("research", ("read", "http", "fetch", "url")),
     "search_scholar": ("research", ("read", "search", "academic", "papers")),
-    # self
+    # self / meta
     "introspect": ("meta", ("read", "self-inspection", "capabilities")),
     "spawn_subagent": ("meta", ("read", "subagent", "delegate")),
+    "tool_search": ("meta", ("read", "discovery", "search", "catalog")),
     # ab ops (personal-operations data plane)
     "plan": ("ops", ("write", "bd", "task", "plan-issue")),
     "capture": ("ops", ("write", "bd", "task", "capture")),

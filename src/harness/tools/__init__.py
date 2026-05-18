@@ -58,6 +58,7 @@ from harness.tools.shell import ShellTool
 from harness.tools.stats import StatsTool
 from harness.tools.subagent import SpawnSubagentTool
 from harness.tools.sun import SunTool
+from harness.tools.tool_search import ToolSearchTool
 from harness.tools.transcript_ingest import TranscriptIngestTool
 from harness.tools.tz_convert import TzConvertTool
 from harness.tools.write_file import WriteFileTool
@@ -108,6 +109,7 @@ __all__ = [
     "ToolHit",
     "ToolRegistry",
     "ToolResult",
+    "ToolSearchTool",
     "ToolSpec",
     "TranscriptIngestTool",
     "TzConvertTool",

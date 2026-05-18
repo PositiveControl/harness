@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -69,10 +69,13 @@ from harness.tools import (
     SunTool,
     Tool,
     ToolCall,
+    ToolCatalog,
     ToolRegistry,
+    ToolSearchTool,
     TzConvertTool,
     WriteFileTool,
     resolve_tool_names,
+    seed_builtins_into,
 )
 from harness.tools.ab_ops import build_resume_summary
 
@@ -85,6 +88,15 @@ _EXIT_COMMANDS = frozenset({"/exit", "/quit", ":q"})
 _RETRO_COMMANDS = frozenset({"/retro"})
 _EDIT_COMMANDS = frozenset({"/edit", "/capture"})
 _CLEAR_COMMANDS = frozenset({"/clear"})
+
+
+def _classic_session_tool_catalog() -> ToolCatalog:
+    """Build a fresh ToolCatalog seeded with the built-in metadata
+    table for a classic-CLI session (harness-ozx1). Mirrors
+    cli._session_tool_catalog. Persistence lands in rqg0.5."""
+    cat = ToolCatalog()
+    seed_builtins_into(cat, now_iso=datetime.now(UTC).isoformat(timespec="seconds"))
+    return cat
 
 
 def _build_hook_pipeline(
@@ -270,6 +282,14 @@ def build_classic_registry(
         "tz_convert": lambda: TzConvertTool(),
         "stats": lambda: StatsTool(),
         "sun": lambda: SunTool(),
+        # tool_search — agent discovery primitive (harness-ozx1).
+        # Build a fresh session-scoped catalog seeded from the
+        # builtin metadata table; registry plumbing surfaces live
+        # spec descriptions over the catalog's empty defaults.
+        "tool_search": lambda: ToolSearchTool(
+            catalog=_classic_session_tool_catalog(),
+            registry=registry,
+        ),
         "search_memory": (
             lambda: (
                 SearchMemoryTool(store=memory_store, user_id=speaker, expander=query_expander)
