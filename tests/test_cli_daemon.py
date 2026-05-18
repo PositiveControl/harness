@@ -118,6 +118,100 @@ def test_daemon_consolidation_disabled_when_interval_zero() -> None:
     assert "heartbeat consolidation" not in out
 
 
+def test_daemon_writes_state_file_on_tick_once(tmp_path: Path) -> None:
+    """A --tick-once run with --state-path pointing into tmp_path
+    creates the sidecar with one entry per registered task. End-to-end
+    persistence smoke test (harness-m64i)."""
+    state_path = tmp_path / "state.json"
+    proc = subprocess.run(
+        [
+            *HARNESS_CMD,
+            "daemon",
+            "--tick-once",
+            "--state-path",
+            str(state_path),
+            "--compaction-interval",
+            "0",
+            "--consolidation-interval",
+            "0",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=_env(),
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert state_path.exists()
+    import json as _json
+
+    payload = _json.loads(state_path.read_text())
+    assert "heartbeat_alive" in payload["tasks"]
+    assert payload["tasks"]["heartbeat_alive"]["last_success_at"] is not None
+
+
+def test_daemon_status_reports_no_state_when_file_missing(tmp_path: Path) -> None:
+    """`daemon-status` against a never-run path prints a friendly
+    'no heartbeat state file' line and exits 0 (not an error)."""
+    proc = subprocess.run(
+        [
+            *HARNESS_CMD,
+            "daemon-status",
+            "--state-path",
+            str(tmp_path / "absent.json"),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=_env(),
+        timeout=15,
+        check=False,
+    )
+    assert proc.returncode == 0
+    assert "no heartbeat state file" in _norm(proc.stdout)
+
+
+def test_daemon_status_round_trip(tmp_path: Path) -> None:
+    """Run the daemon once into a tmp_path state file; then run
+    daemon-status against the same file and verify the task name
+    appears in the table output."""
+    state_path = tmp_path / "state.json"
+    run = subprocess.run(
+        [
+            *HARNESS_CMD,
+            "daemon",
+            "--tick-once",
+            "--state-path",
+            str(state_path),
+            "--compaction-interval",
+            "0",
+            "--consolidation-interval",
+            "0",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=_env(),
+        timeout=30,
+        check=False,
+    )
+    assert run.returncode == 0, run.stderr
+    status = subprocess.run(
+        [*HARNESS_CMD, "daemon-status", "--state-path", str(state_path)],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=_env(),
+        timeout=15,
+        check=False,
+    )
+    assert status.returncode == 0
+    out = _norm(status.stdout)
+    assert "heartbeat state" in out
+    assert "heartbeat_alive" in out
+
+
 def test_daemon_both_optional_tasks_disabled_leaves_alive_only() -> None:
     """Disable both maintenance tasks: only heartbeat_alive remains."""
     proc = subprocess.run(
@@ -182,6 +276,8 @@ def test_daemon_help_lists_flags() -> None:
         "--compaction-model",
         "--consolidation-interval",
         "--consolidation-min-working",
+        "--state-path",
+        "--grace-period",
         "--tick-once",
     ):
         assert flag in proc.stdout, f"missing flag {flag!r} in --help output"

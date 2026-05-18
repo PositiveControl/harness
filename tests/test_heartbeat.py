@@ -273,13 +273,16 @@ async def test_tick_once_skips_quarantined_tasks() -> None:
 
 def test_heartbeat_task_dataclass_shape() -> None:
     """Pin the public bookkeeping shape so consumers (daemon status,
-    observability bead m64i) can rely on the field set."""
+    state persistence) can rely on the field set."""
     task = HeartbeatTask(name="t", fn=lambda: None, interval_s=1.0)
     assert task.name == "t"
     assert task.interval_s == 1.0
     assert task.last_fire_ts == 0.0
     assert task.last_success_ts == 0.0
     assert task.last_error_ts == 0.0
+    assert task.last_success_at is None
+    assert task.last_error_at is None
+    assert task.last_error_msg is None
     assert task.consecutive_errors == 0
     assert task.quarantined is False
     assert task.next_fire_ts == 0.0

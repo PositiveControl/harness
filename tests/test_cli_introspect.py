@@ -17,6 +17,7 @@ from harness.cli_introspect import CommandInfo, list_cli_commands
 _EXPECTED_COMMANDS: tuple[str, ...] = (
     "chat",
     "daemon",
+    "daemon-status",
     "describe",
     "eval atc",
     "eval atc-audio",

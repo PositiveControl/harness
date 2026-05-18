@@ -2549,6 +2549,19 @@ def daemon(
         help="Skip the consolidator unless the working tier has at least this many "
         "episodic records (avoids wasted scans on empty stores).",
     ),
+    state_path: Path | None = typer.Option(
+        None,
+        "--state-path",
+        help="JSON sidecar where heartbeat state (last-fire timestamps, error counts, "
+        "quarantine flags) is persisted. Default: <character>/data/heartbeat_state.json. "
+        "Survives daemon restarts so a quarantined task stays quarantined.",
+    ),
+    grace_period: float = typer.Option(
+        10.0,
+        "--grace-period",
+        help="Seconds to wait for the loop to exit cleanly after SIGINT/SIGTERM "
+        "before force-exiting. A task hung past this is hard-killed.",
+    ),
     tick_once: bool = typer.Option(
         False,
         "--tick-once",
@@ -2579,7 +2592,10 @@ def daemon(
     def _err(name: str, exc: BaseException) -> None:
         console.print(f"[red]heartbeat error[/red] [{name}]: {exc!r}")
 
-    hb = Heartbeat(on_error=_err)
+    # State path defaults to <character>/data/heartbeat_state.json,
+    # alongside the SQLite stores. Override via --state-path.
+    resolved_state_path = state_path or (char_path / "data" / "heartbeat_state.json")
+    hb = Heartbeat(on_error=_err, state_path=resolved_state_path)
 
     def heartbeat_alive() -> None:
         ts = datetime.now(UTC).isoformat(timespec="seconds")
@@ -2638,10 +2654,20 @@ def daemon(
                 interval_s=consolidation_interval,
             )
 
+    # Restore persisted state from prior daemon runs (quarantine flags,
+    # last-fire timestamps). Idempotent — no file = first launch.
+    hb.restore_from_disk()
+    if hb.quarantined_tasks():
+        console.print(
+            f"[yellow]heartbeat[/yellow] resumed with quarantined tasks: "
+            f"{', '.join(hb.quarantined_tasks())}. Inspect via 'harness daemon-status'."
+        )
+
     console.print(
         f"[bold]heartbeat[/bold] daemon starting for {char.name} "
         f"(interval_default={interval_default}s, "
-        f"{len(hb.names())} task(s) registered)"
+        f"{len(hb.names())} task(s) registered, "
+        f"state_path={resolved_state_path})"
     )
 
     if tick_once:
@@ -2649,15 +2675,88 @@ def daemon(
         console.print("[bold]heartbeat[/bold] tick-once complete")
         return
 
+    import os as _os
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+
+    def _shutdown() -> None:
+        hb.stop()
+
+        def _force_exit() -> None:
+            console.print(
+                f"[yellow]heartbeat[/yellow] grace period {grace_period}s expired — forcing exit"
+            )
+            _os._exit(1)
+
+        loop.call_later(grace_period, _force_exit)
+
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, hb.stop)
+        loop.add_signal_handler(sig, _shutdown)
     try:
         loop.run_until_complete(hb.run_forever())
     finally:
         loop.close()
     console.print("[bold]heartbeat[/bold] daemon stopped.")
+
+
+@app.command("daemon-status")
+def daemon_status(
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character whose daemon state to inspect. "
+        "Default: HARNESS_CHARACTER_NAME or 'airton'.",
+    ),
+    state_path: Path | None = typer.Option(
+        None,
+        "--state-path",
+        help="Override path to the heartbeat state JSON. "
+        "Default: <character>/data/heartbeat_state.json.",
+    ),
+) -> None:
+    """Read the heartbeat state sidecar and print a table of per-task
+    last-success / last-error / consecutive_errors / quarantined flags.
+
+    Use this to verify the daemon is alive and inspect any failing
+    tasks without tailing logs. The state file is written by the
+    running daemon on every tick (harness-m64i)."""
+    from harness.runtime.state import load_state
+
+    char_path = settings.character_path
+    if character:
+        char_path = char_path.parent / character
+    char = load_character(char_path)
+    resolved_path = state_path or (char_path / "data" / "heartbeat_state.json")
+
+    if not resolved_path.exists():
+        console.print(
+            f"[yellow]no heartbeat state file at {resolved_path}[/yellow] — "
+            f"daemon may not have run for character {char.name!r} yet."
+        )
+        return
+
+    state = load_state(resolved_path)
+    console.print(f"[bold]heartbeat state[/bold] for {char.name} ({resolved_path})")
+    if not state.tasks:
+        console.print("  (no tasks recorded yet)")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("task")
+    table.add_column("last_success")
+    table.add_column("last_error")
+    table.add_column("errs", justify="right")
+    table.add_column("quarantined")
+    for name in sorted(state.tasks):
+        rec = state.tasks[name]
+        table.add_row(
+            name,
+            rec.last_success_at or "(never)",
+            rec.last_error_at or "(none)",
+            str(rec.consecutive_errors),
+            "yes" if rec.quarantined else "no",
+        )
+    console.print(table)
 
 
 @app.command()

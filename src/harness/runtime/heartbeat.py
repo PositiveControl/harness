@@ -38,6 +38,15 @@ import inspect
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+
+from harness.runtime.state import (
+    HeartbeatState,
+    TaskState,
+    load_state,
+    save_state,
+)
 
 TaskFn = Callable[[], None | Awaitable[None]]
 ErrorHandler = Callable[[str, BaseException], None]
@@ -67,6 +76,13 @@ class HeartbeatTask:
     last_fire_ts: float = 0.0
     last_success_ts: float = 0.0
     last_error_ts: float = 0.0
+    # Wall-clock timestamps for the daemon-status command and for the
+    # state-persistence sidecar. Monotonic ts fields above are what
+    # the scheduler reads; these are what humans read. Captured
+    # alongside in `_fire` so the two views can't drift (harness-m64i).
+    last_success_at: datetime | None = None
+    last_error_at: datetime | None = None
+    last_error_msg: str | None = None
     consecutive_errors: int = 0
     quarantined: bool = False
     next_fire_ts: float = field(default=0.0)
@@ -92,11 +108,15 @@ class Heartbeat:
         on_error: ErrorHandler | None = None,
         max_consecutive_errors: int = DEFAULT_MAX_CONSECUTIVE_ERRORS,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        state_path: Path | None = None,
     ) -> None:
         self._tasks: dict[str, HeartbeatTask] = {}
         self._on_error = on_error
         self._max_consecutive_errors = max_consecutive_errors
         self._clock = clock
+        self._wall_clock = wall_clock
+        self._state_path = state_path
         self._stop_event = asyncio.Event()
         self._running = False
 
@@ -184,6 +204,57 @@ class Heartbeat:
     def is_running(self) -> bool:
         return self._running
 
+    # --- state persistence ----------------------------------------------
+
+    def snapshot(self) -> HeartbeatState:
+        """Capture the current per-task state in a JSON-serializable
+        form. Wall-clock timestamps go through `.isoformat()`; monotonic
+        timestamps are deliberately omitted — they don't survive
+        process restart, so persisting them would lie to the next
+        daemon."""
+        tasks: dict[str, TaskState] = {}
+        for name, task in self._tasks.items():
+            tasks[name] = TaskState(
+                last_success_at=task.last_success_at.isoformat() if task.last_success_at else None,
+                last_error_at=task.last_error_at.isoformat() if task.last_error_at else None,
+                last_error_msg=task.last_error_msg,
+                consecutive_errors=task.consecutive_errors,
+                quarantined=task.quarantined,
+            )
+        return HeartbeatState(tasks=tasks)
+
+    def restore(self, state: HeartbeatState) -> None:
+        """Apply a persisted state to currently-registered tasks.
+
+        Tasks present in `state` but not registered are silently
+        ignored — they were probably part of an older daemon
+        configuration. Tasks registered but absent from `state` are
+        left at their fresh defaults — that's a first-launch task.
+
+        Wall-clock timestamps are restored verbatim (ISO -> datetime).
+        Monotonic timestamps are NOT touched — `next_fire_ts` was
+        already set to `now + interval` at `register()` time, which is
+        the correct schedule after restart."""
+        for name, persisted in state.tasks.items():
+            task = self._tasks.get(name)
+            if task is None:
+                continue
+            if persisted.last_success_at is not None:
+                task.last_success_at = datetime.fromisoformat(persisted.last_success_at)
+            if persisted.last_error_at is not None:
+                task.last_error_at = datetime.fromisoformat(persisted.last_error_at)
+            task.last_error_msg = persisted.last_error_msg
+            task.consecutive_errors = persisted.consecutive_errors
+            task.quarantined = persisted.quarantined
+
+    def restore_from_disk(self) -> None:
+        """Read `state_path` (if set) and apply via `restore`. No-op
+        when `state_path is None` or the file doesn't exist. Idempotent
+        — calling twice with no intervening fires is a no-op."""
+        if self._state_path is None:
+            return
+        self.restore(load_state(self._state_path))
+
     # --- internals -------------------------------------------------------
 
     def _collect_due(self) -> list[HeartbeatTask]:
@@ -217,6 +288,8 @@ class Heartbeat:
             # .suppress because a buggy handler shouldn't crash the loop
             # either.
             task.last_error_ts = self._clock()
+            task.last_error_at = self._wall_clock()
+            task.last_error_msg = repr(exc)
             task.consecutive_errors += 1
             if task.consecutive_errors >= self._max_consecutive_errors:
                 task.quarantined = True
@@ -225,9 +298,18 @@ class Heartbeat:
                     self._on_error(task.name, exc)
         else:
             task.last_success_ts = self._clock()
+            task.last_success_at = self._wall_clock()
             task.consecutive_errors = 0
         finally:
             task.next_fire_ts = self._clock() + task.interval_s
+            # Auto-persist on every fire when state_path is set. Small
+            # file, atomic write — even with several tasks firing per
+            # minute the write cost is negligible. Silently swallow
+            # filesystem errors so a locked sidecar can't crash the
+            # loop (harness-m64i).
+            if self._state_path is not None:
+                with contextlib.suppress(OSError):
+                    save_state(self.snapshot(), self._state_path)
 
     async def _sleep_until_next(self) -> None:
         """Sleep until the next-due task or until `stop()` is called,
