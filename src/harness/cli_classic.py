@@ -54,6 +54,7 @@ from harness.tools import (
     GlobTool,
     GrepTool,
     ListDirTool,
+    LoadToolTool,
     NowTool,
     PythonEvalTool,
     ReadFileTool,
@@ -289,6 +290,15 @@ def build_classic_registry(
         "tool_search": lambda: ToolSearchTool(
             catalog=_classic_session_tool_catalog(),
             registry=registry,
+        ),
+        # load_tool — agent-driven working-set expansion (harness-atsz),
+        # extended in harness-cm4v to build catalog-only builtins on
+        # demand. Closure captures the local `builders` dict by name,
+        # so the lazy-build path sees the full builder map at call time.
+        "load_tool": lambda: LoadToolTool(
+            catalog=_classic_session_tool_catalog(),
+            registry=registry,
+            builders=builders,
         ),
         "search_memory": (
             lambda: (
