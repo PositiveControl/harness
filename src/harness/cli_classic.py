@@ -68,6 +68,7 @@ from harness.tools import (
     Tool,
     ToolCall,
     ToolRegistry,
+    TzConvertTool,
     WriteFileTool,
     resolve_tool_names,
 )
@@ -264,6 +265,7 @@ def build_classic_registry(
         "date_math": lambda: DateMathTool(),
         "calc": lambda: CalcTool(),
         "python_eval": lambda: PythonEvalTool(),
+        "tz_convert": lambda: TzConvertTool(),
         "search_memory": (
             lambda: (
                 SearchMemoryTool(store=memory_store, user_id=speaker, expander=query_expander)

@@ -47,6 +47,7 @@ from harness.tools.search_web import SearchWebTool
 from harness.tools.shell import ShellTool
 from harness.tools.subagent import SpawnSubagentTool
 from harness.tools.transcript_ingest import TranscriptIngestTool
+from harness.tools.tz_convert import TzConvertTool
 from harness.tools.write_file import WriteFileTool
 
 __all__ = [
@@ -91,6 +92,7 @@ __all__ = [
     "ToolResult",
     "ToolSpec",
     "TranscriptIngestTool",
+    "TzConvertTool",
     "WriteFileTool",
     "lint_utterance",
     "resolve_tool_names",

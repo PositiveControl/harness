@@ -84,6 +84,7 @@ from harness.tools import (
     ToolRegistry,
     ToolSpec,
     TranscriptIngestTool,
+    TzConvertTool,
     WriteFileTool,
     resolve_tool_names,
 )
@@ -1552,6 +1553,7 @@ def _build_tool_registry_for_tui(
         "date_math": lambda: DateMathTool(),
         "calc": lambda: CalcTool(),
         "python_eval": lambda: PythonEvalTool(),
+        "tz_convert": lambda: TzConvertTool(),
         "search_memory": lambda: (
             SearchMemoryTool(store=memory_store, user_id=speaker, expander=query_expander)
             if memory_store is not None
