@@ -227,17 +227,26 @@ class SearchWebTool:
                 entry += f"\n   {result.snippet}"
                 any_snippet = True
             lines.append(entry)
-        # Surface a follow-up hint when the result set is content-thin:
-        # all-empty snippets means the agent has URLs but no extracted
-        # data. The honest next step is to fetch_url one of them rather
-        # than fabricate placeholder content like "[Check the link for
-        # the latest temperature]". See harness-q7kn.
-        if not any_snippet and classified:
-            lines.append(
-                "Next step: call `fetch_url(url=<one of the above>)` to read "
-                "the page contents — these results carry titles but no "
-                "snippets, so the actual data lives behind the URLs."
-            )
+        # Always surface the fetch_url chain hint when results exist
+        # (harness-h6ve). Snippets are previews — for the actual page
+        # content (current temperatures, exact figures, full article
+        # text), the agent has to fetch_url. Without this in-band push,
+        # small models tend to wrap up with what the snippet says and
+        # fabricate the rest (Mark's Mombasa repro: 1 real search
+        # result expanded to 5 padded sources).
+        if classified:
+            if any_snippet:
+                hint = (
+                    "snippets are previews; call `fetch_url(url=<one of the above>)` "
+                    "to read the full page when the user asked for content the "
+                    "snippet doesn't include (current data, exact figures, full text)."
+                )
+            else:
+                hint = (
+                    "these results carry titles but no snippets, so the actual data "
+                    "lives behind the URLs — call `fetch_url(url=<one of the above>)`."
+                )
+            lines.append(f"Next step: {hint}")
         return "\n".join(lines)
 
 

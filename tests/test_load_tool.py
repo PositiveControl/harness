@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
+
 from harness.tools.base import ToolRegistry, ToolSpec
 from harness.tools.catalog import ToolCatalog, ToolCatalogEntry
 from harness.tools.load_tool import LoadToolTool
@@ -257,3 +259,124 @@ def test_load_tool_without_builders_keeps_old_restart_hint() -> None:
     out = tool.call(name="not_built")
     assert "not loaded this session" in out
     assert "--tools-add not_built" in out
+
+
+# --- harness-h6ve: companion auto-load ----------------------------------
+
+
+def test_load_tool_auto_loads_known_companion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """harness-h6ve: loading search_web pulls fetch_url along. The
+    pair travels together because snippets are previews and the
+    actual page content lives behind the URL — small models bail
+    rather than do another discovery cycle."""
+    from harness.tools import load_tool as load_tool_mod
+
+    primary_spec = _stub_spec("search_web")
+    companion_spec = _stub_spec("fetch_url")
+
+    monkeypatch.setattr(
+        load_tool_mod,
+        "_TOOL_COMPANIONS",
+        {"search_web": ("fetch_url",)},
+    )
+
+    tool = _build_with_builders(
+        catalog_entries=[
+            ToolCatalogEntry(name="search_web", family="research", origin="builtin"),
+            ToolCatalogEntry(name="fetch_url", family="research", origin="builtin"),
+        ],
+        builders={
+            "search_web": lambda: _StubTool(_spec=primary_spec),
+            "fetch_url": lambda: _StubTool(_spec=companion_spec),
+        },
+    )
+    out = tool.call(name="search_web")
+    assert "built and activated 'search_web'" in out
+    assert "also loaded: fetch_url (peer tools)" in out
+    assert "search_web" in tool.registry.names()
+    assert "fetch_url" in tool.registry.names()
+
+
+def test_load_tool_companion_skipped_when_builder_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Companion declared but its builder isn't wired — silent skip.
+    Primary load still succeeds; the success summary just omits the
+    'also loaded' line."""
+    from harness.tools import load_tool as load_tool_mod
+
+    primary_spec = _stub_spec("search_web")
+    monkeypatch.setattr(load_tool_mod, "_TOOL_COMPANIONS", {"search_web": ("fetch_url",)})
+
+    tool = _build_with_builders(
+        catalog_entries=[
+            ToolCatalogEntry(name="search_web", family="research", origin="builtin"),
+        ],
+        builders={"search_web": lambda: _StubTool(_spec=primary_spec)},  # no fetch_url
+    )
+    out = tool.call(name="search_web")
+    assert "built and activated 'search_web'" in out
+    assert "also loaded:" not in out
+    assert "fetch_url" not in tool.registry.names()
+
+
+def test_load_tool_companion_skipped_when_already_registered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the companion was already explicitly loaded earlier in the
+    session, don't double-register. The 'also loaded' line should
+    omit it — there was no companion load to report."""
+    from harness.tools import load_tool as load_tool_mod
+
+    primary_spec = _stub_spec("search_web")
+    companion_spec = _stub_spec("fetch_url")
+    monkeypatch.setattr(load_tool_mod, "_TOOL_COMPANIONS", {"search_web": ("fetch_url",)})
+
+    tool = _build_with_builders(
+        catalog_entries=[
+            ToolCatalogEntry(name="search_web", family="research", origin="builtin"),
+            ToolCatalogEntry(name="fetch_url", family="research", origin="builtin"),
+        ],
+        builders={
+            "search_web": lambda: _StubTool(_spec=primary_spec),
+            "fetch_url": lambda: _StubTool(_spec=companion_spec),
+        },
+        registered=[companion_spec],  # fetch_url already there
+    )
+    out = tool.call(name="search_web")
+    assert "built and activated 'search_web'" in out
+    assert "also loaded:" not in out
+
+
+def test_load_tool_companion_raise_is_silent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Companion builder crashing must not break the primary load.
+    Silently swallow the exception; the primary load reports success
+    without claiming the companion landed."""
+    from harness.tools import load_tool as load_tool_mod
+
+    primary_spec = _stub_spec("search_web")
+
+    def _broken_companion() -> _StubTool:
+        raise ImportError("ddgs not installed")
+
+    monkeypatch.setattr(load_tool_mod, "_TOOL_COMPANIONS", {"search_web": ("fetch_url",)})
+
+    tool = _build_with_builders(
+        catalog_entries=[
+            ToolCatalogEntry(name="search_web", family="research", origin="builtin"),
+            ToolCatalogEntry(name="fetch_url", family="research", origin="builtin"),
+        ],
+        builders={
+            "search_web": lambda: _StubTool(_spec=primary_spec),
+            "fetch_url": _broken_companion,
+        },
+    )
+    out = tool.call(name="search_web")
+    assert "built and activated 'search_web'" in out
+    assert "also loaded:" not in out
+    assert "search_web" in tool.registry.names()
+    assert "fetch_url" not in tool.registry.names()

@@ -107,17 +107,26 @@ def test_results_with_no_snippets_get_fetch_url_hint(
     out = SearchWebTool().call(query="anything")
     assert "Title A" in out
     assert "Title B" in out
-    assert "Next step: call `fetch_url" in out
+    assert "Next step:" in out
+    assert "fetch_url" in out
+    # No-snippet branch explicitly says snippets are absent.
+    assert "no snippets" in out
 
 
-def test_results_with_any_snippet_do_not_get_fetch_url_hint(
+def test_results_with_snippets_also_get_fetch_url_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The hint must NOT appear when at least one result has a snippet
-    — those are content-rich and the agent has enough to summarize."""
+    """harness-h6ve: always surface the fetch_url chain hint, even
+    when snippets are present. Snippets are previews; the actual page
+    content (current weather, exact figures, full text) lives behind
+    the URL. Mark's Mombasa repro showed the agent fabricating a list
+    of 5 sources from 1 snippet-bearing result rather than fetching."""
     monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
     out = SearchWebTool().call(query="MLX")
-    assert "Next step: call `fetch_url" not in out
+    assert "Next step:" in out
+    assert "fetch_url" in out
+    # Snippet-bearing branch frames hint as 'snippets are previews'.
+    assert "snippets are previews" in out
 
 
 def test_network_failure_returns_graceful_message(

@@ -49,6 +49,18 @@ from dataclasses import dataclass, field
 from harness.tools.base import Tool, ToolRegistry, ToolSpec
 from harness.tools.catalog import ToolCatalog
 
+# Tools that travel together — loading one auto-loads the others
+# (harness-h6ve). Pure pragmatism: small models bail on multi-step
+# discovery, and these pairings are 'almost always wanted together.'
+# Reasoning, not a hard convention:
+#   search_web → fetch_url    Snippets are previews; the agent almost
+#                             always wants to read one of the URLs.
+# Add cautiously: pairings that aren't tight enough cause the wrong
+# tools to leak into a session.
+_TOOL_COMPANIONS: dict[str, tuple[str, ...]] = {
+    "search_web": ("fetch_url",),
+}
+
 
 @dataclass
 class LoadToolTool:
@@ -160,7 +172,14 @@ class LoadToolTool:
                 # registration alone is sufficient.
                 if self.registry._active_names is not None:
                     self.registry.set_active(set(self.registry.active_names()) | {name})
-                return _format_loaded(instance.spec, lazy_built=True)
+
+                # Auto-load known companions (harness-h6ve). search_web
+                # → fetch_url etc. Silent on failure: the primary load
+                # already succeeded, so we don't want a companion
+                # builder hiccup to mask that. The caller sees which
+                # companions actually landed in the success summary.
+                companions_loaded = self._load_companions(name)
+                return _format_loaded(instance.spec, lazy_built=True, companions=companions_loaded)
             hint = f"Restart the session with `--tools-add {name}` (or a profile that includes it)."
             return f"load_tool: {name!r} is in the catalog but not loaded this session. {hint}"
 
@@ -175,8 +194,45 @@ class LoadToolTool:
         spec = self.registry.get(name).spec
         return _format_loaded(spec)
 
+    def _load_companions(self, primary_name: str) -> tuple[str, ...]:
+        """Build + register peer tools that travel with `primary_name`.
 
-def _format_loaded(spec: ToolSpec, *, lazy_built: bool = False) -> str:
+        Quietly skips: companions already in the registry, missing
+        builders, builders that return None (state not enabled),
+        builders that raise, or `register` failures. Returns the names
+        that actually landed."""
+        wanted = _TOOL_COMPANIONS.get(primary_name, ())
+        if not wanted:
+            return ()
+        loaded: list[str] = []
+        for comp in wanted:
+            if comp in self.registry:
+                continue
+            builder = self.builders.get(comp)
+            if builder is None:
+                continue
+            try:
+                instance = builder()
+            except Exception:  # noqa: S112 — companion failure must not break primary load
+                continue
+            if instance is None:
+                continue
+            try:
+                self.registry.register(instance)
+            except ValueError:
+                continue
+            if self.registry._active_names is not None:
+                self.registry.set_active(set(self.registry.active_names()) | {comp})
+            loaded.append(comp)
+        return tuple(loaded)
+
+
+def _format_loaded(
+    spec: ToolSpec,
+    *,
+    lazy_built: bool = False,
+    companions: tuple[str, ...] = (),
+) -> str:
     headline = (
         f"load_tool: built and activated {spec.name!r} on demand."
         if lazy_built
@@ -191,6 +247,8 @@ def _format_loaded(spec: ToolSpec, *, lazy_built: bool = False) -> str:
     if isinstance(props, dict) and props:
         joined = ", ".join(sorted(props.keys()))
         lines.append(f"  parameters : {joined}")
+    if companions:
+        lines.append(f"  also loaded: {', '.join(companions)} (peer tools)")
     lines.append("Next round will see its schema in the tool list.")
     return "\n".join(lines)
 
