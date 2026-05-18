@@ -159,6 +159,7 @@ ignore = [
 "tests/**" = ["PLR2004"]           # magic numbers are fine in tests
 "tests/test_cli_daemon.py" = ["S603"]  # subprocess calls run our own harness binary; not untrusted input
 "tests/test_cli_plan.py" = ["S603"]  # same — subprocess invokes our harness binary
+"tests/test_cli_tool.py" = ["S603"]  # same — subprocess invokes our harness binary
 "tests/test_tui_*.py" = ["PLR2004", "RUF001", "RUF002", "RUF003"]  # same rationale as src/harness/tui/
 "tests/test_atc_chunk.py" = ["RUF001", "RUF002", "RUF003"]  # U+2212 is the point — exercising the normaliser
 "tests/test_eval_atc_audio.py" = ["RUF002"]  # U+2212 in section-normalization test docstring

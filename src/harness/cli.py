@@ -305,6 +305,11 @@ plan_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(plan_app, name="plan")
+tool_app = typer.Typer(
+    help="Inspect + manage the tool catalog (harness-rqg0).",
+    no_args_is_help=True,
+)
+app.add_typer(tool_app, name="tool")
 console = Console()
 
 
@@ -3064,6 +3069,210 @@ def plan_bootstrap(
     store = JsonPlanStore(resolved_dir)
     store.save(plan)
     console.print(f"[green]wrote {resolved_dir / (plan.id + '.json')}[/green]")
+
+
+# --- harness tool ... ---------------------------------------------------
+
+
+def _resolve_catalog_path(character: str | None) -> Path:
+    """Default catalog location for the character. Operator override
+    via `--catalog-path` on each command."""
+    char_path = settings.character_path
+    if character:
+        char_path = char_path.parent / character
+    return char_path / "data" / "tool_catalog.json"
+
+
+def _load_or_seed_catalog(path: Path) -> ToolCatalog:
+    """Load from disk if present; else seed from the builtin metadata
+    table and return (without writing). The CLI list / show paths use
+    this so a never-saved catalog still surfaces builtins."""
+    from harness.tools import load_catalog as _load
+
+    if path.exists():
+        return _load(path)
+    cat = ToolCatalog()
+    seed_builtins_into(cat, now_iso=datetime.now(UTC).isoformat(timespec="seconds"))
+    return cat
+
+
+@tool_app.command("list")
+def tool_list(
+    tag: str | None = typer.Option(None, "--tag", help="Filter to entries with this tag."),
+    family: str | None = typer.Option(None, "--family", help="Filter to entries in this family."),
+    origin: str | None = typer.Option(
+        None,
+        "--origin",
+        help="Filter by origin: builtin | synthesized | external.",
+    ),
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character whose tool catalog to read. Default: HARNESS_CHARACTER_NAME.",
+    ),
+    catalog_path: Path | None = typer.Option(
+        None,
+        "--catalog-path",
+        help="Override the catalog file path. Default: <character>/data/tool_catalog.json.",
+    ),
+) -> None:
+    """List tools in the catalog (harness-fx24).
+
+    Reads from <character>/data/tool_catalog.json; if missing,
+    surfaces the builtin metadata table directly. Filters compose:
+    --tag X --family Y --origin Z all intersect."""
+    cat = _load_or_seed_catalog(catalog_path or _resolve_catalog_path(character))
+    entries = cat.all()
+    if tag:
+        entries = [e for e in entries if tag in e.tags]
+    if family:
+        entries = [e for e in entries if e.family == family]
+    if origin:
+        entries = [e for e in entries if e.origin == origin]
+
+    if not entries:
+        console.print("[yellow]no catalog entries match the filter[/yellow]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("name")
+    table.add_column("family")
+    table.add_column("origin")
+    table.add_column("tags")
+    table.add_column("registered_at")
+    for entry in entries:
+        tags = ", ".join(entry.tags) if entry.tags else "—"
+        table.add_row(
+            entry.name,
+            entry.family or "—",
+            entry.origin,
+            tags,
+            entry.registered_at or "—",
+        )
+    console.print(table)
+    console.print(f"\n[dim]{len(entries)} entr{'y' if len(entries) == 1 else 'ies'}[/dim]")
+
+
+@tool_app.command("show")
+def tool_show(
+    name: str = typer.Argument(..., help="Tool name to inspect."),
+    character: str | None = typer.Option(None, "--character", help="Character to read from."),
+    catalog_path: Path | None = typer.Option(None, "--catalog-path"),
+    source_preview_lines: int = typer.Option(
+        20,
+        "--source-preview-lines",
+        help="How many lines of source to preview for synthesized tools.",
+    ),
+) -> None:
+    """Show the full catalog entry for `name` — family, tags, tier,
+    origin, registered_at, plus the first ~20 lines of source for
+    synthesized tools."""
+    cat = _load_or_seed_catalog(catalog_path or _resolve_catalog_path(character))
+    entry = cat.get(name)
+    if entry is None:
+        console.print(f"[red]no tool named {name!r} in catalog[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[bold]{entry.name}[/bold]")
+    console.print(f"  family       : {entry.family or '—'}")
+    console.print(f"  tags         : {', '.join(entry.tags) if entry.tags else '—'}")
+    console.print(f"  tier         : {entry.tier}")
+    console.print(f"  origin       : {entry.origin}")
+    console.print(f"  source_path  : {entry.source_path or '—'}")
+    console.print(f"  registered_at: {entry.registered_at or '—'}")
+    if entry.quarantined:
+        reason = entry.quarantine_reason or "no reason"
+        console.print(f"[yellow]  quarantined  : yes ({reason})[/yellow]")
+    if entry.description:
+        console.print("\n[bold]description[/bold]")
+        console.print(f"  {entry.description}")
+    if entry.source_path:
+        src = Path(entry.source_path)
+        if src.exists():
+            console.print(f"\n[bold]source preview[/bold] ({src})")
+            text = src.read_text()
+            lines = text.splitlines()
+            visible = lines[:source_preview_lines]
+            for line in visible:
+                console.print(f"  {line}")
+            if len(lines) > source_preview_lines:
+                remaining = len(lines) - source_preview_lines
+                console.print(f"  [dim]… (+{remaining} more lines)[/dim]")
+        else:
+            console.print(f"\n[yellow]source_path {src} does not exist on disk[/yellow]")
+
+
+@tool_app.command("drop")
+def tool_drop(
+    name: str = typer.Argument(..., help="Tool name to remove from the catalog."),
+    character: str | None = typer.Option(None, "--character"),
+    catalog_path: Path | None = typer.Option(None, "--catalog-path"),
+    keep_source: bool = typer.Option(
+        False,
+        "--keep-source",
+        help="Skip deleting the synthesized tool's source file; only remove from catalog.",
+    ),
+) -> None:
+    """Remove a tool from the catalog. Refuses on builtin entries
+    (they're declared in code, not the catalog file). For synthesized
+    tools, deletes the source file unless --keep-source is set.
+    Idempotent — dropping an absent name is a no-op + warning."""
+    from harness.tools import load_catalog as _load
+    from harness.tools import save_catalog as _save
+
+    path = catalog_path or _resolve_catalog_path(character)
+    if not path.exists():
+        console.print(f"[yellow]no catalog file at {path}; nothing to drop[/yellow]")
+        return
+    cat = _load(path)
+    entry = cat.get(name)
+    if entry is None:
+        console.print(f"[yellow]tool {name!r} not in catalog; nothing to drop[/yellow]")
+        return
+    if entry.origin == "builtin":
+        console.print(
+            f"[red]refusing to drop builtin tool {name!r} — "
+            f"builtins are declared in code, not the catalog. "
+            f"Add to TOOL_PROFILES drop set or remove from BUILTIN_TOOL_METADATA instead.[/red]"
+        )
+        raise typer.Exit(code=1)
+    cat.drop(name)
+    _save(cat, path)
+    console.print(f"[green]dropped {name!r} from catalog[/green]")
+    if entry.source_path and not keep_source:
+        src = Path(entry.source_path)
+        if src.exists():
+            src.unlink()
+            console.print(f"[green]deleted source {src}[/green]")
+        else:
+            console.print(f"[dim]source {src} already gone[/dim]")
+
+
+@tool_app.command("synth-rebuild")
+def tool_synth_rebuild(
+    character: str | None = typer.Option(None, "--character"),
+    catalog_path: Path | None = typer.Option(None, "--catalog-path"),
+) -> None:
+    """Re-validate every synthesized catalog entry via the sandbox
+    validator (harness-l2ak). Surfaces drift — a synthesized tool
+    whose source file is missing, whose import allowlist no longer
+    accepts a builtin it uses, etc.
+
+    Until rqg0.5 + l2ak ship the validator + hot-reload, this command
+    reports synthesized-entry counts but doesn't yet revalidate. Use
+    `harness tool list --origin synthesized` to see current entries.
+    """
+    path = catalog_path or _resolve_catalog_path(character)
+    cat = _load_or_seed_catalog(path)
+    synth = cat.by_origin("synthesized")
+    if not synth:
+        console.print("[dim]no synthesized tools in catalog[/dim]")
+        return
+    console.print(f"[bold]{len(synth)} synthesized tool(s):[/bold]")
+    for entry in synth:
+        marker = "[yellow]quarantined[/yellow]" if entry.quarantined else "[green]ok[/green]"
+        console.print(f"  - {entry.name} ({entry.family}) — {marker}")
+    console.print(
+        "\n[dim]revalidation pending harness-l2ak (sandbox) + harness-t5kx (hot-reload).[/dim]"
+    )
 
 
 @app.command()
