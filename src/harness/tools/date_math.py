@@ -21,13 +21,21 @@ from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import holidays as _holidays
 from dateutil import parser as _dt_parser
 from dateutil.relativedelta import relativedelta
 
 from harness.tools.base import ToolSpec
 
 _DEFAULT_TZ = "America/Phoenix"
-_OPS = ("parse", "add", "diff", "format")
+_OPS = ("parse", "add", "diff", "format", "business_days")
+
+# Holiday-set tags accepted by the business_days op. "none" = weekends-
+# only. "us_federal" = python-holidays' UnitedStates() default, which is
+# the 11 federal holidays plus observed-on-Mon/Fri shifts. New tags can
+# be added here without changing the op shape (e.g. "us_federal_observed_only",
+# "uk_bank", country-coded entries).
+_HOLIDAY_SETS = ("none", "us_federal")
 # Re-exported indirection so a future per-character `default_tz`
 # override can `from harness.tools.date_math import ZoneInfoNotFound`
 # at validation time. Kept as a type alias rather than a new exception.
@@ -159,15 +167,96 @@ def _parse_natural(expr: str, *, today: date) -> date:
     return parsed.date()
 
 
+def _holiday_set_for(tag: str) -> dict[date, str] | None:
+    """Resolve a holiday-set tag to a python-holidays calendar (dict
+    keyed by date) or None for weekends-only. Validated values come
+    from `_HOLIDAY_SETS`; the caller raises ValueError on unknowns."""
+    if tag == "none":
+        return None
+    if tag == "us_federal":
+        # `country_holidays('US')` is the typed factory; the country-class
+        # constructors (`holidays.UnitedStates()`) are dynamic exports that
+        # mypy can't see. The returned HolidayBase is dict-like and
+        # computes year ranges lazily as the caller probes dates.
+        return _holidays.country_holidays("US")
+    raise ValueError(f"holidays must be one of {_HOLIDAY_SETS!r}, got {tag!r}")
+
+
+def _is_business_day(d: date, holiday_set: dict[date, str] | None) -> bool:
+    if d.weekday() >= 5:  # Saturday (5) or Sunday (6)
+        return False
+    return not (holiday_set is not None and d in holiday_set)
+
+
+def _count_business_days_inclusive(
+    a: date,
+    b: date,
+    holiday_set: dict[date, str] | None,
+) -> tuple[int, int, int]:
+    """Count business days from `a` to `b` inclusive of both endpoints,
+    in NETWORKDAYS-style semantics. Returns (business_days, weekend_skips,
+    holiday_skips). `a > b` yields a negative business_days count but
+    positive skip counts (the skips are still real days)."""
+    if a == b:
+        return (1 if _is_business_day(a, holiday_set) else 0, 0 if a.weekday() < 5 else 1, 0)
+    step = timedelta(days=1) if b > a else timedelta(days=-1)
+    sign = 1 if b > a else -1
+    cur = a
+    business = 0
+    weekends = 0
+    holidays_hit = 0
+    while True:
+        if cur.weekday() >= 5:
+            weekends += 1
+        elif holiday_set is not None and cur in holiday_set:
+            holidays_hit += 1
+        else:
+            business += 1
+        if cur == b:
+            break
+        cur += step
+    return (sign * business, weekends, holidays_hit)
+
+
+def _advance_business_days(
+    base: date,
+    delta: int,
+    holiday_set: dict[date, str] | None,
+) -> date:
+    """Return the date `delta` business days from `base`. If `base` is
+    not itself a business day, snap forward (delta >= 0) or backward
+    (delta < 0) to the nearest business day, then advance from there.
+    Snap-to-business consumes zero of the delta budget — delta=0 from
+    a Saturday returns the following Monday."""
+    result = base
+    if not _is_business_day(result, holiday_set):
+        snap_step = timedelta(days=1) if delta >= 0 else timedelta(days=-1)
+        while not _is_business_day(result, holiday_set):
+            result += snap_step
+    if delta == 0:
+        return result
+    direction = timedelta(days=1) if delta > 0 else timedelta(days=-1)
+    remaining = abs(delta)
+    while remaining > 0:
+        result += direction
+        if _is_business_day(result, holiday_set):
+            remaining -= 1
+    return result
+
+
 @dataclass
 class DateMathTool:
     """Date arithmetic + parsing tool.
 
-    Args: `op` (parse/add/diff/format) + `args` (dict, shape varies):
+    Args: `op` (parse/add/diff/format/business_days) + `args` (dict, shape varies):
         parse  : {"expr": "next Thursday"} -> "2026-05-21 (Thursday)"
         add    : {"base": "2026-05-15", "delta": "+3 weeks 2 days"}
         diff   : {"a": "2026-05-15", "b": "2026-06-20"}
         format : {"iso": "2026-05-15", "format": "%A, %B %d %Y"}
+        business_days:
+            count mode   : {"a": "2026-05-22", "b": "2026-05-26", "holidays": "us_federal"}
+            advance mode : {"base": "2026-05-18", "delta_business_days": 10,
+                            "holidays": "us_federal"}
     """
 
     default_tz: str = _DEFAULT_TZ
@@ -193,7 +282,10 @@ class DateMathTool:
                             "add: base + delta -> iso date. "
                             "diff: returns {days, weeks, months_approx, "
                             "hours, minutes, seconds}. "
-                            "format: iso + strftime -> string."
+                            "format: iso + strftime -> string. "
+                            "business_days: count workdays between two "
+                            "dates or advance a base date by N workdays, "
+                            "honoring weekends + optional holiday table."
                         ),
                     },
                     "args": {
@@ -203,7 +295,11 @@ class DateMathTool:
                             "parse: {expr}. "
                             "add: {base, delta}. "
                             "diff: {a, b}. "
-                            "format: {iso, format}."
+                            "format: {iso, format}. "
+                            "business_days count: {a, b, holidays: "
+                            "'none'|'us_federal'}. "
+                            "business_days advance: {base, "
+                            "delta_business_days: int, holidays}."
                         ),
                     },
                 },
@@ -225,6 +321,8 @@ class DateMathTool:
             return self._op_add(args)
         if op == "diff":
             return self._op_diff(args)
+        if op == "business_days":
+            return self._op_business_days(args)
         return self._op_format(args)
 
     def _today(self) -> date:
@@ -270,6 +368,64 @@ class DateMathTool:
             f"({sign}{weeks_exact:.2f} weeks, "
             f"{sign}{months_approx:.2f} months_approx, "
             f"{sign}{abs(total_seconds)} seconds)"
+        )
+
+    def _op_business_days(self, args: dict[str, Any]) -> str:
+        """Two shapes, dispatched by which keys are present:
+
+          count   : {a, b, holidays?}     -> NETWORKDAYS-style count
+          advance : {base, delta_business_days, holidays?}
+
+        `holidays` defaults to 'none' (weekends-only) when omitted. The
+        op picks count vs. advance from the presence of
+        `delta_business_days`; supplying both is a usage error."""
+        holiday_tag = args.get("holidays", "none")
+        if not isinstance(holiday_tag, str):
+            raise ValueError("business_days: args.holidays must be a string")
+        holiday_set = _holiday_set_for(holiday_tag)
+        has_delta = "delta_business_days" in args
+        has_ab = "a" in args and "b" in args
+
+        if has_delta and has_ab:
+            raise ValueError(
+                "business_days: pass either {a, b} for count mode or "
+                "{base, delta_business_days} for advance mode — not both"
+            )
+        today = self._today()
+        if has_delta:
+            base_str = args.get("base")
+            delta = args.get("delta_business_days")
+            if not isinstance(base_str, str):
+                raise ValueError("business_days advance: args.base must be a string")
+            if not isinstance(delta, int) or isinstance(delta, bool):
+                raise ValueError(
+                    "business_days advance: args.delta_business_days must be an integer"
+                )
+            base_d = _parse_natural(base_str, today=today)
+            result = _advance_business_days(base_d, delta, holiday_set)
+            return (
+                f"{result.isoformat()} ({result.strftime('%A')}) "
+                f"[+{delta} business days from "
+                f"{base_d.isoformat()} ({base_d.strftime('%A')}), "
+                f"holidays={holiday_tag}]"
+            )
+        if not has_ab:
+            raise ValueError(
+                "business_days: args must include either {a, b} for "
+                "count mode or {base, delta_business_days} for advance mode"
+            )
+        a_str = args.get("a")
+        b_str = args.get("b")
+        if not isinstance(a_str, str) or not isinstance(b_str, str):
+            raise ValueError("business_days count: args.a and args.b must be strings")
+        a_d = _parse_natural(a_str, today=today)
+        b_d = _parse_natural(b_str, today=today)
+        business, weekends, holidays_hit = _count_business_days_inclusive(a_d, b_d, holiday_set)
+        return (
+            f"{business} business days "
+            f"(weekend_skips={weekends}, holiday_skips={holidays_hit}, "
+            f"holidays={holiday_tag}, range="
+            f"{a_d.isoformat()}..{b_d.isoformat()} inclusive)"
         )
 
     def _op_format(self, args: dict[str, Any]) -> str:

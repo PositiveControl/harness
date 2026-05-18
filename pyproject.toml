@@ -15,6 +15,10 @@ dependencies = [
     # available transitively; pinned directly now that harness code
     # imports it.
     "python-dateutil>=2.9",
+    # date_math.business_days op (harness-kncj) — US federal holiday
+    # table plus weekend-rolling business-day arithmetic. Pure-Python,
+    # ~1.4 MB install, no compiled deps. PyPI name is `holidays`.
+    "holidays>=0.50",
 ]
 
 [project.optional-dependencies]

@@ -165,3 +165,199 @@ def test_missing_args_rejected() -> None:
         t.call(op="parse", args={})  # expr missing
     with pytest.raises(ValueError, match="must be strings"):
         t.call(op="add", args={"base": "2026-05-15"})  # delta missing
+
+
+# --- business_days op (harness-kncj) -------------------------------------
+
+
+def test_business_days_count_across_a_weekend() -> None:
+    # 2026-05-15 (Fri) to 2026-05-18 (Mon). Inclusive of both endpoints,
+    # weekends-only -> Fri + Mon = 2 business days, Sat+Sun = 2 weekend
+    # skips, 0 holidays.
+    t = _tool()
+    out = t.call(
+        op="business_days",
+        args={"a": "2026-05-15", "b": "2026-05-18", "holidays": "none"},
+    )
+    assert out.startswith("2 business days")
+    assert "weekend_skips=2" in out
+    assert "holiday_skips=0" in out
+    assert "holidays=none" in out
+
+
+def test_business_days_count_skips_memorial_day() -> None:
+    # 2026-05-22 (Fri) to 2026-05-26 (Tue), us_federal:
+    # Fri ✓, Sat ✗, Sun ✗, Mon (Memorial Day) ✗, Tue ✓ -> 2 business days,
+    # 2 weekend skips, 1 holiday skip.
+    t = _tool()
+    out = t.call(
+        op="business_days",
+        args={"a": "2026-05-22", "b": "2026-05-26", "holidays": "us_federal"},
+    )
+    assert out.startswith("2 business days")
+    assert "weekend_skips=2" in out
+    assert "holiday_skips=1" in out
+    assert "holidays=us_federal" in out
+
+
+def test_business_days_count_no_holidays_includes_memorial_day() -> None:
+    # Same window, holidays='none' -> Memorial Day counts as a workday.
+    t = _tool()
+    out = t.call(
+        op="business_days",
+        args={"a": "2026-05-22", "b": "2026-05-26", "holidays": "none"},
+    )
+    assert out.startswith("3 business days")
+    assert "holiday_skips=0" in out
+
+
+def test_business_days_count_negative_when_a_after_b() -> None:
+    # Reverse the window: a=Mon b=Fri previous week. Signed count is
+    # negative; skip counts stay positive (real calendar days).
+    t = _tool()
+    out = t.call(
+        op="business_days",
+        args={"a": "2026-05-18", "b": "2026-05-15", "holidays": "none"},
+    )
+    assert out.startswith("-2 business days")
+    assert "weekend_skips=2" in out
+
+
+def test_business_days_count_same_day_business() -> None:
+    t = _tool()
+    out = t.call(
+        op="business_days",
+        args={"a": "2026-05-18", "b": "2026-05-18", "holidays": "none"},
+    )
+    assert out.startswith("1 business days")
+    assert "weekend_skips=0" in out
+
+
+def test_business_days_count_same_day_weekend() -> None:
+    t = _tool()
+    out = t.call(
+        op="business_days",
+        args={"a": "2026-05-16", "b": "2026-05-16", "holidays": "none"},
+    )
+    assert out.startswith("0 business days")
+    assert "weekend_skips=1" in out
+
+
+def test_business_days_advance_from_saturday_lands_on_monday() -> None:
+    # 2026-05-16 is a Saturday. Snap-to-business semantics: delta=0
+    # rolls forward to the next workday (Mon 2026-05-18).
+    t = _tool()
+    out = t.call(
+        op="business_days",
+        args={"base": "2026-05-16", "delta_business_days": 0, "holidays": "none"},
+    )
+    assert out.startswith("2026-05-18 (Monday)")
+    assert "delta_business_days" not in out  # echo uses a humanized phrasing
+    assert "+0 business days from 2026-05-16" in out
+
+
+def test_business_days_advance_skips_holiday() -> None:
+    # Step-forward semantics: base itself doesn't consume a step.
+    # +10 business days from 2026-05-18 (Mon), us_federal: skips
+    # Memorial Day 2026-05-25. Without us_federal +10 -> 2026-06-01;
+    # with the holiday skipped, the count rolls one day later.
+    t = _tool()
+    with_federal = t.call(
+        op="business_days",
+        args={
+            "base": "2026-05-18",
+            "delta_business_days": 10,
+            "holidays": "us_federal",
+        },
+    )
+    without_federal = t.call(
+        op="business_days",
+        args={
+            "base": "2026-05-18",
+            "delta_business_days": 10,
+            "holidays": "none",
+        },
+    )
+    assert with_federal.startswith("2026-06-02 (Tuesday)")
+    assert without_federal.startswith("2026-06-01 (Monday)")
+
+
+def test_business_days_advance_negative() -> None:
+    # -3 business days from Fri 2026-05-15: Thu, Wed, Tue -> 2026-05-12.
+    t = _tool()
+    out = t.call(
+        op="business_days",
+        args={"base": "2026-05-15", "delta_business_days": -3, "holidays": "none"},
+    )
+    assert out.startswith("2026-05-12 (Tuesday)")
+
+
+def test_business_days_advance_from_saturday_with_negative_delta() -> None:
+    # base=Sat 2026-05-16, delta=-1, holidays=none: snap back to Fri
+    # 2026-05-15, then -1 business day = Thu 2026-05-14.
+    t = _tool()
+    out = t.call(
+        op="business_days",
+        args={"base": "2026-05-16", "delta_business_days": -1, "holidays": "none"},
+    )
+    assert out.startswith("2026-05-14 (Thursday)")
+
+
+def test_business_days_unknown_holiday_set_raises() -> None:
+    t = _tool()
+    with pytest.raises(ValueError, match="holidays must be one of"):
+        t.call(
+            op="business_days",
+            args={"a": "2026-05-15", "b": "2026-05-18", "holidays": "uk_bank"},
+        )
+
+
+def test_business_days_rejects_count_and_advance_in_same_call() -> None:
+    t = _tool()
+    with pytest.raises(ValueError, match=r"either \{a, b\} for count"):
+        t.call(
+            op="business_days",
+            args={
+                "a": "2026-05-15",
+                "b": "2026-05-18",
+                "delta_business_days": 3,
+            },
+        )
+
+
+def test_business_days_advance_rejects_non_int_delta() -> None:
+    t = _tool()
+    with pytest.raises(ValueError, match="must be an integer"):
+        t.call(
+            op="business_days",
+            args={"base": "2026-05-18", "delta_business_days": "10"},
+        )
+
+
+def test_business_days_advance_rejects_bool_delta() -> None:
+    # bool is a subclass of int in Python, but using True for "advance by
+    # True days" is almost certainly a bug — reject it explicitly.
+    t = _tool()
+    with pytest.raises(ValueError, match="must be an integer"):
+        t.call(
+            op="business_days",
+            args={"base": "2026-05-18", "delta_business_days": True},
+        )
+
+
+def test_business_days_defaults_holidays_to_none_when_omitted() -> None:
+    t = _tool()
+    out = t.call(
+        op="business_days",
+        args={"a": "2026-05-22", "b": "2026-05-26"},
+    )
+    # Without us_federal, Memorial Day counts; we get 3 business days,
+    # not 2.
+    assert out.startswith("3 business days")
+    assert "holidays=none" in out
+
+
+def test_business_days_op_listed_in_spec_enum() -> None:
+    t = _tool()
+    enum = t.spec.parameters["properties"]["op"]["enum"]
+    assert "business_days" in enum
