@@ -218,6 +218,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "python_eval",
         "tz_convert",
         "stats",
+        "sun",
         "search_memory",
         "search_facts",
         "introspect",
@@ -258,6 +259,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "python_eval",
         "tz_convert",
         "stats",
+        "sun",
     ),
 }
 

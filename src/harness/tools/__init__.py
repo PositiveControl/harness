@@ -47,6 +47,7 @@ from harness.tools.search_web import SearchWebTool
 from harness.tools.shell import ShellTool
 from harness.tools.stats import StatsTool
 from harness.tools.subagent import SpawnSubagentTool
+from harness.tools.sun import SunTool
 from harness.tools.transcript_ingest import TranscriptIngestTool
 from harness.tools.tz_convert import TzConvertTool
 from harness.tools.write_file import WriteFileTool
@@ -87,6 +88,7 @@ __all__ = [
     "StreamChunk",
     "StreamComplete",
     "StreamText",
+    "SunTool",
     "Tool",
     "ToolCall",
     "ToolHit",

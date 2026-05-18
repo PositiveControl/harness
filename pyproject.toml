@@ -19,6 +19,10 @@ dependencies = [
     # table plus weekend-rolling business-day arithmetic. Pure-Python,
     # ~1.4 MB install, no compiled deps. PyPI name is `holidays`.
     "holidays>=0.50",
+    # sun tool (harness-jqep) — sunrise/sunset/civil-twilight/solar-noon
+    # at a given lat/lon/date. astral is pure-Python, ~50 KB, no
+    # compiled deps. Companion to now/date_math in the reckon profile.
+    "astral>=3.0",
 ]
 
 [project.optional-dependencies]

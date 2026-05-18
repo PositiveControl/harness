@@ -66,6 +66,7 @@ from harness.tools import (
     SearchWebTool,
     ShellTool,
     StatsTool,
+    SunTool,
     Tool,
     ToolCall,
     ToolRegistry,
@@ -268,6 +269,7 @@ def build_classic_registry(
         "python_eval": lambda: PythonEvalTool(),
         "tz_convert": lambda: TzConvertTool(),
         "stats": lambda: StatsTool(),
+        "sun": lambda: SunTool(),
         "search_memory": (
             lambda: (
                 SearchMemoryTool(store=memory_store, user_id=speaker, expander=query_expander)
