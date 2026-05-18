@@ -2527,6 +2527,17 @@ def daemon(
         "--interval-default",
         help="Default heartbeat interval in seconds. Registered tasks may override.",
     ),
+    compaction_interval: float = typer.Option(
+        600.0,
+        "--compaction-interval",
+        help="Periodic-compaction tick interval in seconds. 0 disables the task.",
+    ),
+    compaction_model: str = typer.Option(
+        "echo",
+        "--compaction-model",
+        help="Adapter for compaction summarization: echo | mlx | ollama. "
+        "Defaults to echo so the daemon stays cheap until you opt in to a real model.",
+    ),
     tick_once: bool = typer.Option(
         False,
         "--tick-once",
@@ -2535,16 +2546,19 @@ def daemon(
 ) -> None:
     """Start the heartbeat daemon — harness-swvf.
 
-    First slice (harness-ppi0): wires the runtime.heartbeat.Heartbeat
-    into a CLI subcommand with SIGINT/SIGTERM hygiene, an alive-tick
-    placeholder task, and a --tick-once test mode. Real maintenance
-    tasks (compaction, consolidation, drift checks, scheduled tool
-    calls) plug in via separate sub-beads (klwg / srus / c32m / 6dnf).
+    Built-in tasks (registered when their interval > 0):
+      * heartbeat_alive  — logs an ISO timestamp every tick (sanity).
+      * compaction       — scans recently-active sessions and folds
+                            ones over threshold (harness-klwg).
+
+    Real consolidation / drift / scheduled-tool-call tasks land in
+    separate sub-beads (srus / c32m / 6dnf).
     """
     import asyncio
     import signal
 
     from harness.runtime import Heartbeat
+    from harness.runtime.tasks import build_compaction_task
 
     char_path = settings.character_path
     if character:
@@ -2561,6 +2575,29 @@ def daemon(
         console.print(f"[dim]heartbeat[/dim] tick {ts}")
 
     hb.register("heartbeat_alive", heartbeat_alive, interval_s=interval_default)
+
+    # Compaction task — opt-in via --compaction-interval > 0. Builds
+    # the adapter once at daemon startup so subsequent ticks reuse it.
+    if compaction_interval > 0:
+        from harness.compaction import CompactionStore
+
+        transcript = Transcript(settings.character_db_path)
+        compaction_store = CompactionStore(settings.character_db_path)
+        compaction_adapter = make_adapter(cast("AdapterName", compaction_model))
+
+        def _compaction_sink(outcome: object) -> None:
+            console.print(f"[dim]heartbeat[/dim] compaction {outcome!r}")
+
+        hb.register(
+            "compaction",
+            build_compaction_task(
+                adapter=compaction_adapter,
+                transcript=transcript,
+                compaction_store=compaction_store,
+                sink=_compaction_sink,
+            ),
+            interval_s=compaction_interval,
+        )
 
     console.print(
         f"[bold]heartbeat[/bold] daemon starting for {char.name} "

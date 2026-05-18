@@ -53,6 +53,50 @@ def test_daemon_tick_once_exits_clean_with_heartbeat_log() -> None:
     assert "tick-once complete" in proc.stdout
 
 
+def _norm(s: str) -> str:
+    """Flatten whitespace — Rich wraps long lines at the terminal width
+    even with capture_output, so substring assertions against the raw
+    stdout are flaky."""
+    return " ".join(s.split())
+
+
+def test_daemon_tick_once_registers_compaction_task_by_default() -> None:
+    """When --compaction-interval > 0 (default 600s), the daemon
+    registers the compaction task alongside heartbeat_alive. tick-once
+    fires both and prints the compaction outcome line."""
+    proc = subprocess.run(
+        [*HARNESS_CMD, "daemon", "--tick-once"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=_env(),
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0
+    out = _norm(proc.stdout)
+    assert "2 task(s) registered" in out
+    assert "heartbeat compaction" in out
+
+
+def test_daemon_compaction_disabled_when_interval_zero() -> None:
+    """--compaction-interval 0 leaves only the heartbeat_alive task
+    registered."""
+    proc = subprocess.run(
+        [*HARNESS_CMD, "daemon", "--tick-once", "--compaction-interval", "0"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=_env(),
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0
+    out = _norm(proc.stdout)
+    assert "1 task(s) registered" in out
+    assert "heartbeat compaction" not in out
+
+
 def test_daemon_tick_once_with_explicit_character() -> None:
     """--character airton is the documented form; verify it doesn't
     blow up when supplied explicitly."""
@@ -84,7 +128,13 @@ def test_daemon_help_lists_flags() -> None:
     assert proc.returncode == 0
     # Typer renders option names verbatim; assert each documented flag
     # appears at least once.
-    for flag in ("--character", "--interval-default", "--tick-once"):
+    for flag in (
+        "--character",
+        "--interval-default",
+        "--compaction-interval",
+        "--compaction-model",
+        "--tick-once",
+    ):
         assert flag in proc.stdout, f"missing flag {flag!r} in --help output"
 
 

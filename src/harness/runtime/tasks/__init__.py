@@ -1,0 +1,15 @@
+"""Heartbeat-compatible task builders.
+
+Each module here exports a `build_<name>_task` factory that takes the
+stores + adapters the task depends on and returns a zero-arg callable
+suitable for `Heartbeat.register()`. Outcomes flow through optional
+sink callbacks so the daemon (and tests) can observe per-tick activity
+without diving into the task internals.
+"""
+
+from harness.runtime.tasks.compaction import (
+    CompactionTaskOutcome,
+    build_compaction_task,
+)
+
+__all__ = ["CompactionTaskOutcome", "build_compaction_task"]
