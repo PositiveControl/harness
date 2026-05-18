@@ -305,6 +305,26 @@ def test_query_falls_back_to_tag_when_query_yields_zero() -> None:
     assert "fell back to tag='web'" in out
 
 
+def test_query_falls_back_to_query_alone_when_filter_is_fabricated() -> None:
+    """Mark's recurring transcript: agent passes a real query plus a
+    fabricated tag like 'fs-read' that exists in no catalog entry.
+    Both the intersection path AND the tag-alone path yield zero.
+    Phase 3b drops the bad filter and retries with the query alone."""
+    cat = ToolCatalog()
+    cat.register(
+        ToolCatalogEntry(
+            name="search_web",
+            family="research",
+            description="Search the web.",
+            tags=("web", "weather", "search"),
+        )
+    )
+    tool = ToolSearchTool(catalog=cat)
+    out = tool.call(query="weather", tag="fs-read")
+    assert "search_web" in out
+    assert "fell back to query='weather' only" in out
+
+
 def test_query_fallback_does_not_fire_when_query_matches() -> None:
     cat = ToolCatalog()
     cat.register(ToolCatalogEntry(name="search_web", family="research", tags=("web",)))

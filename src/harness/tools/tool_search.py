@@ -162,7 +162,7 @@ class ToolSearchTool:
         if family is not None:
             candidates = [e for e in candidates if e.family == family]
 
-        # Phase 3: if query was over-specific and yielded zero but the
+        # Phase 3a: if query was over-specific and yielded zero but the
         # caller also passed tag or family, retry with just those.
         # Small models routinely pass a verbatim user-prompt fragment
         # as the query AND a relevant tag — we'd rather surface the
@@ -184,6 +184,27 @@ class ToolSearchTool:
                 elif family is not None:
                     fallback_note += f"family={family!r}"
                 fallback_note += ")"
+
+        # Phase 3b: if BOTH the query-and-filter AND the filter-alone
+        # paths yielded zero, drop the (likely-fabricated) tag/family
+        # and retry with just the query. Small models reach for
+        # plausible-sounding tag names like 'fs-read' or 'weather-api'
+        # that don't exist in the catalog — refusing to recover from
+        # that costs the agent the round entirely.
+        if not candidates and query.strip() and (tag is not None or family is not None):
+            candidates = self.catalog.search(query)
+            if candidates:
+                dropped = ", ".join(
+                    s
+                    for s in (
+                        f"tag={tag!r}" if tag is not None else None,
+                        f"family={family!r}" if family is not None else None,
+                    )
+                    if s
+                )
+                fallback_note = (
+                    f"\n(no match for query+{dropped}; fell back to query={query!r} only)"
+                )
 
         if not candidates:
             constraints = []

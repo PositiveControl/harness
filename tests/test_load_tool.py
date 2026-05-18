@@ -164,3 +164,96 @@ def test_load_tool_works_when_name_in_registry_but_not_in_catalog() -> None:
     out = tool.call(name="ephemeral")
     assert "now active" in out
     assert "ephemeral" in {s.name for s in tool.registry.specs()}
+
+
+# --- 8-11. cm4v: lazy build via builders ---------------------------------
+
+
+def _build_with_builders(
+    *,
+    catalog_entries: list[ToolCatalogEntry],
+    builders: dict[str, object],
+    registered: list[ToolSpec] | None = None,
+) -> LoadToolTool:
+    catalog = ToolCatalog()
+    for e in catalog_entries:
+        catalog.register(e)
+    registry = ToolRegistry()
+    for spec in registered or []:
+        registry.register(_StubTool(_spec=spec))
+    return LoadToolTool(
+        catalog=catalog,
+        registry=registry,
+        builders=builders,  # type: ignore[arg-type]  # accepting Callable typing in tests
+    )
+
+
+def test_load_tool_builds_builtin_lazily_when_builder_supplied() -> None:
+    """The cm4v happy path: builtin in catalog, not in registry, but
+    a builder is wired. Tool should be constructed, registered, and
+    show up in subsequent specs() output."""
+    target_spec = _stub_spec("on_demand")
+
+    def _builder() -> _StubTool:
+        return _StubTool(_spec=target_spec)
+
+    tool = _build_with_builders(
+        catalog_entries=[ToolCatalogEntry(name="on_demand", family="reckon", origin="builtin")],
+        builders={"on_demand": _builder},
+    )
+    out = tool.call(name="on_demand")
+    assert "built and activated 'on_demand' on demand" in out
+    assert "on_demand" in tool.registry.names()
+    # Specs reflect the new tool on the next round.
+    assert "on_demand" in {s.name for s in tool.registry.specs()}
+
+
+def test_load_tool_builder_returning_none_explains_state_gap() -> None:
+    """Builders that need session state (memory store, etc.) return
+    None when state is missing. load_tool must surface that as a
+    clear error pointing at the CLI flag — not a silent failure."""
+
+    def _stateful_builder() -> _StubTool | None:
+        return None  # state not enabled
+
+    tool = _build_with_builders(
+        catalog_entries=[ToolCatalogEntry(name="search_memory", family="memory", origin="builtin")],
+        builders={"search_memory": _stateful_builder},
+    )
+    out = tool.call(name="search_memory")
+    assert "requires session state" in out
+    assert "--memories" in out or "--facts" in out
+    # Tool NOT registered — must wait for a restart with state enabled.
+    assert "search_memory" not in tool.registry.names()
+
+
+def test_load_tool_builder_raising_surfaces_exception() -> None:
+    """A builder that crashes (missing dep, bad config) must not crash
+    load_tool — surface the exception type + message so the operator
+    can diagnose."""
+
+    def _broken_builder() -> _StubTool:
+        raise ImportError("cannot import 'optional_dep'")
+
+    tool = _build_with_builders(
+        catalog_entries=[ToolCatalogEntry(name="broken_tool", family="research", origin="builtin")],
+        builders={"broken_tool": _broken_builder},
+    )
+    out = tool.call(name="broken_tool")
+    assert "builder for 'broken_tool' raised" in out
+    assert "ImportError" in out
+    assert "optional_dep" in out
+    assert "broken_tool" not in tool.registry.names()
+
+
+def test_load_tool_without_builders_keeps_old_restart_hint() -> None:
+    """Backward compat: when load_tool is constructed without a
+    builders map (the v0 invocation), the catalog-hit-registry-miss
+    branch still produces the 'restart with --tools-add' hint."""
+    tool = _build_with_builders(
+        catalog_entries=[ToolCatalogEntry(name="not_built", family="filesystem", origin="builtin")],
+        builders={},  # explicit empty
+    )
+    out = tool.call(name="not_built")
+    assert "not loaded this session" in out
+    assert "--tools-add not_built" in out

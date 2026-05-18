@@ -16,19 +16,25 @@ The orchestrator already calls `registry.specs()` on every round
 (see `_run_round` in `tool_loop.py`), so a successful `load_tool`
 call surfaces the new tool's schema starting next round.
 
-Three states, three outcomes:
+Five states, five outcomes:
 
   catalog miss        — "no tool named X. Try tool_search to find one."
   in catalog,
-    not in registry   — "tool exists but isn't loaded this session.
+    not in registry,
+    builder available — build via the builder, register, activate.
+                         This is what makes core_minimal actually
+                         pay-on-demand: tools live in the catalog
+                         until the agent asks for them (harness-cm4v).
+  in catalog,
+    not in registry,
+    builder missing   — "tool exists but isn't loaded this session.
                          Restart with --tools-add X (or, if origin=
                          synthesized, wait for the t5kx hot-reload
                          pass on next session start)."
   in registry,
     already active    — "X is already in your working set."
   in registry,
-    inactive          — set_active(active + {X}); return spec preview
-                         + 'now active'.
+    inactive          — set_active(active + {X}); return spec preview.
 
 Tier=read because the only mutation is to the in-memory working set;
 no filesystem or network involved. The orchestrator's confirm gate
@@ -37,21 +43,37 @@ correctly does not prompt for this.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
-from harness.tools.base import ToolRegistry, ToolSpec
+from harness.tools.base import Tool, ToolRegistry, ToolSpec
 from harness.tools.catalog import ToolCatalog
 
 
 @dataclass
 class LoadToolTool:
-    """Expand the live registry's working set by name. Reads the
-    catalog for the description/origin hint when the name isn't
-    currently loaded — that's where the 'restart with --tools-add'
-    error string gets its tailoring."""
+    """Expand the live registry's working set by name.
+
+    When `builders` is supplied (an injected map keyed by tool name,
+    callable returns a Tool or None), the catalog-hit-registry-miss
+    branch will try to construct and register the tool on the fly
+    rather than dead-ending at 'restart with --tools-add'. That's
+    what makes the core_minimal profile (harness-sbia) deliver real
+    pay-on-demand discovery instead of a hard restart for every
+    capability.
+
+    Builders that return None signal 'tool requires session state
+    that isn't enabled' (e.g. search_memory without --memories) —
+    surfaced as a clear error pointing at the right CLI flag.
+    """
 
     catalog: ToolCatalog
     registry: ToolRegistry
+    # Optional builder map. Provided by the CLI session-bootstrap path
+    # (cli.py:_build_tool_registry_for_tui) so the same dict that
+    # constructs the profile's initial tools is reused for on-demand
+    # construction. Without it, load_tool keeps its v0 'restart' hint.
+    builders: dict[str, Callable[[], Tool | None]] = field(default_factory=dict)
 
     @property
     def spec(self) -> ToolSpec:
@@ -93,8 +115,8 @@ class LoadToolTool:
                 "Use `tool_search` to find the right name."
             )
 
-        # 2. In catalog but not in registry: needs --tools-add (or hot-
-        #    reload, depending on origin).
+        # 2. In catalog but not in registry: try to build it on demand
+        #    (the cm4v path), else fall back to a 'restart' hint.
         if name not in self.registry:
             # entry is non-None here because we returned above otherwise.
             assert entry is not None  # for type narrowing
@@ -104,11 +126,42 @@ class LoadToolTool:
                     "hot-reload pass runs at session start (harness-t5kx); "
                     "restart the harness to pick it up."
                 )
-            else:
-                hint = (
-                    "Restart the session with `--tools-add "
-                    f"{name}` (or a profile that includes it)."
-                )
+                return f"load_tool: {name!r} is in the catalog but not loaded this session. {hint}"
+
+            # Builtin in catalog, not registered, builder available:
+            # construct it lazily, register, ensure it's in the working
+            # set, and return the spec preview. This is the cm4v path
+            # that closes the discovery loop for core_minimal.
+            builder = self.builders.get(name)
+            if builder is not None:
+                try:
+                    instance = builder()
+                except Exception as exc:
+                    return (
+                        f"load_tool: builder for {name!r} raised "
+                        f"{type(exc).__name__}: {exc}. Likely a missing dep; "
+                        f"restart with `--tools-add {name}` to see the full error."
+                    )
+                if instance is None:
+                    return (
+                        f"load_tool: tool {name!r} requires session state that "
+                        "isn't enabled (memory store, semantic store, or similar). "
+                        "Restart with the matching CLI flag — see `--memories` / "
+                        "`--facts` / `--workspace` for the common ones."
+                    )
+                try:
+                    self.registry.register(instance)
+                except ValueError as exc:
+                    return f"load_tool: registry rejected {name!r}: {exc}"
+                # Ensure the freshly-registered tool participates in
+                # the working set. If a working set was already
+                # explicitly configured (active_names != None), add to
+                # it; if no working set was configured (all-active),
+                # registration alone is sufficient.
+                if self.registry._active_names is not None:
+                    self.registry.set_active(set(self.registry.active_names()) | {name})
+                return _format_loaded(instance.spec, lazy_built=True)
+            hint = f"Restart the session with `--tools-add {name}` (or a profile that includes it)."
             return f"load_tool: {name!r} is in the catalog but not loaded this session. {hint}"
 
         # 3. In registry, already in the active set: no-op confirmation.
@@ -123,9 +176,14 @@ class LoadToolTool:
         return _format_loaded(spec)
 
 
-def _format_loaded(spec: ToolSpec) -> str:
+def _format_loaded(spec: ToolSpec, *, lazy_built: bool = False) -> str:
+    headline = (
+        f"load_tool: built and activated {spec.name!r} on demand."
+        if lazy_built
+        else f"load_tool: {spec.name!r} is now active."
+    )
     lines = [
-        f"load_tool: {spec.name!r} is now active.",
+        headline,
         f"  description: {_clip(spec.description, 200)}",
         f"  tier       : {spec.tier}",
     ]

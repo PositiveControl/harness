@@ -1592,12 +1592,15 @@ def _build_tool_registry_for_tui(
             catalog=_session_tool_catalog(),
             registry=registry,
         ),
-        # load_tool — agent-driven working-set expansion (harness-atsz).
-        # Companion to tool_search: tool_search finds the name, load_tool
-        # brings it into the chat template for the next round.
+        # load_tool — agent-driven working-set expansion (harness-atsz),
+        # extended in harness-cm4v to build catalog-only builtins on
+        # demand. The lambda captures `builders` by reference (late
+        # binding), so the dict-literal-after-load_tool tools are still
+        # reachable when load_tool actually calls a builder.
         "load_tool": lambda: LoadToolTool(
             catalog=_session_tool_catalog(),
             registry=registry,
+            builders=builders,
         ),
         "search_memory": lambda: (
             SearchMemoryTool(store=memory_store, user_id=speaker, expander=query_expander)
