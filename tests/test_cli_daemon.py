@@ -293,6 +293,65 @@ def test_daemon_status_round_trip(tmp_path: Path) -> None:
     assert "heartbeat_alive" in out
 
 
+def test_daemon_plan_revision_disabled_by_default() -> None:
+    """Plan-revision is off-by-default (interval 0) — operator must
+    bootstrap a plan + opt in explicitly via --plan-revision-interval."""
+    proc = subprocess.run(
+        [*HARNESS_CMD, "daemon", "--tick-once"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=_env(),
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0
+    out = _norm(proc.stdout)
+    # Default task count is still 5 (alive + compaction + consolidation
+    # + drift + schedule); plan-revision is opted in via the flag.
+    assert "5 task(s) registered" in out
+    assert "heartbeat plan-revision" not in out
+
+
+def test_daemon_plan_revision_runs_when_interval_set(tmp_path: Path) -> None:
+    """With --plan-revision-interval>0, the task registers + fires on
+    tick-once. Without a bootstrapped plan, the outcome reports
+    loaded=False — and that's fine (the daemon hums along until the
+    operator runs `harness plan bootstrap`)."""
+    proc = subprocess.run(
+        [
+            *HARNESS_CMD,
+            "daemon",
+            "--tick-once",
+            "--compaction-interval",
+            "0",
+            "--consolidation-interval",
+            "0",
+            "--drift-interval",
+            "0",
+            "--schedule-interval",
+            "0",
+            "--plan-revision-interval",
+            "60",
+            "--plan-revision-id",
+            "bd:mark",
+            "--plans-dir",
+            str(tmp_path / "plans"),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=_env(),
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = _norm(proc.stdout)
+    assert "2 task(s) registered" in out  # alive + plan_revision
+    assert "heartbeat plan-revision" in out
+    assert "plan_id='bd:mark'" in out
+
+
 def test_daemon_all_optional_tasks_disabled_leaves_alive_only() -> None:
     """Disable all four maintenance tasks: only heartbeat_alive
     remains."""
@@ -370,6 +429,11 @@ def test_daemon_help_lists_flags() -> None:
         "--drift-stale-days",
         "--schedule-interval",
         "--schedule-path",
+        "--plan-revision-interval",
+        "--plan-revision-id",
+        "--plan-revision-assignee",
+        "--plan-revision-writeback",
+        "--plans-dir",
         "--state-path",
         "--grace-period",
         "--tick-once",

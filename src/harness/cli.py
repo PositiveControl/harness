@@ -2588,6 +2588,35 @@ def daemon(
         help="YAML file with scheduled tool calls. "
         "Default: <character>/data/heartbeat_schedule.yaml.",
     ),
+    plan_revision_interval: float = typer.Option(
+        0.0,
+        "--plan-revision-interval",
+        help="Periodic plan-revision tick interval in seconds. 0 disables the task "
+        "(default: off — run `harness plan bootstrap` first, then opt in).",
+    ),
+    plan_revision_id: str = typer.Option(
+        "bd:mark",
+        "--plan-revision-id",
+        help="Plan id the revision task loads + saves. Matches the bootstrap "
+        "default 'bd:<assignee>'.",
+    ),
+    plan_revision_assignee: str = typer.Option(
+        "mark",
+        "--plan-revision-assignee",
+        help="Bd assignee whose open/closed bead sets feed the WorldSnapshot.",
+    ),
+    plan_revision_writeback: bool = typer.Option(
+        False,
+        "--plan-revision-writeback",
+        help="Apply bd writeback after each revision (active→achieved closes the "
+        "bead, etc.). Default: off — watch a few ticks first.",
+    ),
+    plans_dir: Path | None = typer.Option(
+        None,
+        "--plans-dir",
+        help="Directory the plan-revision task reads PlanStore from. "
+        "Default: <character>/data/plans/.",
+    ),
     state_path: Path | None = typer.Option(
         None,
         "--state-path",
@@ -2625,6 +2654,7 @@ def daemon(
         build_compaction_task,
         build_consolidation_task,
         build_drift_task,
+        build_plan_revision_task,
         build_scheduled_tools_task,
     )
 
@@ -2780,6 +2810,46 @@ def daemon(
                     sink=_consolidation_sink,
                 ),
                 interval_s=consolidation_interval,
+            )
+
+    # Plan-revision task — opt-in via --plan-revision-interval > 0.
+    # Loads a Plan, builds a WorldSnapshot from bd, advances subgoal
+    # statuses, saves. Optional bd writeback (off by default — operator
+    # opts in after watching a few ticks). Requires `harness plan
+    # bootstrap` to have run first; missing plan logs cleanly and tick
+    # is a no-op (harness-rbj9).
+    if plan_revision_interval > 0:
+        from harness.plan import JsonPlanStore
+
+        plan_revision_dir = plans_dir or (char_path / "data" / "plans")
+        plan_revision_store = JsonPlanStore(plan_revision_dir)
+        plan_revision_adapter = BeadsAdapter(
+            settings.bd_dir_for(char.name),
+            default_exclude_assignee=char.bd_exclude_assignee,
+            ab_assignee=char.bd_assignee,
+        )
+        try:
+            plan_revision_adapter.verify()
+        except BeadsAdapterError as exc:
+            console.print(
+                f"[yellow]heartbeat[/yellow] plan-revision disabled: bd not available ({exc})"
+            )
+        else:
+
+            def _plan_revision_sink(outcome: object) -> None:
+                console.print(f"[dim]heartbeat[/dim] plan-revision {outcome!r}")
+
+            hb.register(
+                "plan_revision",
+                build_plan_revision_task(
+                    plan_store=plan_revision_store,
+                    plan_id=plan_revision_id,
+                    bd_adapter=plan_revision_adapter,
+                    assignee=plan_revision_assignee,
+                    apply_bd_writeback=plan_revision_writeback,
+                    sink=_plan_revision_sink,
+                ),
+                interval_s=plan_revision_interval,
             )
 
     # Restore persisted state from prior daemon runs (quarantine flags,
