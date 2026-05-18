@@ -16,6 +16,7 @@ from harness.tools import (
     DateMathTool,
     NowTool,
     PythonEvalTool,
+    StatsTool,
     Tool,
     TzConvertTool,
     resolve_tool_names,
@@ -29,6 +30,7 @@ def test_reckon_profile_members() -> None:
         "calc",
         "python_eval",
         "tz_convert",
+        "stats",
         "search_memory",
         "search_facts",
         "introspect",
@@ -46,7 +48,7 @@ def test_reckon_resolve_clean() -> None:
 
 def test_full_profile_now_includes_reckon_primitives() -> None:
     full = TOOL_PROFILES["full"]
-    for name in ("now", "date_math", "calc", "python_eval", "tz_convert"):
+    for name in ("now", "date_math", "calc", "python_eval", "tz_convert", "stats"):
         assert name in full, f"full profile missing {name!r}"
 
 
@@ -62,9 +64,10 @@ def test_reckon_tools_construct_standalone() -> None:
         CalcTool(),
         PythonEvalTool(),
         TzConvertTool(),
+        StatsTool(),
     ]
     names = {t.spec.name for t in tools}
-    assert names == {"now", "date_math", "calc", "python_eval", "tz_convert"}
+    assert names == {"now", "date_math", "calc", "python_eval", "tz_convert", "stats"}
     for t in tools:
         # Read-tier, no write-confirm prompt.
         assert t.spec.tier == "read", f"{t.spec.name} is not read-tier"
@@ -77,8 +80,9 @@ def test_reckon_schema_budget_under_target() -> None:
     tokens of schema overhead. We approximate by character length —
     rough but stable enough to detect a 10x regression.
 
-    Combined JSON-schema size of all 5 reckon primitives stays under
-    7 KB raw (Qwen tokenizer ~4 chars/token → well under 1500 tokens)."""
+    Combined JSON-schema size of all 6 reckon primitives stays under
+    8 KB raw (Qwen tokenizer ~4 chars/token → still well under 1500
+    tokens)."""
     import json
 
     from harness.tools import (
@@ -86,6 +90,7 @@ def test_reckon_schema_budget_under_target() -> None:
         DateMathTool,
         NowTool,
         PythonEvalTool,
+        StatsTool,
         TzConvertTool,
     )
 
@@ -96,6 +101,7 @@ def test_reckon_schema_budget_under_target() -> None:
         CalcTool(),
         PythonEvalTool(),
         TzConvertTool(),
+        StatsTool(),
     ):
         rendered = json.dumps(
             {
@@ -106,10 +112,10 @@ def test_reckon_schema_budget_under_target() -> None:
         )
         total += len(rendered)
     # Generous headroom; tighten if it ever drifts up.
-    assert total < 7000, f"reckon primitives schema is {total} chars — over budget"
+    assert total < 8000, f"reckon primitives schema is {total} chars — over budget"
 
 
-@pytest.mark.parametrize("name", ["now", "date_math", "calc", "python_eval", "tz_convert"])
+@pytest.mark.parametrize("name", ["now", "date_math", "calc", "python_eval", "tz_convert", "stats"])
 def test_reckon_tool_spec_names_match_profile(name: str) -> None:
     """Sanity: the registry profile names match the tools' ToolSpec
     names. A future rename of NowTool.spec.name would silently break
@@ -120,5 +126,6 @@ def test_reckon_tool_spec_names_match_profile(name: str) -> None:
         "calc": CalcTool(),
         "python_eval": PythonEvalTool(),
         "tz_convert": TzConvertTool(),
+        "stats": StatsTool(),
     }
     assert instances[name].spec.name == name

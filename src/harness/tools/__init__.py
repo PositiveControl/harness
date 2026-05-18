@@ -45,6 +45,7 @@ from harness.tools.search_memory import SearchMemoryTool
 from harness.tools.search_scholar import SearchScholarTool
 from harness.tools.search_web import SearchWebTool
 from harness.tools.shell import ShellTool
+from harness.tools.stats import StatsTool
 from harness.tools.subagent import SpawnSubagentTool
 from harness.tools.transcript_ingest import TranscriptIngestTool
 from harness.tools.tz_convert import TzConvertTool
@@ -82,6 +83,7 @@ __all__ = [
     "SearchWebTool",
     "ShellTool",
     "SpawnSubagentTool",
+    "StatsTool",
     "StreamChunk",
     "StreamComplete",
     "StreamText",

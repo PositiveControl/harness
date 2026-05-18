@@ -79,6 +79,7 @@ from harness.tools import (
     SearchScholarTool,
     SearchWebTool,
     ShellTool,
+    StatsTool,
     Tool,
     ToolCall,
     ToolRegistry,
@@ -1554,6 +1555,7 @@ def _build_tool_registry_for_tui(
         "calc": lambda: CalcTool(),
         "python_eval": lambda: PythonEvalTool(),
         "tz_convert": lambda: TzConvertTool(),
+        "stats": lambda: StatsTool(),
         "search_memory": lambda: (
             SearchMemoryTool(store=memory_store, user_id=speaker, expander=query_expander)
             if memory_store is not None
