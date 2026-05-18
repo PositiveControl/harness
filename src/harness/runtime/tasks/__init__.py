@@ -15,10 +15,18 @@ from harness.runtime.tasks.consolidation import (
     ConsolidationTaskOutcome,
     build_consolidation_task,
 )
+from harness.runtime.tasks.drift import (
+    DriftIssue,
+    DriftTaskOutcome,
+    build_drift_task,
+)
 
 __all__ = [
     "CompactionTaskOutcome",
     "ConsolidationTaskOutcome",
+    "DriftIssue",
+    "DriftTaskOutcome",
     "build_compaction_task",
     "build_consolidation_task",
+    "build_drift_task",
 ]

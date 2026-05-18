@@ -2549,6 +2549,29 @@ def daemon(
         help="Skip the consolidator unless the working tier has at least this many "
         "episodic records (avoids wasted scans on empty stores).",
     ),
+    drift_interval: float = typer.Option(
+        3600.0,
+        "--drift-interval",
+        help="Periodic bd-drift-check tick interval in seconds. 0 disables the task.",
+    ),
+    drift_assignee: str = typer.Option(
+        "mark",
+        "--drift-assignee",
+        help="Bd assignee whose in_progress work the drift check inspects "
+        "(use 'airton_b' for the ab data-plane daemon).",
+    ),
+    drift_max_in_progress: int = typer.Option(
+        3,
+        "--drift-max-in-progress",
+        help="Overload threshold: flag drift when in_progress count for the "
+        "watched assignee exceeds this.",
+    ),
+    drift_stale_days: float = typer.Option(
+        7.0,
+        "--drift-stale-days",
+        help="Staleness threshold: flag in_progress beads with no updated_at "
+        "activity within this many days.",
+    ),
     state_path: Path | None = typer.Option(
         None,
         "--state-path",
@@ -2582,7 +2605,11 @@ def daemon(
     import signal
 
     from harness.runtime import Heartbeat
-    from harness.runtime.tasks import build_compaction_task, build_consolidation_task
+    from harness.runtime.tasks import (
+        build_compaction_task,
+        build_consolidation_task,
+        build_drift_task,
+    )
 
     char_path = settings.character_path
     if character:
@@ -2625,6 +2652,41 @@ def daemon(
             ),
             interval_s=compaction_interval,
         )
+
+    # Drift task — bd-based heuristics; opt-in via --drift-interval > 0.
+    # Constructs a fresh BeadsAdapter pointing at the character's bd
+    # directory. If bd isn't initialized in that dir (no .beads),
+    # disable drift with a console warning instead of crashing.
+    if drift_interval > 0:
+        drift_bd_dir = settings.bd_dir_for(char.name)
+        drift_adapter = BeadsAdapter(
+            drift_bd_dir,
+            default_exclude_assignee=char.bd_exclude_assignee,
+            ab_assignee=char.bd_assignee,
+        )
+        try:
+            drift_adapter.verify()
+        except BeadsAdapterError as exc:
+            console.print(
+                f"[yellow]heartbeat[/yellow] drift disabled: bd not "
+                f"available at {drift_bd_dir} ({exc})"
+            )
+        else:
+
+            def _drift_sink(outcome: object) -> None:
+                console.print(f"[dim]heartbeat[/dim] drift {outcome!r}")
+
+            hb.register(
+                "drift",
+                build_drift_task(
+                    bd_adapter=drift_adapter,
+                    assignee=drift_assignee,
+                    max_in_progress=drift_max_in_progress,
+                    stale_after_days=drift_stale_days,
+                    sink=_drift_sink,
+                ),
+                interval_s=drift_interval,
+            )
 
     # Consolidation task — opt-in via --consolidation-interval > 0.
     # Uses the character's existing episodic + semantic stores (same
