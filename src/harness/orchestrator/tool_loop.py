@@ -127,6 +127,7 @@ __all__ = [
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from harness.plan import Plan
     from harness.router.intent import Router, RouterIntent
     from harness.tools.base import StreamChunk, ToolSpec
 
@@ -756,6 +757,7 @@ def run_tool_loop(
     banter_tracker: BanterStreakTracker | None = None,
     scope_redirect_template: str | None = None,
     scope_lexicon: tuple[str, ...] = (),
+    plan: Plan | None = None,
 ) -> ToolLoopResult:
     """Drive a model + tool registry until the model emits a text-only
     reply or `max_rounds` rounds are spent.
@@ -822,6 +824,17 @@ def run_tool_loop(
     starts fresh with a joke."""
     pipeline = hooks if hooks is not None else _DEFAULT_PIPELINE
     working: list[ChatMessage] = list(messages)
+    # Inject the active-plan block as a system-role message before
+    # the loop opens (harness-uzan). The plan is read-only here —
+    # actual mutations happen in the heartbeat plan-revision task
+    # (rbj9). Block is prepended so it appears alongside the
+    # character's main system prompt rather than after the user turn.
+    if plan is not None:
+        from harness.plan import render_plan_block
+
+        block = render_plan_block(plan)
+        if block.strip():
+            working.insert(0, ChatMessage(role="system", content=block))
     initial_count = len(working)
     events: list[ToolLoopEvent] = []
     last_reply: ModelReply = ModelReply(content="", tool_calls=())

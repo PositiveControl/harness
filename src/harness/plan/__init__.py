@@ -11,6 +11,7 @@ in-place state.
 """
 
 from harness.plan.bd_source import build_plan_from_bd
+from harness.plan.context import render_plan_block
 from harness.plan.model import (
     STATUS_VALUES,
     Action,
@@ -63,5 +64,6 @@ __all__ = [
     "evaluate_precondition",
     "new_plan",
     "new_subgoal",
+    "render_plan_block",
     "revise_plan",
 ]
