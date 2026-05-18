@@ -167,6 +167,19 @@ class Heartbeat:
         """Signal `run_forever` to exit at the next checkpoint."""
         self._stop_event.set()
 
+    async def tick_once(self) -> None:
+        """Fire each registered (non-quarantined) task exactly once and
+        return. Bypasses interval scheduling — every task gets one fire
+        regardless of when it last ran.
+
+        Intended for daemon `--tick-once` test mode + integration tests
+        that want deterministic 'run each task and exit' semantics
+        without sleeping through real intervals."""
+        for task in list(self._tasks.values()):
+            if task.quarantined:
+                continue
+            await self._fire(task)
+
     @property
     def is_running(self) -> bool:
         return self._running

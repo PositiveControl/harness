@@ -227,6 +227,50 @@ async def test_run_forever_with_no_tasks_is_stoppable() -> None:
     await asyncio.wait_for(run_task, timeout=2.0)
 
 
+@pytest.mark.asyncio
+async def test_tick_once_fires_each_task_exactly_once() -> None:
+    """tick_once bypasses interval scheduling — every registered task
+    runs once and the method returns. Used by `harness daemon
+    --tick-once` (ppi0) and integration tests that need deterministic
+    'run each task' semantics."""
+    hb = Heartbeat()
+    fires_a = 0
+    fires_b = 0
+
+    async def task_a() -> None:
+        nonlocal fires_a
+        fires_a += 1
+
+    async def task_b() -> None:
+        nonlocal fires_b
+        fires_b += 1
+
+    hb.register("a", task_a, interval_s=999.0)  # huge interval — wouldn't fire normally
+    hb.register("b", task_b, interval_s=999.0)
+    await hb.tick_once()
+    assert fires_a == 1
+    assert fires_b == 1
+
+
+@pytest.mark.asyncio
+async def test_tick_once_skips_quarantined_tasks() -> None:
+    """A quarantined task doesn't fire on tick_once any more than it
+    would in run_forever — keeping the two paths symmetric so
+    --tick-once tests reflect production behavior."""
+    hb = Heartbeat(max_consecutive_errors=1)
+
+    def always_fails() -> None:
+        raise RuntimeError("dead")
+
+    hb.register("always_fails", always_fails, interval_s=1.0)
+    await hb.tick_once()  # quarantines after the first failure
+    assert "always_fails" in hb.quarantined_tasks()
+    # Second tick: skipped entirely. consecutive_errors doesn't tick up.
+    pre = hb.task("always_fails").consecutive_errors
+    await hb.tick_once()
+    assert hb.task("always_fails").consecutive_errors == pre
+
+
 def test_heartbeat_task_dataclass_shape() -> None:
     """Pin the public bookkeeping shape so consumers (daemon status,
     observability bead m64i) can rely on the field set."""

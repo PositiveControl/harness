@@ -2516,6 +2516,75 @@ def phraseology_lint_cmd(
 
 
 @app.command()
+def daemon(
+    character: str | None = typer.Option(
+        None,
+        "--character",
+        help="Character to run the daemon for. Default: HARNESS_CHARACTER_NAME or 'airton'.",
+    ),
+    interval_default: float = typer.Option(
+        60.0,
+        "--interval-default",
+        help="Default heartbeat interval in seconds. Registered tasks may override.",
+    ),
+    tick_once: bool = typer.Option(
+        False,
+        "--tick-once",
+        help="Fire each registered task once and exit. For integration tests.",
+    ),
+) -> None:
+    """Start the heartbeat daemon — harness-swvf.
+
+    First slice (harness-ppi0): wires the runtime.heartbeat.Heartbeat
+    into a CLI subcommand with SIGINT/SIGTERM hygiene, an alive-tick
+    placeholder task, and a --tick-once test mode. Real maintenance
+    tasks (compaction, consolidation, drift checks, scheduled tool
+    calls) plug in via separate sub-beads (klwg / srus / c32m / 6dnf).
+    """
+    import asyncio
+    import signal
+
+    from harness.runtime import Heartbeat
+
+    char_path = settings.character_path
+    if character:
+        char_path = char_path.parent / character
+    char = load_character(char_path)
+
+    def _err(name: str, exc: BaseException) -> None:
+        console.print(f"[red]heartbeat error[/red] [{name}]: {exc!r}")
+
+    hb = Heartbeat(on_error=_err)
+
+    def heartbeat_alive() -> None:
+        ts = datetime.now(UTC).isoformat(timespec="seconds")
+        console.print(f"[dim]heartbeat[/dim] tick {ts}")
+
+    hb.register("heartbeat_alive", heartbeat_alive, interval_s=interval_default)
+
+    console.print(
+        f"[bold]heartbeat[/bold] daemon starting for {char.name} "
+        f"(interval_default={interval_default}s, "
+        f"{len(hb.names())} task(s) registered)"
+    )
+
+    if tick_once:
+        asyncio.run(hb.tick_once())
+        console.print("[bold]heartbeat[/bold] tick-once complete")
+        return
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, hb.stop)
+    try:
+        loop.run_until_complete(hb.run_forever())
+    finally:
+        loop.close()
+    console.print("[bold]heartbeat[/bold] daemon stopped.")
+
+
+@app.command()
 def describe() -> None:
     """Print Airton's resolved character sheet (sanity check)."""
     character = load_character(settings.character_path)

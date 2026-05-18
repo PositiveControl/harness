@@ -16,6 +16,7 @@ from harness.cli_introspect import CommandInfo, list_cli_commands
 # surface (and docs/usage.md) move together.
 _EXPECTED_COMMANDS: tuple[str, ...] = (
     "chat",
+    "daemon",
     "describe",
     "eval atc",
     "eval atc-audio",
