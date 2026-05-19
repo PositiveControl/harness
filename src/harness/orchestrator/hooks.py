@@ -579,6 +579,14 @@ class PreToolContext:
     model hallucinate success after a failed retry. Other hooks that
     only care about which tools ran iterate the keys.
 
+    `attempted_calls` maps each (name, args-json) key the loop has
+    EMITTED this turn to the count of emissions, regardless of whether
+    the call was deduped, skipped, or executed (harness-delk). Loop-
+    detection catchers need this because duplicate_call Skips repeat
+    emissions before they reach seen_calls — counting only execution
+    means a model that emits the same tool_search 10 times sees count=1
+    from seen_calls but count=10 from attempted_calls.
+
     `prior_tool_outputs` is the tuple of tool-role message contents
     already in the working thread this turn. ArgumentGroundingHook
     widens its grounding corpus to include them (harness-jm9p), so a
@@ -587,6 +595,7 @@ class PreToolContext:
 
     call: ToolCall
     seen_calls: Mapping[tuple[str, str], ToolResult]
+    attempted_calls: Mapping[tuple[str, str], int] = field(default_factory=dict)
     user_message: str | None = None
     prior_tool_outputs: tuple[str, ...] = ()
 
@@ -2946,12 +2955,26 @@ class ToolSearchLoopHook:
     def check(self, ctx: PreToolContext) -> PreToolOutcome:
         if ctx.call.name != "tool_search":
             return Continue()
-        names_seen = [name for (name, _args) in ctx.seen_calls]
-        if any(n == "load_tool" for n in names_seen):
+        # load_tool detection uses attempted_calls so a deduped load_tool
+        # emission still counts as 'the model tried to load' — the
+        # discovery flow is engaging correctly even if the load attempt
+        # didn't add a new entry to seen_calls.
+        load_tool_attempted = any(name == "load_tool" for (name, _args) in ctx.attempted_calls)
+        if load_tool_attempted:
             return Continue()
-        prior_tool_search = sum(1 for n in names_seen if n == "tool_search")
+        # Count tool_search ATTEMPTS, not executions (harness-delk).
+        # duplicate_call runs before this hook and Skips exact-args
+        # repeats — counting seen_calls (executions) would register a
+        # 10-attempt loop with same args as 1 entry. attempted_calls
+        # is incremented AFTER each pre_tool dispatch, so the value
+        # here is PRIOR attempts (not including this call).
+        prior_tool_search = sum(
+            count for (name, _args), count in ctx.attempted_calls.items() if name == "tool_search"
+        )
         if prior_tool_search < _TOOL_SEARCH_LOOP_THRESHOLD:
             return Continue()
+        # Nudge text reports total attempts (prior + this 3rd one) so
+        # 'called 3 times' is what the model sees.
         nudge_text = _TOOL_SEARCH_LOOP_NUDGE.format(count=prior_tool_search + 1)
         return Skip(
             ToolResult(

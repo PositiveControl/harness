@@ -350,6 +350,7 @@ def _router_prelude(
     hooks: HookPipeline,
     user_message: str | None,
     succeeded_tools: set[str],
+    attempted_calls: dict[tuple[str, str], int] | None = None,
 ) -> tuple[bool, bool]:
     """On a usable router intent, append a synthetic assistant tool-
     call turn + the tool result to `working` in place. Returns
@@ -405,10 +406,13 @@ def _router_prelude(
     # outcome (grounding rejection) should fall through silently so the
     # user sees the main-model path, not a "router picked X, discarded"
     # trace. The router is advisory and its misfires are noise.
+    if attempted_calls is None:
+        attempted_calls = {}
     pre_outcome = hooks.run_pre_tool(
         PreToolContext(
             call=call,
             seen_calls=dict(seen_calls),
+            attempted_calls=dict(attempted_calls),
             user_message=user_message,
             prior_tool_outputs=tuple(m.content for m in working if m.role == "tool"),
         ),
@@ -416,6 +420,10 @@ def _router_prelude(
     )
     if isinstance(pre_outcome, Skip):
         return (False, False)
+    # Increment AFTER pre_tool dispatch — the catcher saw PRIOR-only
+    # state. The router's emission now contributes to the count for
+    # any later catcher invocation this turn (harness-delk).
+    attempted_calls[_call_key(call)] = attempted_calls.get(_call_key(call), 0) + 1
     emit(ToolLoopEvent(kind="router_intent", call=call, round_index=0))
     emit(ToolLoopEvent(kind="tool_call_start", call=call, round_index=0))
     if confirm is not None and spec.tier == "write" and not confirm(call):
@@ -739,6 +747,7 @@ def _execute_tool_calls(
     hooks: HookPipeline,
     user_message: str | None,
     succeeded_tools: set[str],
+    attempted_calls: dict[tuple[str, str], int] | None = None,
 ) -> bool:
     """Execute the round's tool calls: in-round dedup, duplicate-call
     hook (cross-round), write-tier confirm, dispatch, append tool-role
@@ -784,17 +793,29 @@ def _execute_tool_calls(
         deduped.append(call)
 
     any_success = False
+    # attempted_calls counts PRIOR emissions (not including the current
+    # call) — incremented at the END of each iteration so the catcher's
+    # mental model is 'how many previous attempts' (harness-delk).
+    # In-round duplicates were collapsed above; deduped here is the
+    # unique-per-round set.
+    if attempted_calls is None:
+        attempted_calls = {}
     for call in deduped:
         key = _call_key(call)
         pre_outcome = hooks.run_pre_tool(
             PreToolContext(
                 call=call,
                 seen_calls=dict(seen_calls),
+                attempted_calls=dict(attempted_calls),
                 user_message=user_message,
                 prior_tool_outputs=tuple(m.content for m in working if m.role == "tool"),
             ),
             disabled=_disabled_snapshot(),
         )
+        # Increment AFTER pre_tool dispatch — the catcher saw the
+        # PRIOR-only state. This emission now contributes to the count
+        # the NEXT call's catcher will see.
+        attempted_calls[key] = attempted_calls.get(key, 0) + 1
         if isinstance(pre_outcome, Skip):
             # Cross-round duplicate (or grounding rejection). For
             # duplicate_call this carries the prior ToolResult re-issued
@@ -966,6 +987,11 @@ def run_tool_loop(
     # re-issues it on duplicates so a prior failure can't get
     # paraphrased as success (harness-v5w).
     seen_calls: dict[tuple[str, str], ToolResult] = {}
+    # Attempt counter (harness-delk). Incremented on EVERY tool_call the
+    # model emits, regardless of whether duplicate_call Skips it. Loop-
+    # detection catchers (tool_search_loop) read this instead of
+    # seen_calls so a dedup-masked loop still trips the threshold.
+    attempted_calls: dict[tuple[str, str], int] = {}
 
     def emit(event: ToolLoopEvent) -> None:
         events.append(event)
@@ -1108,6 +1134,7 @@ def run_tool_loop(
             pipeline,
             turn_user_message,
             succeeded_tools,
+            attempted_calls=attempted_calls,
         )
         any_tool_succeeded = any_tool_succeeded or router_success
 
@@ -1248,6 +1275,7 @@ def run_tool_loop(
             hooks=pipeline,
             user_message=turn_user_message,
             succeeded_tools=succeeded_tools,
+            attempted_calls=attempted_calls,
         )
         any_tool_succeeded = any_tool_succeeded or round_success
 

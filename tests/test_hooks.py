@@ -1246,6 +1246,16 @@ def _seen_with(names: list[str]) -> dict[tuple[str, str], ToolResult]:
     return out
 
 
+def _attempted_with(names: list[str]) -> dict[tuple[str, str], int]:
+    """Build an attempted_calls map with one entry per requested name.
+    Mirrors _seen_with's differentiated args. Each entry has count=1
+    (one attempt per unique args)."""
+    out: dict[tuple[str, str], int] = {}
+    for i, name in enumerate(names):
+        out[(name, f'{{"query":"variant_{i}"}}')] = 1
+    return out
+
+
 def test_tool_search_loop_hook_skips_third_call_without_load_tool() -> None:
     """Session 2026-05-19 repro: model called tool_search 7 times in
     one turn with refined / search-engine-syntax queries (site:...) and
@@ -1256,6 +1266,7 @@ def test_tool_search_loop_hook_skips_third_call_without_load_tool() -> None:
     ctx = PreToolContext(
         call=call,
         seen_calls=_seen_with(["tool_search", "tool_search"]),
+        attempted_calls=_attempted_with(["tool_search", "tool_search"]),
     )
     outcome = ToolSearchLoopHook().check(ctx)
     assert isinstance(outcome, Skip)
@@ -1275,7 +1286,11 @@ def test_tool_search_loop_hook_passes_second_call() -> None:
     is 3rd call. Conservative on the early-call side to avoid blocking
     legitimate iterate-then-load patterns."""
     call = ToolCall(name="tool_search", arguments={"query": "y"})
-    ctx = PreToolContext(call=call, seen_calls=_seen_with(["tool_search"]))
+    ctx = PreToolContext(
+        call=call,
+        seen_calls=_seen_with(["tool_search"]),
+        attempted_calls=_attempted_with(["tool_search"]),
+    )
     assert isinstance(ToolSearchLoopHook().check(ctx), Continue)
 
 
@@ -1288,6 +1303,7 @@ def test_tool_search_loop_hook_resets_after_load_tool() -> None:
     ctx = PreToolContext(
         call=call,
         seen_calls=_seen_with(["tool_search", "tool_search", "load_tool", "tool_search"]),
+        attempted_calls=_attempted_with(["tool_search", "tool_search", "load_tool", "tool_search"]),
     )
     assert isinstance(ToolSearchLoopHook().check(ctx), Continue)
 
@@ -1301,6 +1317,7 @@ def test_tool_search_loop_hook_ignores_non_tool_search_calls() -> None:
     ctx = PreToolContext(
         call=call,
         seen_calls=_seen_with(["tool_search", "tool_search", "tool_search"]),
+        attempted_calls=_attempted_with(["tool_search", "tool_search", "tool_search"]),
     )
     assert isinstance(ToolSearchLoopHook().check(ctx), Continue)
 
@@ -1313,10 +1330,56 @@ def test_tool_search_loop_hook_nudge_carries_call_count() -> None:
     ctx = PreToolContext(
         call=call,
         seen_calls=_seen_with(["tool_search"] * 6),  # this would be the 7th
+        attempted_calls=_attempted_with(["tool_search"] * 6),
     )
     outcome = ToolSearchLoopHook().check(ctx)
     assert isinstance(outcome, Skip)
     assert "7" in outcome.result.output
+
+
+def test_tool_search_loop_hook_fires_on_dedup_masked_attempts() -> None:
+    """harness-delk repro: model emitted the SAME tool_search args 6
+    times. duplicate_call (which runs before this hook) Skipped 5 of
+    them — seen_calls has only 1 entry. The OLD hook missed this loop
+    because it counted executions. The NEW hook counts attempts:
+    attempted_calls[(tool_search, args)] = 6, so the threshold of 2
+    prior attempts is crossed on the 3rd emission."""
+    # Same args every time → seen_calls would have just 1 entry under
+    # the executed-only count. attempted_calls tracks all 6 attempts.
+    args_key = ("tool_search", '{"query":"ev production 2023","tag":"search"}')
+    call = ToolCall(
+        name="tool_search",
+        arguments={"query": "ev production 2023", "tag": "search"},
+    )
+    ctx = PreToolContext(
+        call=call,
+        seen_calls={
+            args_key: ToolResult(tool_name="tool_search", output="prior", success=True)
+        },  # only 1 execution from N attempts
+        attempted_calls={args_key: 5},  # 5 prior emissions, this would be the 6th
+    )
+    outcome = ToolSearchLoopHook().check(ctx)
+    assert isinstance(outcome, Skip)
+    # Nudge reports 6 — total attempts including this call.
+    assert "6" in outcome.result.output
+
+
+def test_tool_search_loop_hook_recognizes_load_tool_from_attempted_calls() -> None:
+    """harness-delk: load_tool's RESET-the-counter behavior must work
+    even when the load_tool attempt itself was deduped — the model's
+    intent (tried to load) is what matters, not whether the call
+    executed."""
+    args_key = ("load_tool", '{"name":"search_web"}')
+    ts_key = ("tool_search", '{"query":"x"}')
+    call = ToolCall(name="tool_search", arguments={"query": "still looking"})
+    ctx = PreToolContext(
+        call=call,
+        seen_calls={},  # nothing executed
+        attempted_calls={ts_key: 3, args_key: 1},  # load_tool was attempted (deduped/skip)
+    )
+    # Even with 3 prior tool_search attempts, the deduped load_tool
+    # attempt counts as 'engaging the discovery flow' → Continue.
+    assert isinstance(ToolSearchLoopHook().check(ctx), Continue)
 
 
 def test_tool_search_spec_description_calls_out_load_tool_step() -> None:
