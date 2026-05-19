@@ -937,15 +937,23 @@ class FabricatedItemizationHook:
 
 
 _THIN_SOURCE_FABRICATION_NUDGE = (
-    "The page you fetched returned thin / empty content for the data "
-    "you're claiming. The body contained almost no numeric values, "
-    "yet your reply emits specific numbers with units (temperatures, "
-    "percentages, distances). That's fabrication. Either: (a) try a "
-    "different source — a real API endpoint (weather.gov forecast.json, "
-    "wttr.in, aviationweather.gov), a non-JS-rendered page, or a more "
-    "specific URL; or (b) tell the user plainly that you couldn't "
-    "extract the data and what they could paste instead. Do NOT invent "
-    "specific numbers from a body that didn't carry them."
+    "The page you fetched returned thin / empty content for the "
+    "data you're claiming. The body contained almost no numeric "
+    "values, yet your reply emits specific numbers with units "
+    "(temperatures, percentages, distances). That's fabrication. "
+    "Reach for a different tool / source BEFORE giving up: "
+    "(a) call search_web with a query specific to the data you "
+    "need (e.g. 'Nairobi 4-day forecast wttr.in', 'population by "
+    "gender KNBS census') to find a better source URL; "
+    "(b) call fetch_url against a non-JS-rendered alternative — "
+    "a real API endpoint (weather.gov forecast.json, wttr.in, "
+    "aviationweather.gov, an official stats bureau JSON / CSV) "
+    "usually carries the data the SPA page hid behind JavaScript; "
+    "(c) only after both (a) and (b) have genuinely failed, tell "
+    "the user plainly that you couldn't extract the data and what "
+    "URL or paste they could provide instead. "
+    "Do NOT invent specific numbers from a body that didn't carry "
+    "them."
 )
 
 

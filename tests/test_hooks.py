@@ -593,6 +593,32 @@ def test_thin_source_fabrication_hook_numeric_regex_coverage() -> None:
         )
 
 
+def test_thin_source_fabrication_nudge_names_fallback_tools() -> None:
+    """harness-qzxq upgrade: the nudge must teach what-to-do-instead,
+    not just what-not-to-do. Concretely it must name search_web AND
+    fetch_url AND a non-JS-rendered alternative so the model has a
+    clear recovery path. Without this, the bail converts fabrication
+    into refusal — the user wanted the data, not an apology."""
+    ctx = BailContext(
+        reply=_reply(_THIN_WEATHER_REPLY),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"fetch_url"}),
+        user_message="4-day weather forecast for Nairobi, Kenya",
+        prior_tool_outputs=(_THIN_WEATHER_BODY,),
+    )
+    outcome = ThinSourceFabricationHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    nudge = outcome.text.lower()
+    # Names BOTH data-side tools.
+    assert "search_web" in nudge, "nudge must name search_web as a recovery option"
+    assert "fetch_url" in nudge, "nudge must name fetch_url as a recovery option"
+    # Calls out the non-JS-rendered alternative pattern.
+    assert "non-js" in nudge or "api endpoint" in nudge or "wttr.in" in nudge, (
+        "nudge must point at non-JS / API alternatives so the agent "
+        "knows the SPA-page failure has a known workaround"
+    )
+
+
 # ---------- incomplete_multipart (harness-111v) ----------
 
 # Repro 2026-05-19: user asked TWO things in one prompt. Agent
