@@ -171,7 +171,9 @@ _SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/consolidate", "merge near-duplicate memories + facts"),
     ("/edit", "edit Airton's last reply as a new voice sample"),
     ("/exit", "leave chat"),
+    ("/help", "show this list of slash commands"),
     ("/quit", "leave chat"),
+    ("/reset", "alias for /session-reset (full per-session clean)"),
     ("/retro", "ab's thought-graph retrospective (summary)"),
     ("/scribe", "extract memory candidates from recent turns"),
     ("/sessions", "list every recorded chat session, newest first"),
@@ -819,9 +821,19 @@ class ChatApp(App[None]):
             event.input.value = ""
             self._ops.run_session_compact_reset(cmd_args[0] if cmd_args else None)
             return
-        if cmd == "/session-reset":
+        if cmd in {"/session-reset", "/reset"}:
+            # /reset is the discoverable alias for /session-reset
+            # (harness-hb8). Same heavy clean — summary + clear watermark
+            # + working-memory prune for the current (or named) session.
             event.input.value = ""
             self._ops.run_session_reset(cmd_args[0] if cmd_args else None)
+            return
+        if cmd in {"/help", "/?"}:
+            event.input.value = ""
+            log = self.query_one("#output", RichLog)
+            log.write(Text("available commands:", style="dim"))
+            for name, desc in _SLASH_COMMANDS:
+                log.write(Text(f"  {name:<24} {desc}", style="dim"))
             return
         event.input.value = ""
         # Always-on prompt: if a turn is in flight, enqueue instead of

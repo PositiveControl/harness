@@ -26,6 +26,7 @@ from harness.cli_repl import (
     ContextMeter,
     handle_clear_slash,
     handle_edit_slash,
+    handle_help_slash,
     handle_retro_slash,
 )
 from harness.compaction import CompactionStore
@@ -88,7 +89,13 @@ if TYPE_CHECKING:
 _EXIT_COMMANDS = frozenset({"/exit", "/quit", ":q"})
 _RETRO_COMMANDS = frozenset({"/retro"})
 _EDIT_COMMANDS = frozenset({"/edit", "/capture"})
-_CLEAR_COMMANDS = frozenset({"/clear"})
+# /clear and /reset are aliases — /reset is the more-discoverable name
+# users guess; /clear is what's been wired since the original watermark
+# work (harness-c1r). Mid-loop session-id swap (harness-hb8's stretch
+# goal) isn't supported in the classic REPL — `/exit` and restart with
+# `--session NEW_NAME` is the documented path.
+_CLEAR_COMMANDS = frozenset({"/clear", "/reset"})
+_HELP_COMMANDS = frozenset({"/help", "/?"})
 
 
 def _classic_session_tool_catalog() -> ToolCatalog:
@@ -1023,6 +1030,9 @@ def run_classic_chat(
                 continue
             if user_input.lower() in _CLEAR_COMMANDS:
                 handle_clear_slash(ctx_meter, console)
+                continue
+            if user_input.lower() in _HELP_COMMANDS:
+                handle_help_slash(console)
                 continue
             chat_session.run_turn(user_input)
     except (KeyboardInterrupt, EOFError):

@@ -265,15 +265,40 @@ class ContextMeter:
 
 
 def handle_clear_slash(ctx_meter: ContextMeter, console: Console) -> None:
-    """/clear — reset the model-visible context to a fresh start.
+    """/clear (or /reset) — reset the model-visible context to a fresh
+    start.
 
     Wipes the history the next turn will see and prints a confirmation
     line. Persisted stores (transcript, memory, facts, compaction,
     voice corpus) are untouched; scribe + retro still have everything.
     Ephemeral to this process — restarting without `/clear` will
-    replay the full session."""
+    replay the full session.
+
+    `/reset` is an alias for `/clear` (harness-hb8). Mid-loop session-id
+    swap is not supported in the classic REPL — to start a fresh
+    session, `/exit` and restart with `--session NEW_NAME`."""
     ctx_meter.clear()
     console.print("[dim]─── context cleared ───[/dim]")
+
+
+def handle_help_slash(console: Console) -> None:
+    """/help (or /?) — print the available in-chat slash commands.
+
+    Discoverability: users don't always know `/clear` / `/edit` exist;
+    a quick `?` reminder beats reading the docs (harness-hb8)."""
+    console.print("[dim]available commands:[/dim]")
+    console.print(
+        "[dim]  /clear, /reset    — wipe model-visible history (persisted stores untouched)[/dim]"
+    )
+    console.print(
+        "[dim]  /edit, /capture   — open Airton's last reply in $EDITOR as a voice sample[/dim]"
+    )
+    console.print(
+        "[dim]  /retro            — ab thought-graph summary + "
+        "optional insight (airton_b only)[/dim]"
+    )
+    console.print("[dim]  /help, /?         — show this list[/dim]")
+    console.print("[dim]  /exit, /quit, :q  — leave chat[/dim]")
 
 
 def handle_retro_slash(ab_adapter: BeadsAdapter | None, console: Console) -> None:

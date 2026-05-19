@@ -352,6 +352,46 @@ def test_clear_command_set_is_case_insensitive(cmd: str) -> None:
     assert cmd.lower() in _CLEAR_COMMANDS
 
 
+def test_reset_is_alias_for_clear_in_classic_repl() -> None:
+    """harness-hb8: /reset is the more-discoverable name; it aliases to
+    /clear in the classic REPL (mid-loop session-id swap isn't
+    supported — /exit + restart with --session is the path)."""
+    from harness.cli_classic import _CLEAR_COMMANDS
+
+    assert "/reset" in _CLEAR_COMMANDS
+    assert "/clear" in _CLEAR_COMMANDS
+
+
+def test_help_command_set_is_wired() -> None:
+    """harness-hb8: /help is the discoverability surface for slash
+    commands. Both /help and /? must dispatch to the help handler."""
+    from harness.cli_classic import _HELP_COMMANDS
+
+    assert "/help" in _HELP_COMMANDS
+    assert "/?" in _HELP_COMMANDS
+
+
+def test_handle_help_slash_lists_known_commands() -> None:
+    """The help banner must surface every actionable slash command so
+    a new user can discover them without reading docs."""
+    from io import StringIO
+
+    from harness.cli_repl import handle_help_slash
+
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=False)
+    handle_help_slash(console)
+    out = buf.getvalue()
+    # Every command set the REPL handles must be discoverable here.
+    assert "/clear" in out
+    assert "/reset" in out
+    assert "/edit" in out
+    assert "/capture" in out
+    assert "/retro" in out
+    assert "/exit" in out
+    assert "/help" in out
+
+
 # ---------- auto-scribe at compaction (harness-0kw) ----------
 
 
