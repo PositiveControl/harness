@@ -414,14 +414,41 @@ def looks_like_ab_fabrication(content: str) -> bool:
 # was called this turn, the model has announced intent without acting
 # on it — classic 7B failure mode (harness-q27 follow-up).
 TOOL_INTENT_RE = re.compile(
-    r"\b(?:"
-    r"i['\u2019]?ll|i\s+will|i\s+need\s+to|i\s+should|i'?m\s+going\s+to|"
-    r"let\s+me|let['\u2019]?s|"
-    r"now\s+i['\u2019]?ll|now\s+let\s+me|next,?\s+i['\u2019]?ll"
-    r")\s+"
+    r"(?:"
+    # Direct intent + action verb. Allows an optional interposing
+    # cluster ('need to' / 'have to' / 'want to' / 'now' / 'just' /
+    # 'first' / 'then' / 'go ahead and') between the intent phrase
+    # and the action verb (harness-27zr): 'I will need to search'
+    # was slipping past the original direct-adjacency form.
+    r"\b(?:i['\u2019]?ll|i\s+will|i\s+need\s+to|i\s+should|"
+    r"i['\u2019]?m\s+going\s+to|let\s+me|let['\u2019]?s|"
+    r"now\s+i['\u2019]?ll|now\s+let\s+me|next,?\s+i['\u2019]?ll)"
+    r"\s+"
+    r"(?:(?:need|have|want)\s+to\s+|now\s+|just\s+|first\s+|"
+    r"then\s+|go\s+(?:ahead\s+and\s+)?)?"
     r"(?:search|look\s+(?:up|for|at)|find|check|read|run|fetch|call|"
     r"invoke|execute|list|grep|edit|write|open|browse|query|"
-    r"retrieve|download|inspect|examine)\b",
+    r"retrieve|download|inspect|examine|gather|pull)\b"
+    r"|"
+    # 'Let's proceed (with|to|by) ...' / 'I will proceed with ...'
+    # (harness-27zr). 'proceed' as a top-level alternative because it
+    # commonly stands without a nested action verb in this idiom.
+    r"\b(?:let['\u2019]?s|let\s+me|i['\u2019]?ll|i\s+will|i\s+need\s+to)\s+"
+    r"proceed\s+(?:with|to|by)\b"
+    r"|"
+    # 'I (will|need to|...) use ... tool' (harness-27zr). 'use' is
+    # overloaded ('I will use the data' is benign), so require a
+    # tool-naming object ('tool', 'function', 'command', 'utility',
+    # 'primitive') within a short window after 'use'. The token-budget
+    # window (0-3 intermediate words) covers 'use the `search_web` tool'
+    # / 'use my fetch_url tool' / 'use a memory tool' without over-
+    # matching unrelated 'use' usages.
+    r"\b(?:i['\u2019]?ll|i\s+will|i\s+need\s+to|let\s+me|let['\u2019]?s)"
+    r"\s+(?:now\s+)?use\s+"
+    r"(?:the\s+|my\s+|a\s+)?"
+    r"(?:\S+\s+){0,3}"
+    r"(?:tool|function|command|utility|primitive)\b"
+    r")",
     re.IGNORECASE,
 )
 

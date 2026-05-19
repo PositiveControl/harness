@@ -34,15 +34,24 @@
 
 - id: teaser_trailing
   label: teaser
-  description: Trailing 'Let me check…' with no tool_call runs out retries and
-    falls back to the canned refusal.
+  description: |
+    Trailing 'Let me <X>:' with no tool_call and no action verb that
+    would also trip tool_intent. teaser fires on the intent + colon
+    shape regardless of the verb; tool_intent fires only on specific
+    action verbs (search / look up / check / read / run / fetch /
+    etc.). Picks verbs OUTSIDE tool_intent's list so the attribution
+    eval can prove teaser does load-bearing work — disabling teaser
+    must change the outcome, which requires tool_intent to NOT pick
+    up the slack on these replies (harness-27zr surfaced this when
+    the expansion to 'use ... tool' / 'proceed with' / interposing
+    cluster widened tool_intent's coverage).
   scripted_replies:
-    - content: "Sure. Let me check the file:"
-    - content: "Okay. I'll now look at the path:"
-    - content: "Let me open it:"
+    - content: "Sure. Let me think about that:"
+    - content: "Okay. I'll consider it carefully:"
+    - content: "Let me ponder this for a moment:"
   expected_fallback: true
   expected_events_contain: [bail_retry]
-  expected_not_contains: ["Let me check the file"]
+  expected_not_contains: ["Let me think about that"]
 
 - id: false_success_no_tool
   label: false_success

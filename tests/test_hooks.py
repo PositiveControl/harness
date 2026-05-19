@@ -978,6 +978,75 @@ def test_tool_intent_hook_fires_on_stated_intent() -> None:
     assert isinstance(ToolIntentHook().check(ctx), Nudge)
 
 
+# ---------- tool_intent indirect-phrasing coverage (harness-27zr) ----------
+
+
+def test_tool_intent_hook_fires_on_will_need_to_search() -> None:
+    """Session 2026-05-19 (gum-export query) trace: model emitted 'I
+    will need to search the web' as a final text-only reply. The
+    interposing 'need to' between 'will' and 'search' slipped past
+    the original direct-adjacency regex; the new interposing-cluster
+    branch must catch it."""
+    ctx = BailContext(
+        reply=_reply(
+            "I found that no specific tool matched. To find the data, I will "
+            "need to search the web. Let's proceed with that."
+        ),
+        tools_ran_this_turn=False,
+    )
+    assert isinstance(ToolIntentHook().check(ctx), Nudge)
+
+
+def test_tool_intent_hook_fires_on_will_use_tool_phrasing() -> None:
+    """Same session: 'I will use the `search_web` tool to gather this
+    information.' Three-word window between 'use' and 'tool' so the
+    new 'use ... tool' branch must land."""
+    ctx = BailContext(
+        reply=_reply("I will use the `search_web` tool to gather this information."),
+        tools_ran_this_turn=False,
+    )
+    assert isinstance(ToolIntentHook().check(ctx), Nudge)
+
+
+def test_tool_intent_hook_fires_on_lets_proceed_with_search() -> None:
+    """Same session: 'Let's proceed with the search.' 'proceed' as a
+    top-level alternative, with the required (with|to|by) preposition
+    that distinguishes 'proceed' as a tool-intent idiom from generic
+    use."""
+    ctx = BailContext(
+        reply=_reply("Let's proceed with the search."),
+        tools_ran_this_turn=False,
+    )
+    assert isinstance(ToolIntentHook().check(ctx), Nudge)
+
+
+def test_tool_intent_hook_silent_on_use_data_benign() -> None:
+    """'I will use the data' is benign — no tool call intended. The
+    'use ... tool' branch requires a tool-naming object ('tool',
+    'function', 'command', 'utility', 'primitive') after 'use', so
+    'use the data' / 'use my training' must NOT fire."""
+    for phrase in (
+        "I will use the data you provided to compute the answer.",
+        "I'll use my training to estimate that.",
+        "Let me use the table from the source.",
+    ):
+        ctx = BailContext(reply=_reply(phrase), tools_ran_this_turn=False)
+        assert isinstance(ToolIntentHook().check(ctx), Continue), (
+            f"benign 'use' phrase {phrase!r} must not trip tool_intent"
+        )
+
+
+def test_tool_intent_hook_silent_on_proceed_without_preposition() -> None:
+    """'I will proceed' without the with/to/by preposition is too
+    generic to be a tool-intent signal. The new branch requires the
+    preposition to qualify."""
+    ctx = BailContext(
+        reply=_reply("I will proceed and tell you the answer directly."),
+        tools_ran_this_turn=False,
+    )
+    assert isinstance(ToolIntentHook().check(ctx), Continue)
+
+
 # ---------- pipeline semantics ----------
 
 
