@@ -1414,6 +1414,40 @@ _CITATION_TOKEN_IN_CLAIM_RE = re.compile(
 )
 
 
+# Subset-language markers (harness-9gzk). When a count claim's match
+# span contains one of these, the count is talking about a population
+# total and the enumerated list is a labelled SUBSET — not the count
+# itself. Example: 'Kenya is home to 50 genera. Among these, some
+# species are unique... <list of 4 species>'. The 50 is the population;
+# the 4 is a labelled subset ('species valuable for cut-flower
+# production'). Without this carve-out, the catcher reads '50 genera'
+# vs '4 items listed' as a self-inconsistency, which is the wrong
+# reading.
+#
+# Markers are conservative: each phrase explicitly names a labelled
+# subset (among-these / examples / partial / representative / for-X-
+# purpose) rather than promising an exhaustive enumeration.
+_SUBSET_MARKER_RE = re.compile(
+    r"\b("
+    r"among\s+(?:these|them|those|which)"
+    r"|some\s+of\s+(?:these|them|those|which|the)"
+    r"|a\s+few\s+(?:species|examples?|notable|of\s+(?:these|them|those))"
+    r"|several\s+of\s+(?:these|them|those)"
+    r"|several\s+(?:notable|examples?|species)"
+    r"|for\s+(?:cut-flower|ornamental|specific|certain|particular|special|"
+    r"medicinal|culinary|industrial|commercial)\s+(?:use|purpose|production|"
+    r"value|interest|cultivation)"
+    r"|including"
+    r"|such\s+as"
+    r"|examples?\s+include"
+    r"|notable\s+(?:examples?|species)"
+    r"|partial\s+list"
+    r"|representative\s+(?:examples?|sample|selection)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
 # Matches the start of a numbered or bulleted list item. Requires
 # punctuation after digits (`.`, `)`, or `]`) so stray numbers in
 # prose don't count. Bullet characters (`-`, `*`, `•`) are standard
@@ -2056,6 +2090,15 @@ class ListCountMismatchHook:
         valid_claims: list[str] = []
         for match in _COUNT_CLAIM_RE.finditer(content):
             if _CITATION_TOKEN_IN_CLAIM_RE.search(match.group(0)):
+                continue
+            # Subset carve-out (harness-9gzk). When the match span
+            # contains language that explicitly labels the enumerated
+            # list as a subset of the counted population, skip — the
+            # count is informational, not a promise of enumeration
+            # length. Repro: 'Kenya is home to 50 genera. Among these,
+            # some species are unique... <list of 4>' should not fire
+            # 50-vs-4. See _SUBSET_MARKER_RE for the marker set.
+            if _SUBSET_MARKER_RE.search(match.group(0)):
                 continue
             valid_claims.append(match.group(1))
         if len(valid_claims) != 1:

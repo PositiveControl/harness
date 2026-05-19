@@ -2739,6 +2739,129 @@ def test_list_count_mismatch_ignores_usc_citation_digits() -> None:
     assert isinstance(outcome, Continue)
 
 
+# ---------- list_count_mismatch subset carve-out (harness-9gzk) ----------
+
+
+def test_list_count_mismatch_silent_on_orchid_subset_repro() -> None:
+    """Session 2026-05-19: model summarized an article saying 'Kenya is
+    home to 283 species of orchids belonging to 50 genera. Among these,
+    some species are unique and potentially valuable for ornamental
+    purposes' then listed 4 named species (potential cut-flower
+    cultivars). Without the subset carve-out the catcher fired
+    50-vs-4 on 'genera ... are' — wrong reading: 50 was the population
+    total, 4 was a labelled subset. Repro must stay silent so the
+    legitimate summary passes through."""
+    reply_text = (
+        "Based on the information provided in the article, Kenya is home to "
+        "283 species of orchids belonging to 50 genera. Among these, some "
+        "species are unique and potentially valuable for ornamental purposes. "
+        "The article mentions a few species that have potential for "
+        "cut-flower production:\n\n"
+        "1. **Ansellia africana**\n"
+        "2. **Angraecum eburneum**\n"
+        "3. **Calanthea sylvatica**\n"
+        "4. **Eulophia horsfalii**\n"
+    )
+    outcome = ListCountMismatchHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"fetch_url"}),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_list_count_mismatch_silent_with_among_these_marker() -> None:
+    """Minimal 'among these' subset pattern — 50 things in the
+    population, then 4 specific examples called out. Must stay silent."""
+    reply_text = (
+        "The state has 50 counties. Among these, four are coastal:\n\n"
+        "- Alpha\n- Beta\n- Gamma\n- Delta\n"
+    )
+    outcome = ListCountMismatchHook().check(
+        BailContext(reply=_reply(reply_text), tools_ran_this_turn=False)
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_list_count_mismatch_silent_with_some_of_them_marker() -> None:
+    """'Some of them are' is canonical subset language. 50 vs 3
+    enumeration with this marker should NOT fire."""
+    reply_text = "There are 50 species. Some of them are notable:\n\n- A\n- B\n- C\n"
+    outcome = ListCountMismatchHook().check(
+        BailContext(reply=_reply(reply_text), tools_ran_this_turn=False)
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_list_count_mismatch_silent_with_for_purpose_marker() -> None:
+    """'for cut-flower production' / 'for ornamental use' etc. label
+    a list as a purpose-filtered subset of the count claim. Stay
+    silent — the list isn't promising to enumerate the count."""
+    reply_text = (
+        "The country has 12 native species. For ornamental cultivation, "
+        "the following are notable:\n\n"
+        "- A\n- B\n"
+    )
+    outcome = ListCountMismatchHook().check(
+        BailContext(reply=_reply(reply_text), tools_ran_this_turn=False)
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_list_count_mismatch_silent_with_including_marker() -> None:
+    """'including' opens an open-ended subset. '10 X, including A, B, C'
+    is not promising an exhaustive 10-item list. Stay silent."""
+    reply_text = (
+        "The class has 10 students, including these top performers:\n\n- Alice\n- Bob\n- Charlie\n"
+    )
+    outcome = ListCountMismatchHook().check(
+        BailContext(reply=_reply(reply_text), tools_ran_this_turn=False)
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_list_count_mismatch_still_fires_on_real_mismatch_in_repro_shape() -> None:
+    """Critical: the second draft of the orchid repro said 'lists five
+    orchids that are unique to or particularly notable in Kenya. Here
+    are the orchids mentioned:' followed by 4 items. That's a real 5
+    vs 4 mismatch (no subset language between 'five' and the list).
+    Must still fire — the subset carve-out shouldn't disarm genuine
+    count fabrications."""
+    reply_text = (
+        "The source lists five orchids that are unique to or particularly "
+        "notable in Kenya. Here are the orchids mentioned:\n\n"
+        "1. Ansellia africana\n"
+        "2. Angraecum eburneum\n"
+        "3. Calanthea sylvatica\n"
+        "4. Eulophia horsfalii\n"
+    )
+    outcome = ListCountMismatchHook().check(
+        BailContext(reply=_reply(reply_text), tools_ran_this_turn=True)
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_list_count_mismatch_still_fires_when_subset_marker_far_from_claim() -> None:
+    """Subset language must be inside the count-claim's match window
+    (120 chars). A 'including' that appears late in the reply, after
+    the count + list, can't disarm the catcher — the claim already
+    committed to an exhaustive enumeration shape."""
+    reply_text = (
+        "The four primary purposes of ATC are as follows:\n\n"
+        "1. Prevent collisions.\n"
+        "2. Safe and orderly flow.\n"
+        "3. National security.\n\n"
+        "These are non-exhaustive — additional services may apply, "
+        "including secondary missions."
+    )
+    outcome = ListCountMismatchHook().check(
+        BailContext(reply=_reply(reply_text), tools_ran_this_turn=True)
+    )
+    assert isinstance(outcome, Nudge)
+
+
 def test_list_count_mismatch_ignores_phone_and_frequency_digits() -> None:
     """harness-ygvg follow-up: airton_c_tfr observed 2026-05-15
     discarding a clean TFR decode because the model echoed the NOTAM's
