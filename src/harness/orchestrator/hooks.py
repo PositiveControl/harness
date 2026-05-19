@@ -495,12 +495,18 @@ class BailContext:
     'model is making a new claim' — e.g. reserved_squawk_code
     disarms when the reserved-code match in the reply is a verbatim
     echo of the user's quoted question. Defaults to None so callers
-    that don't plumb it through fall through untouched."""
+    that don't plumb it through fall through untouched.
+
+    `prior_tool_outputs` is the tuple of tool-role message contents
+    executed earlier this turn (in order). Catchers compare the reply
+    against actual tool output — e.g. SourceCountInflationHook flags
+    a 5-item reply when the search returned 1 (harness-lynw)."""
 
     reply: ModelReply
     tools_ran_this_turn: bool
     tools_ran: frozenset[str] = frozenset()
     user_message: str | None = None
+    prior_tool_outputs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -521,11 +527,18 @@ class PreToolContext:
     stored result to re-issue prior outcomes preserving success/error
     (harness-v5w) — feeding back a generic success=True nudge made the
     model hallucinate success after a failed retry. Other hooks that
-    only care about which tools ran iterate the keys."""
+    only care about which tools ran iterate the keys.
+
+    `prior_tool_outputs` is the tuple of tool-role message contents
+    already in the working thread this turn. ArgumentGroundingHook
+    widens its grounding corpus to include them (harness-jm9p), so a
+    URL the model picked up from a prior search result isn't flagged
+    as ungrounded just because the user never spelled the domain out."""
 
     call: ToolCall
     seen_calls: Mapping[tuple[str, str], ToolResult]
     user_message: str | None = None
+    prior_tool_outputs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1702,6 +1715,90 @@ class ListCountMismatchHook:
         return Nudge(_LIST_COUNT_MISMATCH_NUDGE)
 
 
+_SOURCE_COUNT_INFLATION_NUDGE = (
+    "[source-count inflation — your reply enumerated {reply_count} items "
+    "but the most recent tool result returned {tool_count}. Do NOT pad "
+    "with sources the tool did not return. Re-answer using ONLY the "
+    "items in the tool result; if you have additional knowledge about "
+    "the topic, you may add prose (not numbered/bulleted entries) and "
+    "label it explicitly as your own knowledge, not as a tool result.]"
+)
+
+
+# Tolerance: a reply may legitimately enumerate one more item than the
+# tool (e.g. the tool returned 4 papers + the model adds a brief "also
+# worth mentioning" line). > tool_count + 1 is the fabrication shape.
+_SOURCE_COUNT_TOLERANCE = 1
+# Below this floor the comparison is too noisy to act on — a 1-item
+# reply enumerating a 0-item tool result is a "no matches" wrap-up, not
+# fabrication. Pin reply_count at >= 3 so the catch shape ("padded to 5
+# from 1") is unambiguous.
+_SOURCE_COUNT_REPLY_FLOOR = 3
+
+
+@dataclass(frozen=True)
+class SourceCountInflationHook:
+    """Nudge replies that enumerate substantially more items than the
+    underlying tool actually returned.
+
+    Failure mode this catches (harness-lynw): tool returns 1 search
+    result; model writes a 5-item enumerated list, padding 4 entries
+    with plausible-sounding names that never appeared in the tool
+    output. The other fabrication catchers don't fire because:
+      - FABRICATED_URL_LIST_RE requires per-entry URLs (this pattern
+        has none — just `**Name**: description`).
+      - The web-fetch tool ran legitimately, so the broad
+        'fabricated_search' gate is disarmed.
+      - ListCountMismatchHook compares the reply against a stated
+        count claim in the SAME reply; here the model never claims
+        a count, it just over-enumerates.
+
+    Rule (ALL must hold):
+      1. Reply enumerates >= _SOURCE_COUNT_REPLY_FLOOR items.
+      2. Most recent prior tool output also enumerates >= 1 item.
+      3. reply_count > tool_count + _SOURCE_COUNT_TOLERANCE.
+
+    Silent cases (by design):
+      - No prior tool output → no comparison.
+      - Most recent tool output had no enumerated items (e.g. prose
+        reply, no-matches sentinel) → no comparison.
+      - Reply count is within tolerance → legitimate elaboration.
+
+    Opt-in via the character's `catchers:` roster as
+    `source_count_inflation`. Default-on for characters that do
+    web research; off for chat-only profiles where the heuristic
+    has no signal to gate on."""
+
+    name: str = "source_count_inflation"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if not ctx.prior_tool_outputs:
+            return Continue()
+        reply_count = len(_LIST_ITEM_RE.findall(ctx.reply.content))
+        if reply_count < _SOURCE_COUNT_REPLY_FLOOR:
+            return Continue()
+        # Walk priors in reverse to find the most recent enumerated
+        # tool output. A tool that returned a no-matches blurb has 0
+        # items and we keep walking; once we hit one with items, that
+        # anchors the comparison. If none have items, we don't fire.
+        tool_count: int | None = None
+        for prior in reversed(ctx.prior_tool_outputs):
+            count = len(_LIST_ITEM_RE.findall(prior))
+            if count >= 1:
+                tool_count = count
+                break
+        if tool_count is None:
+            return Continue()
+        if reply_count <= tool_count + _SOURCE_COUNT_TOLERANCE:
+            return Continue()
+        return Nudge(
+            _SOURCE_COUNT_INFLATION_NUDGE.format(
+                reply_count=reply_count,
+                tool_count=tool_count,
+            )
+        )
+
+
 @dataclass(frozen=True)
 class MissingCitationHook:
     """Nudge a reply that references the corpus document substantively
@@ -2024,8 +2121,15 @@ class ArgumentGroundingHook:
         roots = _arg_domain_roots(arg_strings)
         if not roots:
             return Continue()
-        user_lower = ctx.user_message.lower()
-        ungrounded = sorted(root for root in roots if root not in user_lower)
+        # Ground against the user message AND any prior tool outputs
+        # this turn (harness-jm9p) — a fetch_url targeting a domain
+        # the prior search_web returned is legitimate even if the user
+        # never spelled the domain out. Only "leaked from training /
+        # parametric memory" domains stay flagged.
+        grounded_corpus = ctx.user_message.lower()
+        for prior in ctx.prior_tool_outputs:
+            grounded_corpus += "\n" + prior.lower()
+        ungrounded = sorted(root for root in roots if root not in grounded_corpus)
         if not ungrounded:
             return Continue()
         offenders = ", ".join(repr(r) for r in ungrounded)
@@ -3309,6 +3413,7 @@ _OPT_IN_CATCHERS: frozenset[str] = frozenset(
         "post_search_grounding",
         "post_research_persist",
         "persist_body_citations",
+        "source_count_inflation",
     }
 )
 
@@ -3393,6 +3498,13 @@ def default_hook_pipeline(
     # ADDS a citation on retry doesn't get re-chained into a
     # count-mismatch nudge from its original pre-citation form.
     bail.append(ListCountMismatchHook())
+    # source_count_inflation: reply enumerates substantially more
+    # items than the most recent tool result produced (harness-lynw).
+    # Opt-in for characters that do web research where the model can
+    # pad with plausible-sounding source names; chat-only profiles
+    # leave it off since the heuristic has no tool count to compare.
+    if "source_count_inflation" in catchers_set:
+        bail.append(SourceCountInflationHook())
     # reserved_squawk_code: ATC pilot-initiated reserved transponder
     # codes (7500/7600/7700). Runs after structural fabrication
     # checks so a reply that fails any earlier gate gets the
@@ -3691,6 +3803,7 @@ __all__ = [
     "ReservedSquawkCodeHook",
     "ScopeRedirectHook",
     "Skip",
+    "SourceCountInflationHook",
     "TableFabricationHook",
     "TeaserHook",
     "ToolIntentHook",

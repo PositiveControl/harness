@@ -46,6 +46,7 @@ from harness.orchestrator.hooks import (
     ReservedSquawkCodeHook,
     ScopeRedirectHook,
     Skip,
+    SourceCountInflationHook,
     TableFabricationHook,
     TeaserHook,
     ToolIntentHook,
@@ -698,6 +699,59 @@ def test_argument_grounding_hook_passes_mixed_grounded_and_prose_args() -> None:
     )
     outcome = ArgumentGroundingHook().check(ctx)
     assert isinstance(outcome, Continue)
+
+
+def test_argument_grounding_hook_passes_url_from_prior_tool_result() -> None:
+    """harness-jm9p: a fetch_url targeting a domain that appeared in a
+    prior search_web tool result is legitimate even if the user never
+    named it. Without this, the discovery loop (search_web → fetch_url
+    one of the results) is broken."""
+    call = ToolCall(
+        name="fetch_url",
+        arguments={"url": "https://metar-taf.com/metar/RJTA"},
+    )
+    prior_search_result = (
+        "search_web(query='weather RJTA') returned 1 result:\n"
+        "  1. RJTA METAR — https://metar-taf.com/metar/RJTA"
+    )
+    ctx = PreToolContext(
+        call=call,
+        seen_calls={},
+        user_message="weather at RJTA",
+        prior_tool_outputs=(prior_search_result,),
+    )
+    outcome = ArgumentGroundingHook().check(ctx)
+    assert isinstance(outcome, Continue), (
+        "URL grounded in a prior tool result must pass — the discovery "
+        "loop (search_web → fetch_url) depends on this."
+    )
+
+
+def test_argument_grounding_hook_still_flags_url_not_in_any_source() -> None:
+    """harness-jm9p inverse: a fetch_url targeting a domain that
+    appears in NEITHER the user message NOR any prior tool result
+    is still flagged. This is the original fabrication shape — the
+    model invented metar-taf.com from training data when the search
+    only returned Chandler-AZ weather URLs."""
+    call = ToolCall(
+        name="fetch_url",
+        arguments={"url": "https://metar-taf.com/metar/RJTA"},
+    )
+    # Prior search returned a different domain entirely (the bug's
+    # actual repro: geolocation-polluted results).
+    prior_search_result = (
+        "search_web(query='weather RJTA') returned 1 result:\n"
+        "  1. Chandler AZ weather — https://example-weather.com/chandler"
+    )
+    ctx = PreToolContext(
+        call=call,
+        seen_calls={},
+        user_message="weather at RJTA",
+        prior_tool_outputs=(prior_search_result,),
+    )
+    outcome = ArgumentGroundingHook().check(ctx)
+    assert isinstance(outcome, Skip)
+    assert "'metar-taf'" in outcome.result.output
 
 
 # ---------- fetch_url_guard (harness-ygvg follow-up) ----------
@@ -2232,6 +2286,104 @@ def test_list_count_mismatch_respects_disabled_toggle() -> None:
         disabled=frozenset({"list_count_mismatch"}),
     )
     assert isinstance(disabled, Continue)
+
+
+# ---------- source_count_inflation (harness-lynw) ----------
+
+
+def test_source_count_inflation_fires_on_1_to_5_pad() -> None:
+    """harness-lynw repro: search_web returned 1 result; reply
+    enumerates 5 sources. Padding 4 fabricated entries is the
+    failure shape."""
+    reply_text = (
+        "Here are the weather sources for Mombasa:\n\n"
+        "1. **Time and Date**: Provides a 14-day forecast.\n"
+        "2. **AccuWeather**: Offers a 3-day forecast.\n"
+        "3. **Weather.com**: Shows today's conditions.\n"
+        "4. **Weather.co.ke**: Provides updates on temperature.\n"
+        "5. **BBC Weather**: Offers a 14-day forecast.\n"
+    )
+    tool_output = (
+        "search_web(query='weather in Mombasa, Kenya') returned 1 result:\n"
+        "  1. Mombasa 14 day forecast - https://timeanddate.com/...\n"
+    )
+    outcome = SourceCountInflationHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_web"}),
+            prior_tool_outputs=(tool_output,),
+        )
+    )
+    assert isinstance(outcome, Nudge)
+    assert "5" in outcome.text
+    assert "1" in outcome.text
+
+
+def test_source_count_inflation_silent_within_tolerance() -> None:
+    """Reply enumerates exactly tool_count + 1 — within the tolerance
+    (a model may add a single 'also worth mentioning' line on top of
+    the tool's items). Don't fire."""
+    reply_text = "From the search:\n\n1. **Source A**\n2. **Source B**\n3. **Source C**\n"
+    tool_output = (
+        "search_web returned 2 results:\n  1. A — https://a.example\n  2. B — https://b.example\n"
+    )
+    outcome = SourceCountInflationHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_web"}),
+            prior_tool_outputs=(tool_output,),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_source_count_inflation_silent_when_reply_below_floor() -> None:
+    """A 2-item reply when the tool returned 0 items is a 'no
+    matches' wrap-up shape, not fabrication. Don't fire."""
+    reply_text = "Found nothing.\n\n1. A\n2. B\n"
+    tool_output = "search_web returned 0 results."
+    outcome = SourceCountInflationHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_web"}),
+            prior_tool_outputs=(tool_output,),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_source_count_inflation_silent_when_no_prior_tool_output() -> None:
+    """No prior tool output → no comparison anchor. Don't fire."""
+    reply_text = "Here are the steps:\n\n1. First\n2. Second\n3. Third\n4. Fourth\n"
+    outcome = SourceCountInflationHook().check(
+        BailContext(
+            reply=_reply(reply_text),
+            tools_ran_this_turn=False,
+            tools_ran=frozenset(),
+            prior_tool_outputs=(),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_source_count_inflation_opt_in_via_catchers_roster() -> None:
+    """Hook installs only when 'source_count_inflation' is in the
+    character's catchers roster — characters that don't do web
+    research provably skip it."""
+    from harness.orchestrator.hooks import default_hook_pipeline
+
+    # Default (empty catchers) — hook NOT installed.
+    pipe_default = default_hook_pipeline()
+    hook_names = {h.name for h in pipe_default.bail}
+    assert "source_count_inflation" not in hook_names
+
+    # Opt-in — hook installed.
+    pipe_optin = default_hook_pipeline(catchers=("source_count_inflation",))
+    hook_names_optin = {h.name for h in pipe_optin.bail}
+    assert "source_count_inflation" in hook_names_optin
 
 
 # ---------- reserved_squawk_code (harness-5uq follow-up #3) ----------

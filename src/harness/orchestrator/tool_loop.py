@@ -397,6 +397,7 @@ def _router_prelude(
             call=call,
             seen_calls=dict(seen_calls),
             user_message=user_message,
+            prior_tool_outputs=tuple(m.content for m in working if m.role == "tool"),
         ),
         disabled=_disabled_snapshot(),
     )
@@ -714,6 +715,7 @@ def _execute_tool_calls(
                 call=call,
                 seen_calls=dict(seen_calls),
                 user_message=user_message,
+                prior_tool_outputs=tuple(m.content for m in working if m.role == "tool"),
             ),
             disabled=_disabled_snapshot(),
         )
@@ -1051,6 +1053,7 @@ def run_tool_loop(
                     tools_ran_this_turn=any_tool_succeeded,
                     tools_ran=frozenset(succeeded_tools),
                     user_message=turn_user_message,
+                    prior_tool_outputs=tuple(m.content for m in working if m.role == "tool"),
                 ),
                 disabled=_disabled_snapshot(),
             )
