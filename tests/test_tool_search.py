@@ -303,6 +303,9 @@ def test_query_falls_back_to_tag_when_query_yields_zero() -> None:
     out = tool.call(query="completely unrelated phrase xyz", tag="web")
     assert "search_web" in out
     assert "fell back to tag='web'" in out
+    # Phase-3a fallback now carries a diagnostic warning so the model
+    # treats the rescue as suggestive, not authoritative (harness-l0wg).
+    assert "VERIFY" in out
 
 
 def test_query_alone_fallback_wins_over_tag_alone_when_both_have_hits() -> None:
@@ -383,3 +386,80 @@ def test_no_registry_uses_catalog_description() -> None:
     cat.register(ToolCatalogEntry(name="now", family="reckon", description=""))
     out = ToolSearchTool(catalog=cat).call(query="now")
     assert "(no description)" in out
+
+
+# --- schema content (harness-l0wg) -------------------------------------
+
+
+def test_tag_description_does_not_advertise_arithmetic_as_example() -> None:
+    """The earlier schema listed 'arithmetic' as a tag example, which
+    led small models to pass tag='arithmetic' for factual lookups (the
+    user asked them to compute a percentage AFTER finding the data).
+    The example pulled the model toward picking SOME tag instead of
+    sending query alone. Repro: 'population of Nairobi, percent
+    female vs male' → tag='arithmetic' → calc → fabrication.
+    Pin the fix so the bait example can't sneak back in."""
+    spec = ToolSearchTool(catalog=ToolCatalog()).spec
+    tag_desc = spec.parameters["properties"]["tag"]["description"]
+    # Must NOT advertise arithmetic as an opt-in example.
+    assert "'arithmetic'" not in tag_desc, (
+        "tag examples must not include 'arithmetic' — models latch onto "
+        "it for percent-math questions and skip data-gathering tools"
+    )
+    # Must include the IMMEDIATE-step framing.
+    assert "NOW" in tag_desc or "immediate" in tag_desc.lower()
+
+
+def test_top_level_description_steers_toward_data_tools_for_lookups() -> None:
+    """The tool_search top-level description must explicitly call out
+    that factual lookups should reach for search/lookup/fetch tools,
+    not arithmetic tools. Without this, the model treats 'I need to
+    compute a percentage' as the framing and picks calc."""
+    spec = ToolSearchTool(catalog=ToolCatalog()).spec
+    desc = spec.description
+    # Must mention the data-side options for factual lookups.
+    lower = desc.lower()
+    assert "search" in lower, (
+        "tool_search description must mention 'search' as a data-gathering option"
+    )
+    assert "lookup" in lower, (
+        "tool_search description must mention 'lookup' as a data-gathering option"
+    )
+    # Must warn against picking arithmetic just because computation
+    # happens later.
+    assert "arithmetic" in lower, (
+        "description must explicitly call out the arithmetic trap so the model can recognize it"
+    )
+
+
+def test_phase_3a_fallback_note_carries_verification_hint() -> None:
+    """When a query yields zero and tool_search falls back to
+    tag-alone, the note must signal that this is a rescue, not a
+    confirmation. Without the warning, the model treats whatever came
+    back as authoritative. Targets the harness-l0wg repro shape."""
+    cat = ToolCatalog()
+    cat.register(
+        ToolCatalogEntry(
+            name="calc",
+            family="reckon",
+            tags=("arithmetic",),
+            description="Arithmetic.",
+        )
+    )
+    cat.register(
+        ToolCatalogEntry(
+            name="search_web",
+            family="research",
+            tags=("search", "lookup", "web"),
+            description="Search the web.",
+        )
+    )
+    tool = ToolSearchTool(catalog=cat)
+    out = tool.call(query="population count Nairobi Kenya", tag="arithmetic")
+    # 3a fired and surfaced calc.
+    assert "calc" in out
+    assert "fell back to tag='arithmetic'" in out
+    # And the diagnostic hint is present.
+    assert "VERIFY" in out
+    assert "search" in out
+    assert "lookup" in out

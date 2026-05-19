@@ -88,10 +88,16 @@ class ToolSearchTool:
             name="tool_search",
             description=(
                 "Find tools in the catalog by keyword query, tag, or family. "
-                "Use this BEFORE fabricating an answer when you suspect "
-                "a tool might fit the user's need but isn't in the current "
-                "turn's schema. Returns name + family + description "
-                "excerpt + tags for up to `limit` matching tools."
+                "Use this BEFORE fabricating an answer when a tool might "
+                "fit the user's need but isn't in the current turn's "
+                "schema. Match the IMMEDIATE step you need a tool for, "
+                "NOT what you might do with the data later: for factual "
+                "lookups ('what is the population of X?', 'weather in Y') "
+                "try query='search' / 'lookup' / 'fetch' to find a "
+                "data-gathering tool — don't pick 'arithmetic' just "
+                "because you'll compute a percentage AFTER finding "
+                "the data. Returns name + family + description excerpt "
+                "+ tags for up to `limit` matches."
             ),
             parameters={
                 "type": "object",
@@ -100,24 +106,32 @@ class ToolSearchTool:
                         "type": "string",
                         "description": (
                             "Substring match against tool name + description "
-                            "+ tags. Case-insensitive. Empty query returns "
-                            "the empty list unless `tag` or `family` is set."
+                            "+ tags. Case-insensitive. If a literal phrase "
+                            "('population of Nairobi') returns nothing, "
+                            "retry with the abstract action you need "
+                            "('search', 'web', 'lookup', 'fetch'). Empty "
+                            "query returns the empty list unless `tag` or "
+                            "`family` is set."
                         ),
                     },
                     "tag": {
                         "type": "string",
                         "description": (
-                            "Restrict results to tools carrying this tag "
-                            "(e.g. 'arithmetic', 'time', 'fs-read'). "
-                            "Optional."
+                            "Restrict results to tools carrying this tag. "
+                            "Optional — query alone is usually enough. "
+                            "Pick a tag matching the step you need a "
+                            "tool for NOW (e.g. 'search', 'lookup', "
+                            "'fetch' for data; 'fs-read' for files), "
+                            "not what you'll do with the data later."
                         ),
                     },
                     "family": {
                         "type": "string",
                         "description": (
                             "Restrict results to tools in this family "
-                            "(e.g. 'reckon', 'filesystem', 'memory'). "
-                            "Optional."
+                            "(e.g. 'research' for data lookup, "
+                            "'filesystem' for files, 'memory' for "
+                            "recall). Optional."
                         ),
                     },
                     "limit": {
@@ -203,7 +217,12 @@ class ToolSearchTool:
                     fallback_note += f"tag={tag!r}"
                 elif family is not None:
                     fallback_note += f"family={family!r}"
-                fallback_note += ")"
+                fallback_note += (
+                    " — VERIFY this matches the immediate step you need. "
+                    "If the user asked for facts/data and this returned an "
+                    "arithmetic/compute tool, retry tool_search with "
+                    "query='search' / 'lookup' / 'fetch' instead.)"
+                )
 
         if not candidates:
             constraints = []
