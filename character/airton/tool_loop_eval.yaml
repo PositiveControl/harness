@@ -382,6 +382,41 @@
   expected_events_contain: [tool_call_deduped]
   expected_messages_not_contain: ["search-result"]
 
+- id: tool_search_loop_caught_at_third_call
+  label: tool_search_loop
+  description: |
+    Session 2026-05-19 repro: user asked 'what is the national bird
+    of Kenya?', model called tool_search SEVEN times with refined
+    queries (including search-engine operators like 'site:wikipedia
+    .org') and never called load_tool, ending with a fabricated
+    answer. ToolSearchLoopHook now Skips the 3rd tool_search call
+    with a directive nudge naming load_tool as the required next
+    step. The recovery reply acknowledges the dead-end and either
+    asks the user to paste a URL or tells them plainly.
+  registry:
+    - name: tool_search
+      output: "stub tool_search output"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: tool_search
+          arguments: { query: "kenya national bird" }
+    - content: ""
+      tool_calls:
+        - name: tool_search
+          arguments: { query: "national bird kenya wiki" }
+    - content: ""
+      tool_calls:
+        - name: tool_search
+          arguments: { query: "kenya national bird site:wikipedia.org" }
+    - content: |
+        I couldn't pin down a search tool from the catalog. Paste
+        a source URL or rephrase the question — discovery loops
+        aren't getting me anywhere new.
+  expected_contains: ["Paste"]
+  expected_events_contain: [tool_call_deduped]
+  expected_messages_contain: ["tool_search loop", "load_tool"]
+
 - id: duplicate_call_short_circuit
   label: duplicate_call
   description: Model re-emits the same (name, args) tool call across rounds —

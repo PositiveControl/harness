@@ -87,17 +87,21 @@ class ToolSearchTool:
         return ToolSpec(
             name="tool_search",
             description=(
-                "Find tools in the catalog by keyword query, tag, or family. "
-                "Use this BEFORE fabricating an answer when a tool might "
-                "fit the user's need but isn't in the current turn's "
-                "schema. Match the IMMEDIATE step you need a tool for, "
-                "NOT what you might do with the data later: for factual "
-                "lookups ('what is the population of X?', 'weather in Y') "
-                "try query='search' / 'lookup' / 'fetch' to find a "
-                "data-gathering tool — don't pick 'arithmetic' just "
-                "because you'll compute a percentage AFTER finding "
-                "the data. Returns name + family + description excerpt "
-                "+ tags for up to `limit` matches."
+                "Finds TOOL NAMES in the catalog by query / tag / family. "
+                "Returns at most `limit` tool entries — NOT answers, NOT "
+                "web results. After ANY non-empty result, your NEXT call "
+                "MUST be load_tool(name=<one of the candidates>) to "
+                "activate it for use. Calling tool_search again with "
+                "rephrased queries searches the SAME catalog and yields "
+                "the same (or weaker) results. Search-engine operators "
+                "('site:wikipedia.org', 'intitle:', etc.) do NOT apply — "
+                "catalog match is on tool name / description / tags, not "
+                "URLs. Match the IMMEDIATE step you need a tool for: for "
+                "factual lookups ('what is the population of X?', "
+                "'weather in Y') try query='search' / 'lookup' / 'fetch' "
+                "to find a data-gathering tool — don't pick 'arithmetic' "
+                "just because you'll compute a percentage AFTER finding "
+                "the data."
             ),
             parameters={
                 "type": "object",

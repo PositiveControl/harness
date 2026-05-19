@@ -1,0 +1,107 @@
+# tool_search_loop fixtures (harness-lmwm).
+#
+# Pin the ToolSearchLoopHook (pre-tool catcher). Session repro
+# 2026-05-19: model called tool_search 7 times with refined queries
+# (including search-engine operators like 'site:wikipedia.org') and
+# never called load_tool. The 3rd tool_search call now Skips with a
+# directive nudge naming load_tool as the required next step.
+#
+# Replayed by:
+#   harness eval tool-loop --fixture evals/orchestrator/tool_search_loop.yaml
+
+# ---------- positive: 3rd tool_search call without load_tool ----------
+
+- id: tool_search_loop_third_call_skipped
+  label: tool_search_loop
+  description: |
+    Session repro shape. Three tool_search calls in a row, none
+    preceded by load_tool. The 3rd one trips the catcher; the
+    recovery reply names the failure mode and asks for a paste.
+  registry:
+    - name: tool_search
+      output: "stub tool_search output"
+  messages:
+    - role: user
+      content: "what is the national bird of kenya?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: tool_search
+          arguments: { query: "kenya national bird" }
+    - content: ""
+      tool_calls:
+        - name: tool_search
+          arguments: { query: "national bird kenya wiki" }
+    - content: ""
+      tool_calls:
+        - name: tool_search
+          arguments: { query: "kenya national bird site:wikipedia.org" }
+    - content: |
+        I tried discovering a search tool but couldn't pin one down
+        from the catalog. Paste a source URL or tell me a different
+        question I can answer with what I have.
+  expected_contains: ["Paste"]
+  expected_events_contain: [tool_call_deduped]
+  expected_messages_contain: ["tool_search loop", "load_tool"]
+
+# ---------- control: load_tool between tool_search calls ----------
+
+- id: tool_search_after_load_tool_passes
+  label: control
+  description: |
+    Model engages the discovery flow correctly: tool_search ->
+    load_tool -> tool_search (looking for an alternative). The
+    intervening load_tool resets the loop counter, so the second
+    tool_search proceeds normally. Tests that the catcher's reset
+    semantics don't block legitimate iteration.
+  registry:
+    - name: tool_search
+      output: "stub tool_search output"
+    - name: load_tool
+      output: "stub load_tool output"
+  messages:
+    - role: user
+      content: "find me info about kenya"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: tool_search
+          arguments: { query: "kenya" }
+    - content: ""
+      tool_calls:
+        - name: load_tool
+          arguments: { name: "search_web" }
+    - content: ""
+      tool_calls:
+        - name: tool_search
+          arguments: { query: "fetch_url" }
+    - content: "done with discovery"
+  expected_contains: ["done"]
+  expected_events_not_contain: [tool_call_deduped]
+
+# ---------- control: 2nd tool_search passes (under threshold) ----------
+
+- id: tool_search_second_call_passes
+  label: control
+  description: |
+    Threshold is 3rd call. The 2nd call (one refinement after the
+    first) is a legitimate pattern — model saw the first results
+    and wants a narrower / different match. Must NOT Skip.
+  registry:
+    - name: tool_search
+      output: "stub tool_search output"
+  messages:
+    - role: user
+      content: "I need a tool to do X"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: tool_search
+          arguments: { query: "do X" }
+    - content: ""
+      tool_calls:
+        - name: tool_search
+          arguments: { query: "X tool" }
+    - content: "found what I needed"
+  expected_contains: ["found"]
+  expected_events_not_contain: [tool_call_deduped]

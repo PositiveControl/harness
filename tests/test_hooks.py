@@ -53,6 +53,7 @@ from harness.orchestrator.hooks import (
     TeaserHook,
     ThinSourceFabricationHook,
     ToolIntentHook,
+    ToolSearchLoopHook,
     Truncated,
     TruncatedHook,
     UncitedSubstantiveReplyHook,
@@ -958,6 +959,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "ambiguous_context",
         "paired_meta_confirm_strip",
         "duplicate_call",
+        "tool_search_loop",
         "argument_grounding",
         "low_confidence_fallback",
         "ungrounded_citation",
@@ -1064,6 +1066,117 @@ def test_duplicate_call_hook_passes_first_time() -> None:
     call = ToolCall(name="list_dir", arguments={"path": "/workdir"})
     outcome = DuplicateCallHook().check(PreToolContext(call=call, seen_calls={}))
     assert isinstance(outcome, Continue)
+
+
+# ---------- tool_search loop (harness-lmwm) ----------
+
+
+def _seen_with(names: list[str]) -> dict[tuple[str, str], ToolResult]:
+    """Build a seen_calls map with one entry per requested name. Args
+    are differentiated so each entry has a unique key — mirrors the
+    repro's pattern of refining the query across attempts."""
+    out: dict[tuple[str, str], ToolResult] = {}
+    for i, name in enumerate(names):
+        out[(name, f'{{"query":"variant_{i}"}}')] = ToolResult(
+            tool_name=name, output=f"prior result {i}", success=True
+        )
+    return out
+
+
+def test_tool_search_loop_hook_skips_third_call_without_load_tool() -> None:
+    """Session 2026-05-19 repro: model called tool_search 7 times in
+    one turn with refined / search-engine-syntax queries (site:...) and
+    never called load_tool, eventually fabricating an answer. The 3rd
+    tool_search call must Skip with a directive nudge naming load_tool
+    as the required next step."""
+    call = ToolCall(name="tool_search", arguments={"query": "kenya national bird wiki"})
+    ctx = PreToolContext(
+        call=call,
+        seen_calls=_seen_with(["tool_search", "tool_search"]),
+    )
+    outcome = ToolSearchLoopHook().check(ctx)
+    assert isinstance(outcome, Skip)
+    assert "load_tool" in outcome.result.output
+    assert outcome.result.success is False
+
+
+def test_tool_search_loop_hook_passes_first_call() -> None:
+    """First tool_search call this turn — legitimate discovery."""
+    call = ToolCall(name="tool_search", arguments={"query": "x"})
+    ctx = PreToolContext(call=call, seen_calls={})
+    assert isinstance(ToolSearchLoopHook().check(ctx), Continue)
+
+
+def test_tool_search_loop_hook_passes_second_call() -> None:
+    """Second tool_search call — one refinement is fine. Threshold
+    is 3rd call. Conservative on the early-call side to avoid blocking
+    legitimate iterate-then-load patterns."""
+    call = ToolCall(name="tool_search", arguments={"query": "y"})
+    ctx = PreToolContext(call=call, seen_calls=_seen_with(["tool_search"]))
+    assert isinstance(ToolSearchLoopHook().check(ctx), Continue)
+
+
+def test_tool_search_loop_hook_resets_after_load_tool() -> None:
+    """Once load_tool has run, the discovery flow is engaging
+    correctly. A subsequent tool_search (e.g. the loaded tool didn't
+    fit, model is looking for an alternative) is legitimate. Catcher
+    must NOT skip even with 3+ prior tool_search calls."""
+    call = ToolCall(name="tool_search", arguments={"query": "different topic"})
+    ctx = PreToolContext(
+        call=call,
+        seen_calls=_seen_with(["tool_search", "tool_search", "load_tool", "tool_search"]),
+    )
+    assert isinstance(ToolSearchLoopHook().check(ctx), Continue)
+
+
+def test_tool_search_loop_hook_ignores_non_tool_search_calls() -> None:
+    """The hook only gates tool_search re-invocation. Other tool calls
+    pass through unaffected, even if many tool_search calls preceded
+    them — those would already have hit the threshold but this call
+    isn't tool_search."""
+    call = ToolCall(name="search_web", arguments={"query": "kenya national bird"})
+    ctx = PreToolContext(
+        call=call,
+        seen_calls=_seen_with(["tool_search", "tool_search", "tool_search"]),
+    )
+    assert isinstance(ToolSearchLoopHook().check(ctx), Continue)
+
+
+def test_tool_search_loop_hook_nudge_carries_call_count() -> None:
+    """The nudge text includes the actual repeat count so the model
+    can see the magnitude of its loop ('called 7 times' is more
+    forceful than 'called several times')."""
+    call = ToolCall(name="tool_search", arguments={"query": "site:example.com"})
+    ctx = PreToolContext(
+        call=call,
+        seen_calls=_seen_with(["tool_search"] * 6),  # this would be the 7th
+    )
+    outcome = ToolSearchLoopHook().check(ctx)
+    assert isinstance(outcome, Skip)
+    assert "7" in outcome.result.output
+
+
+def test_tool_search_spec_description_calls_out_load_tool_step() -> None:
+    """harness-lmwm preventive layer: the tool_search spec
+    description must explicitly tell the model that after a non-empty
+    result the next call is load_tool, AND that search-engine
+    operators like 'site:' don't apply to the catalog. Without these
+    cues the model loops on refined queries as if tool_search were
+    the search engine."""
+    from harness.tools import ToolCatalog, ToolSearchTool
+
+    spec = ToolSearchTool(catalog=ToolCatalog()).spec
+    desc = spec.description
+    assert "load_tool" in desc, (
+        "tool_search description must name load_tool as the required next step"
+    )
+    assert "TOOL NAMES" in desc or "tool names" in desc, (
+        "tool_search description must clarify it returns tool names, not answers"
+    )
+    assert "site:" in desc, (
+        "tool_search description must call out that search-engine "
+        "operators ('site:') don't apply to the catalog"
+    )
 
 
 # ---------- argument grounding hook ----------

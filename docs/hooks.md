@@ -42,6 +42,7 @@ Hooks dispatch in the order shown within each phase — first-match semantics, s
 | Name | Shape |
 | --- | --- |
 | `duplicate_call` | Identical (name, args) call this turn; re-issues prior result. |
+| `tool_search_loop` | tool_search called repeatedly without load_tool — model is treating it as a search engine. |
 | `argument_grounding` | Tool args name domains not in user message or prior tool output. |
 | `fetch_url_guard` | fetch_url called speculatively when user pasted no URL. |
 | `assemble_context_once` | Model re-calls assemble_context when forced-grounding already ran. |

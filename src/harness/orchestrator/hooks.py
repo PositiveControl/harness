@@ -2460,6 +2460,83 @@ class DuplicateCallHook:
         )
 
 
+_TOOL_SEARCH_LOOP_NUDGE = (
+    "[tool_search loop — you have called tool_search {count} times this "
+    "turn without loading any candidate. The catalog has not changed "
+    "between calls — tool_search returns TOOL NAMES, not answers. "
+    "Repeating the call with rephrased queries searches the same "
+    "catalog and yields the same results. Search-engine operators "
+    "like 'site:' or 'intitle:' do NOT apply to the catalog.\n\n"
+    "To actually look up an answer:\n"
+    "  1. call load_tool(name=<candidate>) with one of the data-tagged "
+    "tools from an earlier tool_search result (search_web is the "
+    "usual one for general factual queries),\n"
+    "  2. then call that loaded tool with the user's question.\n\n"
+    "If no candidate from prior results fits, tell the user plainly "
+    "that the tools available don't cover this question. Do NOT keep "
+    "calling tool_search.]"
+)
+
+
+# Threshold: trigger on the 3rd tool_search call this turn (2 priors +
+# this one) when no load_tool has run yet. The first 2 calls allow
+# the model one refinement; by the 3rd it's looping. Counter is per-
+# turn (resets between turns) and resets after load_tool runs.
+_TOOL_SEARCH_LOOP_THRESHOLD = 2
+
+
+@dataclass(frozen=True)
+class ToolSearchLoopHook:
+    """Reject a tool_search call when the model is treating discovery
+    as a search engine (harness-lmwm). Session repro 2026-05-19: model
+    called tool_search SEVEN times in one turn — including queries with
+    search-engine operators ('site:en.wikipedia.org',
+    'site:nationalparks.org') — without ever calling load_tool. The
+    first call returned 7 candidates including search_web with a
+    'Next step: call load_tool(...)' suffix; the model ignored it and
+    kept refining the query as if tool_search were the search engine.
+    The turn ended with a fabricated answer because no content tool
+    ever ran.
+
+    Trigger conditions (ALL must hold):
+      1. The incoming call is tool_search.
+      2. At least `_TOOL_SEARCH_LOOP_THRESHOLD` (2) prior tool_search
+         calls have already run this turn.
+      3. No load_tool call has run this turn. (If load_tool ran, the
+         model has been engaging with the discovery flow correctly;
+         a fresh round of tool_search after load_tool is legitimate
+         when the loaded tool didn't fit.)
+
+    Action: Skip the call with a directive ToolResult naming
+    load_tool as the required next step.
+
+    Position: after duplicate_call in the pre_tool pipeline. Both
+    catchers gate the same call shape (tool_search re-invocation) but
+    on different signals — duplicate_call rejects exact-args repeats,
+    this hook rejects refined-query loops."""
+
+    name: str = "tool_search_loop"
+
+    def check(self, ctx: PreToolContext) -> PreToolOutcome:
+        if ctx.call.name != "tool_search":
+            return Continue()
+        names_seen = [name for (name, _args) in ctx.seen_calls]
+        if any(n == "load_tool" for n in names_seen):
+            return Continue()
+        prior_tool_search = sum(1 for n in names_seen if n == "tool_search")
+        if prior_tool_search < _TOOL_SEARCH_LOOP_THRESHOLD:
+            return Continue()
+        nudge_text = _TOOL_SEARCH_LOOP_NUDGE.format(count=prior_tool_search + 1)
+        return Skip(
+            ToolResult(
+                tool_name="tool_search",
+                output=nudge_text,
+                success=False,
+                error="tool_search loop detected (harness-lmwm)",
+            )
+        )
+
+
 # Nudge fed back as the tool-role message when the grounding hook
 # skips a call. Phrased so the next round knows exactly what failed
 # (the arg that didn't trace back to the user) and what the remedy is
@@ -3764,6 +3841,9 @@ HOOK_SHAPES: dict[str, str] = {
     # (none today — phase exists for future use.)
     # pre_tool-phase catchers (gate tool execution).
     "duplicate_call": "Identical (name, args) call this turn; re-issues prior result.",
+    "tool_search_loop": (
+        "tool_search called repeatedly without load_tool — model is treating it as a search engine."
+    ),
     "argument_grounding": "Tool args name domains not in user message or prior tool output.",
     "assemble_context_once": "Model re-calls assemble_context when forced-grounding already ran.",
     "fetch_url_guard": "fetch_url called speculatively when user pasted no URL.",
@@ -4069,7 +4149,17 @@ def default_hook_pipeline(
     # Pre-tool catchers. Built mutably so opt-in characters can
     # tack on FetchUrlGuardHook without forcing every non-paste-only
     # persona to inherit it.
-    pre_tool: list[PreToolHook] = [DuplicateCallHook(), ArgumentGroundingHook()]
+    pre_tool: list[PreToolHook] = [
+        DuplicateCallHook(),
+        # tool_search_loop (harness-lmwm): after duplicate_call (which
+        # uses an exact (name, args) key) and before argument_grounding
+        # (which inspects arg domains). Gates a different signal —
+        # 'tool_search called repeatedly with refined queries, no
+        # load_tool yet' — that duplicate_call doesn't see because
+        # the args differ across attempts.
+        ToolSearchLoopHook(),
+        ArgumentGroundingHook(),
+    ]
     # fetch_url_guard: airton_c_tfr-style paste-only characters block
     # speculative fetch_url calls (those without a URL in the user's
     # message). Placed after argument_grounding so a real URL still
