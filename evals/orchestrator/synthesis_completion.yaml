@@ -1,0 +1,152 @@
+# Synthesis-completion fixtures (harness-i2jj, part of harness-akpx).
+#
+# Pin the behavior of the future RawResultsDump catcher (harness-s451)
+# and the synthesis-continue preamble nudge (harness-b7yd). Lifted out
+# of character/<name>/tool_loop_eval.yaml because both behaviors are
+# orchestrator-level — they apply to every character regardless of
+# persona / citation grammar / catcher roster.
+#
+# Schema mirrors character/airton/tool_loop_eval.yaml. Replayed by
+# `harness eval tool-loop --fixture evals/orchestrator/synthesis_completion.yaml`.
+#
+# Status on current main: the positive case FAILS (no catcher fires;
+# round 2 never plays). The negative + clean-synthesis controls PASS.
+# After harness-s451 lands the catcher, all three should pass.
+
+# ---------- positive: raw-dump after synthesis prompt ----------
+
+- id: synthesis_raw_dump_news_priority
+  # `label:` deliberately omitted until harness-s451 registers
+  # `raw_results_dump` in _CATCHER_NAMES — load_fixture rejects
+  # unknown labels (src/harness/evals/tool_loop.py:414-419). The
+  # catcher bead will add `label: raw_results_dump` here as part
+  # of its registration step.
+  description: |
+    User asks for a synthesis ("prioritize by location and severity").
+    Model calls search_web, then dumps the tool output near-verbatim
+    as its final reply — the exact failure mode harness-akpx targets.
+
+    Without the catcher: loop exits on round 1, no synthesis produced,
+    expected_contains misses the ranking markers, expected_events
+    misses bail_retry. This fixture fails today.
+
+    With the catcher: round 1 reply trips the raw-dump detector (high
+    overlap with last tool_result + synthesis verb in prompt + no
+    ordering markers), bail nudge fires, round 2 plays and emits the
+    requested ranked synthesis. This fixture passes.
+  registry:
+    - name: search_web
+      output: |
+        1. Wildfire spreads in Northern California, mass evacuations ordered — npr.org
+        2. Earthquake magnitude 6.4 hits Tokyo region — reuters.com
+        3. Brazil election results announced — bbc.com
+        4. Stock market closes at new high — bloomberg.com
+        5. Hurricane forming in Atlantic, watch issued — weather.com
+  messages:
+    - role: user
+      content: search the web for breaking news around the world and prioritize the events by location and severity
+  scripted_replies:
+    # Round 0 — model calls the search tool.
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "breaking news today" }
+    # Round 1 — failure mode: dumps the tool result verbatim, no
+    # synthesis. Without a catcher the loop accepts this as final.
+    - content: |
+        Here are the results:
+        1. Wildfire spreads in Northern California, mass evacuations ordered — npr.org
+        2. Earthquake magnitude 6.4 hits Tokyo region — reuters.com
+        3. Brazil election results announced — bbc.com
+        4. Stock market closes at new high — bloomberg.com
+        5. Hurricane forming in Atlantic, watch issued — weather.com
+    # Round 2 — only reached after the catcher's bail nudge. Produces
+    # the synthesis the user asked for, grouped by region and graded
+    # by severity. Until harness-s451 lands, this reply is unused.
+    - content: |
+        Prioritized by location and severity:
+
+        High severity:
+        - Asia (Japan): Earthquake magnitude 6.4 hits Tokyo region — immediate safety risk, dense urban population.
+        - North America (California): Wildfire spreads, mass evacuations ordered — active emergency.
+        - Atlantic basin: Hurricane forming, watch issued — multi-region threat.
+
+        Medium severity:
+        - South America (Brazil): Election results announced — political impact, no immediate harm.
+
+        Low severity:
+        - Global markets: Stock market closes at new high — economic, non-urgent.
+  expected_contains:
+    - "Prioritized by location and severity"
+    - "High severity"
+    - "Medium severity"
+  expected_events_contain: [bail_retry]
+
+# ---------- control: synthesis verb present, model gets it right ----------
+
+- id: synthesis_clean_reply_no_overfire
+  label: control
+  description: |
+    User asks for synthesis. Model calls search_web AND produces a
+    ranked synthesis directly on round 1 — the well-behaved path.
+    Raw-dump catcher must NOT fire: even though the prompt has a
+    synthesis verb, the reply has clear ordering markers and the
+    content does not overlap verbatim with the tool result. Tests
+    the catcher's no-overfire gate after harness-s451 lands; today
+    it passes trivially because no catcher exists.
+  registry:
+    - name: search_web
+      output: |
+        1. Wildfire spreads in Northern California — npr.org
+        2. Earthquake magnitude 6.4 hits Tokyo region — reuters.com
+        3. Stock market closes at new high — bloomberg.com
+  messages:
+    - role: user
+      content: search the web for breaking news and rank the top stories by severity
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "breaking news today" }
+    - content: |
+        Ranked by severity:
+
+        1. High — Earthquake in Tokyo region (Japan): immediate safety risk in a dense urban area.
+        2. High — Wildfire in Northern California: active evacuations underway.
+        3. Low — Stock market new high: economic news, no urgency.
+  expected_contains: ["Ranked by severity"]
+  expected_events_not_contain: [bail_retry]
+
+# ---------- negative: no synthesis verb, summary is correct exit ----------
+
+- id: no_synthesis_simple_search_summary
+  label: control
+  description: |
+    User asks a plain factual question ("search for X"). Model calls
+    search_web and returns a short summary — stopping after the
+    summary is the correct behavior, NOT a synthesis-completion
+    failure. The raw-dump catcher's prompt-verb gate must keep it
+    silent here, even if the summary happens to share tokens with
+    the tool output. Today the case passes (no catcher); after
+    harness-s451 it must continue to pass — this is the canary
+    that the catcher is not over-eager.
+  registry:
+    - name: search_web
+      output: |
+        Apple announced the iPhone 17 Pro at its September event,
+        featuring a redesigned camera system and the new A19 chip.
+        Pre-orders open this Friday with shipping the following week.
+  messages:
+    - role: user
+      content: search the web for the latest iPhone announcement
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "latest iPhone announcement" }
+    - content: |
+        Apple announced the iPhone 17 Pro at its September event, with
+        a redesigned camera system and the new A19 chip. Pre-orders
+        open Friday.
+  expected_contains: ["iPhone 17 Pro"]
+  expected_events_not_contain: [bail_retry]
