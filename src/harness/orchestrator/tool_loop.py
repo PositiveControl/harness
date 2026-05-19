@@ -432,6 +432,27 @@ _FORCED_SEARCH_MEMORY = "search_memory"
 _FORCED_ASSEMBLE_CONTEXT = "assemble_context"
 
 
+# Synthesis-continue nudge (harness-b7yd). Prepended as a system-role
+# message at the top of every tool-using turn. Targets the common
+# failure mode where a model calls a data-gathering tool (search_web,
+# fetch_url, search_memory), receives results, and exits the loop with
+# a verbatim regurgitation of those results — even when the prompt
+# clearly asked for a synthesis ("rank", "prioritize", "compare",
+# "summarize"). The defensive layer is the RawResultsDump catcher
+# (harness-s451); this nudge is the cheaper preventive — it costs
+# ~50 prompt tokens and keeps the model from going there in the first
+# place. Injected only when the registry exposes at least one tool;
+# tool-less turns can't trip this failure mode.
+_SYNTHESIS_CONTINUE_NUDGE = (
+    "Tool-use rule: when the user's request contains a synthesis verb "
+    "(rank, prioritize, compare, summarize, group, score, categorize, "
+    "order, sort, filter), do not terminate after the data-gathering "
+    "tool call. The tool result is input, not output — continue the "
+    "turn and produce the requested synthesis (ranked / grouped / "
+    "scored / etc.) before ending."
+)
+
+
 def _forced_assemble_context_prelude(
     working: list[ChatMessage],
     registry: ToolRegistry,
@@ -872,6 +893,12 @@ def run_tool_loop(
         block = render_plan_block(plan)
         if block.strip():
             working.insert(0, ChatMessage(role="system", content=block))
+    # Synthesis-continue nudge (harness-b7yd). See _SYNTHESIS_CONTINUE_NUDGE
+    # for rationale. Gated on registry.active_names() so tool-less turns
+    # (e.g. an orchestrator entered with an empty registry as a no-op)
+    # don't carry the rule.
+    if registry.active_names():
+        working.insert(0, ChatMessage(role="system", content=_SYNTHESIS_CONTINUE_NUDGE))
     initial_count = len(working)
     events: list[ToolLoopEvent] = []
     last_reply: ModelReply = ModelReply(content="", tool_calls=())

@@ -128,11 +128,15 @@ def test_subagent_child_registry_filters_to_requested_tools(tmp_path: Path) -> N
     )
     out = tool.call(task="read a.txt", tools=["read_file"])
     assert out == "contents: A"
-    # The child only ever saw its own [system, user] preamble — no parent history.
+    # The child only ever saw its own preamble — no parent history.
+    # Preamble shape is [synthesis-continue nudge (harness-b7yd),
+    # subagent default system, user task].
     first_call = adapter.calls_seen[0]
     assert first_call[0].role == "system"
-    assert first_call[1].role == "user"
-    assert first_call[1].content == "read a.txt"
+    assert "Tool-use rule" in (first_call[0].content or "")
+    assert first_call[1].role == "system"
+    assert first_call[2].role == "user"
+    assert first_call[2].content == "read a.txt"
 
 
 # ---------- validation: rejections ----------
@@ -241,7 +245,9 @@ def test_subagent_uses_default_system_prompt(tmp_path: Path) -> None:
     adapter = _ScriptedAdapter(replies=[ModelReply(content="ok")])
     tool = SpawnSubagentTool(adapter=adapter, registry=parent, hooks=default_hook_pipeline())
     tool.call(task="noop", tools=["read_file"])
-    assert adapter.calls_seen[0][0].content == DEFAULT_SUBAGENT_SYSTEM_PROMPT
+    # Subagent prompt sits at index 1 — index 0 is the orchestrator's
+    # synthesis-continue nudge (harness-b7yd).
+    assert adapter.calls_seen[0][1].content == DEFAULT_SUBAGENT_SYSTEM_PROMPT
 
 
 def test_subagent_honors_custom_system_prompt(tmp_path: Path) -> None:
@@ -253,7 +259,8 @@ def test_subagent_honors_custom_system_prompt(tmp_path: Path) -> None:
         tools=["read_file"],
         system_prompt="custom brief for this task",
     )
-    assert adapter.calls_seen[0][0].content == "custom brief for this task"
+    # Same shape — custom prompt at index 1 behind the synthesis nudge.
+    assert adapter.calls_seen[0][1].content == "custom brief for this task"
 
 
 # ---------- profile membership ----------

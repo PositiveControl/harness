@@ -2921,6 +2921,51 @@ def test_force_assemble_context_stacks_with_force_search_memory() -> None:
     assert names == ["search_memory", "assemble_context"]
 
 
+# ---------- synthesis-continue nudge (harness-b7yd) ----------
+
+
+def test_synthesis_continue_nudge_injected_when_registry_has_tools(
+    tmp_path: Path,
+) -> None:
+    """When the registry exposes at least one tool, run_tool_loop
+    prepends the synthesis-continue rule as a system-role message.
+    The model sees it on round 0 — exactly when the rule needs to
+    bite (before any data-gathering call)."""
+    (tmp_path / "hi.txt").write_text("contents")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="done")])
+
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="just text")],
+        registry,
+    )
+
+    seen = adapter.calls_seen[0]
+    nudge_msgs = [m for m in seen if m.role == "system" and "Tool-use rule" in (m.content or "")]
+    assert len(nudge_msgs) == 1, f"expected one nudge system msg, got {seen!r}"
+    assert "synthesis verb" in nudge_msgs[0].content
+    assert "rank, prioritize, compare, summarize" in nudge_msgs[0].content
+
+
+def test_synthesis_continue_nudge_skipped_when_registry_empty() -> None:
+    """Empty registry → no tools the model can call → the synthesis
+    rule has nothing to gate, so it shouldn't appear. Keeps the
+    minimal-orchestrator path quiet."""
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="just text")])
+
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="hi")],
+        ToolRegistry(),
+    )
+
+    seen = adapter.calls_seen[0]
+    nudge_msgs = [m for m in seen if m.role == "system" and "Tool-use rule" in (m.content or "")]
+    assert not nudge_msgs
+
+
 # Explicit import to confirm we can pass pytest from the tests folder
 def test_tools_module_importable() -> None:
     import harness.tools  # noqa: F401 — import-for-side-effect check
