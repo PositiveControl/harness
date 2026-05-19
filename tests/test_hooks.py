@@ -30,6 +30,7 @@ from harness.orchestrator.hooks import (
     FinalizeContext,
     Halt,
     HookPipeline,
+    IncompleteMultipartHook,
     ListCountMismatchHook,
     MetaConfirmHook,
     MissingCitationHook,
@@ -592,6 +593,150 @@ def test_thin_source_fabrication_hook_numeric_regex_coverage() -> None:
         )
 
 
+# ---------- incomplete_multipart (harness-111v) ----------
+
+# Repro 2026-05-19: user asked TWO things in one prompt. Agent
+# searched, found the population, then gave up on the gender ratio
+# instead of issuing another search_web. The reply explicitly
+# acknowledged it couldn't fulfill the second sub-ask.
+_NAIROBI_MULTIPART_USER = (
+    "Find the population count of Nairobi, Kenya. What percent are female vs male?"
+)
+_NAIROBI_GIVEUP_REPLY = (
+    "The population of Nairobi, Kenya, is approximately 5,545,000 as of "
+    "2026. According to the source, the gender breakdown is not "
+    "explicitly provided. However, the source does not mention any "
+    "specific data on the percentage of males and females. For a precise "
+    "breakdown, we would need to look at a more detailed demographic "
+    "report or a specific source that provides gender statistics."
+)
+
+
+def test_incomplete_multipart_hook_fires_on_nairobi_repro() -> None:
+    """The motivating repro. Multi-part user prompt + content tool ran +
+    reply ends with explicit give-up phrasing must Nudge."""
+    ctx = BailContext(
+        reply=_reply(_NAIROBI_GIVEUP_REPLY),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web", "fetch_url"}),
+        user_message=_NAIROBI_MULTIPART_USER,
+        prior_tool_outputs=("Nairobi Population 2026 — 5,545,000 People...",),
+    )
+    outcome = IncompleteMultipartHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "multi" in outcome.text.lower() or "another tool call" in outcome.text.lower()
+
+
+def test_incomplete_multipart_hook_silent_on_single_ask_refusal() -> None:
+    """Single-part prompt that the model legitimately can't answer:
+    one ask, give-up phrasing — the hook must stay silent so the
+    refusal passes through. Not the failure mode this catcher targets."""
+    ctx = BailContext(
+        reply=_reply(
+            "The source does not mention any gender breakdown for Nairobi. "
+            "We would need a more detailed demographic report."
+        ),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message="What percent of Nairobi residents are female?",
+        prior_tool_outputs=("Nairobi general info — no demographics tables.",),
+    )
+    assert isinstance(IncompleteMultipartHook().check(ctx), Continue)
+
+
+def test_incomplete_multipart_hook_silent_when_reply_answers_both() -> None:
+    """Multi-part prompt + content tool ran + reply answers everything
+    without give-up phrasing. Nothing to nudge about."""
+    ctx = BailContext(
+        reply=_reply(
+            "Population: 5,545,000. Gender split per the 2019 KNBS census: "
+            "approximately 50.5% female and 49.5% male."
+        ),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web", "fetch_url"}),
+        user_message=_NAIROBI_MULTIPART_USER,
+        prior_tool_outputs=("KNBS Nairobi census: pop 5,545,000; F 50.5% M 49.5%",),
+    )
+    assert isinstance(IncompleteMultipartHook().check(ctx), Continue)
+
+
+def test_incomplete_multipart_hook_silent_on_meta_tool_only() -> None:
+    """Meta-tools (tool_search / load_tool / introspect / spawn_subagent)
+    don't count as 'a content tool ran' — defer to the fabricated_*
+    family which targets the no-real-tool case."""
+    ctx = BailContext(
+        reply=_reply(_NAIROBI_GIVEUP_REPLY),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"tool_search", "load_tool"}),
+        user_message=_NAIROBI_MULTIPART_USER,
+        prior_tool_outputs=("tool_search results...",),
+    )
+    assert isinstance(IncompleteMultipartHook().check(ctx), Continue)
+
+
+def test_incomplete_multipart_hook_silent_without_tools() -> None:
+    """No tools ran at all → fabricated_search / teaser / false_success
+    territory. This catcher only nudges when a search was attempted but
+    the model bailed early on a sub-ask."""
+    ctx = BailContext(
+        reply=_reply(_NAIROBI_GIVEUP_REPLY),
+        tools_ran_this_turn=False,
+        tools_ran=frozenset(),
+        user_message=_NAIROBI_MULTIPART_USER,
+        prior_tool_outputs=(),
+    )
+    assert isinstance(IncompleteMultipartHook().check(ctx), Continue)
+
+
+def test_incomplete_multipart_hook_silent_on_empty_user_message() -> None:
+    """Guard: empty user_message can't be multi-part. Belt-and-braces
+    in case the context arrives with no prompt (continuation turns,
+    forced-grounding preludes)."""
+    ctx = BailContext(
+        reply=_reply(_NAIROBI_GIVEUP_REPLY),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message="",
+        prior_tool_outputs=("anything",),
+    )
+    assert isinstance(IncompleteMultipartHook().check(ctx), Continue)
+
+
+def test_incomplete_multipart_hook_multi_ask_regex_coverage() -> None:
+    """The ask-counter must recognize the common multi-ask shapes
+    the user sends. Verified via the helper used by the catcher."""
+    from harness.orchestrator.hooks import _multipart_ask_count
+
+    samples = [
+        ("Find X. What is Y?", 2),
+        ("What's X? What's Y?", 2),
+        ("Find X and what is Y?", 2),
+        ("List X, then show Y.", 2),
+        ("Search X. Also tell me Y.", 2),
+        ("Calculate X and compare Y.", 2),
+    ]
+    for prompt, minimum in samples:
+        actual = _multipart_ask_count(prompt)
+        assert actual >= minimum, (
+            f"ask-counter missed in {prompt!r}: got {actual}, expected >= {minimum}"
+        )
+
+
+def test_incomplete_multipart_hook_single_ask_under_threshold() -> None:
+    """Single-ask prompts must count as 1 (or less) so the catcher
+    stays silent on legitimate one-part questions even with give-up
+    phrasing. Targets the false-positive guard."""
+    from harness.orchestrator.hooks import _multipart_ask_count
+
+    for prompt in (
+        "Find the population of Nairobi.",
+        "What is the gender ratio in Nairobi?",
+        "Tell me about Nairobi's climate.",
+        "Compare the climate in Nairobi to that in Cairo.",  # single 'compare' verb
+    ):
+        assert _multipart_ask_count(prompt) < 2, f"ask-counter overfired on single-ask {prompt!r}"
+
+
 def test_fabricated_search_hook_fires_after_meta_tool_only() -> None:
     """harness-q7kn: load_tool / tool_search / introspect are meta-tools
     (plumbing for the discovery loop). They must NOT disarm the
@@ -776,6 +921,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "fabricated_search",
         "fabricated_itemization",
         "thin_source_fabrication",
+        "incomplete_multipart",
         "ab_fabrication",
         "tool_intent",
         "missing_citation",

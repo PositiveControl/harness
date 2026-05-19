@@ -432,24 +432,39 @@ _FORCED_SEARCH_MEMORY = "search_memory"
 _FORCED_ASSEMBLE_CONTEXT = "assemble_context"
 
 
-# Synthesis-continue nudge (harness-b7yd). Prepended as a system-role
-# message at the top of every tool-using turn. Targets the common
-# failure mode where a model calls a data-gathering tool (search_web,
-# fetch_url, search_memory), receives results, and exits the loop with
-# a verbatim regurgitation of those results — even when the prompt
-# clearly asked for a synthesis ("rank", "prioritize", "compare",
-# "summarize"). The defensive layer is the RawResultsDump catcher
-# (harness-s451); this nudge is the cheaper preventive — it costs
-# ~50 prompt tokens and keeps the model from going there in the first
-# place. Injected only when the registry exposes at least one tool;
-# tool-less turns can't trip this failure mode.
-_SYNTHESIS_CONTINUE_NUDGE = (
-    "Tool-use rule: when the user's request contains a synthesis verb "
-    "(rank, prioritize, compare, summarize, group, score, categorize, "
-    "order, sort, filter), do not terminate after the data-gathering "
-    "tool call. The tool result is input, not output — continue the "
-    "turn and produce the requested synthesis (ranked / grouped / "
-    "scored / etc.) before ending."
+# Tool-use rules nudge — two clauses, one system message
+# (harness-b7yd + harness-111v). Prepended as a single system-role
+# message at the top of every tool-using turn. Two failure modes
+# share the same shape ("model terminates too early") so they share
+# one preventive message; bundling them keeps prompt overhead low
+# and avoids cascading subagent-preamble index shifts.
+#
+# Clause 1 — synthesis verbs (harness-b7yd): model calls a
+# data-gathering tool, receives results, and exits the loop with a
+# verbatim regurgitation even when the prompt asked for "rank" /
+# "prioritize" / "compare" / "summarize". Defensive layer is the
+# RawResultsDump catcher (harness-s451).
+#
+# Clause 2 — multi-part prompts (harness-111v): user asks for X AND
+# Y, model answers X and gives up on Y instead of issuing another
+# tool call. Defensive layer is the IncompleteMultipart catcher.
+#
+# Injected only when the registry exposes at least one tool;
+# tool-less turns can't trip either failure mode.
+_TOOL_USE_RULES_NUDGE = (
+    "Tool-use rules. "
+    "(1) Synthesis verbs — when the user's request contains a synthesis "
+    "verb (rank, prioritize, compare, summarize, group, score, categorize, "
+    "order, sort, filter), do not terminate after the data-gathering tool "
+    "call. The tool result is input, not output — continue the turn and "
+    "produce the requested synthesis (ranked / grouped / scored / etc.) "
+    "before ending. "
+    "(2) Multi-part prompts — when the user's request contains multiple "
+    "distinct asks (two questions in one turn, 'X. then Y?', 'find X and "
+    "what is Y?'), each sub-ask gets its own tool budget. If a source "
+    "covered X but not Y, issue ANOTHER tool call targeting Y (different "
+    "query, different URL, different tool) before terminating. Only "
+    "return a partial answer after multiple genuine attempts."
 )
 
 
@@ -893,12 +908,12 @@ def run_tool_loop(
         block = render_plan_block(plan)
         if block.strip():
             working.insert(0, ChatMessage(role="system", content=block))
-    # Synthesis-continue nudge (harness-b7yd). See _SYNTHESIS_CONTINUE_NUDGE
-    # for rationale. Gated on registry.active_names() so tool-less turns
-    # (e.g. an orchestrator entered with an empty registry as a no-op)
-    # don't carry the rule.
+    # Tool-use rules nudge (harness-b7yd + harness-111v). See
+    # _TOOL_USE_RULES_NUDGE for rationale. Gated on registry.active_names()
+    # so tool-less turns (e.g. an orchestrator entered with an empty
+    # registry as a no-op) don't carry the rule.
     if registry.active_names():
-        working.insert(0, ChatMessage(role="system", content=_SYNTHESIS_CONTINUE_NUDGE))
+        working.insert(0, ChatMessage(role="system", content=_TOOL_USE_RULES_NUDGE))
     initial_count = len(working)
     events: list[ToolLoopEvent] = []
     last_reply: ModelReply = ModelReply(content="", tool_calls=())

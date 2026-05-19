@@ -2949,6 +2949,31 @@ def test_synthesis_continue_nudge_injected_when_registry_has_tools(
     assert "rank, prioritize, compare, summarize" in nudge_msgs[0].content
 
 
+def test_tool_use_rules_nudge_includes_multipart_clause(tmp_path: Path) -> None:
+    """The same system-prompt nudge carries BOTH the synthesis-verb
+    rule (harness-b7yd) and the multi-part rule (harness-111v). Pin
+    the multipart clause's keywords so it can't silently drop out
+    if someone later refactors the constant."""
+    (tmp_path / "hi.txt").write_text("contents")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="done")])
+
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="just text")],
+        registry,
+    )
+
+    seen = adapter.calls_seen[0]
+    nudge_msgs = [m for m in seen if m.role == "system" and "Tool-use rule" in (m.content or "")]
+    assert len(nudge_msgs) == 1
+    body = nudge_msgs[0].content
+    assert "Multi-part" in body or "multi-part" in body
+    assert "another tool call" in body.lower()
+    assert "partial answer" in body.lower()
+
+
 def test_synthesis_continue_nudge_skipped_when_registry_empty() -> None:
     """Empty registry → no tools the model can call → the synthesis
     rule has nothing to gate, so it shouldn't appear. Keeps the

@@ -1,0 +1,150 @@
+# Multi-part task-completion fixtures (harness-111v).
+#
+# Pin the behavior of the IncompleteMultipartHook (bail catcher) and
+# the multi-part clause of the _TOOL_USE_RULES_NUDGE preamble. Lifted
+# out of character/<name>/tool_loop_eval.yaml because the failure mode
+# is orchestrator-level — applies to every character whose tool set
+# allows multi-source lookups.
+#
+# Schema mirrors character/airton/tool_loop_eval.yaml. Replayed by
+# `harness eval tool-loop --fixture evals/orchestrator/multipart_completion.yaml`.
+
+# ---------- positive: Nairobi population + gender repro ----------
+
+- id: incomplete_multipart_nairobi_gender
+  label: incomplete_multipart
+  description: |
+    Session repro 2026-05-19 post-l0wg fix. User asked two distinct
+    factual questions in one turn — population AND gender breakdown.
+    Agent searched + answered the population (5,545,000) but treated
+    'the source didn't have gender stats' as 'I'm done' instead of
+    issuing another search for the missing sub-ask. The catcher's
+    bail nudge fires; round 2 plays and issues a second search_web
+    call before closing the turn with both parts answered.
+
+    Note for fixture authors: the scripted-eval framework returns the
+    same registry output on every call of a tool, so the recovery
+    reply (round 4) cites data from the SAME search_web output as
+    rounds 0 — realism: that output has to carry both data points or
+    other fabrication catchers (thin_source / numeric) over-fire on
+    the recovery reply. Real second-search behavior is what the
+    catcher exists to drive; pinning it deterministically requires
+    the body to already carry the answer.
+  registry:
+    - name: search_web
+      output: |
+        1. Nairobi Population 2026 — https://worldpopulationreview.com/cities/kenya/nairobi
+           Nairobi's population is approximately 5,545,000 as of 2026 (KNBS projection).
+        2. Nairobi County 2019 KNBS census — https://knbs.or.ke/nairobi
+           Total population 4,397,073 in 2019; gender breakdown 50.5 percent female
+           and 49.5 percent male per the official county tabulation.
+        3. Nairobi Population Data — https://citypopulationdata.com/city/nairobi-kenya
+    - name: fetch_url
+      output: |
+        Nairobi, Kenya — population approximately 5,545,000 as of 2026
+        per the 2019 Kenya National Bureau of Statistics census,
+        projected forward. The city covers 696 km². Demographic
+        details such as gender breakdown are tracked separately in
+        the KNBS Volume IV report (not on this page).
+  messages:
+    - role: user
+      content: "Find the population count of Nairobi, Kenya. What percent are female vs male?"
+  scripted_replies:
+    # Round 0 — model searches for the population.
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments:
+            query: "Nairobi Kenya population 2026"
+    # Round 1 — model fetches a top result for the population.
+    - content: ""
+      tool_calls:
+        - name: fetch_url
+          arguments:
+            url: "https://worldpopulationreview.com/cities/kenya/nairobi"
+            extract_text: true
+    # Round 2 — FAILURE MODE: model answers population, gives up on
+    # gender breakdown instead of doing a second search.
+    - content: |
+        The population of Nairobi, Kenya, is approximately 5,545,000
+        as of 2026. According to the source, the gender breakdown is
+        not explicitly provided. However, the source does not mention
+        any specific data on the percentage of males and females. For
+        a precise breakdown, we would need to look at a more detailed
+        demographic report or a specific source that provides gender
+        statistics.
+    # Round 3 — only reached after the catcher's bail nudge. Issues
+    # another tool call targeting the missing sub-ask.
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments:
+            query: "Nairobi Kenya gender ratio female male census KNBS"
+    # Round 4 — closes the turn with both parts answered. Numbers cited
+    # all come from the search_web body (see the KNBS line in the
+    # registry output above).
+    - content: |
+        Population: 5,545,000 (2026 projection from KNBS).
+        Per the 2019 KNBS census, the gender split for Nairobi
+        County is approximately 50.5 percent female and 49.5
+        percent male.
+  expected_contains: ["5,545,000", "50.5", "female"]
+  expected_events_contain: [bail_retry]
+
+# ---------- control: multi-part answered cleanly, no overfire ----------
+
+- id: multipart_clean_completion_no_overfire
+  label: control
+  description: |
+    Multi-part prompt + content tool ran + reply answers BOTH parts
+    without give-up phrasing. IncompleteMultipartHook gate fails (no
+    give-up regex match) so the catcher stays silent and the clean
+    reply passes through unmolested.
+  registry:
+    - name: search_web
+      output: |
+        Nairobi (Kenya): population 5,545,000 per KNBS 2026 projection.
+        Gender split per the 2019 census: 50.5% female, 49.5% male.
+  messages:
+    - role: user
+      content: "Find the population count of Nairobi, Kenya. What percent are female vs male?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments:
+            query: "Nairobi Kenya population gender ratio census"
+    - content: |
+        Population: 5,545,000 (KNBS 2026 projection).
+        Gender split: approximately 50.5% female, 49.5% male.
+  expected_contains: ["5,545,000", "50.5", "49.5"]
+  expected_events_not_contain: [bail_retry]
+
+# ---------- control: single-part refusal, no fire ----------
+
+- id: multipart_single_part_giveup_no_fire
+  label: control
+  description: |
+    Single-ask prompt + tool ran + give-up phrasing. Multi-part gate
+    fails (ask count < 2), so the catcher stays silent — this is a
+    legitimate single-source refusal, not the multi-part bail case.
+    Other catchers may or may not fire on the refusal shape; this
+    fixture pins ONLY that incomplete_multipart doesn't overfire.
+  registry:
+    - name: search_web
+      output: |
+        Nairobi general info — no demographic breakdown tables on this page.
+  messages:
+    - role: user
+      content: "What percent of Nairobi residents are female?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments:
+            query: "Nairobi gender ratio female"
+    - content: |
+        The source does not mention any gender breakdown for Nairobi.
+        We would need a more detailed demographic report for that.
+  expected_contains: ["does not mention"]
+  expected_events_not_contain: [bail_retry]

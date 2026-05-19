@@ -160,6 +160,59 @@
   expected_contains: ["Prioritized by location and severity", "High severity"]
   expected_events_contain: [bail_retry]
 
+- id: incomplete_multipart_nairobi_gender
+  label: incomplete_multipart
+  description: |
+    Multi-part task abandonment (harness-111v). User asked for
+    population AND gender breakdown in one prompt; agent answered
+    population but gave up on the second sub-ask instead of issuing
+    another search. IncompleteMultipartHook nudges; the round-3
+    retry issues a second search and the final reply covers both
+    parts. Fuller surface (positive + 2 controls) lives in
+    evals/orchestrator/multipart_completion.yaml; this is the
+    coverage entry that pins the catcher in airton's attribution
+    matrix.
+  registry:
+    - name: search_web
+      output: |
+        1. Nairobi Population 2026 — Nairobi is approximately 5,545,000 in 2026.
+        2. Nairobi County 2019 KNBS census — gender 50.5 percent female,
+           49.5 percent male per the official county tabulation.
+    - name: fetch_url
+      output: |
+        Nairobi population approximately 5,545,000 as of 2026. Gender
+        breakdown tracked separately in the KNBS Volume IV report
+        (not on this page).
+  messages:
+    - role: user
+      content: "Find the population count of Nairobi, Kenya. What percent are female vs male?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "Nairobi Kenya population 2026" }
+    - content: ""
+      tool_calls:
+        - name: fetch_url
+          arguments: { url: "https://example.com/nairobi", extract_text: true }
+    - content: |
+        The population of Nairobi, Kenya, is approximately 5,545,000
+        as of 2026. According to the source, the gender breakdown is
+        not explicitly provided. However, the source does not mention
+        any specific data on the percentage of males and females. For
+        a precise breakdown, we would need to look at a more detailed
+        demographic report.
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "Nairobi gender ratio KNBS census" }
+    - content: |
+        Population: 5,545,000 (2026 projection). Per the 2019 KNBS
+        census, the gender split for Nairobi County is approximately
+        50.5 percent female and 49.5 percent male.
+  expected_contains: ["5,545,000", "50.5", "female"]
+  expected_events_contain: [bail_retry]
+
 - id: fabricated_search_results
   label: fabricated_search
   description: Model invents a numbered list of search hits with placeholder

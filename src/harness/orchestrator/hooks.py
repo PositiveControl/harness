@@ -1050,6 +1050,112 @@ class ThinSourceFabricationHook:
         return Nudge(_THIN_SOURCE_FABRICATION_NUDGE)
 
 
+_INCOMPLETE_MULTIPART_NUDGE = (
+    "The user's request had multiple distinct asks (find X AND find Y / "
+    "two questions in one turn). Your reply addressed part of it but "
+    "signals you couldn't find the rest — phrases like 'we would need', "
+    "'the source does not', 'not explicitly provided', 'for a precise "
+    "breakdown'. Don't stop here. Issue ANOTHER tool call (search_web "
+    "with a different query specific to the missing part, fetch_url "
+    "against a different source, search_memory for prior context) "
+    "BEFORE terminating. Only return a partial answer if multiple "
+    "genuine attempts at the missing sub-ask have all failed."
+)
+
+
+# Asks-counter: imperative verbs at sentence start OR interrogatives, each
+# preceded by a sentence boundary / conjunction / 'then' marker. Two or
+# more matches in the user message = multi-part. Tuned to count the
+# common multi-ask shapes ("Find X. What is Y?", "Find X and what's Y?",
+# "X then list Y") without firing on every single-imperative prompt.
+_MULTIPART_ASK_RE = re.compile(
+    r"(?:^|[.!?]\s+|\band\s+|\bthen\s+|\balso\s+|\bplus\s+|;\s*)"
+    r"(?:what|who|whom|when|where|why|how|which|whose|"
+    r"find|list|show|tell|get|search|lookup|look\s+up|"
+    r"calculate|compute|compare|describe|give|name|explain|"
+    r"identify|determine|estimate|measure|rank|prioritize)\b",
+    re.IGNORECASE,
+)
+
+
+# Give-up phrasing — the model signalling 'I tried, source didn't have
+# it' in a way that should trigger a retry on the missing sub-ask, not
+# a turn-ending refusal. Covers the dominant shapes from the 2026-05-19
+# Nairobi gender-breakdown repro plus close cousins. Conservative: every
+# phrase implies the model EXPLICITLY acknowledged it couldn't fulfill
+# part of the request.
+_INCOMPLETE_MULTIPART_GIVE_UP_RE = re.compile(
+    r"(?:"
+    r"\b(?:we|you|i)\s+would\s+need\b"
+    r"|\bfor\s+a\s+(?:precise|complete|full|specific|more\s+detailed|detailed)\s+"
+    r"(?:breakdown|answer|figure|number|view|picture|estimate|report)\b"
+    r"|\b(?:the\s+)?source\s+(?:does\s+not|doesn't|does\s+n't)\b"
+    r"|\b(?:does\s+not|doesn't|isn't|is\s+not|do\s+not|don't)\s+"
+    r"(?:mention|provide|specify|include|cover|list|state|contain)\b"
+    r"|\bnot\s+(?:explicitly\s+)?(?:provided|mentioned|specified|available|"
+    r"listed|stated|covered|included|reported)\b"
+    r"|\bwould\s+need\s+to\s+(?:look|consult|find|search|check|refer|access)\b"
+    r"|\b(?:isn't|is\s+not)\s+(?:specified|provided|mentioned|available|"
+    r"included|listed|stated)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _multipart_ask_count(user_message: str) -> int:
+    return len(_MULTIPART_ASK_RE.findall(user_message))
+
+
+@dataclass(frozen=True)
+class IncompleteMultipartHook:
+    """Catch the multi-part task abandonment shape (harness-111v).
+    Session repro 2026-05-19: user asked 'Find the population count
+    of Nairobi, Kenya. What percent are female vs male?' Agent
+    searched + answered the population (5,545,000) but gave up on
+    the gender breakdown — 'the source does not mention any specific
+    data on the percentage of males and females. For a precise
+    breakdown, we would need to look at...'. No second search for the
+    missing sub-ask.
+
+    Distinct from raw_results_dump (which targets synthesis VERBS:
+    rank/prioritize/compare/summarize). Here the user asked two
+    parallel factual questions; the agent's tool budget allowed both
+    but the agent treated 'one source didn't have it' as 'I'm done'.
+
+    Trigger conditions (ALL must hold):
+      1. A content tool ran this turn (_content_tools_ran). Pure
+         meta-tool turns can't have done real lookups yet.
+      2. User message contains at least two distinct 'asks' per
+         _MULTIPART_ASK_RE — imperatives + interrogatives separated
+         by sentence boundaries / 'and' / 'then'. Single-ask prompts
+         that the agent legitimately couldn't answer don't trip.
+      3. Reply contains give-up phrasing per
+         _INCOMPLETE_MULTIPART_GIVE_UP_RE — explicit acknowledgement
+         the model couldn't fulfill some part of the request. Silent
+         when the model just answers cleanly (no give-up = nothing
+         to nudge about).
+
+    Position in the bail pipeline: AFTER the fabrication-shape
+    catchers (raw_results_dump / fabricated_search /
+    fabricated_itemization / thin_source_fabrication) — those address
+    what the reply SAYS that's false; this addresses what the reply
+    OMITS that it shouldn't have. Universal, not opt-in: the failure
+    shape is character-agnostic."""
+
+    name: str = "incomplete_multipart"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if not _content_tools_ran(ctx):
+            return Continue()
+        if not ctx.user_message:
+            return Continue()
+        if _multipart_ask_count(ctx.user_message) < 2:
+            return Continue()
+        if not _INCOMPLETE_MULTIPART_GIVE_UP_RE.search(ctx.reply.content):
+            return Continue()
+        return Nudge(_INCOMPLETE_MULTIPART_NUDGE)
+
+
 _AB_FABRICATION_NUDGE = (
     "Your reply looks like fabricated tool output (ab_ops capture "
     "receipt / tiered plan / fake scope abbreviation). You did NOT "
@@ -3584,6 +3690,9 @@ HOOK_SHAPES: dict[str, str] = {
     "thin_source_fabrication": (
         "Reply makes specific numeric claims off a tool body that contained almost none."
     ),
+    "incomplete_multipart": (
+        "Multi-part prompt; reply gives up on missing sub-ask instead of another tool call."
+    ),
     "ab_fabrication": "Reply imitates ab_ops output without a real tool call.",
     "tool_intent": "Reply restates a tool-call intent as prose, no actual call.",
     "ambiguous_context": "Reply silently picks one variant of an ambiguous term.",
@@ -3814,6 +3923,15 @@ def default_hook_pipeline(
         # fabricates coherent-looking numbers anyway. Universal,
         # not opt-in — failure mode is character-agnostic.
         ThinSourceFabricationHook(),
+        # incomplete_multipart (harness-111v): user asks two parallel
+        # questions in one turn ('find X. what is Y?'), agent answers
+        # only one and gives up on the other with explicit refusal
+        # phrasing ('the source doesn't mention', 'we would need').
+        # Position AFTER the fabrication-shape catchers because
+        # fabrication-of-content is a more specific failure than
+        # omission-of-content; a reply that BOTH fabricates AND
+        # gives-up should get the fabrication nudge first.
+        IncompleteMultipartHook(),
     ]
     # ab_fabrication: ab_ops capture/plan/remember imitation shapes.
     # Self-gates on `tools_ran_this_turn=False`; non-ab characters
