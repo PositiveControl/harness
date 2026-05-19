@@ -2164,6 +2164,175 @@ class ListCountMismatchHook:
         return Nudge(_LIST_COUNT_MISMATCH_NUDGE)
 
 
+# ---------- self-contradicting rank claim (harness-1jca) ----------
+
+
+# Canonical first-place vocabulary used in TOP-rank claims.
+_TOP_WORDS = (
+    r"top|leading|highest|largest|biggest|first|"
+    r"#1|number\s+(?:one|1)|main|primary|chief|foremost|"
+    r"most\s+prolific|single\s+(?:largest|biggest)"
+)
+
+
+# Ordinal vocabulary (2nd through 10th) used in NTH-rank claims.
+_NTH_WORDS = (
+    r"second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
+    r"2nd|3rd|4th|5th|6th|7th|8th|9th|10th|"
+    r"#[2-9]|#10|"
+    r"number\s+(?:[2-9]|10|two|three|four|five|six|seven|eight|nine|ten)"
+)
+
+
+# TOP claim with EXPLICIT subject extraction. Two alternations cover
+# both surface forms:
+#   1. '<SUBJ> is/are (the|a|an) <top-word> ...'  — subject before copula
+#   2. '(the|a|an) <top-word> ... is/are <SUBJ>'  — subject after copula
+# Subject is a single capitalized word ([A-Z][A-Za-z]+); multi-word
+# proper nouns ('United States') are matched as the first capitalized
+# token, which is enough for same-subject comparison.
+_TOP_CLAIM_RE = re.compile(
+    rf"(?:"
+    # subj-before form
+    rf"\b(?P<subj_before_top>[A-Z][A-Za-z]+)\s+(?:is|are)\s+"
+    rf"(?:the|a|an)\s+(?:{_TOP_WORDS})\b"
+    rf"|"
+    # subj-after form
+    rf"\b(?:the|a|an)\s+(?:{_TOP_WORDS})\b"
+    rf"[^.!?\n]{{0,80}}?"
+    rf"\b(?:is|are)\s+(?P<subj_after_top>[A-Z][A-Za-z]+)"
+    rf")",
+    re.IGNORECASE,
+)
+
+
+# NTH claim with EXPLICIT subject extraction. Two alternations:
+#   1. '<SUBJ> is/are (the|a)? <Nth-word> ...'  — subject before copula
+#   2. 'making (it|them|this|that) (the)? <Nth-word> ...'  — back-reference
+#      to the most recent named subject
+_NTH_CLAIM_RE = re.compile(
+    rf"(?:"
+    # subj-before form
+    rf"\b(?P<subj_before_nth>[A-Z][A-Za-z]+)\s+(?:is|are)\s+"
+    rf"(?:the\s+|a\s+|an\s+)?(?:{_NTH_WORDS})\b"
+    rf"|"
+    # back-reference form ('making it the third')
+    rf"\b(?P<backref>making\s+(?:it|them|this|that))\s+"
+    rf"(?:the\s+)?(?:{_NTH_WORDS})\b"
+    rf")",
+    re.IGNORECASE,
+)
+
+
+# Proximity window for matching a TOP claim with an NTH claim. Chosen
+# to cover same-paragraph contradictions (the Chile repro is ~200
+# chars apart) while keeping cross-paragraph claims about different
+# scopes separate.
+_RANK_CONTRADICTION_WINDOW = 300
+
+
+_SELF_CONTRADICTING_RANK_NUDGE = (
+    "Your reply contradicts itself: it says <{subject}> is the {top_word} "
+    "AND that the same entity is {nth_word}. Both cannot be true. Re-read "
+    "the source — if your source ranks <{subject}> as {nth_word}, then a "
+    "different entity is #1. Re-answer with the source's actual top entry, "
+    "or drop the 'top' claim if the source doesn't support it."
+)
+
+
+@dataclass(frozen=True)
+class SelfContradictingRankHook:
+    """Catch replies that claim X is the top/leading/highest Y AND also
+    claim X is the second/third/Nth Y in the same paragraph
+    (harness-1jca).
+
+    Session repro 2026-05-19 (avocado query, 2nd session): final reply
+    contained both 'The top South American avocado exporter is Chile'
+    and 'making it the third highest exporter in South America' —
+    same paragraph, same subject (Chile via 'it'), conflicting rank
+    claims. The data source actually ranked Chile #3; the real top
+    SA exporter is Peru.
+
+    Distinct from existing catchers:
+      - list_count_mismatch compares stated count to enumerated list
+        size, not rank-vs-rank claims about the same entity.
+      - numeric_fabrication checks labeled-value drift between tool
+        body and reply — internal-to-reply contradiction is a
+        different shape.
+
+    Trigger conditions (ALL must hold):
+      1. At least one TOP claim (_TOP_CLAIM_RE) with an extractable
+         subject (proper noun before or after the copula).
+      2. At least one NTH claim (_NTH_CLAIM_RE) with either an
+         extractable subject OR a back-reference pronoun ('making
+         it/them/this/that the third').
+      3. The two claims are within _RANK_CONTRADICTION_WINDOW chars.
+      4. The subjects match: either the same proper noun captured
+         in both, OR the NTH claim back-references the TOP claim's
+         subject ('making it' after 'X is the top').
+
+    Position: bail phase, after list_count_mismatch and before the
+    opt-in scope-tier hooks. The same-paragraph contradiction is a
+    last-mile self-consistency check, not a content-shape check, so
+    it runs after the structural catchers."""
+
+    name: str = "self_contradicting_rank"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        content = ctx.reply.content
+        top_matches = list(_TOP_CLAIM_RE.finditer(content))
+        if not top_matches:
+            return Continue()
+        nth_matches = list(_NTH_CLAIM_RE.finditer(content))
+        if not nth_matches:
+            return Continue()
+        for top in top_matches:
+            top_subj = (top.group("subj_before_top") or top.group("subj_after_top") or "").lower()
+            if not top_subj:
+                continue
+            top_pos = top.start()
+            for nth in nth_matches:
+                nth_pos = nth.start()
+                if abs(nth_pos - top_pos) > _RANK_CONTRADICTION_WINDOW:
+                    continue
+                nth_subj = (nth.group("subj_before_nth") or "").lower()
+                backref = nth.group("backref")
+                # Match if explicit subjects agree, OR the NTH is a
+                # back-reference and the TOP precedes it (the back-ref
+                # idiom only refers backward).
+                same_subject = bool(nth_subj) and nth_subj == top_subj
+                back_referenced = bool(backref) and nth_pos > top_pos
+                if not (same_subject or back_referenced):
+                    continue
+                # Extract human-readable label spans for the nudge.
+                top_word = _extract_rank_word(top.group(0), _TOP_WORDS_DISPLAY)
+                nth_word = _extract_rank_word(nth.group(0), _NTH_WORDS_DISPLAY)
+                subject = (
+                    top.group("subj_before_top") or top.group("subj_after_top") or "the same entity"
+                )
+                return Nudge(
+                    _SELF_CONTRADICTING_RANK_NUDGE.format(
+                        subject=subject,
+                        top_word=top_word,
+                        nth_word=nth_word,
+                    )
+                )
+        return Continue()
+
+
+# Display-friendly lookups for nudge text. Compiled once.
+_TOP_WORDS_DISPLAY = re.compile(rf"\b(?:{_TOP_WORDS})\b", re.IGNORECASE)
+_NTH_WORDS_DISPLAY = re.compile(rf"\b(?:{_NTH_WORDS})\b", re.IGNORECASE)
+
+
+def _extract_rank_word(span_text: str, pattern: re.Pattern[str]) -> str:
+    """Pull the rank-word substring out of a matched span for the nudge
+    text. Fallback to a short truncation if the pattern doesn't
+    re-match (shouldn't happen — the parent regex already matched)."""
+    m = pattern.search(span_text)
+    return m.group(0) if m else span_text[:40].strip()
+
+
 _SOURCE_COUNT_INFLATION_NUDGE = (
     "[source-count inflation — your reply enumerated {reply_count} items "
     "but the most recent tool result returned {tool_count}. Do NOT pad "
@@ -3877,6 +4046,9 @@ HOOK_SHAPES: dict[str, str] = {
     "scope_redirect": "Reply talks domain content for an out-of-scope question.",
     "reserved_squawk_code": "Reply assigns a reserved transponder code (7500/7600/7700).",
     "list_count_mismatch": "Reply's count claim disagrees with its enumerated list.",
+    "self_contradicting_rank": (
+        "Reply claims X is #1 AND #N≥2 of the same thing in the same paragraph."
+    ),
     "source_count_inflation": "Reply enumerates more items than the most recent tool returned.",
     "missing_citation": "Reply references the corpus substantively without an anchor.",
     "fabricated_section": "Reply cites a §-anchor that doesn't exist in the corpus.",
@@ -4138,6 +4310,13 @@ def default_hook_pipeline(
     # ADDS a citation on retry doesn't get re-chained into a
     # count-mismatch nudge from its original pre-citation form.
     bail.append(ListCountMismatchHook())
+    # self_contradicting_rank (harness-1jca): reply makes both a TOP
+    # claim ('the top X is Y') AND an NTH claim ('Y is the third X')
+    # about the same entity within ~250 chars. Internally self-
+    # falsifying. Runs after list_count_mismatch so the more-specific
+    # count-vs-list shape gets first pass; this hook catches the
+    # rank-vs-rank shape.
+    bail.append(SelfContradictingRankHook())
     # source_count_inflation: reply enumerates substantially more
     # items than the most recent tool result produced (harness-lynw).
     # Opt-in for characters that do web research where the model can

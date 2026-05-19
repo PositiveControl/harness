@@ -1,0 +1,93 @@
+# self_contradicting_rank fixtures (harness-1jca).
+#
+# Pin the SelfContradictingRankHook. Session repro 2026-05-19 (avocado
+# query, 2nd session): final reply contained both 'Chile is the top
+# South American avocado exporter' and 'making it the third highest
+# exporter in South America' — self-falsifying. The data actually
+# ranked Chile #3.
+#
+# Replayed by:
+#   harness eval tool-loop --fixture evals/orchestrator/self_contradicting_rank.yaml
+
+# ---------- positive: Chile back-reference idiom ----------
+
+- id: self_contradicting_rank_chile_backref
+  label: self_contradicting_rank
+  description: |
+    The Chile repro. TOP claim 'the top SA exporter is Chile' followed
+    by 'making it the third highest exporter in SA' — back-reference
+    via 'it'. Catcher fires; retry drops the contradiction.
+  registry:
+    - name: search_web
+      output: "stub"
+  messages:
+    - role: user
+      content: "which south american country exports the most avocados? cite your sources"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "south american avocado exporter ranking" }
+    - content: |
+        The top South American avocado exporter is Chile, as reported
+        by WorldStopExports. Chile exported $291.6 million in 2024,
+        making it the third highest exporter in South America.
+    - content: |
+        Correction — the source actually ranks Chile #3 in South
+        America. The top exporter is a different country per the
+        article's ranking.
+  expected_contains: ["Correction", "#3"]
+  expected_events_contain: [bail_retry]
+
+# ---------- positive: same proper noun in both claims ----------
+
+- id: self_contradicting_rank_symmetric_named
+  label: self_contradicting_rank
+  description: |
+    Same proper noun in both the TOP and NTH claims (no back-reference
+    pronoun). 'Brazil is the top exporter' + 'Brazil is the second
+    largest producer'. Both subjects extracted as Brazil → match.
+  registry:
+    - name: search_web
+      output: "stub"
+  messages:
+    - role: user
+      content: "biggest coffee exporter"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "top coffee exporter" }
+    - content: |
+        Per the source, Brazil is the top exporter of coffee.
+        Brazil is the second largest producer overall.
+    - content: |
+        Correction — the data ranks Brazil as second, not top. Apologies
+        for the conflicting framing.
+  expected_contains: ["Correction"]
+  expected_events_contain: [bail_retry]
+
+# ---------- control: different subjects, no contradiction ----------
+
+- id: rank_claims_about_different_subjects_no_fire
+  label: control
+  description: |
+    'Brazil is the top exporter' + 'Colombia is the third largest'.
+    Both rank markers fire, but each is about a different country.
+    No contradiction; catcher must stay silent.
+  registry:
+    - name: search_web
+      output: "stub"
+  messages:
+    - role: user
+      content: "coffee rankings"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "coffee export rankings" }
+    - content: |
+        Per the source, Brazil is the top exporter of coffee. Colombia
+        is the third largest producer in the region.
+  expected_contains: ["Brazil", "Colombia"]
+  expected_events_not_contain: [bail_retry]

@@ -47,6 +47,7 @@ from harness.orchestrator.hooks import (
     Replace,
     ReservedSquawkCodeHook,
     ScopeRedirectHook,
+    SelfContradictingRankHook,
     Skip,
     SourceCountInflationHook,
     TableFabricationHook,
@@ -1113,6 +1114,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "missing_citation",
         "fabricated_section",
         "list_count_mismatch",
+        "self_contradicting_rank",
         "reserved_squawk_code",
         "scope_redirect",
         "ambiguous_context",
@@ -3132,6 +3134,105 @@ def test_list_count_mismatch_still_fires_when_subset_marker_far_from_claim() -> 
         BailContext(reply=_reply(reply_text), tools_ran_this_turn=True)
     )
     assert isinstance(outcome, Nudge)
+
+
+# ---------- self_contradicting_rank (harness-1jca) ----------
+
+
+def test_self_contradicting_rank_fires_on_chile_repro() -> None:
+    """Session 2026-05-19 (avocado query, 2nd session): final reply
+    said Chile is BOTH 'the top South American avocado exporter' AND
+    'the third highest exporter in South America'. Internally self-
+    falsifying. The 'making it the third' idiom uses a back-reference
+    pronoun ('it') to the previously-named subject (Chile)."""
+    reply_text = (
+        "The top South American avocado exporter is Chile, as reported by "
+        "the article 'Avocados Exports by Country 2024' from WorldStopExports. "
+        "The data shows that Chile exported $291.6 million worth of avocados "
+        "in 2024, making it the third highest exporter in South America."
+    )
+    outcome = SelfContradictingRankHook().check(
+        BailContext(reply=_reply(reply_text), tools_ran_this_turn=True)
+    )
+    assert isinstance(outcome, Nudge)
+    # Nudge text must name the failure shape.
+    assert "contradicts" in outcome.text.lower()
+
+
+def test_self_contradicting_rank_fires_on_named_subject_in_both() -> None:
+    """Shared proper-noun across both windows (no pronoun needed).
+    'Brazil is the top exporter' + 'Brazil is the second largest
+    producer' — same proper noun in both windows, conflicting rank."""
+    reply_text = (
+        "Per the source, Brazil is the top exporter of coffee. Brazil is "
+        "the second largest producer overall."
+    )
+    outcome = SelfContradictingRankHook().check(
+        BailContext(reply=_reply(reply_text), tools_ran_this_turn=True)
+    )
+    assert isinstance(outcome, Nudge)
+
+
+def test_self_contradicting_rank_silent_when_subjects_differ() -> None:
+    """'Brazil is the top exporter, Colombia is the third.' — both
+    rank markers fire but different subjects. Catcher must stay
+    silent — no contradiction; each statement is consistent."""
+    reply_text = (
+        "Per the source, Brazil is the top exporter of coffee. Colombia "
+        "is the third largest producer in the region."
+    )
+    outcome = SelfContradictingRankHook().check(
+        BailContext(reply=_reply(reply_text), tools_ran_this_turn=True)
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_self_contradicting_rank_silent_with_only_top_claim() -> None:
+    """One TOP claim, no NTH claim — nothing to contradict."""
+    reply_text = "Per the source, Brazil is the top exporter of coffee in the world."
+    outcome = SelfContradictingRankHook().check(
+        BailContext(reply=_reply(reply_text), tools_ran_this_turn=True)
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_self_contradicting_rank_silent_with_only_nth_claim() -> None:
+    """One NTH claim, no TOP claim — also no contradiction."""
+    reply_text = "Per the source, Chile is the third largest exporter of avocados in South America."
+    outcome = SelfContradictingRankHook().check(
+        BailContext(reply=_reply(reply_text), tools_ran_this_turn=True)
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_self_contradicting_rank_silent_across_far_paragraphs() -> None:
+    """TOP and NTH claims must be near each other (within the
+    proximity window) to count as a single-paragraph contradiction.
+    Claims in widely-separated paragraphs may legitimately be about
+    different scopes ('top in the world' vs 'third in 2010')."""
+    reply_text = (
+        "Brazil is the top exporter of coffee globally as of 2024.\n\n"
+        + ("---\n" * 30)  # ~120 chars of separator
+        + (
+            "Background: in 2010, before the recent boom, Brazil was the third "
+            "largest exporter. Output has grown significantly since then."
+        )
+    )
+    outcome = SelfContradictingRankHook().check(
+        BailContext(reply=_reply(reply_text), tools_ran_this_turn=True)
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_self_contradicting_rank_silent_with_no_shared_subject_and_no_pronoun() -> None:
+    """TOP and NTH markers within window but no shared proper noun AND
+    no back-reference pronoun. Catcher can't establish that the two
+    claims refer to the same entity → conservative Continue."""
+    reply_text = "the top exporter is reported. The third is also reported."
+    outcome = SelfContradictingRankHook().check(
+        BailContext(reply=_reply(reply_text), tools_ran_this_turn=True)
+    )
+    assert isinstance(outcome, Continue)
 
 
 def test_list_count_mismatch_ignores_phone_and_frequency_digits() -> None:

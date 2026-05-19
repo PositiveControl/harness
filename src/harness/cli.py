@@ -51,6 +51,7 @@ from harness.store import (
 )
 from harness.store.audit import AuditStore
 from harness.store.bd_adapter import BeadsAdapter, BeadsAdapterError
+from harness.store.fetch_denylist import FetchDenylistStore
 from harness.store.transcript import Transcript, TranscriptMessage
 from harness.tools import (
     DEFAULT_PROFILE,
@@ -311,6 +312,11 @@ tool_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(tool_app, name="tool")
+denylist_app = typer.Typer(
+    help="Inspect + manage the fetch_url denylist (harness-4dgm).",
+    no_args_is_help=True,
+)
+app.add_typer(denylist_app, name="denylist")
 console = Console()
 
 
@@ -414,6 +420,14 @@ def _open_audit_store() -> AuditStore:
     dependency and the feature is on for every chat session
     (harness-ywp.2). Callers close() at session teardown."""
     return AuditStore(settings.character_db_path)
+
+
+def _open_fetch_denylist() -> FetchDenylistStore:
+    """Open the per-character fetch_url denylist on the shared SQLite
+    (harness-4dgm). Always live — denylist behavior is on whenever
+    fetch_url is in the registry; absence means the table is just
+    empty. Callers close() at session teardown."""
+    return FetchDenylistStore(settings.character_db_path)
 
 
 def _print_session_end_retro(ab_adapter: BeadsAdapter | None) -> None:
@@ -1639,7 +1653,8 @@ def _build_tool_registry_for_tui(
                 frozenset(character.fetch_url_allowed_hosts)
                 if character is not None and character.fetch_url_allowed_hosts
                 else None
-            )
+            ),
+            denylist=_open_fetch_denylist(),
         ),
         "remember_fact": lambda: (
             RememberFactTool(store=semantic_store, user_id=speaker, session_id=session)
@@ -3316,6 +3331,106 @@ def tool_synth_rebuild(
         console.print(f"  - {entry.name} ({entry.family}) — {marker}")
     console.print(
         "\n[dim]revalidation pending harness-l2ak (sandbox) + harness-t5kx (hot-reload).[/dim]"
+    )
+
+
+@denylist_app.command("list")
+def denylist_list(
+    include_expired: bool = typer.Option(
+        False,
+        "--include-expired",
+        help="Show entries past their 30-day TTL alongside active ones.",
+    ),
+) -> None:
+    """List hosts currently blocked by the fetch_url denylist.
+
+    Active = last 401/403 within the TTL window (30 days). Expired
+    entries stay on disk for audit but no longer gate fetches; pass
+    --include-expired to see them too."""
+    store = _open_fetch_denylist()
+    try:
+        entries = store.list_all(include_expired=include_expired)
+    finally:
+        store.close()
+    if not entries:
+        scope = "any" if include_expired else "active"
+        console.print(f"[dim]no {scope} denylist entries[/dim]")
+        return
+    now = datetime.now(UTC)
+    for entry in entries:
+        active = entry.is_active(now=now, ttl_days=store.ttl_days)
+        status_tag = "[green]active[/green]" if active else "[dim]expired[/dim]"
+        age_days = (now - entry.last_seen_at).days
+        console.print(
+            f"  {entry.host}  HTTP {entry.last_status} {entry.last_reason}  "
+            f"({entry.count} hit{'s' if entry.count != 1 else ''}, "
+            f"last seen {age_days}d ago) {status_tag}"
+        )
+
+
+@denylist_app.command("clear")
+def denylist_clear(
+    host: str | None = typer.Option(
+        None,
+        "--host",
+        help="Remove this host only. Without --host, all entries are dropped.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the confirm prompt when clearing everything.",
+    ),
+) -> None:
+    """Remove entries from the fetch_url denylist.
+
+    Use this after a host's 401/403 was transient and you want the
+    agent to retry sooner than the 30-day TTL."""
+    if host is None and not yes:
+        confirm = typer.confirm("Clear ALL denylist entries?", default=False)
+        if not confirm:
+            console.print("[dim]cancelled[/dim]")
+            return
+    store = _open_fetch_denylist()
+    try:
+        removed = store.clear(host)
+    finally:
+        store.close()
+    target = f"host {host!r}" if host else "all entries"
+    console.print(f"[dim]removed {removed} row(s) for {target}[/dim]")
+
+
+@denylist_app.command("add")
+def denylist_add(
+    host: str = typer.Argument(..., help="Hostname to block (e.g. example.com)."),
+    status: int = typer.Option(
+        403,
+        "--status",
+        help="HTTP status to record. Defaults to 403.",
+    ),
+    reason: str = typer.Option(
+        "manual",
+        "--reason",
+        help="Free-text reason recorded with the entry.",
+    ),
+) -> None:
+    """Manually add a host to the denylist.
+
+    Useful when you already know a domain will refuse fetches and
+    want to skip the first round-trip. Mirrors a fresh 401/403 record."""
+    store = _open_fetch_denylist()
+    try:
+        entry = store.record(
+            host=host,
+            status=status,
+            reason=reason,
+            url=f"https://{host}/",
+        )
+    finally:
+        store.close()
+    console.print(
+        f"[dim]added {entry.host} (HTTP {entry.last_status} {entry.last_reason}, "
+        f"count={entry.count})[/dim]"
     )
 
 

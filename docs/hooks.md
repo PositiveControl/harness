@@ -29,6 +29,7 @@ Hooks dispatch in the order shown within each phase — first-match semantics, s
 | `missing_citation` | Reply references the corpus substantively without an anchor. |
 | `fabricated_section` | Reply cites a §-anchor that doesn't exist in the corpus. |
 | `list_count_mismatch` | Reply's count claim disagrees with its enumerated list. |
+| `self_contradicting_rank` | Reply claims X is #1 AND #N≥2 of the same thing in the same paragraph. |
 | `source_count_inflation` | Reply enumerates more items than the most recent tool returned. |
 | `reserved_squawk_code` | Reply assigns a reserved transponder code (7500/7600/7700). |
 | `scope_redirect` | Reply talks domain content for an out-of-scope question. |

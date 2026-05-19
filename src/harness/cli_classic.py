@@ -214,6 +214,7 @@ def build_classic_registry(
         _ab_tool_builders,
         _make_introspect_tool,
         _missing_builder_reason,
+        _open_fetch_denylist,
         _router_id_label,
     )
 
@@ -351,7 +352,8 @@ def build_classic_registry(
                 frozenset(character.fetch_url_allowed_hosts)
                 if character.fetch_url_allowed_hosts
                 else None
-            )
+            ),
+            denylist=_open_fetch_denylist(),
         ),
         "remember_fact": (
             lambda: (

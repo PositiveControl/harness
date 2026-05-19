@@ -402,6 +402,112 @@ def test_surfaces_timeout() -> None:
     assert "deadline exceeded" in out
 
 
+# ---------- denylist integration (harness-4dgm) ----------
+
+
+def _http_error(url: str, code: int, reason: str) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(url, code, reason, Message(), io.BytesIO(b""))
+
+
+def test_403_records_host_on_denylist(tmp_path: object) -> None:
+    from harness.store.fetch_denylist import FetchDenylistStore
+
+    db = tmp_path / "harness.sqlite"  # type: ignore[operator]
+    denylist = FetchDenylistStore(db)
+    opener = _FakeOpener(raise_exc=_http_error("https://blocked.test/", 403, "Forbidden"))
+    tool = FetchUrlTool(request_opener=opener, denylist=denylist)
+    out = tool.call(url="https://blocked.test/foo")
+    assert "HTTP 403" in out
+    entry = denylist.get("blocked.test")
+    assert entry is not None
+    assert entry.last_status == 403
+    assert entry.count == 1
+
+
+def test_401_records_host_on_denylist(tmp_path: object) -> None:
+    from harness.store.fetch_denylist import FetchDenylistStore
+
+    db = tmp_path / "harness.sqlite"  # type: ignore[operator]
+    denylist = FetchDenylistStore(db)
+    opener = _FakeOpener(raise_exc=_http_error("https://auth.test/", 401, "Unauthorized"))
+    tool = FetchUrlTool(request_opener=opener, denylist=denylist)
+    tool.call(url="https://auth.test/")
+    entry = denylist.get("auth.test")
+    assert entry is not None
+    assert entry.last_status == 401
+
+
+def test_404_does_not_touch_denylist(tmp_path: object) -> None:
+    from harness.store.fetch_denylist import FetchDenylistStore
+
+    db = tmp_path / "harness.sqlite"  # type: ignore[operator]
+    denylist = FetchDenylistStore(db)
+    opener = _FakeOpener(raise_exc=_http_error("https://missing.test/", 404, "Not Found"))
+    tool = FetchUrlTool(request_opener=opener, denylist=denylist)
+    tool.call(url="https://missing.test/")
+    assert denylist.get("missing.test") is None
+
+
+def test_blocked_host_short_circuits_before_network(tmp_path: object) -> None:
+    from harness.store.fetch_denylist import FetchDenylistStore
+
+    db = tmp_path / "harness.sqlite"  # type: ignore[operator]
+    denylist = FetchDenylistStore(db)
+    denylist.record(
+        host="blocked.test", status=403, reason="Forbidden", url="https://blocked.test/"
+    )
+    opener = _FakeOpener()  # no response queued; getting here would assert
+    tool = FetchUrlTool(request_opener=opener, denylist=denylist)
+    out = tool.call(url="https://blocked.test/whatever")
+    assert "is on the denylist" in out
+    assert "HTTP 403" in out
+    assert opener.calls == []  # never reached the network
+
+
+def test_blocked_host_lookup_is_case_insensitive(tmp_path: object) -> None:
+    from harness.store.fetch_denylist import FetchDenylistStore
+
+    db = tmp_path / "harness.sqlite"  # type: ignore[operator]
+    denylist = FetchDenylistStore(db)
+    denylist.record(host="example.com", status=403, reason="Forbidden", url="https://example.com/")
+    opener = _FakeOpener()
+    tool = FetchUrlTool(request_opener=opener, denylist=denylist)
+    out = tool.call(url="https://EXAMPLE.com/path")
+    assert "denylist" in out
+    assert opener.calls == []
+
+
+def test_repeated_403_bumps_count(tmp_path: object) -> None:
+    from harness.store.fetch_denylist import FetchDenylistStore
+
+    db = tmp_path / "harness.sqlite"  # type: ignore[operator]
+    # Wide TTL window so the second call also short-circuits.
+    denylist = FetchDenylistStore(db, ttl_days=365)
+    opener = _FakeOpener(raise_exc=_http_error("https://blocked.test/", 403, "Forbidden"))
+    tool = FetchUrlTool(request_opener=opener, denylist=denylist)
+    tool.call(url="https://blocked.test/a")
+    # Second call short-circuits because the first put the host on
+    # the active denylist — count stays at 1 because we never reach
+    # the network the second time. That's the desired behavior: a
+    # blocked host doesn't keep accumulating hits we never make.
+    out = tool.call(url="https://blocked.test/b")
+    assert "denylist" in out
+    entry = denylist.get("blocked.test")
+    assert entry is not None
+    assert entry.count == 1
+
+
+def test_denylist_none_means_feature_off(tmp_path: object) -> None:
+    """When the tool is constructed without a denylist, 401/403
+    responses surface as errors but nothing is persisted and future
+    fetches aren't short-circuited."""
+    opener = _FakeOpener(raise_exc=_http_error("https://blocked.test/", 403, "Forbidden"))
+    tool = FetchUrlTool(request_opener=opener)  # no denylist
+    out = tool.call(url="https://blocked.test/")
+    assert "HTTP 403" in out
+    assert "denylist" not in out
+
+
 # ---------- profile membership ----------
 
 

@@ -47,7 +47,10 @@ import urllib.request
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 
+from harness.store.fetch_denylist import FetchDenylistStore
 from harness.tools.base import ToolSpec
+
+_DENYLIST_BLOCKED_STATUSES: frozenset[int] = frozenset({401, 403})
 
 _DEFAULT_TIMEOUT_S = 10
 _MAX_TIMEOUT_S = 30
@@ -218,6 +221,12 @@ class FetchUrlTool:
     # a tool-level knob rather than a hook so the refusal happens
     # before the network call (atc-3 / harness-xbk.3).
     allowed_hosts: frozenset[str] | None = None
+    # Persistent denylist (harness-4dgm). When supplied, hosts that
+    # have returned 401/403 within the store's TTL window short-circuit
+    # before the network call, and fresh 401/403 responses are recorded.
+    # None disables the feature — useful for tests and for the echo-
+    # adapter dry run where there's no character DB.
+    denylist: FetchDenylistStore | None = None
     # Allow tests (or future callers) to supply their own opener —
     # the production path uses urllib.request.urlopen through the
     # module-level alias below. Keep the type wide (`object`) so the
@@ -285,17 +294,27 @@ class FetchUrlTool:
             )
         if not parsed.netloc:
             return f"fetch_url error: URL {url!r} has no host"
-        if self.allowed_hosts is not None:
-            # Strip user:pass@ and :port if present so the check matches
-            # the caller-supplied host set cleanly. netloc lower-cased
-            # because DNS is case-insensitive and the allowlist author
-            # shouldn't have to worry about that.
-            host = parsed.hostname or parsed.netloc
-            if host.lower() not in self.allowed_hosts:
+        # Strip user:pass@ and :port for both the allowlist check and
+        # the denylist record. DNS is case-insensitive, so the lowered
+        # hostname is the canonical key.
+        host = (parsed.hostname or parsed.netloc).lower()
+        if self.allowed_hosts is not None and host not in self.allowed_hosts:
+            return (
+                f"fetch_url error: host {host!r} is not in this "
+                "character's fetch allowlist. Allowed hosts: "
+                f"{sorted(self.allowed_hosts)}"
+            )
+
+        if self.denylist is not None:
+            blocked = self.denylist.is_blocked(host)
+            if blocked is not None:
                 return (
-                    f"fetch_url error: host {host!r} is not in this "
-                    "character's fetch allowlist. Allowed hosts: "
-                    f"{sorted(self.allowed_hosts)}"
+                    f"fetch_url error: host {host!r} is on the denylist "
+                    f"(HTTP {blocked.last_status} {blocked.last_reason}, "
+                    f"first seen {blocked.first_seen_at.date().isoformat()}, "
+                    f"{blocked.count} hit{'s' if blocked.count != 1 else ''}). "
+                    "Skipping the fetch. Try a different source, or run "
+                    f"`harness denylist clear --host {host}` to retry."
                 )
 
         timeout_s = self.default_timeout_s if timeout_seconds is None else int(timeout_seconds)
@@ -311,6 +330,13 @@ class FetchUrlTool:
         try:
             response = opener(req, timeout=timeout_s)  # type: ignore[operator]
         except urllib.error.HTTPError as exc:
+            if self.denylist is not None and exc.code in _DENYLIST_BLOCKED_STATUSES:
+                self.denylist.record(
+                    host=host,
+                    status=exc.code,
+                    reason=str(exc.reason),
+                    url=url,
+                )
             return f"fetch_url error: HTTP {exc.code} {exc.reason} for {url}"
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             return f"fetch_url error: network failure for {url}: {exc}"

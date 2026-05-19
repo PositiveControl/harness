@@ -391,6 +391,39 @@
   expected_events_contain: [tool_call_deduped]
   expected_messages_not_contain: ["search-result"]
 
+- id: self_contradicting_rank_chile_repro
+  label: self_contradicting_rank
+  description: |
+    Session repro 2026-05-19 (avocado query, 2nd session): final reply
+    says Chile is BOTH the top South American avocado exporter AND
+    'making it the third highest exporter in South America'. The
+    'making it' idiom back-references Chile. Self-falsifying.
+    SelfContradictingRankHook fires; retry produces a corrected
+    reply that drops the 'top' claim and acknowledges Chile is #3.
+    The real top-SA exporter is Peru — out of scope for this catcher;
+    scope_violation (harness-lyyr) is the companion that catches the
+    wrong-pick-from-data shape.
+  registry:
+    - name: search_web
+      output: "stub"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "south american avocado exporter" }
+    - content: |
+        The top South American avocado exporter is Chile, as reported
+        by WorldStopExports. Chile exported $291.6 million worth of
+        avocados in 2024, making it the third highest exporter in
+        South America.
+    - content: |
+        Correction — the source ranks Chile as the third largest
+        avocado exporter in South America, not the top. Per the
+        2024 data, a different country leads the region; check the
+        article for the #1 entry.
+  expected_contains: ["Correction", "third"]
+  expected_events_contain: [bail_retry]
+
 - id: tool_search_loop_caught_at_third_call
   label: tool_search_loop
   description: |
