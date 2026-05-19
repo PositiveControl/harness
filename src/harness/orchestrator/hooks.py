@@ -714,6 +714,134 @@ class MetaConfirmHook:
         return Continue()
 
 
+_RAW_RESULTS_DUMP_NUDGE = (
+    "Your reply repeats the tool result without producing the synthesis "
+    "the user asked for (rank / prioritize / compare / summarize / group / "
+    "score / categorize / order / sort / filter). The tool output is "
+    "input, not the answer — continue the turn and produce the requested "
+    "output (grouped, ranked, or scored as the prompt specified) using "
+    "the data you already gathered. Do NOT call the tool again."
+)
+
+
+# User-prompt synthesis verbs. A match flips the catcher armed — without
+# one, raw-dumping the tool output is the user's actual request and the
+# catcher must stay silent (see synthesis_completion.yaml negative case).
+SYNTHESIS_VERB_RE = re.compile(
+    r"\b(?:"
+    r"rank(?:ing|ed|s)?"
+    r"|prioritiz(?:e|ing|ed|es)"
+    r"|compar(?:e|ing|ed|es)"
+    r"|summariz(?:e|ing|ed|es)"
+    r"|group(?:ing|ed|s)?"
+    r"|scor(?:e|ing|ed|es)"
+    r"|categoriz(?:e|ing|ed|es)"
+    r"|order(?:ing|ed|s)?"
+    r"|sort(?:ing|ed|s)?"
+    r"|filter(?:ing|ed|s)?"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+# Ordering markers that signal the model imposed synthesis structure
+# on top of the data. Numbered lists alone don't count — raw tool
+# outputs are often numbered lists already. We look for:
+#   - pipe-table rows (two+ pipes per line)
+#   - severity / priority grouping headings ("High severity:", "Top
+#     priority:")
+#   - "by X:" headings ("by region:", "by date:")
+#   - explicit "ranked by" / "prioritized by" / "grouped by" phrases
+RAW_RESULTS_DUMP_ORDERING_RE = re.compile(
+    r"(?:"
+    r"\|[^|\n]+\|[^|\n]+\|"
+    r"|"
+    r"^\s*(?:high|medium|low|critical|severe|major|minor|"
+    r"top|bottom|most|least)\s+"
+    r"(?:severity|priority|importance|critical(?:ity)?|urgency)\s*[:.]"
+    r"|"
+    r"^\s*by\s+\w+\s*[:.]"
+    r"|"
+    r"\b(?:ranked|prioritized|grouped|sorted|categorized|scored|ordered)\s+by\b"
+    r")",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+# Jaccard threshold above which the reply counts as "mostly the tool
+# output." Tuned biased toward false-negatives (harness-s451 design):
+# only fire when overlap is unambiguous; missed catches just land the
+# same failure we already have, false positives force extra rounds on
+# legitimate single-step completions.
+_RAW_RESULTS_DUMP_OVERLAP_THRESHOLD = 0.5
+
+
+def _content_token_set(text: str) -> frozenset[str]:
+    """Lowercased alphanumeric tokens of length >= 3 from `text`.
+    Short tokens (a, is, to, the) dominate Jaccard otherwise and
+    inflate overlap on near-disjoint replies."""
+    return frozenset(t for t in re.findall(r"[a-z0-9]+", text.lower()) if len(t) >= 3)
+
+
+@dataclass(frozen=True)
+class RawResultsDumpHook:
+    """Catch the synthesis-completion failure mode (harness-akpx /
+    s451): a content-producing tool ran, the user asked for synthesis
+    (rank / prioritize / compare / summarize / etc.), and the reply
+    is mostly a verbatim regurgitation of the tool output with no
+    ordering / grouping / scoring structure imposed on top.
+
+    All four signals must hold to fire:
+      1. A content tool succeeded this turn (`_content_tools_ran`).
+         Opposite gate from the fabrication catchers (which fire on
+         no-tool turns) — RawResultsDump targets real-but-unsynthesized
+         output, not invented content.
+      2. The user message carries a synthesis verb (rank / prioritize /
+         compare / summarize / group / score / categorize / order /
+         sort / filter).
+      3. Reply tokens overlap with the most recent prior tool output
+         above `_RAW_RESULTS_DUMP_OVERLAP_THRESHOLD` (Jaccard).
+      4. The reply lacks ordering markers — pipe tables, severity /
+         priority headings, "by X:" groupings, or explicit "ranked
+         by" phrases. The presence of any marker disarms the catcher;
+         the model imposed structure, that's the synthesis we wanted.
+
+    Defensive layer behind the synthesis-continue preamble nudge
+    (harness-b7yd). The nudge is preventive (steer the model away
+    from raw-dump in the first place); this hook is the recovery
+    path when the model emits the dump anyway."""
+
+    name: str = "raw_results_dump"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if not _content_tools_ran(ctx):
+            return Continue()
+        if not ctx.user_message:
+            return Continue()
+        if not SYNTHESIS_VERB_RE.search(ctx.user_message):
+            return Continue()
+        if not ctx.prior_tool_outputs:
+            return Continue()
+        if RAW_RESULTS_DUMP_ORDERING_RE.search(ctx.reply.content):
+            return Continue()
+        reply_tokens = _content_token_set(ctx.reply.content)
+        if not reply_tokens:
+            return Continue()
+        # Compare against the most recent tool output — the one the
+        # model is most likely echoing. Older outputs may share
+        # incidental tokens but aren't the dump source.
+        tool_tokens = _content_token_set(ctx.prior_tool_outputs[-1])
+        if not tool_tokens:
+            return Continue()
+        union = len(reply_tokens | tool_tokens)
+        if union == 0:
+            return Continue()
+        overlap = len(reply_tokens & tool_tokens) / union
+        if overlap < _RAW_RESULTS_DUMP_OVERLAP_THRESHOLD:
+            return Continue()
+        return Nudge(_RAW_RESULTS_DUMP_NUDGE)
+
+
 _FABRICATED_SEARCH_NUDGE = (
     "Your reply looks like fabricated tool output (search results / "
     "placeholder URLs / 'here are the results'). You did NOT call any "
@@ -3334,6 +3462,9 @@ HOOK_SHAPES: dict[str, str] = {
     "teaser": "Reply announced more work but emitted no tool call.",
     "false_success": "Reply claims a file edit without a write-tier tool call.",
     "meta_confirm": "Reply asks user to confirm in chat instead of calling the tool.",
+    "raw_results_dump": (
+        "Reply repeats tool output verbatim instead of synthesizing as the prompt asked."
+    ),
     "fabricated_search": "Reply narrates web-search activity but no web tool ran.",
     "fabricated_itemization": "Reply fabricates additional list items beyond what was real.",
     "ab_fabrication": "Reply imitates ab_ops output without a real tool call.",
@@ -3548,6 +3679,13 @@ def default_hook_pipeline(
         TeaserHook(),
         FalseSuccessHook(),
         MetaConfirmHook(),
+        # raw_results_dump (harness-s451) sits BETWEEN MetaConfirm and
+        # FabricatedSearch. Gates on the OPPOSITE condition from the
+        # fabrication catchers (content tool MUST have run) so they
+        # can't both fire on the same turn; ordering here is cosmetic
+        # for attribution-eval output. Placed inside the universal
+        # block (not opt-in) — the failure shape is character-agnostic.
+        RawResultsDumpHook(),
         FabricatedSearchHook(),
         FabricatedItemizationHook(),
     ]

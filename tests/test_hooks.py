@@ -42,6 +42,7 @@ from harness.orchestrator.hooks import (
     PostResearchPersistHook,
     PostSearchGroundingHook,
     PreToolContext,
+    RawResultsDumpHook,
     Replace,
     ReservedSquawkCodeHook,
     ScopeRedirectHook,
@@ -259,6 +260,179 @@ def test_meta_confirm_does_not_fire_on_substantive_read_mention() -> None:
     assert isinstance(MetaConfirmHook().check(ctx), Continue)
 
 
+# ---------- raw_results_dump (harness-s451) ----------
+
+# Shared payload — a 5-item news list. Used as both the tool output
+# and (verbatim) as the model's reply on the failure-path tests. Keeps
+# the overlap clearly above the Jaccard threshold.
+_RAW_DUMP_NEWS = (
+    "1. Wildfire spreads in Northern California, mass evacuations ordered\n"
+    "2. Earthquake magnitude 6.4 hits Tokyo region\n"
+    "3. Brazil election results announced\n"
+    "4. Stock market closes at new high\n"
+    "5. Hurricane forming in Atlantic, watch issued\n"
+)
+
+
+def test_raw_results_dump_hook_fires_on_synthesis_prompt_with_verbatim_dump() -> None:
+    """Positive case: search_web ran, the user asked to 'prioritize',
+    and the reply is the tool output near-verbatim with no ordering
+    markers imposed. The catcher fires and nudges."""
+    ctx = BailContext(
+        reply=_reply(_RAW_DUMP_NEWS),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message="search for breaking news and prioritize by location and severity",
+        prior_tool_outputs=(_RAW_DUMP_NEWS,),
+    )
+    outcome = RawResultsDumpHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "synthesis" in outcome.text.lower()
+
+
+def test_raw_results_dump_hook_silent_without_synthesis_verb() -> None:
+    """User asked for a plain search. Even though the reply repeats the
+    tool output verbatim, no synthesis verb means stopping is the
+    correct exit — catcher stays silent."""
+    ctx = BailContext(
+        reply=_reply(_RAW_DUMP_NEWS),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message="search the web for the latest news headlines",
+        prior_tool_outputs=(_RAW_DUMP_NEWS,),
+    )
+    assert isinstance(RawResultsDumpHook().check(ctx), Continue)
+
+
+def test_raw_results_dump_hook_silent_when_no_content_tool_ran() -> None:
+    """No content tool succeeded — the no-tool case is fabricated_search
+    / false_success / etc.'s job. RawResultsDump only targets
+    real-but-unsynthesized output, so it disarms when no tool ran."""
+    ctx = BailContext(
+        reply=_reply(_RAW_DUMP_NEWS),
+        tools_ran_this_turn=False,
+        tools_ran=frozenset(),
+        user_message="rank these news items by severity",
+        prior_tool_outputs=(),
+    )
+    assert isinstance(RawResultsDumpHook().check(ctx), Continue)
+
+
+def test_raw_results_dump_hook_silent_when_meta_tools_only() -> None:
+    """Meta-tools (tool_search, load_tool) are plumbing, not content
+    producers. Their presence in tools_ran must NOT disarm this catcher
+    — _content_tools_ran is False, so the no-tool gate keeps it
+    silent and the fabrication catchers handle the case."""
+    ctx = BailContext(
+        reply=_reply(_RAW_DUMP_NEWS),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"tool_search", "load_tool"}),
+        user_message="rank news items by severity",
+        prior_tool_outputs=(_RAW_DUMP_NEWS,),
+    )
+    assert isinstance(RawResultsDumpHook().check(ctx), Continue)
+
+
+def test_raw_results_dump_hook_silent_with_ranked_by_marker() -> None:
+    """Reply imposes structure via 'Ranked by severity:' — that's the
+    synthesis we wanted, so the catcher must stay silent even though
+    overlap with the tool data is still high (item titles reused)."""
+    reply = (
+        "Ranked by severity:\n\n"
+        "1. High — Earthquake in Tokyo region: immediate safety risk.\n"
+        "2. High — Wildfire in Northern California: active evacuations.\n"
+        "3. Low — Stock market new high: economic, no urgency.\n"
+    )
+    ctx = BailContext(
+        reply=_reply(reply),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message="rank the latest news items by severity",
+        prior_tool_outputs=(_RAW_DUMP_NEWS,),
+    )
+    assert isinstance(RawResultsDumpHook().check(ctx), Continue)
+
+
+def test_raw_results_dump_hook_silent_with_severity_heading_marker() -> None:
+    """'High severity:' / 'Medium severity:' grouping headings disarm
+    the catcher — explicit grouping IS the synthesis."""
+    reply = (
+        "High severity:\n"
+        "- Tokyo earthquake — immediate safety risk\n"
+        "- California wildfire — evacuations underway\n\n"
+        "Medium severity:\n"
+        "- Brazil election results\n\n"
+        "Low severity:\n"
+        "- Stock market new high\n"
+    )
+    ctx = BailContext(
+        reply=_reply(reply),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message="prioritize by severity",
+        prior_tool_outputs=(_RAW_DUMP_NEWS,),
+    )
+    assert isinstance(RawResultsDumpHook().check(ctx), Continue)
+
+
+def test_raw_results_dump_hook_silent_on_low_overlap_reply() -> None:
+    """Reply doesn't repeat the tool output — the model wrote
+    something substantively different. Overlap below threshold means
+    no dump, no catcher fire (even with synthesis verb in prompt)."""
+    ctx = BailContext(
+        reply=_reply(
+            "Based on what came back: I can't tell which item is most "
+            "critical from the headlines alone. Want me to fetch the "
+            "Tokyo earthquake article for more detail?"
+        ),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message="rank these news items by severity",
+        prior_tool_outputs=(_RAW_DUMP_NEWS,),
+    )
+    assert isinstance(RawResultsDumpHook().check(ctx), Continue)
+
+
+def test_raw_results_dump_hook_silent_without_prior_tool_outputs() -> None:
+    """tools_ran reports a content tool succeeded, but prior_tool_outputs
+    is empty — degenerate state we don't fire on (the comparison anchor
+    is missing)."""
+    ctx = BailContext(
+        reply=_reply(_RAW_DUMP_NEWS),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message="rank these items",
+        prior_tool_outputs=(),
+    )
+    assert isinstance(RawResultsDumpHook().check(ctx), Continue)
+
+
+def test_raw_results_dump_hook_silent_without_user_message() -> None:
+    """No user message captured — we can't check for synthesis verbs,
+    so we don't fire. (System-only bootstrap doesn't trip this catcher.)"""
+    ctx = BailContext(
+        reply=_reply(_RAW_DUMP_NEWS),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message=None,
+        prior_tool_outputs=(_RAW_DUMP_NEWS,),
+    )
+    assert isinstance(RawResultsDumpHook().check(ctx), Continue)
+
+
+def test_raw_results_dump_hook_fires_on_compare_verb_variant() -> None:
+    """The verb regex covers inflections — 'compare' / 'comparing' /
+    'compared' all arm the catcher equivalently."""
+    ctx = BailContext(
+        reply=_reply(_RAW_DUMP_NEWS),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message="comparing the latest news headlines side by side",
+        prior_tool_outputs=(_RAW_DUMP_NEWS,),
+    )
+    assert isinstance(RawResultsDumpHook().check(ctx), Nudge)
+
+
 def test_fabricated_search_hook_fires_after_meta_tool_only() -> None:
     """harness-q7kn: load_tool / tool_search / introspect are meta-tools
     (plumbing for the discovery loop). They must NOT disarm the
@@ -439,6 +613,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "teaser",
         "false_success",
         "meta_confirm",
+        "raw_results_dump",
         "fabricated_search",
         "fabricated_itemization",
         "ab_fabrication",

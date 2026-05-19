@@ -64,6 +64,57 @@
   expected_fallback: true
   expected_events_contain: [bail_retry]
 
+- id: raw_results_dump_news_priority
+  label: raw_results_dump
+  description: |
+    Synthesis-completion failure (harness-akpx). User asked to
+    "prioritize by location and severity"; search_web ran;
+    round 1 reply is the tool output near-verbatim with no
+    ordering structure. RawResultsDumpHook nudges; the round 2
+    scripted reply produces the requested ranked synthesis.
+    Fuller surface (positive + negative + clean-control) lives
+    in evals/orchestrator/synthesis_completion.yaml; this is the
+    coverage entry that pins the catcher in airton's attribution
+    matrix.
+  registry:
+    - name: search_web
+      output: |
+        1. Wildfire spreads in Northern California, mass evacuations ordered — npr.org
+        2. Earthquake magnitude 6.4 hits Tokyo region — reuters.com
+        3. Brazil election results announced — bbc.com
+        4. Stock market closes at new high — bloomberg.com
+        5. Hurricane forming in Atlantic, watch issued — weather.com
+  messages:
+    - role: user
+      content: search the web for breaking news and prioritize by location and severity
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "breaking news today" }
+    - content: |
+        Here are the results:
+        1. Wildfire spreads in Northern California, mass evacuations ordered — npr.org
+        2. Earthquake magnitude 6.4 hits Tokyo region — reuters.com
+        3. Brazil election results announced — bbc.com
+        4. Stock market closes at new high — bloomberg.com
+        5. Hurricane forming in Atlantic, watch issued — weather.com
+    - content: |
+        Prioritized by location and severity:
+
+        High severity:
+        - Asia (Japan): Earthquake in Tokyo region — immediate safety risk.
+        - North America (California): Wildfire spreading — active emergency.
+        - Atlantic basin: Hurricane forming — multi-region threat.
+
+        Medium severity:
+        - South America (Brazil): Election results announced.
+
+        Low severity:
+        - Global markets: Stock market new high.
+  expected_contains: ["Prioritized by location and severity", "High severity"]
+  expected_events_contain: [bail_retry]
+
 - id: fabricated_search_results
   label: fabricated_search
   description: Model invents a numbered list of search hits with placeholder

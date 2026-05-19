@@ -19,6 +19,7 @@ Hooks dispatch in the order shown within each phase — first-match semantics, s
 | `teaser` | Reply announced more work but emitted no tool call. |
 | `false_success` | Reply claims a file edit without a write-tier tool call. |
 | `meta_confirm` | Reply asks user to confirm in chat instead of calling the tool. |
+| `raw_results_dump` | Reply repeats tool output verbatim instead of synthesizing as the prompt asked. |
 | `fabricated_search` | Reply narrates web-search activity but no web tool ran. |
 | `fabricated_itemization` | Reply fabricates additional list items beyond what was real. |
 | `ab_fabrication` | Reply imitates ab_ops output without a real tool call. |

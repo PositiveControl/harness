@@ -16,11 +16,7 @@
 # ---------- positive: raw-dump after synthesis prompt ----------
 
 - id: synthesis_raw_dump_news_priority
-  # `label:` deliberately omitted until harness-s451 registers
-  # `raw_results_dump` in _CATCHER_NAMES — load_fixture rejects
-  # unknown labels (src/harness/evals/tool_loop.py:414-419). The
-  # catcher bead will add `label: raw_results_dump` here as part
-  # of its registration step.
+  label: raw_results_dump
   description: |
     User asks for a synthesis ("prioritize by location and severity").
     Model calls search_web, then dumps the tool output near-verbatim
