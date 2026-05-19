@@ -212,7 +212,13 @@ class ToolLoopEvent:
     model_call_start, token_delta, model_call_end, tool_call_start,
     tool_call_end, tool_call_failed, tool_call_declined,
     tool_call_deduped, truncated_retry, bail_retry, round_complete,
-    scope_redirected.
+    scope_redirected, meta_round.
+
+    `meta_round` (harness-rlza) fires when an iteration's only tool
+    calls were meta-tools (tool_search / load_tool / introspect /
+    spawn_subagent). Such iterations are exempt from the max_rounds
+    budget — they're bookkeeping, not work. Observers + evals use
+    the event to audit which rounds got the exemption.
 
     `scope_redirected` (harness-8dop) fires at most once per turn,
     before round 0, when the Router pre-pass classified the turn
@@ -1071,7 +1077,25 @@ def run_tool_loop(
         )
         any_tool_succeeded = any_tool_succeeded or router_success
 
-    for round_idx in range(max_rounds):
+    # Meta-tool exemption (harness-rlza). Meta-tools (tool_search,
+    # load_tool, introspect, spawn_subagent) are discovery /
+    # bookkeeping primitives — they help the agent figure out WHAT
+    # to do, not DO it. Charging them against the work budget
+    # leaves multi-step / multi-part queries starved (the 2026-05-19
+    # Nairobi multi-part repro burned 3 of 8 rounds on discovery
+    # before the actual data-gathering started). The exemption
+    # tracks work_rounds separately from total_iterations: only
+    # rounds that emitted a content tool count against max_rounds;
+    # meta-only rounds are free. A hard ceiling (2 * max_rounds)
+    # prevents a malformed agent from looping forever on meta calls.
+    from harness.orchestrator.hooks import _META_TOOLS
+
+    work_rounds = 0
+    total_iterations = 0
+    hard_ceiling = max(2 * max_rounds, max_rounds + 1)
+    while work_rounds < max_rounds and total_iterations < hard_ceiling:
+        round_idx = total_iterations
+        total_iterations += 1
         tools_already_ran = any(m.role == "tool" for m in working[initial_count:])
         emit(ToolLoopEvent(kind="round_start", round_index=round_idx))
         last_reply = _run_model_round(
@@ -1099,7 +1123,11 @@ def run_tool_loop(
                 ),
                 disabled=_disabled_snapshot(),
             )
-            can_retry = bail.retries_left > 0 and round_idx + 1 < max_rounds
+            # Bail retries are an inner-loop concern bounded by
+            # `_BAIL_RETRIES_PER_TURN` (3 by default). We additionally
+            # gate on `total_iterations < hard_ceiling` so a pathological
+            # bail-retry storm can't outrun the safety ceiling.
+            can_retry = bail.retries_left > 0 and total_iterations < hard_ceiling
             if not isinstance(bail_outcome, Continue) and can_retry:
                 bail.consume_retry()
                 if isinstance(bail_outcome, Truncated):
@@ -1162,7 +1190,7 @@ def run_tool_loop(
             return ToolLoopResult(
                 content=last_reply.content,
                 messages=working,
-                rounds=round_idx + 1,
+                rounds=total_iterations,
                 events=events,
             )
 
@@ -1189,10 +1217,24 @@ def run_tool_loop(
         )
         any_tool_succeeded = any_tool_succeeded or round_success
 
-    # Loop exhausted — return what we have.
+        # Work-round accounting (harness-rlza). A round counts as "work"
+        # only if at least one of the model's tool calls named a content
+        # tool. Meta-only rounds (tool_search → load_tool sequences,
+        # introspect lookups, depth-1 subagent dispatch) don't burn the
+        # max_rounds budget — they're free passes. Emit a meta_round
+        # event for observers + evals so the exemption is auditable.
+        is_work_round = any(call.name not in _META_TOOLS for call in last_reply.tool_calls)
+        if is_work_round:
+            work_rounds += 1
+        else:
+            emit(ToolLoopEvent(kind="meta_round", round_index=round_idx))
+
+    # Loop exhausted — return what we have. `rounds` reports the
+    # total iterations spent (work + meta) so callers and tests see
+    # the real model-invocation count, not the work-round projection.
     return ToolLoopResult(
         content=last_reply.content or "[tool loop exhausted without final reply]",
         messages=working,
-        rounds=max_rounds,
+        rounds=total_iterations,
         events=events,
     )

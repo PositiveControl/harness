@@ -2991,6 +2991,143 @@ def test_synthesis_continue_nudge_skipped_when_registry_empty() -> None:
     assert not nudge_msgs
 
 
+# ---------- meta-tool round-budget exemption (harness-rlza) ----------
+
+
+def _meta_tool_call(name: str) -> ModelReply:
+    """Synthetic reply that emits a meta-tool call. The tool itself
+    isn't registered — execution fails with a 'tool not found' error
+    but the call NAME drives the work-round accounting, which is what
+    these tests pin."""
+    return ModelReply(
+        content="",
+        tool_calls=(ToolCall(name=name, arguments={}),),
+    )
+
+
+def test_meta_tool_rounds_do_not_burn_work_budget(tmp_path: Path) -> None:
+    """Three meta-tool rounds + content rounds = budget not exhausted.
+    The 2026-05-19 Nairobi repro burned 3 of 8 rounds on discovery
+    before the real work started; the exemption gives those rounds
+    back."""
+    (tmp_path / "hi.txt").write_text("contents")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+    adapter = _ScriptedAdapter(
+        replies=[
+            _meta_tool_call("tool_search"),
+            _meta_tool_call("tool_search"),
+            _meta_tool_call("load_tool"),
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "hi.txt"}),),
+            ),
+            ModelReply(content="contents read; done"),
+        ]
+    )
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="do the thing")],
+        registry,
+        max_rounds=3,
+    )
+
+    # Total iterations = 3 meta + 1 content + 1 text = 5. With the OLD
+    # behavior (no exemption) and max_rounds=3 the loop would exit
+    # after 3 iterations (all spent on meta tools); with the exemption
+    # the meta rounds are free and the content round lands before
+    # the work budget is touched. hard_ceiling = 2 * 3 = 6 covers the
+    # 5 iterations comfortably.
+    assert result.rounds == 5
+    assert "contents read" in result.content
+    meta_events = [e for e in result.events if e.kind == "meta_round"]
+    assert len(meta_events) == 3
+    assert [e.round_index for e in meta_events] == [0, 1, 2]
+
+
+def test_meta_tool_round_event_round_index_matches_total_iteration() -> None:
+    """meta_round events carry the absolute iteration index (not the
+    work-round index), so observers see a monotonic counter aligned
+    with round_start / round_complete events."""
+    adapter = _ScriptedAdapter(
+        replies=[
+            _meta_tool_call("introspect"),
+            ModelReply(content="ok"),
+        ]
+    )
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="who are you")],
+        ToolRegistry(),
+        max_rounds=4,
+    )
+
+    meta = next(e for e in result.events if e.kind == "meta_round")
+    assert meta.round_index == 0
+    # Subsequent round_start event uses index 1 (the text-only round).
+    round_starts = [e for e in result.events if e.kind == "round_start"]
+    assert [e.round_index for e in round_starts] == [0, 1]
+
+
+def test_pathological_meta_only_loop_terminates_at_hard_ceiling() -> None:
+    """An agent that emits nothing but meta-tool calls forever must
+    still terminate. The hard ceiling is 2 * max_rounds — without it,
+    the work-budget exemption would let a malformed loop run
+    indefinitely."""
+    # 16 meta-tool calls — more than the 8-iteration hard ceiling.
+    adapter = _ScriptedAdapter(replies=[_meta_tool_call("tool_search") for _ in range(16)])
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="spin forever")],
+        ToolRegistry(),
+        max_rounds=4,
+    )
+
+    # hard_ceiling = max(2 * 4, 4 + 1) = 8. Loop must exit at 8
+    # iterations regardless of work-round progress.
+    assert result.rounds == 8
+    # All 8 iterations were meta-only → 8 meta_round events.
+    meta_events = [e for e in result.events if e.kind == "meta_round"]
+    assert len(meta_events) == 8
+
+
+def test_mixed_meta_and_content_in_same_round_counts_as_work(tmp_path: Path) -> None:
+    """A round that emits BOTH a meta tool call AND a content tool
+    call counts as work — the content piece is real progress. The
+    exemption only fires when the round is meta-ONLY."""
+    (tmp_path / "hi.txt").write_text("contents")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+    adapter = _ScriptedAdapter(
+        replies=[
+            # Single round with both calls — mixed.
+            ModelReply(
+                content="",
+                tool_calls=(
+                    ToolCall(name="tool_search", arguments={}),
+                    ToolCall(name="read_file", arguments={"path": "hi.txt"}),
+                ),
+            ),
+            ModelReply(content="done"),
+        ]
+    )
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="do mixed work")],
+        registry,
+        max_rounds=4,
+    )
+
+    # No meta_round event — the mixed round counted as work.
+    meta_events = [e for e in result.events if e.kind == "meta_round"]
+    assert not meta_events
+    assert result.content == "done"
+
+
 # Explicit import to confirm we can pass pytest from the tests folder
 def test_tools_module_importable() -> None:
     import harness.tools  # noqa: F401 — import-for-side-effect check

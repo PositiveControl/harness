@@ -225,13 +225,19 @@ def test_subagent_hooks_catch_fabrication_in_child(tmp_path: Path) -> None:
     """Fabrication-shaped first reply without tool_calls should trip
     the bail pipeline inside the child loop. The hooks pipeline is
     shared with the parent, so the canned fallback fires after retries
-    exhaust instead of leaking the fabricated reply to the parent."""
+    exhaust instead of leaking the fabricated reply to the parent.
+
+    Note: post-harness-rlza, bail retries are bounded by
+    `_BAIL_RETRIES_PER_TURN` (3), not `max_rounds`. Adapter needs at
+    least 1 + _BAIL_RETRIES_PER_TURN fab replies so iter 3 still
+    returns fab (rather than the adapter's empty-queue default) and
+    fabrication_fallback substitutes the canned refusal."""
     parent = _registry_with(ReadFileTool(root=tmp_path))
     # Round 0: fabricated meta-confirm (trips the meta_confirm bail hook).
     # Retries keep producing the same shape, so the fabrication_fallback
     # finalize hook substitutes the canned refusal.
     fab_reply = ModelReply(content="Would you like me to proceed?")
-    adapter = _ScriptedAdapter(replies=[fab_reply, fab_reply, fab_reply])
+    adapter = _ScriptedAdapter(replies=[fab_reply] * 5)
     tool = SpawnSubagentTool(adapter=adapter, registry=parent, hooks=default_hook_pipeline())
     out = tool.call(task="do something", tools=["read_file"], max_rounds=3)
     assert "I couldn't answer that without calling a tool" in out
