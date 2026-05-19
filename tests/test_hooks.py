@@ -56,7 +56,9 @@ from harness.orchestrator.hooks import (
     UnparseableHook,
     default_hook_pipeline,
 )
-from harness.tools.base import ModelReply, ToolCall
+from harness.tools.base import ModelReply, ToolCall, ToolResult
+
+_STUB_RESULT = ToolResult(tool_name="stub", output="", success=True)
 
 # FAA citation grammar for MissingCitationHook tests — non-citation
 # characters skip the hook entirely (grammar=None).
@@ -507,18 +509,52 @@ def test_paired_meta_confirm_strip_leaves_reply_without_tool_calls_alone() -> No
 # ---------- pre-tool hook ----------
 
 
-def test_duplicate_call_hook_skips_seen_call() -> None:
+def test_duplicate_call_hook_reissues_prior_success() -> None:
+    """A cross-round duplicate of a successful call re-issues the prior
+    result with a duplicate prefix; success/error preserved."""
     call = ToolCall(name="list_dir", arguments={"path": "/workdir"})
-    # The canonical key is (name, json-sorted arguments).
-    seen = frozenset({("list_dir", '{"path": "/workdir"}')})
+    prior = ToolResult(
+        tool_name="list_dir",
+        output="entries:\n - README.md\n - src/",
+        success=True,
+    )
+    seen = {("list_dir", '{"path": "/workdir"}'): prior}
     outcome = DuplicateCallHook().check(PreToolContext(call=call, seen_calls=seen))
     assert isinstance(outcome, Skip)
-    assert "duplicate call" in outcome.result.output
+    assert outcome.result.success is True
+    assert outcome.result.error is None
+    assert "duplicate of an earlier call" in outcome.result.output
+    # Prior output preserved verbatim (just prefixed).
+    assert "entries:" in outcome.result.output
+    assert "README.md" in outcome.result.output
+
+
+def test_duplicate_call_hook_preserves_prior_failure() -> None:
+    """Duplicate of a failed call: re-issues the failure (NOT success=True).
+    See harness-v5w — feeding success=True for a duplicate of a failed
+    call made the model paraphrase 'duplicate' as 'captured/done'."""
+    call = ToolCall(name="capture", arguments={"title": "x"})
+    prior_failure = ToolResult(
+        tool_name="capture",
+        output="bd command failed: --add-label vs --labels",
+        success=False,
+        error="bd_command_failed",
+    )
+    seen = {("capture", '{"title": "x"}'): prior_failure}
+    outcome = DuplicateCallHook().check(PreToolContext(call=call, seen_calls=seen))
+    assert isinstance(outcome, Skip)
+    # Failure is preserved — the model now sees a tool message that
+    # cannot be paraphrased as success.
+    assert outcome.result.success is False
+    assert outcome.result.error == "bd_command_failed"
+    # The failure body is intact so the model can read what went wrong.
+    assert "bd command failed" in outcome.result.output
+    assert "duplicate of an earlier call" in outcome.result.output
 
 
 def test_duplicate_call_hook_passes_first_time() -> None:
     call = ToolCall(name="list_dir", arguments={"path": "/workdir"})
-    outcome = DuplicateCallHook().check(PreToolContext(call=call, seen_calls=frozenset()))
+    outcome = DuplicateCallHook().check(PreToolContext(call=call, seen_calls={}))
     assert isinstance(outcome, Continue)
 
 
@@ -532,7 +568,7 @@ def test_argument_grounding_hook_flags_unrelated_domain_in_args() -> None:
     call = ToolCall(name="search_web", arguments={"query": "dailydrop.fm", "max_results": 1})
     ctx = PreToolContext(
         call=call,
-        seen_calls=frozenset(),
+        seen_calls={},
         user_message="go to stackoverflow, fetch the first question, summarize it",
     )
     outcome = ArgumentGroundingHook().check(ctx)
@@ -548,7 +584,7 @@ def test_argument_grounding_hook_passes_when_domain_root_matches() -> None:
     call = ToolCall(name="fetch_url", arguments={"url": "https://stackoverflow.com/questions/1"})
     ctx = PreToolContext(
         call=call,
-        seen_calls=frozenset(),
+        seen_calls={},
         user_message="go to stackoverflow and fetch the first question",
     )
     outcome = ArgumentGroundingHook().check(ctx)
@@ -563,7 +599,7 @@ def test_argument_grounding_hook_passes_when_args_have_no_domain() -> None:
     call = ToolCall(name="search_web", arguments={"query": "python best practices 2026"})
     ctx = PreToolContext(
         call=call,
-        seen_calls=frozenset(),
+        seen_calls={},
         user_message="search for python tips",
     )
     outcome = ArgumentGroundingHook().check(ctx)
@@ -574,7 +610,7 @@ def test_argument_grounding_hook_passes_when_user_message_is_none() -> None:
     """No user message threaded through → no ground-truth to check
     against. The hook stays out of the way (bootstrap / subagent cases)."""
     call = ToolCall(name="search_web", arguments={"query": "example.com"})
-    ctx = PreToolContext(call=call, seen_calls=frozenset(), user_message=None)
+    ctx = PreToolContext(call=call, seen_calls={}, user_message=None)
     outcome = ArgumentGroundingHook().check(ctx)
     assert isinstance(outcome, Continue)
 
@@ -585,7 +621,7 @@ def test_argument_grounding_hook_matches_case_insensitively() -> None:
     call = ToolCall(name="fetch_url", arguments={"url": "https://GitHub.com/foo/bar"})
     ctx = PreToolContext(
         call=call,
-        seen_calls=frozenset(),
+        seen_calls={},
         user_message="Check github for the latest release",
     )
     outcome = ArgumentGroundingHook().check(ctx)
@@ -601,7 +637,7 @@ def test_argument_grounding_hook_walks_nested_args() -> None:
     )
     ctx = PreToolContext(
         call=call,
-        seen_calls=frozenset(),
+        seen_calls={},
         user_message="look for articles about gardening",
     )
     outcome = ArgumentGroundingHook().check(ctx)
@@ -619,7 +655,7 @@ def test_argument_grounding_hook_flags_all_ungrounded_roots() -> None:
     )
     ctx = PreToolContext(
         call=call,
-        seen_calls=frozenset(),
+        seen_calls={},
         user_message="find news about the election",
     )
     outcome = ArgumentGroundingHook().check(ctx)
@@ -637,7 +673,7 @@ def test_argument_grounding_hook_ignores_file_extensions() -> None:
         call = ToolCall(name="write_file", arguments={"path": path, "content": "x"})
         ctx = PreToolContext(
             call=call,
-            seen_calls=frozenset(),
+            seen_calls={},
             user_message="write something",
         )
         outcome = ArgumentGroundingHook().check(ctx)
@@ -657,7 +693,7 @@ def test_argument_grounding_hook_passes_mixed_grounded_and_prose_args() -> None:
     )
     ctx = PreToolContext(
         call=call,
-        seen_calls=frozenset(),
+        seen_calls={},
         user_message="summarize the first python question on stackoverflow",
     )
     outcome = ArgumentGroundingHook().check(ctx)
@@ -680,7 +716,7 @@ def test_fetch_url_guard_skips_speculative_call_without_user_url() -> None:
     )
     ctx = PreToolContext(
         call=call,
-        seen_calls=frozenset(),
+        seen_calls={},
         user_message="FDC 5/2809 ZMA PALM BEACH FL TFR 14 CFR 99.7 ...",
     )
     outcome = FetchUrlGuardHook().check(ctx)
@@ -702,7 +738,7 @@ def test_fetch_url_guard_allows_call_when_user_pastes_url() -> None:
     )
     ctx = PreToolContext(
         call=call,
-        seen_calls=frozenset(),
+        seen_calls={},
         user_message=("Decode this TFR for me: https://tfr.faa.gov/save_pages/detail_5_2809.html"),
     )
     outcome = FetchUrlGuardHook().check(ctx)
@@ -717,7 +753,7 @@ def test_fetch_url_guard_ignores_other_tool_names() -> None:
         call = ToolCall(name=tool_name, arguments={"x": "y"})
         ctx = PreToolContext(
             call=call,
-            seen_calls=frozenset(),
+            seen_calls={},
             user_message="no urls in this message",
         )
         outcome = FetchUrlGuardHook().check(ctx)
@@ -730,7 +766,7 @@ def test_fetch_url_guard_skips_when_user_message_missing() -> None:
     paste-only characters never have a legitimate fetch_url without a
     user-pasted URL."""
     call = ToolCall(name="fetch_url", arguments={"url": "https://example.com"})
-    ctx = PreToolContext(call=call, seen_calls=frozenset(), user_message=None)
+    ctx = PreToolContext(call=call, seen_calls={}, user_message=None)
     outcome = FetchUrlGuardHook().check(ctx)
     assert isinstance(outcome, Skip)
 
@@ -763,7 +799,7 @@ def test_assemble_context_once_skips_when_forced_call_already_ran() -> None:
     )
     ctx = PreToolContext(
         call=bad_call,
-        seen_calls=frozenset({forced_key}),
+        seen_calls={forced_key: _STUB_RESULT},
         user_message="FDC 5/2809 ZMA PALM BEACH FL TFR ...",
     )
     outcome = AssembleContextOnceHook().check(ctx)
@@ -781,7 +817,7 @@ def test_assemble_context_once_passes_on_first_call() -> None:
     call = ToolCall(name="assemble_context", arguments={"role": "airton_c_tfr"})
     ctx = PreToolContext(
         call=call,
-        seen_calls=frozenset({("search_memory", "{}")}),  # different tool ran
+        seen_calls={("search_memory", "{}"): _STUB_RESULT},  # different tool ran
         user_message="some notam text",
     )
     outcome = AssembleContextOnceHook().check(ctx)
@@ -796,7 +832,7 @@ def test_assemble_context_once_ignores_other_tool_names() -> None:
         call = ToolCall(name=tool_name, arguments={"x": "y"})
         ctx = PreToolContext(
             call=call,
-            seen_calls=frozenset({("assemble_context", "{}")}),
+            seen_calls={("assemble_context", "{}"): _STUB_RESULT},
             user_message="hi",
         )
         outcome = AssembleContextOnceHook().check(ctx)
@@ -3579,7 +3615,7 @@ def test_persist_body_citations_skips_when_body_strips_url_tokens() -> None:
     call = _persist_body_call(body)
     ctx = PreToolContext(
         call=call,
-        seen_calls=frozenset({("search_scholar", '{"query":"jepa"}')}),
+        seen_calls={("search_scholar", '{"query":"jepa"}'): _STUB_RESULT},
         user_message="research JEPA",
     )
     outcome = PersistBodyCitationsHook().check(ctx)
@@ -3603,7 +3639,7 @@ def test_persist_body_citations_allows_when_body_has_url_tokens() -> None:
     call = _persist_body_call(body)
     ctx = PreToolContext(
         call=call,
-        seen_calls=frozenset({("search_scholar", '{"query":"jepa"}')}),
+        seen_calls={("search_scholar", '{"query":"jepa"}'): _STUB_RESULT},
         user_message="research JEPA",
     )
     outcome = PersistBodyCitationsHook().check(ctx)
@@ -3618,12 +3654,12 @@ def test_persist_body_citations_allows_single_token_path_to_post_research() -> N
     body_two_urls = "Captured: 2026-05-15 — Two papers: [arxiv:1] (A) and [doi:2] (B)."
     ctx_one = PreToolContext(
         call=_persist_body_call(body_one_url),
-        seen_calls=frozenset({("search_scholar", "{}")}),
+        seen_calls={("search_scholar", "{}"): _STUB_RESULT},
         user_message="x",
     )
     ctx_two = PreToolContext(
         call=_persist_body_call(body_two_urls),
-        seen_calls=frozenset({("search_scholar", "{}")}),
+        seen_calls={("search_scholar", "{}"): _STUB_RESULT},
         user_message="x",
     )
     assert isinstance(PersistBodyCitationsHook().check(ctx_one), Skip)
@@ -3638,7 +3674,7 @@ def test_persist_body_citations_silent_when_no_search_scholar_in_turn() -> None:
     call = _persist_body_call(body)
     ctx = PreToolContext(
         call=call,
-        seen_calls=frozenset({("assemble_context", '{"role":"airton_f"}')}),
+        seen_calls={("assemble_context", '{"role":"airton_f"}'): _STUB_RESULT},
         user_message="remember that I prefer MLX",
     )
     outcome = PersistBodyCitationsHook().check(ctx)
@@ -3652,7 +3688,7 @@ def test_persist_body_citations_ignores_other_tool_names() -> None:
         call = ToolCall(name=tool_name, arguments={"x": "y"})
         ctx = PreToolContext(
             call=call,
-            seen_calls=frozenset({("search_scholar", "{}")}),
+            seen_calls={("search_scholar", "{}"): _STUB_RESULT},
             user_message="x",
         )
         outcome = PersistBodyCitationsHook().check(ctx)
@@ -3666,7 +3702,7 @@ def test_persist_body_citations_handles_non_string_body() -> None:
     call = ToolCall(name="remember_event", arguments={"body": 12345})
     ctx = PreToolContext(
         call=call,
-        seen_calls=frozenset({("search_scholar", "{}")}),
+        seen_calls={("search_scholar", "{}"): _STUB_RESULT},
         user_message="x",
     )
     outcome = PersistBodyCitationsHook().check(ctx)

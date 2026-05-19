@@ -8,6 +8,7 @@ bd stores keyed by insight / query.
 from __future__ import annotations
 
 import json
+import warnings
 
 from harness.store._bd_runner import BeadsAdapterError, BeadsRunner
 
@@ -50,11 +51,19 @@ class BeadsMemoryMixin(BeadsRunner):
             )
         out: dict[str, str] = {}
         for key, value in parsed.items():
-            if not isinstance(key, str) or not isinstance(value, str):
-                raise BeadsAdapterError(
-                    f"bd memories --json entry has non-string key/value: "
-                    f"{type(key).__name__}={type(value).__name__}"
+            if not isinstance(key, str):
+                warnings.warn(
+                    f"bd memories --json entry has non-string key "
+                    f"({type(key).__name__}); skipping.",
+                    RuntimeWarning,
+                    stacklevel=2,
                 )
+                continue
+            if not isinstance(value, str):
+                # Metadata sidecar keys (schema_version: int, future
+                # last_modified/source_version) ride alongside the
+                # memory dict. Skip them so the harvest survives.
+                continue
             out[key] = value
         return out
 

@@ -333,7 +333,7 @@ def _router_prelude(
     registry: ToolRegistry,
     confirm: ConfirmFn | None,
     emit: Callable[[ToolLoopEvent], None],
-    seen_calls: set[tuple[str, str]],
+    seen_calls: dict[tuple[str, str], ToolResult],
     hooks: HookPipeline,
     user_message: str | None,
     succeeded_tools: set[str],
@@ -395,7 +395,7 @@ def _router_prelude(
     pre_outcome = hooks.run_pre_tool(
         PreToolContext(
             call=call,
-            seen_calls=frozenset(seen_calls),
+            seen_calls=dict(seen_calls),
             user_message=user_message,
         ),
         disabled=_disabled_snapshot(),
@@ -419,7 +419,7 @@ def _router_prelude(
         kind = "tool_call_end" if result.success else "tool_call_failed"
         emit(ToolLoopEvent(kind=kind, call=call, result=result, round_index=0))
 
-    seen_calls.add(_call_key(call))
+    seen_calls[_call_key(call)] = result
     working.append(ChatMessage(role="assistant", content="", tool_calls=(call,)))
     working.append(ChatMessage(role="tool", content=result.output, name=call.name))
     if result.success:
@@ -435,7 +435,7 @@ def _forced_assemble_context_prelude(
     working: list[ChatMessage],
     registry: ToolRegistry,
     emit: Callable[[ToolLoopEvent], None],
-    seen_calls: set[tuple[str, str]],
+    seen_calls: dict[tuple[str, str], ToolResult],
     user_message: str | None,
     succeeded_tools: set[str],
     role: str,
@@ -477,7 +477,7 @@ def _forced_assemble_context_prelude(
     result = registry.call(call.name, call.arguments)
     kind = "tool_call_end" if result.success else "tool_call_failed"
     emit(ToolLoopEvent(kind=kind, call=call, result=result, round_index=0))
-    seen_calls.add(_call_key(call))
+    seen_calls[_call_key(call)] = result
     working.append(ChatMessage(role="assistant", content="", tool_calls=(call,)))
     working.append(ChatMessage(role="tool", content=result.output, name=call.name))
     succeeded_tools.add(_FORCED_ASSEMBLE_CONTEXT)
@@ -488,7 +488,7 @@ def _forced_search_memory_prelude(
     working: list[ChatMessage],
     registry: ToolRegistry,
     emit: Callable[[ToolLoopEvent], None],
-    seen_calls: set[tuple[str, str]],
+    seen_calls: dict[tuple[str, str], ToolResult],
     user_message: str | None,
     succeeded_tools: set[str],
 ) -> bool:
@@ -534,7 +534,7 @@ def _forced_search_memory_prelude(
     result = registry.call(call.name, call.arguments)
     kind = "tool_call_end" if result.success else "tool_call_failed"
     emit(ToolLoopEvent(kind=kind, call=call, result=result, round_index=0))
-    seen_calls.add(_call_key(call))
+    seen_calls[_call_key(call)] = result
     working.append(ChatMessage(role="assistant", content="", tool_calls=(call,)))
     working.append(ChatMessage(role="tool", content=result.output, name=call.name))
     # Always register the forced call as a grounding signal, even if the
@@ -654,7 +654,7 @@ def _execute_tool_calls(
     calls: Iterable[ToolCall],
     registry: ToolRegistry,
     working: list[ChatMessage],
-    seen_calls: set[tuple[str, str]],
+    seen_calls: dict[tuple[str, str], ToolResult],
     *,
     confirm: ConfirmFn | None,
     emit: Callable[[ToolLoopEvent], None],
@@ -663,30 +663,65 @@ def _execute_tool_calls(
     user_message: str | None,
     succeeded_tools: set[str],
 ) -> bool:
-    """Execute the round's tool calls: duplicate-call hook, write-tier
-    confirm, dispatch, append tool-role messages. Returns True if any
-    call returned success=True (used to gate fabrication catchers on
-    later rounds). Mutates `succeeded_tools` with the names of tools
-    whose calls succeeded — lets narrow gates (e.g. fabricated_search
-    only disarming on web-fetch tools) inspect which specific tools
-    ran this turn."""
+    """Execute the round's tool calls: in-round dedup, duplicate-call
+    hook (cross-round), write-tier confirm, dispatch, append tool-role
+    messages. Returns True if any call returned success=True (used to
+    gate fabrication catchers on later rounds). Mutates `succeeded_tools`
+    with the names of tools whose calls succeeded — lets narrow gates
+    (e.g. fabricated_search only disarming on web-fetch tools) inspect
+    which specific tools ran this turn.
+
+    In-round dedup (harness-69f2): when a single model reply emits the
+    same (name, args) twice, run it once. The dropped duplicates never
+    reach DuplicateCallHook, so the model doesn't see a confusing
+    'duplicate call rejected' nudge on its first visible attempt. A
+    `tool_call_deduped` event fires for telemetry but no tool-role
+    message is appended for the dropped twin.
+
+    Cross-round dedup stays — the hook fires on a real prior call and
+    re-issues that prior result preserving success/error (harness-v5w),
+    not a fixed success=True nudge."""
     from harness.orchestrator.hooks import _call_key
 
-    any_success = False
+    # In-round dedup: keep the first call of each duplicate set.
+    # Iterating once is fine — typical tool-call batches are short.
+    deduped: list[ToolCall] = []
+    in_round_keys: set[tuple[str, str]] = set()
     for call in calls:
+        key = _call_key(call)
+        if key in in_round_keys:
+            emit(
+                ToolLoopEvent(
+                    kind="tool_call_deduped",
+                    call=call,
+                    result=ToolResult(
+                        tool_name=call.name,
+                        output="(in-round duplicate — collapsed silently)",
+                        success=True,
+                    ),
+                    round_index=round_idx,
+                )
+            )
+            continue
+        in_round_keys.add(key)
+        deduped.append(call)
+
+    any_success = False
+    for call in deduped:
         key = _call_key(call)
         pre_outcome = hooks.run_pre_tool(
             PreToolContext(
                 call=call,
-                seen_calls=frozenset(seen_calls),
+                seen_calls=dict(seen_calls),
                 user_message=user_message,
             ),
             disabled=_disabled_snapshot(),
         )
         if isinstance(pre_outcome, Skip):
-            # Duplicate of an earlier call this turn — skip execution.
-            # Feed the nudge back as the tool-role message so the next
-            # round sees 'finalize, don't re-call'.
+            # Cross-round duplicate (or grounding rejection). For
+            # duplicate_call this carries the prior ToolResult re-issued
+            # with a prefix; for other Skip-emitting hooks (grounding)
+            # it carries the hook's own ToolResult.
             result = pre_outcome.result
             emit(
                 ToolLoopEvent(
@@ -730,7 +765,7 @@ def _execute_tool_calls(
             if isinstance(post_outcome, ReplaceResult):
                 result = post_outcome.result
 
-        seen_calls.add(key)
+        seen_calls[key] = result
         if result.success:
             any_success = True
             succeeded_tools.add(call.name)
@@ -842,8 +877,11 @@ def run_tool_loop(
     # Duplicate-call guard. Small models sometimes wrap a real answer
     # around a redundant re-call ("here's the summary" + same list_dir
     # with same args as a prior round). Tracking (name, args-json) per
-    # turn lets us skip execution on repeats (harness-pun).
-    seen_calls: set[tuple[str, str]] = set()
+    # turn lets us skip execution on repeats (harness-pun). The value
+    # is the ToolResult the first call produced — DuplicateCallHook
+    # re-issues it on duplicates so a prior failure can't get
+    # paraphrased as success (harness-v5w).
+    seen_calls: dict[tuple[str, str], ToolResult] = {}
 
     def emit(event: ToolLoopEvent) -> None:
         events.append(event)

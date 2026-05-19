@@ -235,8 +235,9 @@
 
 - id: duplicate_call_short_circuit
   label: duplicate_call
-  description: Model re-emits the same (name, args) tool call — orchestrator
-    dedups and feeds back the 'stop re-calling' nudge.
+  description: Model re-emits the same (name, args) tool call across rounds —
+    orchestrator re-issues the prior result with a duplicate prefix
+    (harness-v5w) so success/error stays consistent.
   registry:
     - name: echo
       output: "echo-output"
@@ -252,7 +253,7 @@
     - content: "done"
   expected_contains: ["done"]
   expected_events_contain: [tool_call_deduped]
-  expected_messages_contain: ["duplicate call"]
+  expected_messages_contain: ["duplicate of an earlier call"]
 
 - id: paired_meta_confirm_strip
   label: paired_meta_confirm_strip

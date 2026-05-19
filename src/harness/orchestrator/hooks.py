@@ -27,7 +27,7 @@ method — toggle a name, watch which scenarios it uniquely saves.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol
@@ -46,6 +46,15 @@ DUPLICATE_CALL_NUDGE = (
     "the user using the data you already have, or (b) tell the user plainly "
     "what you could not find. Emitting another tool call here will be rejected "
     "again and waste the round.]"
+)
+
+
+# Prefix the prior tool result with this annotation when re-issuing on a
+# duplicate. Preserves the original success/error/output so the model
+# can't paraphrase a prior failure as success (harness-v5w).
+_DUPLICATE_CALL_PREFIX = (
+    "[duplicate of an earlier call this turn — re-issuing the prior "
+    "result; do NOT emit this call again]\n\n"
 )
 
 
@@ -505,10 +514,17 @@ class PreToolContext:
     of the most recent user-role turn in the loop's working thread — the
     grounding hook uses it to verify that entity-specific arguments
     (URLs, domains) trace back to something the user actually named. Nil
-    when no user turn exists yet (system-only bootstrap)."""
+    when no user turn exists yet (system-only bootstrap).
+
+    `seen_calls` maps each (name, args-json) key the loop has executed
+    this turn to the ToolResult it produced. DuplicateCallHook uses the
+    stored result to re-issue prior outcomes preserving success/error
+    (harness-v5w) — feeding back a generic success=True nudge made the
+    model hallucinate success after a failed retry. Other hooks that
+    only care about which tools ran iterate the keys."""
 
     call: ToolCall
-    seen_calls: frozenset[tuple[str, str]]
+    seen_calls: Mapping[tuple[str, str], ToolResult]
     user_message: str | None = None
 
 
@@ -1922,20 +1938,28 @@ class PairedMetaConfirmStripHook:
 class DuplicateCallHook:
     """Short-circuit an identical (name, arguments) re-invocation this
     turn. Small models sometimes wrap a real answer around a redundant
-    re-call; feeding the canned nudge back as the tool-role message lets
-    the next round close out (harness-pun)."""
+    re-call; re-issuing the prior result as the tool-role message lets
+    the next round close out (harness-pun) without re-running the tool.
+
+    Re-issues the EXACT prior ToolResult (output + success + error),
+    prefixed with a duplicate annotation. If the prior call failed, the
+    duplicate is also marked as failed — feeding back success=True for
+    a duplicate of a failed call made the model hallucinate success
+    (harness-v5w)."""
 
     name: str = "duplicate_call"
 
     def check(self, ctx: PreToolContext) -> PreToolOutcome:
         key = _call_key(ctx.call)
-        if key not in ctx.seen_calls:
+        prior = ctx.seen_calls.get(key)
+        if prior is None:
             return Continue()
         return Skip(
             ToolResult(
                 tool_name=ctx.call.name,
-                output=DUPLICATE_CALL_NUDGE,
-                success=True,
+                output=_DUPLICATE_CALL_PREFIX + prior.output,
+                success=prior.success,
+                error=prior.error,
             )
         )
 

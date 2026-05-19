@@ -16,6 +16,7 @@ from harness.tools import (
     StreamText,
     ToolCall,
     ToolRegistry,
+    ToolResult,
     ToolSpec,
 )
 
@@ -345,11 +346,14 @@ def test_loop_dedupes_identical_call_across_rounds(tmp_path: Path) -> None:
     assert kinds.count("tool_call_start") == 1
     assert kinds.count("tool_call_end") == 1
     assert kinds.count("tool_call_deduped") == 1
-    # The nudge message is appended as a tool-role turn so the next
-    # round's model context includes 'stop, finalize'.
+    # The duplicate's tool-role turn re-issues the prior result
+    # (harness-v5w), prefixed with the 'duplicate' annotation so the
+    # next round knows not to retry.
     tool_msgs = [m for m in result.messages if m.role == "tool"]
     assert len(tool_msgs) == 2
-    assert "duplicate call" in tool_msgs[1].content
+    assert "duplicate of an earlier call" in tool_msgs[1].content
+    # Prior output preserved verbatim after the prefix.
+    assert tool_msgs[1].content.endswith(tool_msgs[0].content)
     assert result.content == "final answer"
 
 
@@ -402,6 +406,105 @@ def test_loop_dedupes_identical_call_in_same_round(tmp_path: Path) -> None:
     kinds = [e.kind for e in observed]
     assert kinds.count("tool_call_start") == 1
     assert kinds.count("tool_call_deduped") == 1
+
+
+def test_in_round_dedup_does_not_emit_nudge_in_tool_thread(tmp_path: Path) -> None:
+    """harness-69f2: when a single model reply emits the same call
+    twice, the FIRST execution must succeed cleanly — no
+    'duplicate call' nudge in the tool-role thread. Previously the
+    in-round duplicate hit DuplicateCallHook and the model saw its
+    first attempt rejected, which it then paraphrased as 'I couldn't
+    fetch that.'"""
+    (tmp_path / "a.txt").write_text("hello")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(
+                    ToolCall(name="read_file", arguments={"path": "a.txt"}),
+                    ToolCall(name="read_file", arguments={"path": "a.txt"}),
+                ),
+            ),
+            ModelReply(content="done"),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read")],
+        registry,
+    )
+    tool_msgs = [m for m in result.messages if m.role == "tool"]
+    # Exactly ONE tool-role message — the in-round duplicate is silent.
+    assert len(tool_msgs) == 1
+    # The model sees the real file content, not a duplicate-nudge.
+    assert "hello" in tool_msgs[0].content
+    assert "duplicate" not in tool_msgs[0].content.lower()
+
+
+def test_cross_round_duplicate_of_failed_call_reissues_failure() -> None:
+    """harness-v5w: a duplicate of a FAILED call must re-issue the
+    failure, not a fixed success=True nudge. Previously the model saw
+    the duplicate flagged success=True and hallucinated 'captured/done'
+    on top of a real bd failure."""
+    registry = ToolRegistry()
+
+    @dataclass
+    class _FailingTool:
+        @property
+        def spec(self) -> ToolSpec:
+            return ToolSpec(
+                name="capture",
+                description="capture a thing",
+                tier="read",
+                parameters={
+                    "type": "object",
+                    "properties": {"title": {"type": "string"}},
+                    "required": ["title"],
+                },
+            )
+
+        def call(self, *, title: str) -> ToolResult:
+            del title
+            return ToolResult(
+                tool_name="capture",
+                output="bd command failed: invalid flag --add-label",
+                success=False,
+                error="bd_command_failed",
+            )
+
+    registry.register(_FailingTool())
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="capture", arguments={"title": "x"}),),
+            ),
+            # Round 2: model retries with identical args after seeing the failure.
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="capture", arguments={"title": "x"}),),
+            ),
+            ModelReply(content="I couldn't capture that — bd failed."),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="capture x")],
+        registry,
+    )
+    tool_msgs = [m for m in result.messages if m.role == "tool"]
+    assert len(tool_msgs) == 2
+    # First tool message: the real failure.
+    assert "bd command failed" in tool_msgs[0].content
+    # Second tool message: duplicate annotation + the SAME failure body.
+    # Crucially, the model can't paraphrase this as 'captured' because
+    # it can read 'bd command failed' in the duplicate's body.
+    assert "duplicate of an earlier call" in tool_msgs[1].content
+    assert "bd command failed" in tool_msgs[1].content
 
 
 def test_loop_does_not_dedupe_different_args(tmp_path: Path) -> None:

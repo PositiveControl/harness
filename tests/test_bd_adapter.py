@@ -712,11 +712,31 @@ def test_memories_json_raises_on_non_dict_payload(bd_dir: Path, runner: FakeRunn
         adapter.memories_json()
 
 
-def test_memories_json_raises_on_non_string_value(bd_dir: Path, runner: FakeRunner) -> None:
-    runner.queue(FakeCompletedProcess(stdout='{"some-key": 42}'))
+def test_memories_json_skips_non_string_value_as_metadata(bd_dir: Path, runner: FakeRunner) -> None:
+    """bd ships metadata sidecar keys (schema_version: int) alongside
+    string-bodied memories. The harvester must skip them and keep
+    going, not abort. See harness-fl4z."""
+    payload = '{"mark-fact": "Mark is the creator.", "schema_version": 1}'
+    runner.queue(FakeCompletedProcess(stdout=payload))
     adapter = BeadsAdapter(bd_dir)
-    with pytest.raises(BeadsAdapterError, match="non-string"):
-        adapter.memories_json()
+    out = adapter.memories_json()
+    assert out == {"mark-fact": "Mark is the creator."}
+
+
+def test_memories_json_handles_current_bd_shape(bd_dir: Path, runner: FakeRunner) -> None:
+    """Pin the actual bd v1 shape: N string-bodied memories +
+    schema_version: int. All memories surface; schema_version is
+    dropped without error. See harness-fl4z."""
+    payload = {
+        "mark-fact-1": "Mark is the creator.",
+        "mark-fact-2": "Mark hates hallucinations.",
+        "schema_version": 1,
+    }
+    runner.queue(FakeCompletedProcess(stdout=json.dumps(payload)))
+    adapter = BeadsAdapter(bd_dir)
+    out = adapter.memories_json()
+    assert set(out.keys()) == {"mark-fact-1", "mark-fact-2"}
+    assert "schema_version" not in out
 
 
 def test_label_add_command_shape(bd_dir: Path, runner: FakeRunner) -> None:
