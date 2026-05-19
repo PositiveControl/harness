@@ -62,6 +62,7 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "search_facts",
         "search_web",
         "fetch_url",
+        "geography",
         "spawn_subagent",
         "tool_search",
         "load_tool",

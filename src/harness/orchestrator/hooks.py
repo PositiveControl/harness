@@ -2440,7 +2440,7 @@ def _find_top_claim_country(reply: str) -> str | None:
     non-country subjects ('the source', 'the report') avoids the
     false-positive shape where the reply talks about the data
     provider rather than the answer."""
-    from harness.orchestrator._geography import REGION_COUNTRIES
+    from harness.geography import REGION_COUNTRIES
 
     all_countries: set[str] = set()
     for members in REGION_COUNTRIES.values():
@@ -2514,7 +2514,7 @@ class ScopeViolationHook:
         region = _find_region_in_user_message(ctx.user_message)
         if region is None:
             return Continue()
-        from harness.orchestrator._geography import countries_in_region
+        from harness.geography import countries_in_region
 
         members = countries_in_region(region)
         if not members:

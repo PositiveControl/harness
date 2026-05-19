@@ -436,6 +436,16 @@ BUILTIN_TOOL_METADATA: dict[str, tuple[str, tuple[str, ...], str, str]] = {
         "Search academic papers across Semantic Scholar and OpenAlex.",
         "read",
     ),
+    "geography": (
+        "research",
+        ("read", "geography", "lookup", "verify", "country", "region", "continent"),
+        (
+            "Country/region lookup over a static gazetteer. Verify a "
+            "country's region BEFORE answering 'top X in region Y' "
+            "questions, or list the countries in a named region."
+        ),
+        "read",
+    ),
     # self / meta
     "introspect": (
         "meta",

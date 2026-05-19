@@ -3351,7 +3351,7 @@ def test_scope_violation_fires_on_asian_country_for_african_question() -> None:
 def test_geography_module_has_expected_membership() -> None:
     """Smoke test the gazetteer itself: known-good memberships for
     the failure modes the catcher targets."""
-    from harness.orchestrator._geography import (
+    from harness.geography import (
         REGION_COUNTRIES,
         countries_in_region,
         in_region,

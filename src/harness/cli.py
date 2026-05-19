@@ -61,6 +61,7 @@ from harness.tools import (
     DateMathTool,
     EditFileTool,
     FetchUrlTool,
+    GeographyTool,
     GitDiffTool,
     GitLogTool,
     GitStatusTool,
@@ -1631,6 +1632,11 @@ def _build_tool_registry_for_tui(
         # APIs are hardcoded endpoints, not user-configurable hosts.
         # The character profile decides whether to include it.
         "search_scholar": lambda: SearchScholarTool(),
+        # geography: deterministic country/region lookup over the
+        # built-in gazetteer (harness-e83u). No constructor args — the
+        # data is static and offline. Pairs with the ScopeViolationHook
+        # so the model can verify scope proactively.
+        "geography": lambda: GeographyTool(),
         # search_web reuses fetch_url's allowlist to rerank results so
         # allowlisted hosts surface first with `[allowlisted]` markers;
         # external hits stay visible. Keeps the agent's view of the
@@ -3597,6 +3603,7 @@ def _resolve_router_tool_specs(tool_names: Sequence[str], workspace: Path) -> li
         "grep": lambda: GrepTool(root=workspace),
         "glob": lambda: GlobTool(root=workspace),
         "search_web": lambda: SearchWebTool(),
+        "geography": lambda: GeographyTool(),
         "git_status": lambda: GitStatusTool(root=workspace),
         "git_diff": lambda: GitDiffTool(root=workspace),
         "git_log": lambda: GitLogTool(root=workspace),

@@ -50,15 +50,19 @@ SOUTH_AMERICA: frozenset[str] = frozenset(
 )
 
 
-# UN M49 "Northern America" — the US + Canada + their immediate
-# neighbours. Excludes Mexico (lives in Central America / Latin
-# America by UN M49). Common usage often groups Mexico with North
-# America too; harness-lyyr stays with UN M49 for determinism.
+# "North America" — UN M49 'Northern America' (US/Canada/etc.) PLUS
+# Mexico, which UN M49 puts in Central America (subregion 013) but
+# colloquial English commonly groups with North America. Including
+# Mexico in BOTH NA and CA avoids over-firing the scope catcher on
+# the colloquial 'top North American avocado exporter is Mexico'
+# answer while still catching the strict-error case (Mexico for
+# South America).
 NORTH_AMERICA: frozenset[str] = frozenset(
     {
         "Bermuda",
         "Canada",
         "Greenland",
+        "Mexico",
         "Saint Pierre and Miquelon",
         "United States",
         "United States of America",
@@ -70,6 +74,7 @@ NORTH_AMERICA: frozenset[str] = frozenset(
 )
 
 
+# Central America — UN M49 subregion 013, which DOES include Mexico.
 CENTRAL_AMERICA: frozenset[str] = frozenset(
     {
         "Belize",
@@ -77,6 +82,7 @@ CENTRAL_AMERICA: frozenset[str] = frozenset(
         "El Salvador",
         "Guatemala",
         "Honduras",
+        "Mexico",
         "Nicaragua",
         "Panama",
     }

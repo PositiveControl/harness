@@ -29,6 +29,7 @@ from harness.tools.catalog import (
 from harness.tools.date_math import DateMathTool
 from harness.tools.edit_file import EditFileTool
 from harness.tools.fetch_url import FetchUrlTool
+from harness.tools.geography import GeographyTool
 from harness.tools.git import GitDiffTool, GitLogTool, GitStatusTool
 from harness.tools.glob import GlobTool
 from harness.tools.grep import GrepTool
@@ -74,6 +75,7 @@ __all__ = [
     "DateMathTool",
     "EditFileTool",
     "FetchUrlTool",
+    "GeographyTool",
     "GitDiffTool",
     "GitLogTool",
     "GitStatusTool",
