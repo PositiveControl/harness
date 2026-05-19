@@ -196,10 +196,33 @@ FABRICATED_SEARCH_RE = re.compile(
 _APOS_CLASS = "['’]"  # noqa: RUF001 — straight + curly apostrophe in a char class
 FABRICATED_WEB_CLAIM_RE = re.compile(
     rf"(?:"
+    # Active-voice: "I searched the web", "I've searched online", "I just
+    # searched the internet".
     rf"\bi(?:{_APOS_CLASS}ve|\s+have|\s+just)?\s+searched\s+"
     rf"(?:the\s+(?:web|internet)|online)"
     rf"|"
+    # Subordinate-clause: "after searching the web", "upon searching online".
     rf"\b(?:after|upon)\s+searching\s+(?:the\s+(?:web|internet)|online)"
+    rf"|"
+    # Passive-voice attribution (harness-bylm): "this information is from
+    # a web search", "based on a web search", "according to (search
+    # results|the web search)", "from my web search", "per a recent web
+    # search". The model claims a web search happened without naming
+    # itself as the actor. Same signal — only an actual web tool run
+    # legitimizes the claim. Modifier sequence is zero-or-more so
+    # 'based on a recent web search' / 'from my recent web search'
+    # both land.
+    rf"\b(?:from|based\s+on|according\s+to|per)\s+"
+    rf"(?:(?:a|the|my|recent|new)\s+)*"
+    rf"(?:web\s+search(?:\s+results?)?|search\s+results?|"
+    rf"online\s+search|web\s+sources?)"
+    rf"|"
+    # Reporting-verb attribution: "the/my web search indicates / showed
+    # / returned / tells / reveals / says". Same fabrication shape, the
+    # model is treating an imagined search as the source.
+    rf"\b(?:the|my|a)\s+(?:recent\s+)?web\s+search\s+"
+    rf"(?:indicates|showed|returned|tells|reveals|says|reports|confirms|"
+    rf"suggests)"
     rf")",
     re.IGNORECASE,
 )

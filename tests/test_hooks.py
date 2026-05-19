@@ -203,6 +203,96 @@ def test_fabricated_search_hook_skipped_on_web_claim_after_real_fetch_url() -> N
     assert isinstance(FabricatedSearchHook().check(ctx), Continue)
 
 
+# ---------- passive-voice web-claim coverage (harness-bylm) ----------
+
+
+def test_fabricated_search_hook_fires_on_passive_attribution_no_tool() -> None:
+    """Session repro 2026-05-19 (avocado query, 2nd session): model
+    emitted 'This information is from a web search' on round 2 — before
+    any web tool had run (only tool_search, a meta-tool, executed).
+    The original active-voice-only regex missed it. Passive-voice /
+    attribution forms must trip the catcher just like active-voice
+    'I searched the web' does."""
+    ctx = BailContext(
+        reply=_reply(
+            "I found that the top South American avocado exporter is Chile. "
+            "This information is from a web search."
+        ),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"tool_search"}),  # meta-only — _content_tools_ran=False
+    )
+    assert isinstance(FabricatedSearchHook().check(ctx), Nudge)
+
+
+def test_fabricated_search_hook_fires_on_based_on_web_search() -> None:
+    """'Based on a web search ...' — preposition-led attribution, same
+    fabrication shape. Must fire when no web tool ran."""
+    ctx = BailContext(
+        reply=_reply("Based on a recent web search, the answer is Chile."),
+        tools_ran_this_turn=False,
+    )
+    assert isinstance(FabricatedSearchHook().check(ctx), Nudge)
+
+
+def test_fabricated_search_hook_fires_on_according_to_search_results() -> None:
+    """'According to search results' — another attribution form claiming
+    a search happened. Must fire when no web tool ran."""
+    ctx = BailContext(
+        reply=_reply("According to search results, Chile is the top exporter."),
+        tools_ran_this_turn=False,
+    )
+    assert isinstance(FabricatedSearchHook().check(ctx), Nudge)
+
+
+def test_fabricated_search_hook_fires_on_the_web_search_indicates() -> None:
+    """Reporting-verb attribution: 'the web search indicates/showed/
+    returned/tells/reveals/says'. Same fabrication shape — model
+    treating an imagined search as the source."""
+    for verb in ("indicates", "showed", "returned", "reveals", "says"):
+        ctx = BailContext(
+            reply=_reply(f"The web search {verb} that Chile is the top exporter."),
+            tools_ran_this_turn=False,
+        )
+        assert isinstance(FabricatedSearchHook().check(ctx), Nudge), (
+            f"web-search {verb!r} attribution should fire when no web tool ran"
+        )
+
+
+def test_fabricated_search_hook_silent_on_passive_attribution_after_web_tool() -> None:
+    """The same passive attribution AFTER a real web tool ran is
+    legitimate wrap-up narration — the catcher must NOT fire."""
+    for phrase in (
+        "This information is from a web search.",
+        "Based on a web search, the answer is Chile.",
+        "According to search results, Chile leads.",
+        "The web search indicates Chile is top.",
+    ):
+        ctx = BailContext(
+            reply=_reply(phrase),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"search_web"}),
+        )
+        assert isinstance(FabricatedSearchHook().check(ctx), Continue), (
+            f"phrase {phrase!r} should be silent after real search_web"
+        )
+
+
+def test_fabricated_search_hook_silent_on_unrelated_uses_of_from() -> None:
+    """The 'from' alternative must not over-fire on benign phrases that
+    happen to start with 'from' — only the specific 'from <a/the/my>
+    web-search-flavored noun phrase' shape qualifies."""
+    benign_phrases = [
+        "From the data you provided, the answer is X.",
+        "From my reading of the article, Chile is third.",
+        "I learned this from the article you shared.",
+    ]
+    for phrase in benign_phrases:
+        ctx = BailContext(reply=_reply(phrase), tools_ran_this_turn=False)
+        assert isinstance(FabricatedSearchHook().check(ctx), Continue), (
+            f"benign phrase {phrase!r} must not trip the web-claim branch"
+        )
+
+
 def test_fabricated_search_hook_skipped_on_result_list_after_any_tool() -> None:
     """Legacy gate preserved: the result-list patterns ('here are the
     results', placeholder URLs) are disarmed by ANY tool running, not
