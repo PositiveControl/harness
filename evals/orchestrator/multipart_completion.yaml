@@ -120,6 +120,43 @@
   expected_contains: ["5,545,000", "50.5", "49.5"]
   expected_events_not_contain: [bail_retry]
 
+# ---------- positive: wrap-up round saves a terminal tool-call exit ----------
+
+- id: wrap_up_synthesizes_on_terminal_tool_call
+  label: control
+  description: |
+    Companion fixture for harness-0gss. With max_rounds=1, the work
+    budget is spent the moment the model emits a tool call — without
+    the wrap-up, the user would see the previous round's interim text
+    ('') as the final reply. With the wrap-up, the orchestrator runs
+    one more synthesis-only model call (no new tools allowed) so the
+    user gets a coherent answer derived from the data already
+    gathered. Asserts both the wrap_up_forced event and that the
+    final reply carries the data the model couldn't otherwise emit.
+  registry:
+    - name: search_web
+      output: |
+        Nairobi, Kenya — population approximately 5,545,000 as of 2026
+        per KNBS projections.
+  messages:
+    - role: user
+      content: "Find the population of Nairobi."
+  max_rounds: 1
+  scripted_replies:
+    # Round 0 (only allowed work round) — model emits tool call.
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments:
+            query: "Nairobi Kenya population"
+    # Wrap-up — forced after the work budget hits. Synthesizes from
+    # the tool body that landed in round 0.
+    - content: |
+        Nairobi's population is approximately 5,545,000 as of 2026
+        per KNBS projections.
+  expected_contains: ["5,545,000", "Nairobi"]
+  expected_events_contain: [wrap_up_forced]
+
 # ---------- control: single-part refusal, no fire ----------
 
 - id: multipart_single_part_giveup_no_fire

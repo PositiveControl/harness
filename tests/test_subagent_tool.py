@@ -202,17 +202,23 @@ def test_subagent_max_depth_exceeded_returns_error(tmp_path: Path) -> None:
 
 def test_subagent_budget_exhaustion_reports_cleanly(tmp_path: Path) -> None:
     """Child that keeps re-calling tools without a final reply until
-    max_rounds runs out returns the exhaustion marker, not empty."""
+    max_rounds runs out returns the exhaustion marker, not empty.
+
+    Post-harness-0gss: with the wrap-up round, the orchestrator runs
+    ONE more model call after the work budget hits. If that wrap-up
+    also tool-call-only (model still won't synthesize), the
+    orchestrator strips its tool call, content stays empty, and the
+    canned exhaustion path fires — exactly what the subagent wraps.
+    Test now provides a third looping_reply so the wrap-up gets a
+    tool-call-only reply rather than the adapter's empty-queue
+    default."""
     (tmp_path / "a.txt").write_text("A\n")
     parent = _registry_with(ReadFileTool(root=tmp_path))
-    # Every round emits a tool call — the loop never exits via a
-    # final text reply — so we hit max_rounds=2 and exit via the
-    # "loop exhausted" branch with empty content.
     looping_reply = ModelReply(
         content="",
         tool_calls=(ToolCall(name="read_file", arguments={"path": "a.txt"}),),
     )
-    adapter = _ScriptedAdapter(replies=[looping_reply, looping_reply])
+    adapter = _ScriptedAdapter(replies=[looping_reply] * 3)
     tool = SpawnSubagentTool(adapter=adapter, registry=parent, hooks=default_hook_pipeline())
     out = tool.call(task="read endlessly", tools=["read_file"], max_rounds=2)
     assert "budget exhausted" in out or "loop returned empty content" in out

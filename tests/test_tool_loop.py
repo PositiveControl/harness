@@ -3128,6 +3128,178 @@ def test_mixed_meta_and_content_in_same_round_counts_as_work(tmp_path: Path) -> 
     assert result.content == "done"
 
 
+# ---------- wrap-up round (harness-0gss) ----------
+
+
+def test_wrap_up_runs_when_last_round_emits_tool_call(tmp_path: Path) -> None:
+    """Loop terminates on a round that emitted a tool call; without
+    the wrap-up the previous round's interim text would be the user-
+    visible 'final' reply. With the wrap-up, one more synthesis-only
+    model call runs and that reply is returned."""
+    (tmp_path / "hi.txt").write_text("contents")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    last_round_tool_call = ModelReply(
+        content="",
+        tool_calls=(ToolCall(name="read_file", arguments={"path": "hi.txt"}),),
+    )
+    wrap_up_reply = ModelReply(
+        content="Done — found contents in hi.txt.",
+    )
+    adapter = _ScriptedAdapter(replies=[last_round_tool_call, wrap_up_reply])
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read hi.txt")],
+        registry,
+        max_rounds=1,
+    )
+
+    # Wrap-up fired exactly once.
+    wrap_up_events = [e for e in result.events if e.kind == "wrap_up_forced"]
+    assert len(wrap_up_events) == 1
+    # And the wrap-up reply is what got returned, NOT empty / interim.
+    assert "Done" in result.content
+    assert "found contents" in result.content
+    # Total iterations = 1 work round + 1 wrap-up = 2.
+    assert result.rounds == 2
+
+
+def test_wrap_up_skipped_when_last_round_is_text_only() -> None:
+    """If the last round emitted a text-only reply, the normal exit
+    path returns it. No wrap-up needed — the model already produced
+    a final answer."""
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="all done")])
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="hi")],
+        ToolRegistry(),
+        max_rounds=2,
+    )
+
+    wrap_up_events = [e for e in result.events if e.kind == "wrap_up_forced"]
+    assert not wrap_up_events
+    assert result.content == "all done"
+
+
+def test_wrap_up_strips_tool_calls_from_wrap_up_reply(tmp_path: Path) -> None:
+    """If the wrap-up reply itself emits a tool call, strip it —
+    the wrap-up is synthesis only. Text content is kept; the tool
+    call never executes."""
+    (tmp_path / "hi.txt").write_text("contents")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    last_round_tool_call = ModelReply(
+        content="",
+        tool_calls=(ToolCall(name="read_file", arguments={"path": "hi.txt"}),),
+    )
+    wrap_up_with_extra_tool = ModelReply(
+        content="From hi.txt: contents.",
+        tool_calls=(ToolCall(name="read_file", arguments={"path": "hi.txt"}),),
+    )
+    adapter = _ScriptedAdapter(replies=[last_round_tool_call, wrap_up_with_extra_tool])
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read hi.txt")],
+        registry,
+        max_rounds=1,
+    )
+
+    # Wrap-up fired, text content kept, no extra tool execution after.
+    wrap_up_events = [e for e in result.events if e.kind == "wrap_up_forced"]
+    assert len(wrap_up_events) == 1
+    assert "contents" in result.content
+    # The work round read hi.txt once; the wrap-up's tool call was stripped.
+    # Count tool-result messages: should be exactly one (from the work round).
+    tool_msgs = [m for m in result.messages if m.role == "tool"]
+    assert len(tool_msgs) == 1
+
+
+def test_wrap_up_empty_reply_falls_back_to_exhausted_message(tmp_path: Path) -> None:
+    """If the wrap-up reply has neither text nor a usable tool call,
+    the orchestrator returns the canned 'tool loop exhausted' message
+    instead of an empty string."""
+    (tmp_path / "hi.txt").write_text("contents")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    last_round_tool_call = ModelReply(
+        content="",
+        tool_calls=(ToolCall(name="read_file", arguments={"path": "hi.txt"}),),
+    )
+    # Wrap-up emits a tool call only — content empty, tool call stripped.
+    empty_wrap_up = ModelReply(
+        content="",
+        tool_calls=(ToolCall(name="read_file", arguments={"path": "hi.txt"}),),
+    )
+    adapter = _ScriptedAdapter(replies=[last_round_tool_call, empty_wrap_up])
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read hi.txt")],
+        registry,
+        max_rounds=1,
+    )
+
+    assert "[tool loop exhausted without final reply]" in result.content
+
+
+def test_wrap_up_skipped_when_no_content_tool_succeeded() -> None:
+    """If only meta tools ran (or no tools at all) and the loop
+    exhausts at the hard ceiling, the wrap-up SHOULDN'T fire —
+    there's no content for the model to synthesize. The exhausted
+    message returns instead."""
+    # 20 meta-only calls — meta exemption keeps the loop spinning
+    # until the hard ceiling, never landing a work round.
+    adapter = _ScriptedAdapter(replies=[_meta_tool_call("tool_search") for _ in range(20)])
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="spin")],
+        ToolRegistry(),
+        max_rounds=4,
+    )
+
+    wrap_up_events = [e for e in result.events if e.kind == "wrap_up_forced"]
+    assert not wrap_up_events
+    # Last reply was a (failed) meta tool call, no content tool succeeded.
+    assert "[tool loop exhausted without final reply]" in result.content
+
+
+def test_wrap_up_event_round_index_aligns_with_total_iteration(tmp_path: Path) -> None:
+    """The wrap-up event carries the absolute iteration index so
+    observers see a monotonic counter aligned with round_start /
+    round_complete events."""
+    (tmp_path / "hi.txt").write_text("contents")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    last_round = ModelReply(
+        content="",
+        tool_calls=(ToolCall(name="read_file", arguments={"path": "hi.txt"}),),
+    )
+    wrap_up = ModelReply(content="synthesized")
+    adapter = _ScriptedAdapter(replies=[last_round, wrap_up])
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read")],
+        registry,
+        max_rounds=1,
+    )
+
+    # Round 0 was the work round; wrap-up runs at iteration index 1.
+    wrap_up_event = next(e for e in result.events if e.kind == "wrap_up_forced")
+    assert wrap_up_event.round_index == 1
+    # round_complete on the wrap-up matches.
+    round_completes = [e for e in result.events if e.kind == "round_complete"]
+    assert round_completes[-1].round_index == 1
+
+
 # Explicit import to confirm we can pass pytest from the tests folder
 def test_tools_module_importable() -> None:
     import harness.tools  # noqa: F401 — import-for-side-effect check

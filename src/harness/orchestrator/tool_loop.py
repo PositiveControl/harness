@@ -212,13 +212,20 @@ class ToolLoopEvent:
     model_call_start, token_delta, model_call_end, tool_call_start,
     tool_call_end, tool_call_failed, tool_call_declined,
     tool_call_deduped, truncated_retry, bail_retry, round_complete,
-    scope_redirected, meta_round.
+    scope_redirected, meta_round, wrap_up_forced.
 
     `meta_round` (harness-rlza) fires when an iteration's only tool
     calls were meta-tools (tool_search / load_tool / introspect /
     spawn_subagent). Such iterations are exempt from the max_rounds
     budget — they're bookkeeping, not work. Observers + evals use
     the event to audit which rounds got the exemption.
+
+    `wrap_up_forced` (harness-0gss) fires once when the loop ran out
+    of work budget on a round that emitted tool calls that actually
+    ran. The orchestrator runs one additional adapter call with a
+    synthesis-only nudge so the user gets a coherent final answer
+    instead of the previous round's interim text. Tool calls in
+    the wrap-up's reply are stripped — wrap-up is synthesis only.
 
     `scope_redirected` (harness-8dop) fires at most once per turn,
     before round 0, when the Router pre-pass classified the turn
@@ -471,6 +478,25 @@ _TOOL_USE_RULES_NUDGE = (
     "covered X but not Y, issue ANOTHER tool call targeting Y (different "
     "query, different URL, different tool) before terminating. Only "
     "return a partial answer after multiple genuine attempts."
+)
+
+
+# Wrap-up nudge (harness-0gss). Appended as a user-role message just
+# before the forced wrap-up model call when the loop ran out of work
+# budget mid-investigation. Tells the model: stop calling tools,
+# synthesize what you have, be honest about what you couldn't find.
+# Without this nudge — and the wrap-up round it gates — the user would
+# see the previous round's interim text ("Let me try another source")
+# as the turn's final reply because the last round ended on a tool
+# call that never got synthesized.
+_WRAP_UP_NUDGE = (
+    "You have used your tool-call budget for this turn. This is your "
+    "final round — do NOT call another tool. Synthesize the data you "
+    "have gathered into a final reply, citing what each source said. "
+    "If your request had multiple parts and you found some but not "
+    "all, say plainly which parts you could not find. Do not promise "
+    "more searches or say you will continue investigating — there is "
+    "no more budget."
 )
 
 
@@ -1229,9 +1255,92 @@ def run_tool_loop(
         else:
             emit(ToolLoopEvent(kind="meta_round", round_index=round_idx))
 
+    # Wrap-up round (harness-0gss). If the loop exited mid-investigation
+    # — work budget hit AND the last round emitted a tool call that
+    # actually ran — force ONE more model round (no new tools allowed)
+    # so the model can synthesize the data it gathered. Without this,
+    # callers see the previous round's interim text ('Let me try
+    # another source') as 'final' because the last round ended on a
+    # tool call that never got synthesized.
+    #
+    # Hard ceiling still applies — we must leave room for one more
+    # adapter call, and only an honest mid-investigation exit (some
+    # content tool ran) deserves the wrap-up.
+    wrap_up_eligible = (
+        bool(last_reply.tool_calls)
+        and any_tool_succeeded
+        and work_rounds >= max_rounds
+        and total_iterations < hard_ceiling
+    )
+    if wrap_up_eligible:
+        emit(ToolLoopEvent(kind="wrap_up_forced", round_index=total_iterations))
+        working.append(ChatMessage(role="user", content=_WRAP_UP_NUDGE))
+        wrap_up_reply = _run_model_round(
+            adapter,
+            working,
+            registry,
+            round_max_tokens=wrap_up_max_tokens,
+            temperature=temperature,
+            round_idx=total_iterations,
+            emit=emit,
+            hooks=pipeline,
+        )
+        wrap_up_round_idx = total_iterations
+        total_iterations += 1
+        # Strip any tool_calls — wrap-up is synthesis only. If the model
+        # emitted text + tool_call, keep the text; if tool_call only,
+        # content stays empty and the canned fallback below covers it.
+        last_reply = ModelReply(
+            content=wrap_up_reply.content,
+            tool_calls=(),
+            was_truncated=wrap_up_reply.was_truncated,
+            had_unparseable_call=wrap_up_reply.had_unparseable_call,
+        )
+        # Run bail + finalize on the wrap-up reply. No retry budget at
+        # this point — bail outcome only feeds fabrication_fallback so
+        # a fabricated wrap-up still gets the canned refusal substitution
+        # instead of leaking through.
+        wrap_bail_outcome: BailOutcome = pipeline.run_bail(
+            BailContext(
+                reply=last_reply,
+                tools_ran_this_turn=any_tool_succeeded,
+                tools_ran=frozenset(succeeded_tools),
+                user_message=turn_user_message,
+                prior_tool_outputs=tuple(m.content for m in working if m.role == "tool"),
+            ),
+            disabled=_disabled_snapshot(),
+        )
+        wrap_tool_outputs = tuple(m.content for m in working if m.role == "tool" and m.content)
+        wrap_tool_results = [e.result for e in events if e.result is not None]
+        wrap_top_score: float | None = None
+        for _wr in wrap_tool_results:
+            if _wr.hits:
+                _wlocal_top = max(h.score for h in _wr.hits)
+                if wrap_top_score is None or _wlocal_top > wrap_top_score:
+                    wrap_top_score = _wlocal_top
+        wrap_citations_grounded = frozenset().union(
+            *(_wr.citations_grounded for _wr in wrap_tool_results)
+        )
+        wrap_finalize_outcome = pipeline.run_finalize(
+            FinalizeContext(
+                reply=last_reply,
+                last_outcome=wrap_bail_outcome,
+                tools_ran=frozenset(succeeded_tools),
+                memory_block_attached=memory_block_attached,
+                tool_outputs=wrap_tool_outputs,
+                retrieval_top_score=wrap_top_score,
+                citations_grounded=wrap_citations_grounded,
+            ),
+            disabled=_disabled_snapshot(),
+        )
+        if isinstance(wrap_finalize_outcome, Halt):
+            last_reply = wrap_finalize_outcome.reply
+        emit(ToolLoopEvent(kind="round_complete", round_index=wrap_up_round_idx))
+
     # Loop exhausted — return what we have. `rounds` reports the
-    # total iterations spent (work + meta) so callers and tests see
-    # the real model-invocation count, not the work-round projection.
+    # total iterations spent (work + meta + optional wrap-up) so
+    # callers and tests see the real model-invocation count, not the
+    # work-round projection.
     return ToolLoopResult(
         content=last_reply.content or "[tool loop exhausted without final reply]",
         messages=working,
