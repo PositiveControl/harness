@@ -3311,7 +3311,65 @@ class FabricationFallbackHook:
 # ---------- pipeline ----------
 
 
-@dataclass
+@dataclass(frozen=True)
+class CatcherDoc:
+    """One row in the hook registry — used by `HookPipeline.describe()`
+    and by `scripts/gen_hook_docs.py` to render `docs/hooks.md`. Carries
+    enough metadata to answer 'what does this catcher catch and where
+    does it run' without re-reading the hook's docstring (harness-tm8t).
+    """
+
+    name: str
+    phase: str  # "post_model" | "bail" | "pre_tool" | "post_tool" | "finalize"
+    shape: str  # one-line failure-mode descriptor
+
+
+# Maps each registered hook name to a one-line shape descriptor.
+# Source of truth for `docs/hooks.md`. New hooks MUST add an entry here
+# — the registry test (`tests/test_hook_registry.py`) enforces coverage.
+HOOK_SHAPES: dict[str, str] = {
+    # bail-phase catchers (read the model's content reply post-generation).
+    "truncated": "Reply hit the token budget; auto-widen + retry.",
+    "unparseable": "Reply had a malformed <tool_call> block.",
+    "teaser": "Reply announced more work but emitted no tool call.",
+    "false_success": "Reply claims a file edit without a write-tier tool call.",
+    "meta_confirm": "Reply asks user to confirm in chat instead of calling the tool.",
+    "fabricated_search": "Reply narrates web-search activity but no web tool ran.",
+    "fabricated_itemization": "Reply fabricates additional list items beyond what was real.",
+    "ab_fabrication": "Reply imitates ab_ops output without a real tool call.",
+    "tool_intent": "Reply restates a tool-call intent as prose, no actual call.",
+    "ambiguous_context": "Reply silently picks one variant of an ambiguous term.",
+    "scope_redirect": "Reply talks domain content for an out-of-scope question.",
+    "reserved_squawk_code": "Reply assigns a reserved transponder code (7500/7600/7700).",
+    "list_count_mismatch": "Reply's count claim disagrees with its enumerated list.",
+    "source_count_inflation": "Reply enumerates more items than the most recent tool returned.",
+    "missing_citation": "Reply references the corpus substantively without an anchor.",
+    "fabricated_section": "Reply cites a §-anchor that doesn't exist in the corpus.",
+    "paired_meta_confirm_strip": "Reply has both a tool call and meta-confirm prose; strip prose.",
+    "opinion_no_trigger": "Reply emits 'Opinion:' without the user asking for one.",
+    "post_search_grounding": "Reply followed a search but didn't cite or summarize results.",
+    "post_research_persist": "Multi-source summary not persisted via remember_event.",
+    "low_confidence_fallback": "Citation below confidence floor for the grounding run.",
+    "table_fabrication": "Reply's pipe-table rows don't appear in any tool output.",
+    "numeric_fabrication": "Reply's labeled numeric claim disagrees with the tool result.",
+    # post_model-phase catchers (operate on the raw ModelReply).
+    # (none today — phase exists for future use.)
+    # pre_tool-phase catchers (gate tool execution).
+    "duplicate_call": "Identical (name, args) call this turn; re-issues prior result.",
+    "argument_grounding": "Tool args name domains not in user message or prior tool output.",
+    "assemble_context_once": "Model re-calls assemble_context when forced-grounding already ran.",
+    "fetch_url_guard": "fetch_url called speculatively when user pasted no URL.",
+    "persist_body_citations": "remember_event body lacks URL tokens from research summary.",
+    # post_tool-phase catchers (transform tool results before model sees them).
+    "tool_result_summarizer": "Compress high-noise tool outputs before the working thread.",
+    # finalize-phase catchers (last-chance fallbacks on final reply).
+    "ungrounded_citation": "Reply cites a section without a grounding tool having run.",
+    "uncited_substantive_reply": "Substantive reply with no citation at all (finalize mirror).",
+    "fabrication_fallback": "Bail retries exhausted; substitute a canned refusal.",
+}
+
+
+@dataclass(frozen=True)
 class HookPipeline:
     """Owns the four phase lists. Methods are pure functions of their
     context + a `disabled` frozenset — they never mutate module state
@@ -3324,6 +3382,25 @@ class HookPipeline:
     pre_tool: list[PreToolHook] = field(default_factory=list)
     post_tool: list[PostToolHook] = field(default_factory=list)
     finalize: list[FinalizeHook] = field(default_factory=list)
+
+    def describe(self) -> tuple[CatcherDoc, ...]:
+        """Snapshot every installed hook as (name, phase, shape) tuples.
+        Source for `docs/hooks.md` (rendered by `scripts/gen_hook_docs.py`)
+        and the registry-coverage test. Hooks missing a HOOK_SHAPES entry
+        surface here with shape='(no shape entry)' so the test fails loudly
+        rather than silently emitting empty docs."""
+        out: list[CatcherDoc] = []
+        for phase_name, phase_list in (
+            ("post_model", self.post_model),
+            ("bail", self.bail),
+            ("pre_tool", self.pre_tool),
+            ("post_tool", self.post_tool),
+            ("finalize", self.finalize),
+        ):
+            for hook in phase_list:
+                shape = HOOK_SHAPES.get(hook.name, "(no shape entry)")
+                out.append(CatcherDoc(name=hook.name, phase=phase_name, shape=shape))
+        return tuple(out)
 
     def names(self) -> tuple[str, ...]:
         """Canonical ordering: bail → post_model → pre_tool →
@@ -3759,6 +3836,7 @@ __all__ = [
     "FABRICATED_REMEMBER_RE",
     "FABRICATED_SEARCH_RE",
     "FALSE_SUCCESS_RE",
+    "HOOK_SHAPES",
     "META_CONFIRM_RE",
     "TABLE_FABRICATION_FALLBACK",
     "TEASER_RE",
@@ -3771,6 +3849,7 @@ __all__ = [
     "BailContext",
     "BailHook",
     "BailOutcome",
+    "CatcherDoc",
     "Continue",
     "DuplicateCallHook",
     "FabricatedItemizationHook",

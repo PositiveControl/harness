@@ -139,7 +139,11 @@ class IntrospectTool:
                 "have, what model is running, how much you remember, "
                 "what CLI commands exist, or what you can/can't do. "
                 "`scope` picks which surface to report on; use 'all' "
-                "for the full summary."
+                "for the full summary. "
+                "NOT a clock: for current time/date, call `now` (or "
+                "`tool_search(query='current time')` if `now` isn't "
+                "loaded). The session scope reports session timestamps, "
+                "not wall-clock time (harness-2lye)."
             ),
             parameters={
                 "type": "object",
@@ -155,7 +159,9 @@ class IntrospectTool:
                             "character=name, persona, voice corpus "
                             "size; commands=CLI commands; "
                             "session=current session stats (turns, "
-                            "start, last activity); all=everything."
+                            "start, last activity — NOT wall-clock "
+                            "time; for that, use `now`); "
+                            "all=everything."
                         ),
                     },
                 },
@@ -339,11 +345,24 @@ class IntrospectTool:
         lines.append(f"  id: {self.context.session_id}")
         if stats is None:
             lines.append("  turns: 0 (session just started)")
+            lines.append(
+                "  (these are SESSION timestamps, not wall-clock time. "
+                "For current time, call `now` instead.)"
+            )
             return "\n".join(lines)
         lines.append(f"  started: {stats.first_at.isoformat(timespec='seconds')}")
         lines.append(f"  last activity: {stats.last_at.isoformat(timespec='seconds')}")
         lines.append(
             f"  turns: {stats.user_turns} user / {stats.assistant_turns} assistant "
             f"({stats.total_rows} total rows, tool results included)"
+        )
+        # In-output disambiguation: harness-2lye repro showed the model
+        # treating session.last_activity as the current wall-clock time.
+        # The model reads its own tool output, so a self-correcting hint
+        # in the stream lets the next round either re-query via `now` or
+        # tool_search.
+        lines.append(
+            "  (these are SESSION timestamps, not wall-clock time. "
+            "For current time, call `now` instead.)"
         )
         return "\n".join(lines)

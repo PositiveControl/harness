@@ -203,6 +203,31 @@ def test_spec_shape(ctx: IntrospectContext) -> None:
     }
 
 
+def test_spec_description_disambiguates_clock_vs_introspect() -> None:
+    """harness-2lye: model used introspect(session) as a clock and
+    reported last_activity as current time. The spec description
+    must point at `now` for wall-clock time so the model picks the
+    right tool — and tool_search for capability discovery."""
+    repo = Path(__file__).resolve().parents[1]
+    character = load_character(repo / "character" / "airton")
+    tool = IntrospectTool(
+        context=IntrospectContext(
+            registry=ToolRegistry(),
+            adapter=_StubAdapter(),
+            character=character,
+            settings=settings,
+        )
+    )
+    description = tool.spec.description
+    assert "now" in description
+    assert "tool_search" in description
+    # Per-scope description for session ALSO surfaces the disclaimer
+    # — small models often only read the most-specific text.
+    session_desc = tool.spec.parameters["properties"]["scope"]["description"]
+    assert "NOT wall-clock" in session_desc
+    assert "`now`" in session_desc
+
+
 def test_scope_tools_reports_capability_gaps(ctx: IntrospectContext) -> None:
     """harness-8is: when the registry lacks web / shell / git / memory-
     write / etc. tools, scope=tools spells out what the agent CANNOT
@@ -403,6 +428,10 @@ def test_scope_session_reports_transcript_stats(tmp_path: Path) -> None:
     assert "1 assistant" in out
     assert "started:" in out
     assert "last activity:" in out
+    # harness-2lye: model treated last_activity as the wall-clock. The
+    # self-correcting hint redirects to `now`.
+    assert "SESSION timestamps, not wall-clock" in out
+    assert "`now`" in out
 
 
 def test_scope_session_handles_empty_session(tmp_path: Path) -> None:
