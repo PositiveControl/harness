@@ -391,6 +391,36 @@
   expected_events_contain: [tool_call_deduped]
   expected_messages_not_contain: ["search-result"]
 
+- id: scope_violation_mexico_for_south_america
+  label: scope_violation
+  description: |
+    Session repro 2026-05-19 (avocado query, 1st session): user asked
+    'which south american country exports the most avocados?'.
+    Reply named Mexico — which is in North America (UN M49), not
+    South America. ScopeViolationHook fires; retry produces a
+    corrected answer naming an actual SA country.
+  registry:
+    - name: search_web
+      output: "stub"
+  messages:
+    - role: user
+      content: "which south american country exports the most avocados?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "south american avocado exporter" }
+    - content: |
+        The top avocado exporter in South America is Mexico. Mexico
+        exported $4 billion in 2024, accounting for 41.9% of global
+        exports.
+    - content: |
+        Correction — Mexico is in North America, not South America.
+        Per the source data filtered to South American countries
+        only, the top exporter is Peru.
+  expected_contains: ["Peru", "Correction"]
+  expected_events_contain: [bail_retry]
+
 - id: self_contradicting_rank_chile_repro
   label: self_contradicting_rank
   description: |

@@ -1,0 +1,112 @@
+# scope_violation fixtures (harness-lyyr).
+#
+# Pin the ScopeViolationHook: when the user names a region and a
+# top/most/largest word, the reply must name a country actually in
+# that region. Mexico-for-South-America repro from the 2026-05-19
+# avocado session.
+#
+# Replayed by:
+#   harness eval tool-loop --fixture evals/orchestrator/scope_violation.yaml
+
+# ---------- positive: Mexico named for South America ----------
+
+- id: scope_violation_mexico_for_south_america
+  label: scope_violation
+  description: |
+    Session repro shape. User asks for top SA exporter; reply names
+    Mexico (NA per UN M49). Catcher Nudges with the country/region
+    in the message; retry corrects.
+  registry:
+    - name: search_web
+      output: "stub"
+  messages:
+    - role: user
+      content: "which south american country exports the most avocados?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "avocado exporter ranking 2024" }
+    - content: |
+        The top avocado exporter in South America is Mexico, with
+        $4 billion in 2024 exports.
+    - content: |
+        Correction — Mexico is in North America. Filtered to South
+        American countries, the top exporter is Peru.
+  expected_contains: ["Peru", "Correction"]
+  expected_events_contain: [bail_retry]
+
+# ---------- positive: Asian country named for African region ----------
+
+- id: scope_violation_vietnam_for_africa
+  label: scope_violation
+  description: |
+    Generalized shape — gazetteer covers more than SA. User asks for
+    top African coffee producer; reply names Vietnam (Asia).
+  registry:
+    - name: search_web
+      output: "stub"
+  messages:
+    - role: user
+      content: "which african country produces the most coffee?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "top coffee producer 2024" }
+    - content: |
+        The top African coffee producer is Vietnam, with the largest
+        global output.
+    - content: |
+        Correction — Vietnam is in Asia, not Africa. Filtered to
+        African producers, Ethiopia leads.
+  expected_contains: ["Ethiopia", "Correction"]
+  expected_events_contain: [bail_retry]
+
+# ---------- control: country IS in the named region, no fire ----------
+
+- id: scope_correct_country_no_fire
+  label: control
+  description: |
+    User asks for top SA exporter; reply correctly names Peru.
+    Catcher must stay silent — Peru is in SA per the gazetteer.
+  registry:
+    - name: search_web
+      output: "stub"
+  messages:
+    - role: user
+      content: "which south american country exports the most avocados?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "south american avocado exporter" }
+    - content: "The top South American avocado exporter is Peru."
+  expected_contains: ["Peru"]
+  expected_events_not_contain: [bail_retry]
+
+# ---------- control: user named multiple regions, no fire ----------
+
+- id: scope_ambiguous_multi_region_no_fire
+  label: control
+  description: |
+    User explicitly names BOTH North America and South America;
+    answer about Mexico is acceptable within the combined scope
+    (or at least ambiguous). Catcher must skip — the scope
+    isn't unambiguously violated.
+  registry:
+    - name: search_web
+      output: "stub"
+  messages:
+    - role: user
+      content: "compare top avocado exporters from north america and south america."
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "avocado exporter ranking by region" }
+    - content: |
+        Across North America and South America, the top exporter is
+        Mexico, followed by Peru.
+  expected_contains: ["Mexico", "Peru"]
+  expected_events_not_contain: [bail_retry]

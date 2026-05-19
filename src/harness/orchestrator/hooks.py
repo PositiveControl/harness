@@ -2333,6 +2333,213 @@ def _extract_rank_word(span_text: str, pattern: re.Pattern[str]) -> str:
     return m.group(0) if m else span_text[:40].strip()
 
 
+# ---------- scope-constraint verification (harness-lyyr) ----------
+
+
+# Top-rank trigger words in the user message. The catcher only arms when
+# the user is asking for a top/most/largest pick — those are the cases
+# where a region-mismatched answer is wrong on its face.
+_SCOPE_TOP_TRIGGER_RE = re.compile(
+    r"\b(?:most|top|highest|largest|biggest|leading|first|"
+    r"#1|number\s+(?:one|1)|primary|main|chief|"
+    r"largest-?ever|biggest-?ever)\b",
+    re.IGNORECASE,
+)
+
+
+# Multi-word region phrases need to be matched before single-word ones
+# so 'south american' doesn't fall through to 'american' (which would
+# match Northern America). Ordered longest-first.
+_REGION_PATTERN_ORDER: tuple[str, ...] = (
+    "sub-saharan african",
+    "sub-saharan africa",
+    "subsaharan africa",
+    "middle eastern",
+    "middle east",
+    "latin american",
+    "latin america",
+    "north american",
+    "north america",
+    "south american",
+    "south america",
+    "central american",
+    "central america",
+    "north african",
+    "north africa",
+    "scandinavian",
+    "scandinavia",
+    "caribbean",
+    "european",
+    "europe",
+    "african",
+    "africa",
+    "oceanian",
+    "oceania",
+    "nordics",
+    "nordic",
+    "australian",
+    "asian",
+    "asia",
+)
+
+
+_SCOPE_VIOLATION_NUDGE = (
+    "[scope mismatch — the user asked about a top/most/largest "
+    "{region} entity, but your reply names <{country}> as that "
+    "top entry. <{country}> is not in {region}. Re-read the source "
+    "data, filter the ranking to entries actually in {region}, and "
+    "pick the real #1 within that scope.]"
+)
+
+
+def _find_region_in_user_message(user_message: str) -> str | None:
+    """Return the first region phrase found in the user message, or
+    None. Iterates a longest-first list so 'south american' matches
+    before 'american' would have."""
+    msg_lower = user_message.lower()
+    for phrase in _REGION_PATTERN_ORDER:
+        if re.search(rf"\b{re.escape(phrase)}\b", msg_lower):
+            return phrase
+    return None
+
+
+_SCOPE_TOP_WORDS_PATTERN = (
+    r"top|leading|highest|largest|biggest|first|"
+    r"#1|number\s+(?:one|1)|main|primary|chief|foremost|"
+    r"most\s+prolific|most"
+)
+
+
+# 'The top X is COUNTRY' / 'COUNTRY is the top X' — extract the
+# country that's the SUBJECT of the top-rank claim. The catcher
+# only flags this country, not arbitrary country mentions elsewhere
+# in the reply (which can include negation, correction, or context
+# like 'Mexico is in North America, not South America').
+_TOP_CLAIM_SUBJECT_RE = re.compile(
+    rf"(?:"
+    # "(the|a) <top-word> ... is <SUBJ>" — subject after copula
+    rf"\b(?:the|a|an)\s+(?:{_SCOPE_TOP_WORDS_PATTERN})\b"
+    rf"[^.!?\n]{{0,120}}?"
+    rf"\b(?:is|are|was|were)\s+"
+    rf"(?P<subj_after>[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)"
+    rf"|"
+    # "<SUBJ> (is|are|leads) the <top-word>" — subject before
+    rf"\b(?P<subj_before>[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)\s+"
+    rf"(?:is|are|was|were|leads|tops|ranks)\s+"
+    rf"(?:the\s+|a\s+|an\s+)?"
+    rf"(?:{_SCOPE_TOP_WORDS_PATTERN})\b"
+    rf")",
+    re.IGNORECASE,
+)
+
+
+def _find_top_claim_country(reply: str) -> str | None:
+    """Extract the COUNTRY that's the explicit subject of a top-rank
+    claim in the reply. Returns the matched canonical country name
+    if the subject is a known country, otherwise None. Skipping
+    non-country subjects ('the source', 'the report') avoids the
+    false-positive shape where the reply talks about the data
+    provider rather than the answer."""
+    from harness.orchestrator._geography import REGION_COUNTRIES
+
+    all_countries: set[str] = set()
+    for members in REGION_COUNTRIES.values():
+        all_countries.update(members)
+    # Lowercase set for fast comparison.
+    all_lower = {c.lower() for c in all_countries}
+    # Also map lowercase → canonical so we can return the canonical
+    # form for the nudge.
+    canonical: dict[str, str] = {}
+    for c in all_countries:
+        canonical.setdefault(c.lower(), c)
+    for m in _TOP_CLAIM_SUBJECT_RE.finditer(reply):
+        subj = (m.group("subj_after") or m.group("subj_before") or "").strip()
+        if not subj:
+            continue
+        subj_lower = subj.lower()
+        if subj_lower in all_lower:
+            return canonical[subj_lower]
+        # Multi-word subject — try progressively shorter prefixes so
+        # 'United States of America' resolves to 'United States'.
+        parts = subj.split()
+        for cut in range(len(parts) - 1, 0, -1):
+            candidate = " ".join(parts[:cut])
+            if candidate.lower() in all_lower:
+                return canonical[candidate.lower()]
+    return None
+
+
+@dataclass(frozen=True)
+class ScopeViolationHook:
+    """Catch replies that name a country outside the user's named
+    region for a top/most/largest question (harness-lyyr).
+
+    Session repro 2026-05-19 (avocado query, 1st session): user asked
+    'which south american country exports the most avocados?'. Tools
+    ran, returned a global ranking; the reply named Mexico as 'the
+    top avocado exporter in the region'. Mexico is in North America,
+    not South America. The model picked the global #1 without
+    filtering by the user's named scope.
+
+    Trigger conditions (ALL must hold):
+      1. _content_tools_ran(ctx) — at least one content tool ran this
+         turn. Pre-tool fabrication is fabricated_search's territory.
+      2. user_message names a known region (in REGION_COUNTRIES).
+      3. user_message contains a top-rank trigger word (most / top /
+         largest / etc.). The catcher only arms for top-pick questions.
+      4. Reply names a country that is NOT in the user's named region.
+
+    Silent cases (by design):
+      - No content tool ran (other catchers handle that).
+      - User didn't name a region or a top-rank word (no scope to
+        verify against).
+      - Reply doesn't name a known country (nothing to check).
+      - Named country IS in the user's region (correct answer).
+      - User message names MULTIPLE regions and the named country
+        belongs to one of them (ambiguous; conservative skip).
+
+    Position: bail phase, after self_contradicting_rank and before
+    the opt-in scope-tier hooks. Last-mile semantic check —
+    structural and fabrication catchers get first pass."""
+
+    name: str = "scope_violation"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if not _content_tools_ran(ctx):
+            return Continue()
+        if not ctx.user_message:
+            return Continue()
+        if not _SCOPE_TOP_TRIGGER_RE.search(ctx.user_message):
+            return Continue()
+        region = _find_region_in_user_message(ctx.user_message)
+        if region is None:
+            return Continue()
+        from harness.orchestrator._geography import countries_in_region
+
+        members = countries_in_region(region)
+        if not members:
+            return Continue()
+        country = _find_top_claim_country(ctx.reply.content)
+        if country is None:
+            return Continue()
+        if any(c.lower() == country.lower() for c in members):
+            return Continue()
+        # Ambiguity guard: if the user named a SECOND distinct region
+        # in the same message, the question's scope is unclear (e.g.
+        # 'compare top exporters from north america and south america')
+        # — skip rather than risk firing on a legitimate cross-region
+        # comparison. Distinct-region check uses the canonical region
+        # sets to ignore adjective/noun pairs that resolve to the same
+        # set ('south america' vs 'south american').
+        msg_lower = ctx.user_message.lower()
+        for other in _REGION_PATTERN_ORDER:
+            if countries_in_region(other) == members:
+                continue  # same region as `region`, just an alias form
+            if re.search(rf"\b{re.escape(other)}\b", msg_lower):
+                return Continue()
+        return Nudge(_SCOPE_VIOLATION_NUDGE.format(country=country, region=region))
+
+
 _SOURCE_COUNT_INFLATION_NUDGE = (
     "[source-count inflation — your reply enumerated {reply_count} items "
     "but the most recent tool result returned {tool_count}. Do NOT pad "
@@ -4049,6 +4256,9 @@ HOOK_SHAPES: dict[str, str] = {
     "self_contradicting_rank": (
         "Reply claims X is #1 AND #N≥2 of the same thing in the same paragraph."
     ),
+    "scope_violation": (
+        "Reply names a country outside the user's named region for a top/most/largest question."
+    ),
     "source_count_inflation": "Reply enumerates more items than the most recent tool returned.",
     "missing_citation": "Reply references the corpus substantively without an anchor.",
     "fabricated_section": "Reply cites a §-anchor that doesn't exist in the corpus.",
@@ -4317,6 +4527,12 @@ def default_hook_pipeline(
     # count-vs-list shape gets first pass; this hook catches the
     # rank-vs-rank shape.
     bail.append(SelfContradictingRankHook())
+    # scope_violation (harness-lyyr): user asked for a top X in named
+    # region Y; reply names a country NOT in Y. Semantic check on the
+    # answer's scope. Runs after self_contradicting_rank so the
+    # internal-consistency shape gets first pass; this hook catches
+    # the geography-mismatch shape.
+    bail.append(ScopeViolationHook())
     # source_count_inflation: reply enumerates substantially more
     # items than the most recent tool result produced (harness-lynw).
     # Opt-in for characters that do web research where the model can

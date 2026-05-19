@@ -477,7 +477,15 @@ _TOOL_USE_RULES_NUDGE = (
     "what is Y?'), each sub-ask gets its own tool budget. If a source "
     "covered X but not Y, issue ANOTHER tool call targeting Y (different "
     "query, different URL, different tool) before terminating. Only "
-    "return a partial answer after multiple genuine attempts."
+    "return a partial answer after multiple genuine attempts. "
+    "(3) Named-constraint verification — when the user's request carries "
+    "a constraint (a named region like 'South American', a time window "
+    "like 'since 2020', a category like 'Republican senators') AND asks "
+    "for a top/most/largest/highest pick, verify BEFORE answering that "
+    "your pick satisfies the constraint (a named country is actually IN "
+    "the named region) AND is genuinely #1 within that constraint, not "
+    "#1 globally. If the source returns a broader ranking, FILTER it by "
+    "the constraint first; do not pick the global leader by default."
 )
 
 

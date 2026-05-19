@@ -47,6 +47,7 @@ from harness.orchestrator.hooks import (
     Replace,
     ReservedSquawkCodeHook,
     ScopeRedirectHook,
+    ScopeViolationHook,
     SelfContradictingRankHook,
     Skip,
     SourceCountInflationHook,
@@ -1115,6 +1116,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "fabricated_section",
         "list_count_mismatch",
         "self_contradicting_rank",
+        "scope_violation",
         "reserved_squawk_code",
         "scope_redirect",
         "ambiguous_context",
@@ -3233,6 +3235,141 @@ def test_self_contradicting_rank_silent_with_no_shared_subject_and_no_pronoun() 
         BailContext(reply=_reply(reply_text), tools_ran_this_turn=True)
     )
     assert isinstance(outcome, Continue)
+
+
+# ---------- scope_violation (harness-lyyr) ----------
+
+
+def test_scope_violation_fires_on_mexico_for_south_america() -> None:
+    """Session 2026-05-19 (avocado query, 1st session): user asked for
+    'south american' top exporter; reply named Mexico. Mexico is in
+    North America, not South America. Catcher must Nudge."""
+    ctx = BailContext(
+        reply=_reply(
+            "The top avocado exporter in South America is Mexico. Mexico "
+            "exported $4 billion worth of avocados, accounting for 41.9% "
+            "of global exports."
+        ),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web", "fetch_url"}),
+        user_message="which south american country exports the most avocados?",
+    )
+    outcome = ScopeViolationHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "Mexico" in outcome.text
+    assert "south america" in outcome.text.lower()
+
+
+def test_scope_violation_silent_when_country_is_in_region() -> None:
+    """User asked for top SA country; reply names Peru. Peru IS in
+    South America. Catcher must stay silent — correct answer."""
+    ctx = BailContext(
+        reply=_reply("The top South American avocado exporter is Peru."),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message="which south american country exports the most avocados?",
+    )
+    assert isinstance(ScopeViolationHook().check(ctx), Continue)
+
+
+def test_scope_violation_silent_when_user_named_no_region() -> None:
+    """Question without a named region — catcher has no scope to
+    verify against. Stay silent."""
+    ctx = BailContext(
+        reply=_reply("The top avocado exporter is Mexico."),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message="which country exports the most avocados?",
+    )
+    assert isinstance(ScopeViolationHook().check(ctx), Continue)
+
+
+def test_scope_violation_silent_without_top_rank_trigger() -> None:
+    """User asked a region-scoped question but not a top/most/largest
+    one — the catcher only arms for top-pick questions. 'which south
+    american countries grow avocados?' has no top trigger."""
+    ctx = BailContext(
+        reply=_reply("Avocados are grown in South American countries including Mexico."),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message="which south american countries grow avocados?",
+    )
+    assert isinstance(ScopeViolationHook().check(ctx), Continue)
+
+
+def test_scope_violation_silent_when_no_content_tool_ran() -> None:
+    """No content tool ran — fabricated_search territory, not scope
+    territory. Conservative skip."""
+    ctx = BailContext(
+        reply=_reply("The top South American avocado exporter is Mexico."),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"tool_search"}),  # meta-only
+        user_message="which south american country exports the most avocados?",
+    )
+    assert isinstance(ScopeViolationHook().check(ctx), Continue)
+
+
+def test_scope_violation_silent_when_reply_names_no_country() -> None:
+    """Reply doesn't name a country — nothing to check. Stay silent."""
+    ctx = BailContext(
+        reply=_reply("The data didn't surface a clear top exporter for that region."),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message="which south american country exports the most avocados?",
+    )
+    assert isinstance(ScopeViolationHook().check(ctx), Continue)
+
+
+def test_scope_violation_silent_when_user_names_multiple_regions() -> None:
+    """Ambiguity guard: user message names MULTIPLE regions and the
+    named country is in one of them. Skip — the question's scope is
+    unclear and the country isn't unambiguously out-of-scope."""
+    ctx = BailContext(
+        reply=_reply("The top avocado exporter in the region is Mexico."),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message=("compare top avocado exporters from north america and south america."),
+    )
+    assert isinstance(ScopeViolationHook().check(ctx), Continue)
+
+
+def test_scope_violation_fires_on_asian_country_for_african_question() -> None:
+    """Generalized shape: user asks for top African, reply names an
+    Asian country. The gazetteer covers more regions than just SA."""
+    ctx = BailContext(
+        reply=_reply("The top African coffee producer is Vietnam."),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message="which african country produces the most coffee?",
+    )
+    outcome = ScopeViolationHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "Vietnam" in outcome.text
+    assert "africa" in outcome.text.lower()
+
+
+def test_geography_module_has_expected_membership() -> None:
+    """Smoke test the gazetteer itself: known-good memberships for
+    the failure modes the catcher targets."""
+    from harness.orchestrator._geography import (
+        REGION_COUNTRIES,
+        countries_in_region,
+        in_region,
+    )
+
+    # South America membership: Mexico must NOT be in; Peru must be in.
+    assert in_region("Peru", "south america")
+    assert in_region("Peru", "South America")  # case-insensitive
+    assert not in_region("Mexico", "south america")
+
+    # Latin America DOES include Mexico (broader scope).
+    assert in_region("Mexico", "latin america")
+
+    # Lookup with unknown region: empty.
+    assert countries_in_region("xenadu") == frozenset()
+    # Every populated region has entries.
+    for region in REGION_COUNTRIES:
+        assert countries_in_region(region), f"region {region!r} unexpectedly empty"
 
 
 def test_list_count_mismatch_ignores_phone_and_frequency_digits() -> None:
