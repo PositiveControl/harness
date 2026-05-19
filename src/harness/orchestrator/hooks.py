@@ -936,6 +936,120 @@ class FabricatedItemizationHook:
         return Continue()
 
 
+_THIN_SOURCE_FABRICATION_NUDGE = (
+    "The page you fetched returned thin / empty content for the data "
+    "you're claiming. The body contained almost no numeric values, "
+    "yet your reply emits specific numbers with units (temperatures, "
+    "percentages, distances). That's fabrication. Either: (a) try a "
+    "different source — a real API endpoint (weather.gov forecast.json, "
+    "wttr.in, aviationweather.gov), a non-JS-rendered page, or a more "
+    "specific URL; or (b) tell the user plainly that you couldn't "
+    "extract the data and what they could paste instead. Do NOT invent "
+    "specific numbers from a body that didn't carry them."
+)
+
+
+# Numeric-with-unit tokens — temperatures, percentages, speed,
+# distance, currency. Counted on BOTH the reply (claims) and the most
+# recent prior tool output (anchor). The detector fires when the
+# reply has many and the body has few — i.e. the model produced
+# specifics the source didn't carry.
+THIN_SOURCE_NUMERIC_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*"
+    r"(?:"
+    r"°\s*[FC]\b"
+    r"|"
+    r"°(?=\s|$|[.,;)])"
+    r"|"
+    r"degrees?\b"
+    r"|"
+    r"%"
+    r"|"
+    r"(?:mph|kph|km/?h|knots?|mps)\b"
+    r"|"
+    r"(?:miles?|kilometers?|km|mi|ft|feet|m|meters?|inches?|in|mm|cm)\b"
+    r"|"
+    r"(?:hpa|mb|mbar|inhg|millibars?)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+# Currency runs as a leading-symbol pattern, separately from the
+# trailing-unit alternation above. Captured here so a price-claim
+# fabrication off a thin body fires too.
+THIN_SOURCE_CURRENCY_RE = re.compile(r"[$€£¥]\s*\d+(?:\.\d+)?")
+
+
+def _thin_source_numeric_count(text: str) -> int:
+    """Total numeric-with-unit tokens — temperatures + percentages +
+    speeds + distances + pressures + currency. Sums the trailing-unit
+    matches and the leading-symbol currency matches."""
+    return len(THIN_SOURCE_NUMERIC_RE.findall(text)) + len(THIN_SOURCE_CURRENCY_RE.findall(text))
+
+
+# Thresholds tuned biased toward false-negatives (harness-xszc). A
+# real forecast / data page returns dozens of numeric-with-unit
+# tokens; a JS-rendered SPA with no content extraction yields zero
+# or a handful. The reply floor (>= 3) filters out the legitimate
+# "I see one data point" case where overlap is incidental.
+_THIN_SOURCE_BODY_FLOOR = 3
+_THIN_SOURCE_REPLY_FLOOR = 3
+
+
+@dataclass(frozen=True)
+class ThinSourceFabricationHook:
+    """Catch numeric-claim fabrication off a thin tool body
+    (harness-xszc). Session repro 2026-05-19: model called fetch_url
+    on weather.com (JS-rendered SPA), got back a body with no
+    forecast data, fabricated four days of temperatures + humidity
+    that drifted across three retry rounds.
+
+    Existing fabrication catchers don't close this:
+      - fabricated_search disarms once a real web tool ran.
+      - fabricated_itemization gates on `_content_tools_ran=False`.
+      - numeric_fabrication needs the body to CONTAIN the numbers
+        for cross-row comparison; a thin body has no anchors so the
+        catcher stays silent.
+      - raw_results_dump gates on HIGH overlap — opposite of this
+        catcher's case.
+
+    Trigger conditions (ALL must hold):
+      1. prior_tool_outputs non-empty (a tool ran and produced
+         output we can inspect).
+      2. Most recent tool output carries fewer than
+         _THIN_SOURCE_BODY_FLOOR numeric-with-unit tokens — the
+         body can't support specific numeric claims.
+      3. Reply emits at least _THIN_SOURCE_REPLY_FLOOR specific
+         numeric claims with units — short replies that don't claim
+         numbers aren't fabrication candidates.
+
+    Silent cases (by design):
+      - Body has the numbers (≥ _THIN_SOURCE_BODY_FLOOR) →
+        defer to numeric_fabrication / table_fabrication for the
+        cross-row drift case.
+      - Reply has no numeric claims → fabrication isn't the failure
+        shape; other catchers handle prose drift.
+      - No prior tool output → the no-tool case is fabricated_search
+        / false_success / teaser territory.
+
+    Lives in the universal bail roster — the failure mode is
+    character-agnostic. Position after fabricated_itemization so
+    the no-content-tool fabrication shapes get first pass."""
+
+    name: str = "thin_source_fabrication"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if not ctx.prior_tool_outputs:
+            return Continue()
+        body = ctx.prior_tool_outputs[-1]
+        if _thin_source_numeric_count(body) >= _THIN_SOURCE_BODY_FLOOR:
+            return Continue()
+        if _thin_source_numeric_count(ctx.reply.content) < _THIN_SOURCE_REPLY_FLOOR:
+            return Continue()
+        return Nudge(_THIN_SOURCE_FABRICATION_NUDGE)
+
+
 _AB_FABRICATION_NUDGE = (
     "Your reply looks like fabricated tool output (ab_ops capture "
     "receipt / tiered plan / fake scope abbreviation). You did NOT "
@@ -3467,6 +3581,9 @@ HOOK_SHAPES: dict[str, str] = {
     ),
     "fabricated_search": "Reply narrates web-search activity but no web tool ran.",
     "fabricated_itemization": "Reply fabricates additional list items beyond what was real.",
+    "thin_source_fabrication": (
+        "Reply makes specific numeric claims off a tool body that contained almost none."
+    ),
     "ab_fabrication": "Reply imitates ab_ops output without a real tool call.",
     "tool_intent": "Reply restates a tool-call intent as prose, no actual call.",
     "ambiguous_context": "Reply silently picks one variant of an ambiguous term.",
@@ -3688,6 +3805,15 @@ def default_hook_pipeline(
         RawResultsDumpHook(),
         FabricatedSearchHook(),
         FabricatedItemizationHook(),
+        # thin_source_fabrication (harness-xszc): the inverse of
+        # raw_results_dump. Fires when a tool ran but its body has
+        # almost no numeric tokens AND the reply emits specific
+        # numeric claims with units. Targets the JS-rendered SPA
+        # fetch case (weather.com Nairobi repro 2026-05-19) where
+        # fetch_url returns navigation + scripts and the model
+        # fabricates coherent-looking numbers anyway. Universal,
+        # not opt-in — failure mode is character-agnostic.
+        ThinSourceFabricationHook(),
     ]
     # ab_fabrication: ab_ops capture/plan/remember imitation shapes.
     # Self-gates on `tools_ran_this_turn=False`; non-ab characters

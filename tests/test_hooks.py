@@ -50,6 +50,7 @@ from harness.orchestrator.hooks import (
     SourceCountInflationHook,
     TableFabricationHook,
     TeaserHook,
+    ThinSourceFabricationHook,
     ToolIntentHook,
     Truncated,
     TruncatedHook,
@@ -433,6 +434,164 @@ def test_raw_results_dump_hook_fires_on_compare_verb_variant() -> None:
     assert isinstance(RawResultsDumpHook().check(ctx), Nudge)
 
 
+# ---------- thin_source_fabrication (harness-xszc) ----------
+
+# Approximation of what fetch_url returns when pointed at a JS-rendered
+# SPA (weather.com Nairobi repro 2026-05-19). Extract-text strips most
+# scripts, leaving navigation + footer + a notice that JS is required.
+# Zero numeric-with-unit tokens — the body can't support specific
+# numeric claims.
+_THIN_WEATHER_BODY = (
+    "10-Day Weather Forecast for Nairobi, Kenya - The Weather Channel\n\n"
+    "Sign In | Skip to navigation. JavaScript required to view this page. "
+    "Privacy | Terms | About | Contact. Today's forecast | Hourly | "
+    "Tomorrow | Weekend. Allergy | Pollen | Air quality. Maps | Radar | "
+    "Satellite. © 2026 Weather Group, LLC."
+)
+
+# Repro shape: model emits a 4-day forecast off the thin body.
+_THIN_WEATHER_REPLY = (
+    "The 4-day forecast for Nairobi, Kenya:\n"
+    "Today: high 85°F, low 65°F, humidity 65%\n"
+    "Tomorrow: high 87°F, low 66°F, humidity 68%\n"
+    "Day 3: high 88°F, low 67°F, humidity 70%\n"
+    "Day 4: high 89°F, low 68°F, humidity 72%\n"
+)
+
+
+def test_thin_source_fabrication_hook_fires_on_weather_repro() -> None:
+    """The motivating repro: fetch_url returned a JS-rendered SPA body
+    with no forecast data, model fabricated four days of temps +
+    humidity. Thin body (0 numeric tokens) + numeric reply (12 tokens)
+    must Nudge."""
+    ctx = BailContext(
+        reply=_reply(_THIN_WEATHER_REPLY),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web", "fetch_url"}),
+        user_message="4-day weather forecast for Nairobi, Kenya",
+        prior_tool_outputs=(_THIN_WEATHER_BODY,),
+    )
+    outcome = ThinSourceFabricationHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "thin" in outcome.text.lower() or "fabrication" in outcome.text.lower()
+
+
+def test_thin_source_fabrication_hook_silent_when_body_has_numbers() -> None:
+    """Body carries real data — defer to numeric_fabrication /
+    table_fabrication for the cross-row drift case. This catcher
+    targets the no-anchor fabrication path, not the wrong-anchor
+    path."""
+    rich_body = (
+        "Nairobi, Kenya — 4-day forecast:\n"
+        "Day 1: high 75°F low 55°F humidity 60%\n"
+        "Day 2: high 76°F low 56°F humidity 62%\n"
+        "Day 3: high 77°F low 57°F humidity 63%\n"
+        "Day 4: high 78°F low 58°F humidity 64%\n"
+    )
+    ctx = BailContext(
+        reply=_reply(_THIN_WEATHER_REPLY),  # reply doesn't match, but
+        # this catcher's job isn't to check that. It only filters out
+        # the no-anchor case so other catchers can do their work.
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"fetch_url"}),
+        user_message="4-day forecast for Nairobi",
+        prior_tool_outputs=(rich_body,),
+    )
+    assert isinstance(ThinSourceFabricationHook().check(ctx), Continue)
+
+
+def test_thin_source_fabrication_hook_silent_when_reply_has_no_numeric_claims() -> None:
+    """Reply doesn't make specific numeric claims — fabrication isn't
+    the failure shape. A polite 'I couldn't extract the forecast'
+    reply over a thin body must NOT trigger."""
+    ctx = BailContext(
+        reply=_reply(
+            "I couldn't extract a forecast from that page. The Weather "
+            "Channel site needs JavaScript. Try weather.gov for US "
+            "locations or wttr.in for global coverage."
+        ),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"fetch_url"}),
+        user_message="4-day forecast for Nairobi",
+        prior_tool_outputs=(_THIN_WEATHER_BODY,),
+    )
+    assert isinstance(ThinSourceFabricationHook().check(ctx), Continue)
+
+
+def test_thin_source_fabrication_hook_silent_without_prior_tool_outputs() -> None:
+    """No tool output to compare against — the no-tool fabrication
+    case is fabricated_search / false_success / teaser territory."""
+    ctx = BailContext(
+        reply=_reply(_THIN_WEATHER_REPLY),
+        tools_ran_this_turn=False,
+        tools_ran=frozenset(),
+        user_message="4-day forecast",
+        prior_tool_outputs=(),
+    )
+    assert isinstance(ThinSourceFabricationHook().check(ctx), Continue)
+
+
+def test_thin_source_fabrication_hook_silent_on_paraphrase_reply() -> None:
+    """Reply paraphrases the body without inventing specific numbers —
+    legitimate summarization of a thin or prose-only source."""
+    prose_body = (
+        "Nairobi has a subtropical highland climate due to its elevation. "
+        "The city experiences mild temperatures year-round with cool nights. "
+        "Rainfall peaks during the long rains in March-May and short rains "
+        "in October-November."
+    )
+    paraphrase_reply = (
+        "Nairobi has a mild climate year-round thanks to its elevation. "
+        "There are two rainy seasons — long rains in spring and short rains "
+        "in autumn. Nights tend to be cool."
+    )
+    ctx = BailContext(
+        reply=_reply(paraphrase_reply),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"fetch_url"}),
+        user_message="what's the climate in Nairobi like",
+        prior_tool_outputs=(prose_body,),
+    )
+    assert isinstance(ThinSourceFabricationHook().check(ctx), Continue)
+
+
+def test_thin_source_fabrication_hook_silent_on_low_claim_count_reply() -> None:
+    """Reply mentions only one or two numbers — below the
+    reply-floor. A single incidental claim isn't the fabrication
+    shape this catcher targets."""
+    ctx = BailContext(
+        reply=_reply(
+            "I see roughly 70°F mentioned on the page. The rest of the "
+            "forecast didn't render — try a different source."
+        ),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"fetch_url"}),
+        user_message="4-day forecast for Nairobi",
+        prior_tool_outputs=(_THIN_WEATHER_BODY,),
+    )
+    assert isinstance(ThinSourceFabricationHook().check(ctx), Continue)
+
+
+def test_thin_source_fabrication_hook_numeric_regex_coverage() -> None:
+    """The numeric-claim regex must cover the common units that get
+    fabricated: temperatures (°F/°C), percentages, speeds (mph/knots),
+    distances (mi/km/ft), pressure (hPa/inHg), currency. Check via
+    the helper used by the catcher."""
+    from harness.orchestrator.hooks import _thin_source_numeric_count
+
+    samples = [
+        "high 85°F low 65°F humidity 65%",  # temps + percent
+        "wind 12 mph gusting 25 mph",  # mph
+        "visibility 5 miles ceiling 2000 ft",  # miles + ft
+        "pressure 1013 hPa or 29.91 inHg",  # pressure
+        "price $19.99 or €17.50",  # currency
+    ]
+    for sample in samples:
+        assert _thin_source_numeric_count(sample) >= 2, (
+            f"numeric regex missed tokens in: {sample!r}"
+        )
+
+
 def test_fabricated_search_hook_fires_after_meta_tool_only() -> None:
     """harness-q7kn: load_tool / tool_search / introspect are meta-tools
     (plumbing for the discovery loop). They must NOT disarm the
@@ -616,6 +775,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "raw_results_dump",
         "fabricated_search",
         "fabricated_itemization",
+        "thin_source_fabrication",
         "ab_fabrication",
         "tool_intent",
         "missing_citation",

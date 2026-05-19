@@ -22,6 +22,7 @@ Hooks dispatch in the order shown within each phase — first-match semantics, s
 | `raw_results_dump` | Reply repeats tool output verbatim instead of synthesizing as the prompt asked. |
 | `fabricated_search` | Reply narrates web-search activity but no web tool ran. |
 | `fabricated_itemization` | Reply fabricates additional list items beyond what was real. |
+| `thin_source_fabrication` | Reply makes specific numeric claims off a tool body that contained almost none. |
 | `ab_fabrication` | Reply imitates ab_ops output without a real tool call. |
 | `tool_intent` | Reply restates a tool-call intent as prose, no actual call. |
 | `missing_citation` | Reply references the corpus substantively without an anchor. |

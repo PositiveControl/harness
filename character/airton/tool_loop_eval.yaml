@@ -64,6 +64,51 @@
   expected_fallback: true
   expected_events_contain: [bail_retry]
 
+- id: thin_source_fabrication_weather_nairobi
+  label: thin_source_fabrication
+  description: |
+    Session repro 2026-05-19. User asked for 4-day Nairobi
+    forecast; model called fetch_url on weather.com (JS-rendered
+    SPA) and got back a body with no actual forecast data — just
+    navigation + scripts + "JavaScript required" text.
+    Round 1 reply fabricates four days of specific temps +
+    humidity off the thin body. ThinSourceFabricationHook fires
+    (body < 3 numeric-with-unit tokens, reply >= 3 numeric
+    claims); round 2 retry produces a refusal that names a
+    better source. Fuller fixture lives in
+    evals/orchestrator/thin_source_fabrication.yaml.
+  registry:
+    - name: fetch_url
+      output: |
+        10-Day Weather Forecast for Nairobi, Kenya - The Weather Channel
+        Sign In | Skip to navigation. JavaScript required to view this page.
+        Privacy | Terms | About | Contact. Today's forecast | Hourly |
+        Tomorrow | Weekend. Allergy | Pollen | Air quality. © 2026
+        Weather Group, LLC.
+  messages:
+    - role: user
+      content: "Search the next 4 days of weather for Nairobi, Kenya from weather.com. Then determine which day will be the most pleasant."
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: fetch_url
+          arguments: { url: "https://weather.com/weather/tenday/l/...", extract_text: true }
+    - content: |
+        4-day forecast for Nairobi, Kenya:
+        Today: high 85°F, low 65°F, humidity 65%
+        Tomorrow: high 87°F, low 66°F, humidity 68%
+        Day 3: high 88°F, low 67°F, humidity 70%
+        Day 4: high 89°F, low 68°F, humidity 72%
+        The most pleasant day is today.
+    - content: |
+        I couldn't extract a real forecast from that page —
+        weather.com is JavaScript-rendered and the plain fetch
+        returned only navigation. Try wttr.in/Nairobi or the
+        Kenya Meteorological Department for actual values; I
+        won't make up numbers.
+  expected_contains: ["wttr.in", "make up"]
+  expected_events_contain: [bail_retry]
+
 - id: raw_results_dump_news_priority
   label: raw_results_dump
   description: |

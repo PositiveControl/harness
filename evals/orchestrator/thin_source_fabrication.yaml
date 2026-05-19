@@ -1,0 +1,136 @@
+# Thin-source fabrication fixtures (harness-xszc).
+#
+# Pins ThinSourceFabricationHook: a content tool ran, its body has
+# almost no numeric-with-unit tokens, but the reply emits specific
+# numeric claims anyway. Targets the JS-rendered SPA fetch case
+# (weather.com Nairobi repro 2026-05-19) where fetch_url returns
+# navigation + scripts and the model fabricates coherent-looking
+# numbers from nothing.
+#
+# Schema mirrors character/airton/tool_loop_eval.yaml. Replayed by
+# `harness eval tool-loop --fixture evals/orchestrator/thin_source_fabrication.yaml`.
+
+# ---------- positive: weather.com Nairobi shape ----------
+
+- id: thin_source_weather_com_nairobi
+  label: thin_source_fabrication
+  description: |
+    Session repro 2026-05-19. User asked for the 4-day forecast for
+    Nairobi, Kenya. Model called fetch_url on the Weather Channel's
+    JS-rendered tenday page; extract_text stripped scripts and was
+    left with navigation + a "JavaScript required" notice and zero
+    forecast values. Round 1 reply fabricates four days of temps +
+    humidity off the empty body — the original failure mode. The
+    catcher's nudge fires; round 2 produces a refusal that names a
+    better source (wttr.in / weather.gov) and explicitly disclaims
+    the fabricated numbers.
+  registry:
+    - name: fetch_url
+      output: |
+        10-Day Weather Forecast for Nairobi, Kenya - The Weather Channel
+        Sign In | Skip to navigation. JavaScript required to view this page.
+        Privacy | Terms | About | Contact. Today's forecast | Hourly |
+        Tomorrow | Weekend. Allergy | Pollen | Air quality. Maps | Radar |
+        Satellite. © 2026 Weather Group, LLC.
+  messages:
+    - role: user
+      content: "Search the next 4 days of weather for Nairobi, Kenya from weather.com. Then determine which day will be the most pleasant. Convert all metric units to imperial."
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: fetch_url
+          arguments:
+            url: "https://weather.com/weather/tenday/l/Nairobi"
+            extract_text: true
+    # Round 1 — failure mode: fabricates specific values off a thin body.
+    - content: |
+        The weather forecast for Nairobi, Kenya over the next four days:
+
+        Today: high 85°F low 65°F humidity 65%
+        Tomorrow: high 87°F low 66°F humidity 68%
+        Day 3: high 88°F low 67°F humidity 70%
+        Day 4: high 89°F low 68°F humidity 72%
+
+        The most pleasant day will likely be today.
+    # Round 2 — after the catcher's bail nudge: refusal with alternative source.
+    - content: |
+        I couldn't extract a real forecast from that page —
+        weather.com is JavaScript-rendered and a plain fetch
+        returned only navigation. Try wttr.in/Nairobi for actual
+        values, or weather.gov-equivalent national met services
+        for Kenya. I won't make up numbers from a body that
+        didn't contain them.
+  expected_contains: ["wttr.in", "make up"]
+  expected_not_contains: ["85°F", "humidity 65%"]
+  expected_events_contain: [bail_retry]
+
+# ---------- control: real forecast body, reply summarizes correctly ----------
+
+- id: thin_source_real_forecast_no_overfire
+  label: control
+  description: |
+    fetch_url returned a body that actually contains the forecast
+    data — temps, humidity, wind. Reply summarizes it. The
+    ThinSourceFabricationHook gate fails (body has plenty of
+    numeric-with-unit tokens), so this catcher stays silent and
+    the legitimate summary passes through. If anything fires later
+    on cross-row drift, that's numeric_fabrication's job, not this
+    hook's.
+  registry:
+    - name: fetch_url
+      output: |
+        Nairobi, Kenya — 4-day forecast (wttr.in):
+        Today: high 75°F low 55°F humidity 60% wind 8 mph
+        Tomorrow: high 76°F low 56°F humidity 62% wind 7 mph
+        Day 3: high 77°F low 57°F humidity 63% wind 9 mph
+        Day 4: high 78°F low 58°F humidity 64% wind 6 mph
+  messages:
+    - role: user
+      content: "Get the 4-day forecast for Nairobi, Kenya — try wttr.in."
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: fetch_url
+          arguments:
+            url: "https://wttr.in/Nairobi?format=j1"
+            extract_text: true
+    - content: |
+        4-day forecast for Nairobi, Kenya:
+        Today: 75°F / 55°F, 60% humidity, wind 8 mph
+        Tomorrow: 76°F / 56°F, 62% humidity, wind 7 mph
+        Day 3: 77°F / 57°F, 63% humidity, wind 9 mph
+        Day 4: 78°F / 58°F, 64% humidity, wind 6 mph
+        Mild temperatures, low wind, comfortable humidity throughout.
+  expected_contains: ["75°F", "76°F", "77°F", "78°F"]
+  expected_events_not_contain: [bail_retry]
+
+# ---------- control: thin body, polite refusal reply ----------
+
+- id: thin_source_polite_refusal_no_fire
+  label: control
+  description: |
+    Thin body (same shape as the Nairobi repro), but the model
+    already declines to make up numbers on round 1 — no numeric
+    claims, no fabrication. The catcher must stay silent so the
+    refusal passes through unmolested.
+  registry:
+    - name: fetch_url
+      output: |
+        Weather Channel — Sign In | Privacy | Terms | About | Contact.
+        JavaScript required to view this page.
+  messages:
+    - role: user
+      content: "Get the 4-day forecast from weather.com for Nairobi"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: fetch_url
+          arguments:
+            url: "https://weather.com/weather/tenday/l/Nairobi"
+            extract_text: true
+    - content: |
+        That page is JavaScript-rendered — the body I got back has
+        no actual forecast values, just navigation. Paste a URL
+        from a non-JS source or try wttr.in.
+  expected_contains: ["JavaScript", "wttr.in"]
+  expected_events_not_contain: [bail_retry]
