@@ -2099,6 +2099,60 @@ def test_tag_masker_hides_tag_split_across_chunks() -> None:
     assert out == "hello  world"
 
 
+def test_tag_masker_hides_qwen3_coder_nested_tool_call() -> None:
+    """harness-od8w regression: Qwen3-Coder emits the NESTED format
+    `<tool_call><function=…>…</function></tool_call>`. The inner
+    `</function>` used to flip visible mode back on, leaking the
+    outer `</tool_call>` into the user's transcript (visible in
+    Mark's 2026-05-20 GTA2 session). Open/close pairing fixes this:
+    a `<tool_call>` entry only exits on `</tool_call>`, ignoring any
+    inner closes while hidden."""
+    from harness.model.mlx import _TagMasker
+
+    m = _TagMasker()
+    raw = (
+        "before "
+        "<tool_call>"
+        "<function=read_file><parameter=path>foo.txt</parameter></function>"
+        "</tool_call>"
+        " after"
+    )
+    out = "".join(m.feed(c) for c in raw) + m.flush()
+    # The whole nested block is hidden; neither outer tag nor inner
+    # function/parameter markup leaks. No orphan `</tool_call>` survives.
+    assert "<tool_call>" not in out
+    assert "</tool_call>" not in out
+    assert "<function=" not in out
+    assert "</function>" not in out
+    assert "<parameter=" not in out
+    assert "foo.txt" not in out
+    assert out.strip() == "before  after"
+
+
+def test_tag_masker_qwen3_close_tag_across_delta_boundary() -> None:
+    """harness-od8w: the close tag for an outer `<tool_call>` arrives
+    across a stream delta boundary AFTER an inner `</function>`. The
+    pairing fix must keep us hidden until `</tool_call>` arrives, even
+    when it straddles deltas."""
+    from harness.model.mlx import _TagMasker
+
+    m = _TagMasker()
+    chunks = [
+        "intro ",
+        "<tool_call>",
+        "<function=run><parameter=x>1</parameter>",
+        "</function>",  # inner close — MUST NOT flip visible back on
+        "</tool",  # outer close straddles two deltas
+        "_call>",
+        " outro",
+    ]
+    out = "".join(m.feed(c) for c in chunks) + m.flush()
+    assert "<tool_call>" not in out
+    assert "</tool_call>" not in out
+    assert "</function>" not in out
+    assert out == "intro  outro"
+
+
 def test_tag_masker_drops_buffer_on_unclosed_tag() -> None:
     """If the stream ends inside a tool-call span (truncation) the
     buffered hidden text is dropped — we can't safely show half a JSON

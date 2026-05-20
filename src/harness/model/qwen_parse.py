@@ -175,8 +175,17 @@ class _TagMasker:
     Keeps a small rolling tail in visible mode so a tag opening that
     straddles a delta boundary ("...hello<to" + "ol_call>...") isn't
     leaked before the masker can recognize it. `_MAX_TAIL` must be at
-    least the length of the longest recognized opening tag."""
+    least the length of the longest recognized opening tag.
 
+    Open/close tag pairing (harness-od8w): hidden-mode exit only on
+    the close that matches the open we entered with. Qwen3-Coder's
+    nested format `<tool_call><function=…>…</function></tool_call>`
+    used to flip visible mode back on at the inner `</function>`,
+    leaving the trailing `</tool_call>` to leak into output. Pairing
+    means a `<tool_call>` entry only exits on `</tool_call>` —
+    inner `</function>` is ignored while hidden."""
+
+    # Parallel-indexed tuples: opens[i] pairs with closes[i].
     _OPEN_TAGS = ("<tool_call>", "<function=")
     _CLOSE_TAGS = ("</tool_call>", "</function>")
     _MAX_TAIL = 15
@@ -184,6 +193,10 @@ class _TagMasker:
     def __init__(self) -> None:
         self._buf = ""
         self._hidden = False
+        # Records the matching close tag when entering hidden mode so
+        # nested inner closes (e.g. `</function>` inside a `<tool_call>`
+        # span) don't trigger an early exit. None in visible mode.
+        self._close_tag: str | None = None
 
     def feed(self, delta: str) -> str:
         self._buf += delta
@@ -191,10 +204,12 @@ class _TagMasker:
         while True:
             if not self._hidden:
                 earliest = -1
-                for tag in self._OPEN_TAGS:
+                matched_idx = -1
+                for i, tag in enumerate(self._OPEN_TAGS):
                     idx = self._buf.find(tag)
                     if idx != -1 and (earliest == -1 or idx < earliest):
                         earliest = idx
+                        matched_idx = i
                 if earliest == -1:
                     safe_cut = len(self._buf) - self._MAX_TAIL
                     if safe_cut > 0:
@@ -204,18 +219,15 @@ class _TagMasker:
                 out.append(self._buf[:earliest])
                 self._buf = self._buf[earliest:]
                 self._hidden = True
+                self._close_tag = self._CLOSE_TAGS[matched_idx]
             else:
-                end = -1
-                end_tag_len = 0
-                for close in self._CLOSE_TAGS:
-                    idx = self._buf.find(close)
-                    if idx != -1 and (end == -1 or idx < end):
-                        end = idx
-                        end_tag_len = len(close)
+                assert self._close_tag is not None
+                end = self._buf.find(self._close_tag)
                 if end == -1:
                     break
-                self._buf = self._buf[end + end_tag_len :]
+                self._buf = self._buf[end + len(self._close_tag) :]
                 self._hidden = False
+                self._close_tag = None
         return "".join(out)
 
     def flush(self) -> str:
