@@ -10,12 +10,16 @@ Subsequent phases (executor, planner) compose around these.
 
 from harness.driver.bd import DriverBd, DriverBdError
 from harness.driver.handoff import Handoff, build_handoff
+from harness.driver.loop import LoopConfig, LoopResult, run_loop
 from harness.driver.state import LoopRunState
 
 __all__ = [
     "DriverBd",
     "DriverBdError",
     "Handoff",
+    "LoopConfig",
+    "LoopResult",
     "LoopRunState",
     "build_handoff",
+    "run_loop",
 ]

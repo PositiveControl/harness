@@ -1,0 +1,554 @@
+"""Executor loop — harness-ml66.
+
+Drives a bd epic to closure by iterating `bd ready --under-epic`, one
+issue per turn, until the epic empties or a halt condition fires.
+Bypasses `harness chat` and calls `orchestrator.tool_loop.run_tool_loop`
+directly so the executor turn skips voice retrieval, persona rewrite,
+and chat-history tracking — none of which apply to agent-to-agent
+work.
+
+Per-iteration flow:
+
+  1. SIGINT check — clean exit with a session-state bead + state save.
+  2. Turn-budget check — exit_exhausted if `turns_used >= max_turns`.
+  3. `bd.ready_under_epic(epic_id)` — exit_success if empty.
+  4. Take the top of ready; increment attempt counter for that id.
+  5. Build the handoff. If `dry_run`, print and return without calling
+     the model.
+  6. Assemble messages: `[system=character.system_prompt(...) + handoff,
+     user="Drive this bd issue to closure..."]`. No voice samples
+     (stripped prompt, per harness-ml66).
+  7. Call `run_tool_loop` with the coding-profile registry (filesystem
+     + git + reckon + discovery + fetch_url; store-dependent tools
+     skipped for v0).
+  8. Post-turn outcome check: `bd.show(current_id).status == "closed"`
+     AND the reply isn't the fabrication-fallback sentinel.
+  9. On SUCCESS — record close, write a session-state bead, log,
+     continue.
+  10. On FIRST FAILURE — stash the reason in `state.last_failure`,
+      save, log, retry the same issue.
+  11. On SECOND FAILURE — `bd.flag_human`, write a session-state bead
+      with `status=halted`, save, log, exit_halted.
+
+Outcome detection is intentionally NOT scan-based on tool calls —
+the executor's coding profile gives the model `shell`, so it'll close
+via `bd close <id>` via shell rather than a structured `bd_close`
+tool. Post-turn `bd.show` is mechanical and doesn't care which path
+the model took.
+
+State persists between turns to `<workspace>/.harness/loop_runs/<id>.json`
+(crash-safe atomic write via `LoopRunState.save`). Progress log mirrors
+the bead writes to a plain-text file so `tail -f` works during a long
+run.
+
+Resume contract (`--resume <loop_run_id>`): load the state file, pick
+the next ready issue per the same `ready_under_epic` query, continue.
+Any in-progress attempt count is preserved — a SIGINT mid-attempt
+resumes on attempt #2 (operator-visible via the progress log).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import logging
+import signal
+import subprocess
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Literal
+
+from harness.character import Character
+from harness.driver.bd import DriverBd, DriverBdError
+from harness.driver.handoff import Handoff, build_handoff
+from harness.driver.state import LoopRunState
+from harness.model.adapter import ChatMessage, ModelAdapter
+from harness.orchestrator import ToolLoopResult, run_tool_loop
+from harness.orchestrator.hooks import (
+    EXHAUSTED_FABRICATION_FALLBACK,
+    HookPipeline,
+    default_hook_pipeline,
+)
+from harness.tools import (
+    CalcTool,
+    DateMathTool,
+    EditFileTool,
+    FetchUrlTool,
+    GitDiffTool,
+    GitLogTool,
+    GitStatusTool,
+    GlobTool,
+    GrepTool,
+    ListDirTool,
+    LoadToolTool,
+    NowTool,
+    ReadFileTool,
+    ShellTool,
+    Tool,
+    ToolCatalog,
+    ToolRegistry,
+    ToolSearchTool,
+    WriteFileTool,
+    seed_builtins_into,
+)
+
+# The user message stays fixed across the run — the handoff carries the
+# noun, this is the verb. Mentions `bd close` explicitly so the model
+# knows shelling to bd is how it signals completion (v0 has no
+# structured bd_close tool — that's a future revision).
+EXECUTOR_USER_MESSAGE = (
+    "Drive the bd issue described in the session handoff to closure. "
+    "Run `bd close <issue-id>` via shell when the acceptance criteria are met. "
+    "Do not invent acceptance criteria the issue doesn't list."
+)
+
+
+@dataclass
+class LoopConfig:
+    """Configuration for one `run_loop` invocation.
+
+    - `epic_id`: bd epic this run drains. Ignored when `resume_from` is
+      set (state file carries it).
+    - `workspace`: workspace root. Used as `bd_dir` for `DriverBd`,
+      `cwd` for git diff, sandbox root for filesystem tools, and
+      anchor for `.harness/loop_runs/*.json`.
+    - `character`: loaded `Character` used for the (stripped) system
+      prompt. `character.system_prompt(include_samples=())` strips
+      voice few-shot — identity + values + style rules survive.
+    - `max_turns`: hard cap on iterations. Default 20.
+    - `profile`: pinned to "coding" today; field present so future
+      revisions can swap without changing the run_loop signature.
+    - `resume_from`: loop_run_id of an existing state file. When set,
+      `epic_id` and `max_turns` are ignored — the state file owns
+      those values.
+    - `dry_run`: assemble the handoff and print it, then return
+      without running the model. Useful for verifying handoff shape
+      before burning real turns.
+    - `log_path`: progress log file. Defaults to
+      `<workspace>/.harness/loop_runs/<loop_run_id>.log`.
+    """
+
+    epic_id: str
+    workspace: Path
+    character: Character
+    max_turns: int = 20
+    profile: str = "coding"
+    resume_from: str | None = None
+    dry_run: bool = False
+    log_path: Path | None = None
+
+
+@dataclass
+class LoopResult:
+    """What `run_loop` returns to the caller.
+
+    `exit_reason` matches the lifecycle event names in the progress log:
+      - "success":     ready_under_epic emptied; epic complete.
+      - "exhausted":   turns_used reached max_turns.
+      - "halted":      second failure on the same issue; bd-human flagged.
+      - "interrupted": SIGINT mid-loop.
+      - "dry_run":     --dry-run; one handoff printed, no turn ran.
+    """
+
+    loop_run_id: str
+    epic_id: str
+    closed: list[str]
+    halted_on: str | None
+    turns_used: int
+    exit_reason: Literal["success", "halted", "exhausted", "interrupted", "dry_run"]
+    handoffs: list[Handoff] = field(default_factory=list)
+
+
+# --- top-level entry --------------------------------------------------
+
+
+def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopResult:
+    """Run the executor loop until success / halt / exhaustion / interrupt."""
+    state = _load_or_init_state(config)
+    log_path = _resolve_log_path(config, state)
+    log = _open_log(log_path)
+    log(
+        f"loop_run={state.loop_run_id} epic={state.epic_id} max_turns={state.max_turns} "
+        f"resumed={'yes' if config.resume_from else 'no'}"
+    )
+
+    with _sigint_guard() as interrupted:
+        while True:
+            if interrupted.is_set():
+                return _exit_interrupted(bd, state, log)
+            if state.turns_used >= state.max_turns:
+                return _exit_exhausted(state, log)
+
+            try:
+                ready = bd.ready_under_epic(state.epic_id)
+            except DriverBdError as exc:
+                log(f"bd ready_under_epic failed: {exc}; halting")
+                return _exit_halted(bd, state, current_id=state.epic_id, reason=str(exc), log=log)
+            if not ready:
+                return _exit_success(state, log)
+
+            current = ready[0]
+            attempt = state.attempt_counts.get(current.id, 0) + 1
+            state.attempt_counts[current.id] = attempt
+            prior_failure = state.last_failure.get(current.id) if attempt > 1 else None
+
+            handoff = build_handoff(
+                state,
+                current.id,
+                bd,
+                git_root=config.workspace,
+                prior_attempt_failure=prior_failure,
+            )
+
+            if config.dry_run:
+                log(f"dry_run: handoff for {current.id} (attempt {attempt}) — exiting")
+                # Stash the handoff so callers (eg. tests) can inspect.
+                return LoopResult(
+                    loop_run_id=state.loop_run_id,
+                    epic_id=state.epic_id,
+                    closed=list(state.closed_this_run),
+                    halted_on=None,
+                    turns_used=state.turns_used,
+                    exit_reason="dry_run",
+                    handoffs=[handoff],
+                )
+
+            turn_success, turn_reason = _run_executor_turn(
+                adapter=adapter,
+                character=config.character,
+                handoff=handoff,
+                workspace=config.workspace,
+            )
+            state.turns_used += 1
+
+            success, reason = _classify_post_turn(bd, current.id, turn_success, turn_reason)
+
+            if success:
+                _on_success(bd, state, current.id, log)
+                _save_state(state, config.workspace)
+                continue
+
+            log(f"turn {state.turns_used}: {current.id} attempt={attempt} FAIL ({reason})")
+
+            if attempt == 1:
+                state.last_failure[current.id] = reason
+                _save_state(state, config.workspace)
+                continue
+
+            # Second consecutive failure — halt.
+            return _exit_halted(bd, state, current_id=current.id, reason=reason, log=log)
+
+
+# --- per-turn -----------------------------------------------------
+
+
+def _run_executor_turn(
+    *,
+    adapter: ModelAdapter,
+    character: Character,
+    handoff: Handoff,
+    workspace: Path,
+) -> tuple[bool, str]:
+    """Run one executor turn. Returns (succeeded, reason).
+
+    `succeeded` is computed against the post-turn ToolLoopResult only —
+    the caller is responsible for the post-turn `bd.show` outcome check
+    (success requires BOTH a clean reply AND the bd issue actually
+    being closed). This split keeps the test surface small: the turn
+    runner is a pure function of its inputs, and the caller composes
+    the bd check on top."""
+    registry = _build_executor_registry(workspace)
+    # `include_samples=()` strips the voice few-shot block. Identity +
+    # values + style rules from `core.yaml` survive — the executor still
+    # benefits from "say 'Don't know' plainly" and friends, but isn't
+    # padded with examples it doesn't need.
+    base_prompt = character.system_prompt(include_samples=())
+    system_prompt = f"{base_prompt}\n\n{handoff.render()}"
+    messages = [
+        ChatMessage(role="system", content=system_prompt),
+        ChatMessage(role="user", content=EXECUTOR_USER_MESSAGE),
+    ]
+    hooks: HookPipeline = default_hook_pipeline()
+    result: ToolLoopResult = run_tool_loop(
+        adapter,  # type: ignore[arg-type]  # narrower _ToolCapableAdapter, checked at runtime
+        messages,
+        registry,
+        hooks=hooks,
+    )
+    if result.content.strip() == EXHAUSTED_FABRICATION_FALLBACK.strip():
+        return False, "fabrication_fallback fired"
+    return True, ""
+
+
+def _classify_post_turn(
+    bd: DriverBd,
+    current_id: str,
+    turn_success: bool,
+    turn_reason: str,
+) -> tuple[bool, str]:
+    """Combine the turn outcome with the post-turn bd state.
+
+    Issue must actually be closed for the turn to count as a real win —
+    a clean reply with the issue still open means the model didn't
+    finish the work, regardless of how confidently it claimed to."""
+    if not turn_success:
+        return False, turn_reason
+    try:
+        issue = bd.show(current_id)
+    except DriverBdError as exc:
+        return False, f"post-turn bd.show failed: {exc}"
+    if issue.status != "closed":
+        return False, f"issue still {issue.status} after turn"
+    return True, ""
+
+
+# --- tool registry ------------------------------------------------
+
+
+def _build_executor_registry(workspace: Path) -> ToolRegistry:
+    """Build the executor's tool registry. v0: the coding-profile
+    subset that doesn't depend on stores / character. Store-dependent
+    tools (search_memory, search_facts) are skipped — they need
+    retrieval setup the driver doesn't provision. introspect /
+    spawn_subagent are also skipped (need adapter+character wiring;
+    can be added in a future revision).
+
+    All filesystem tools sandboxed to `workspace`. The shell tool runs
+    with `cwd=workspace`, so `bd close <id>` works as long as the
+    workspace is a bd project root (the same constraint the rest of
+    the harness already enforces)."""
+    catalog = ToolCatalog()
+    seed_builtins_into(catalog, now_iso=datetime.now(UTC).isoformat(timespec="seconds"))
+    registry = ToolRegistry(catalog=catalog)
+
+    builders: dict[str, Tool] = {
+        "read_file": ReadFileTool(root=workspace),
+        "list_dir": ListDirTool(root=workspace),
+        "grep": GrepTool(root=workspace),
+        "glob": GlobTool(root=workspace),
+        "edit_file": EditFileTool(root=workspace),
+        "write_file": WriteFileTool(root=workspace),
+        "shell": ShellTool(cwd=workspace),
+        "git_status": GitStatusTool(root=workspace),
+        "git_diff": GitDiffTool(root=workspace),
+        "git_log": GitLogTool(root=workspace),
+        "fetch_url": FetchUrlTool(),
+        "now": NowTool(),
+        "date_math": DateMathTool(),
+        "calc": CalcTool(),
+    }
+    for tool in builders.values():
+        registry.register(tool)
+    # tool_search / load_tool need a reference to the registry they
+    # operate on, so they construct AFTER the static tools are in
+    # place. `load_tool`'s builder map is empty — the executor exposes
+    # its full set upfront, so lazy-loading at runtime isn't needed.
+    registry.register(ToolSearchTool(catalog=catalog, registry=registry))
+    registry.register(LoadToolTool(catalog=catalog, registry=registry, builders={}))
+    return registry
+
+
+# --- state / log -------------------------------------------------
+
+
+def _load_or_init_state(config: LoopConfig) -> LoopRunState:
+    if config.resume_from is not None:
+        path = LoopRunState.state_path(config.workspace, config.resume_from)
+        return LoopRunState.load(path)
+    sha = _git_head_sha(config.workspace)
+    state = LoopRunState.fresh(
+        epic_id=config.epic_id,
+        max_turns=config.max_turns,
+        started_at_sha=sha,
+    )
+    _save_state(state, config.workspace)
+    return state
+
+
+def _save_state(state: LoopRunState, workspace: Path) -> None:
+    state.save(LoopRunState.state_path(workspace, state.loop_run_id))
+
+
+def _git_head_sha(workspace: Path) -> str:
+    """`git rev-parse HEAD` from the workspace. Returns "unknown" on
+    any error — the handoff still functions with a degenerate sha
+    (git diff just returns nothing), so this is non-fatal."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],  # noqa: S607 — git on PATH is expected
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return "unknown"
+    if result.returncode != 0:
+        return "unknown"
+    return result.stdout.strip() or "unknown"
+
+
+def _resolve_log_path(config: LoopConfig, state: LoopRunState) -> Path:
+    if config.log_path is not None:
+        return config.log_path
+    return LoopRunState.state_dir(config.workspace) / f"{state.loop_run_id}.log"
+
+
+def _open_log(log_path: Path) -> _LogWriter:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    return _LogWriter(log_path)
+
+
+class _LogWriter:
+    """Tiny append-only log writer. One line per call. Timestamps each
+    line so `tail -f` is informative. Best-effort — IO errors don't
+    crash the loop (a crashed log isn't worse than no log)."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def __call__(self, message: str) -> None:
+        line = f"{datetime.now(UTC).isoformat(timespec='seconds')} {message}\n"
+        try:
+            with self._path.open("a", encoding="utf-8") as f:
+                f.write(line)
+        except OSError as exc:
+            # Log a warning to stderr but don't crash the loop — a
+            # missing log is annoying, not corrupting.
+            logging.getLogger(__name__).warning("loop log write failed: %s", exc)
+
+
+# --- exit paths --------------------------------------------------
+
+
+def _exit_success(state: LoopRunState, log: _LogWriter) -> LoopResult:
+    log(f"loop_run={state.loop_run_id} SUCCESS (epic empty)")
+    return LoopResult(
+        loop_run_id=state.loop_run_id,
+        epic_id=state.epic_id,
+        closed=list(state.closed_this_run),
+        halted_on=None,
+        turns_used=state.turns_used,
+        exit_reason="success",
+    )
+
+
+def _exit_exhausted(state: LoopRunState, log: _LogWriter) -> LoopResult:
+    log(
+        f"loop_run={state.loop_run_id} EXHAUSTED "
+        f"(turns_used={state.turns_used} max={state.max_turns})"
+    )
+    return LoopResult(
+        loop_run_id=state.loop_run_id,
+        epic_id=state.epic_id,
+        closed=list(state.closed_this_run),
+        halted_on=None,
+        turns_used=state.turns_used,
+        exit_reason="exhausted",
+    )
+
+
+def _exit_halted(
+    bd: DriverBd,
+    state: LoopRunState,
+    *,
+    current_id: str,
+    reason: str,
+    log: _LogWriter,
+) -> LoopResult:
+    log(f"loop_run={state.loop_run_id} HALTED on {current_id}: {reason}")
+    with contextlib.suppress(DriverBdError):
+        bd.flag_human(current_id, reason=f"loop halted: {reason}")
+    with contextlib.suppress(DriverBdError):
+        bd.write_session_state(
+            loop_run_id=state.loop_run_id,
+            current_issue_id=current_id,
+            status="halted",
+            body=reason,
+        )
+    return LoopResult(
+        loop_run_id=state.loop_run_id,
+        epic_id=state.epic_id,
+        closed=list(state.closed_this_run),
+        halted_on=current_id,
+        turns_used=state.turns_used,
+        exit_reason="halted",
+    )
+
+
+def _exit_interrupted(bd: DriverBd, state: LoopRunState, log: _LogWriter) -> LoopResult:
+    log(f"loop_run={state.loop_run_id} INTERRUPTED")
+    with contextlib.suppress(DriverBdError):
+        bd.write_session_state(
+            loop_run_id=state.loop_run_id,
+            current_issue_id=state.epic_id,
+            status="interrupted",
+            body=f"SIGINT received at turns_used={state.turns_used}",
+        )
+    return LoopResult(
+        loop_run_id=state.loop_run_id,
+        epic_id=state.epic_id,
+        closed=list(state.closed_this_run),
+        halted_on=None,
+        turns_used=state.turns_used,
+        exit_reason="interrupted",
+    )
+
+
+def _on_success(bd: DriverBd, state: LoopRunState, current_id: str, log: _LogWriter) -> None:
+    state.closed_this_run.append(current_id)
+    state.last_failure.pop(current_id, None)
+    log(f"turn {state.turns_used}: {current_id} CLOSED")
+    with contextlib.suppress(DriverBdError):
+        bd.write_session_state(
+            loop_run_id=state.loop_run_id,
+            current_issue_id=current_id,
+            status="success",
+            body=f"closed at turn {state.turns_used}",
+        )
+
+
+# --- signal handling ----------------------------------------------
+
+
+class _InterruptFlag:
+    """Set on SIGINT; checked at the top of every loop iteration."""
+
+    def __init__(self) -> None:
+        self._flag = False
+
+    def set(self) -> None:
+        self._flag = True
+
+    def is_set(self) -> bool:
+        return self._flag
+
+
+@contextlib.contextmanager
+def _sigint_guard() -> Iterator[_InterruptFlag]:
+    """Install a SIGINT handler that flips the interrupt flag, restore
+    the previous handler on exit. Safe to nest under outer handlers —
+    the previous handler is restored on context exit."""
+    flag = _InterruptFlag()
+
+    def handler(_signum: int, _frame: object) -> None:
+        flag.set()
+
+    previous = signal.signal(signal.SIGINT, handler)
+    try:
+        yield flag
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+__all__ = [
+    "EXECUTOR_USER_MESSAGE",
+    "LoopConfig",
+    "LoopResult",
+    "run_loop",
+]
