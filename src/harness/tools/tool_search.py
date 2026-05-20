@@ -67,8 +67,11 @@ class ToolSearchTool:
     outside that subset without paying schema cost for them.
 
     Returns a compact text list — name, family, description excerpt,
-    tags. Empty results return a clear 'no tools found' line so the
-    model knows to fall back instead of fabricating an answer.
+    tags. Empty results return a 'no tools found' line that carries
+    an inline recovery hint (harness-mkzk) — teach the model to
+    re-query by capability ('search' / 'lookup' / 'fetch') instead
+    of topic ('weather in Nairobi' / 'game engine'), since the
+    catalog indexes capabilities, not subject matter.
 
     `registry` is optional. When supplied, the tool prefers live
     descriptions from `registry.get(name).spec.description` over the
@@ -236,7 +239,26 @@ class ToolSearchTool:
                 constraints.append(f"tag={tag!r}")
             if family is not None:
                 constraints.append(f"family={family!r}")
-            return f"no tools found ({', '.join(constraints) or 'no constraints'})"
+            constraint_text = ", ".join(constraints) or "no constraints"
+            # Recovery hint (harness-mkzk). The empty-result line is the
+            # last thing the model sees before deciding to refuse or
+            # rephrase, so it has to teach the recovery shape inline.
+            # Without this, models query by topic ('game engine',
+            # 'weather in Nairobi') and conclude "no such tool exists"
+            # because the catalog indexes by capability, not subject.
+            return (
+                f"no tools found ({constraint_text}).\n"
+                "Recovery: the catalog indexes tools by CAPABILITY "
+                "(what they DO), not by topic. Try a capability-shaped "
+                "query — e.g. query='search' to find data-gathering "
+                "tools, query='lookup' / 'fetch' / 'read' / 'time' / "
+                "'compute' / 'write' for the action you actually need. "
+                "Topic words ('weather in Nairobi', 'game engine', "
+                "'JEPA architecture') will not match — they're subject "
+                "matter, not capability. After a non-empty result, "
+                "your next call must be `load_tool(name=<one of the "
+                "candidates>)`."
+            )
 
         visible = candidates[:limit]
         lines = [_format_entry(e, live_description=self._live_description(e.name)) for e in visible]

@@ -114,6 +114,59 @@ def test_query_returns_no_tools_found_on_miss() -> None:
     tool = ToolSearchTool(catalog=_seeded_catalog())
     out = tool.call(query="nonexistent-term")
     assert "no tools found" in out
+    # harness-mkzk: the recovery hint must travel with the
+    # empty-result line so the model can pivot on the very next
+    # emission. Echo the failed query, teach capability framing,
+    # and seed at least one example capability term.
+    assert "nonexistent-term" in out
+    assert "capability" in out.lower()
+    assert "search" in out  # the most-common recovery verb
+
+
+def test_no_results_recovery_hint_lists_example_capability_terms() -> None:
+    """harness-mkzk repro shape: model queries by topic ('game engine'),
+    gets no hits, must see at least several capability tokens to anchor
+    its next attempt on the right axis."""
+    tool = ToolSearchTool(catalog=_seeded_catalog())
+    out = tool.call(query="game engine")
+    # The motivating session-trace query is echoed verbatim.
+    assert "query='game engine'" in out
+    # Several capability tokens must appear as examples; checking a
+    # representative spread (data-gathering + compute + IO + time).
+    for verb in ("search", "lookup", "fetch", "compute", "time"):
+        assert verb in out, f"recovery hint missing capability example {verb!r}"
+    # And the load_tool follow-up reminder so a recovered query can
+    # actually progress to activation on the NEXT emission.
+    assert "load_tool" in out
+
+
+def test_no_results_recovery_hint_calls_out_topic_vs_capability() -> None:
+    """The hint must make the topic-vs-capability distinction explicit
+    so the model understands WHY its topic-shaped query missed. Without
+    that framing, a model just rephrases the same topic and gets the
+    same miss (the 2026-05-20 'framework' / 'engine' / 'Python game
+    framework' iterative repro)."""
+    tool = ToolSearchTool(catalog=_seeded_catalog())
+    out = tool.call(query="2D game framework")
+    # The hint contrasts "subject matter" / "topic" with "capability".
+    assert "topic" in out.lower()
+    assert "capability" in out.lower()
+    # And calls out at least one of the session-trace failure shapes
+    # by name so the model recognizes its own pattern.
+    assert "game engine" in out or "weather in" in out
+
+
+def test_no_results_hint_only_when_no_candidates() -> None:
+    """The recovery hint MUST NOT bleed into the normal results path —
+    a non-empty result page should not carry the topic-vs-capability
+    framing (the model would read it as a critique of a successful
+    search and get confused)."""
+    tool = ToolSearchTool(catalog=_seeded_catalog())
+    out = tool.call(query="search")
+    # Non-empty result; hint phrases must be absent.
+    assert "no tools found" not in out
+    assert "Recovery:" not in out
+    assert "subject matter" not in out
 
 
 # --- tag + family filters ----------------------------------------------
