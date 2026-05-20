@@ -63,6 +63,27 @@
   expected_fallback: true
   expected_events_contain: [bail_retry]
 
+- id: intent_restatement_loop_gta2_followup
+  label: intent_restatement_loop
+  description: |
+    Mark's 2026-05-21 GTA2 follow-up session repro (harness-a4q4)
+    on Qwen3-Coder-30B. Replies share a ~56-char opening
+    ("Now I'll create the game.js file with the implementation")
+    under the "Now I'll" intent-phrase — below the 100-char floor
+    that PreambleLoopHook (harness-jwp3) needs. IntentRestatement
+    LoopHook's intent-phrase gate + lower 30-char LCP floor
+    catches the shorter loop. Reply 0 trips Teaser ('Let me … :')
+    to seed the discarded_openings ledger; replies 1-3 share the
+    intent-phrase opening with reply 0 and trip only this catcher;
+    retries exhaust and fabrication_fallback substitutes.
+  scripted_replies:
+    - content: "Now I'll create the game.js file with the implementation. Let me start writing this:"
+    - content: "Now I'll create the game.js file with the implementation. The structure needs to be built out section by section."
+    - content: "Now I'll create the game.js file with the implementation. The structure starts with the canvas setup."
+    - content: "Now I'll create the game.js file with the implementation. The structure begins with the game loop."
+  expected_fallback: true
+  expected_events_contain: [bail_retry]
+
 - id: preamble_loop_gta_runaway
   label: preamble_loop
   description: |
@@ -75,19 +96,20 @@
     matching retries exhaust the bail budget and the canned
     fabrication_fallback substitutes.
   scripted_replies:
-    # Shared opening spans ≥ _PREAMBLE_LOOP_MIN_LENGTH chars (the
-    # full first sentence is ~118 chars), so the LCP check trips.
-    # Reply 0 trips Teaser (ends with "Let me … :") which captures
-    # the opening into discarded_openings. Replies 1-3 share the
-    # same opening but their tails are calm declaratives that don't
-    # trip any other catcher — preamble_loop is the only one that
-    # can bail them. Disable preamble_loop and replies 1-3 are
-    # accepted as final answers; that makes the attribution
-    # 'preamble_loop has a unique effect' assertion meaningful.
-    - content: "I need to implement the full GTA2 browser clone according to the specification including all required mechanics. Let me create a proper implementation now:"
-    - content: "I need to implement the full GTA2 browser clone according to the specification including all required mechanics. The implementation is straightforward but requires careful structural choices throughout the codebase."
-    - content: "I need to implement the full GTA2 browser clone according to the specification including all required mechanics. The implementation is straightforward and the structure needs to be built out one section at a time."
-    - content: "I need to implement the full GTA2 browser clone according to the specification including all required mechanics. The implementation needs to start with the core skeleton and grow from there."
+    # Shared opening spans ≥ _PREAMBLE_LOOP_MIN_LENGTH chars
+    # (~118 chars) so PreambleLoopHook's LCP check trips. The
+    # openings deliberately DO NOT start with an intent-phrase
+    # ('I'll', 'Let me', 'Now I'll', etc.) so the structural
+    # IntentRestatementLoopHook (harness-a4q4) doesn't double-cover
+    # this case — preamble_loop carries unique attribution load.
+    # Reply 0 trips Teaser ('Let me … :') to seed the discarded
+    # openings ledger; replies 1-3 share the noun-phrase opening
+    # with reply 0 and trip ONLY preamble_loop. Disable
+    # preamble_loop and replies 1-3 pass as final answers.
+    - content: "The full GTA2 browser clone needs to follow the specification including all required mechanics and visual details. Let me create a proper implementation now:"
+    - content: "The full GTA2 browser clone needs to follow the specification including all required mechanics and visual details. The implementation is straightforward but requires careful structural choices throughout the codebase."
+    - content: "The full GTA2 browser clone needs to follow the specification including all required mechanics and visual details. The implementation is straightforward and the structure needs to be built out one section at a time."
+    - content: "The full GTA2 browser clone needs to follow the specification including all required mechanics and visual details. The implementation needs to start with the core skeleton and grow from there."
   expected_fallback: true
   expected_events_contain: [bail_retry]
 

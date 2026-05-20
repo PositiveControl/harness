@@ -32,6 +32,7 @@ from harness.orchestrator.hooks import (
     Halt,
     HookPipeline,
     IncompleteMultipartHook,
+    IntentRestatementLoopHook,
     ListCountMismatchHook,
     MetaConfirmHook,
     MissingCitationHook,
@@ -1293,6 +1294,7 @@ def test_pipeline_names_match_expected_surface() -> None:
     )
     assert pipe.names() == (
         "preamble_loop",
+        "intent_restatement_loop",
         "truncated",
         "unparseable",
         "teaser",
@@ -5777,3 +5779,151 @@ def test_preamble_loop_fires_on_truncated_reply_with_loop_signal() -> None:
     outcome = pipe.run_bail(ctx, disabled=frozenset())
     assert isinstance(outcome, Nudge)
     assert "PREAMBLE LOOP" in outcome.text
+
+
+# ---------- IntentRestatementLoopHook (harness-a4q4) ----------
+
+
+# Mark's 2026-05-21 GTA2 session, Qwen3-Coder-30B. Replies 1-3 all
+# open with "Now I'll create the game.js file with the
+# implementation" (~56-char LCP under the intent-phrase "Now I'll").
+# PreambleLoop's 100-char floor missed this; IntentRestatementLoop
+# catches it.
+_INTENT_LOOP_OPENING_A = (
+    "Now I'll create the game.js file with the implementation. "
+    "I'll work through this systematically, implementing each "
+    "section of the spec."
+)
+_INTENT_LOOP_OPENING_B = (
+    "Now I'll create the game.js file with the implementation. "
+    "Let me start by writing the basic structure according to the "
+    "spec requirements."
+)
+_INTENT_LOOP_DIFFERENT = (
+    "Now I'll fix the bug in the parser by replacing the broken branch with the corrected one."
+)
+_NON_INTENT_OPENING = (
+    "The implementation is straightforward but requires careful "
+    "structural choices throughout the codebase."
+)
+
+
+def test_intent_restatement_loop_fires_on_gta2_followup_shape() -> None:
+    """Mark's 2026-05-21 session: replies open with 'Now I'll
+    create the game.js file with the implementation' (~56-char
+    LCP). PreambleLoop's 100-char floor doesn't fire; this
+    catcher does."""
+    ctx = BailContext(
+        reply=ModelReply(content=_INTENT_LOOP_OPENING_B, tool_calls=()),
+        tools_ran_this_turn=False,
+        discarded_openings=(_INTENT_LOOP_OPENING_A,),
+    )
+    outcome = IntentRestatementLoopHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "INTENT RESTATEMENT LOOP" in outcome.text
+    assert "MUST NOT start with" in outcome.text
+
+
+def test_intent_restatement_loop_passes_no_discarded() -> None:
+    ctx = BailContext(
+        reply=ModelReply(content=_INTENT_LOOP_OPENING_A, tool_calls=()),
+        tools_ran_this_turn=False,
+        discarded_openings=(),
+    )
+    outcome = IntentRestatementLoopHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_intent_restatement_loop_passes_only_one_intent_opener() -> None:
+    """If only ONE of (current, last_discarded) opens with an
+    intent-phrase, the gate isn't satisfied — this isn't the
+    'both sides restating intent' shape. Continue."""
+    ctx = BailContext(
+        reply=ModelReply(content=_INTENT_LOOP_OPENING_A, tool_calls=()),
+        tools_ran_this_turn=False,
+        discarded_openings=(_NON_INTENT_OPENING,),
+    )
+    outcome = IntentRestatementLoopHook().check(ctx)
+    assert isinstance(outcome, Continue)
+    # Symmetric: current is non-intent, prior is intent → still Continue.
+    ctx_b = BailContext(
+        reply=ModelReply(content=_NON_INTENT_OPENING, tool_calls=()),
+        tools_ran_this_turn=False,
+        discarded_openings=(_INTENT_LOOP_OPENING_A,),
+    )
+    assert isinstance(IntentRestatementLoopHook().check(ctx_b), Continue)
+
+
+def test_intent_restatement_loop_passes_when_intents_diverge() -> None:
+    """Both replies open with an intent-phrase ('Now I'll …') but
+    the verb + object differ enough that LCP falls below the floor.
+    Not a loop — Continue."""
+    ctx = BailContext(
+        reply=ModelReply(content=_INTENT_LOOP_DIFFERENT, tool_calls=()),
+        tools_ran_this_turn=False,
+        discarded_openings=(_INTENT_LOOP_OPENING_A,),
+    )
+    outcome = IntentRestatementLoopHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_intent_restatement_loop_passes_neither_opens_with_intent() -> None:
+    """Both replies share a 30+ char prefix but neither opens with
+    an intent-phrase. The catcher must NOT fire — different signal
+    that doesn't belong to this catcher (PreambleLoop owns it once
+    the LCP crosses 100)."""
+    ctx = BailContext(
+        reply=ModelReply(content=_NON_INTENT_OPENING, tool_calls=()),
+        tools_ran_this_turn=False,
+        discarded_openings=(_NON_INTENT_OPENING,),
+    )
+    outcome = IntentRestatementLoopHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_intent_restatement_loop_passes_empty_reply() -> None:
+    ctx = BailContext(
+        reply=ModelReply(content="", tool_calls=()),
+        tools_ran_this_turn=False,
+        discarded_openings=(_INTENT_LOOP_OPENING_A,),
+    )
+    outcome = IntentRestatementLoopHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_intent_restatement_loop_placement_after_preamble_loop() -> None:
+    """Both catchers are in the pipeline; intent_restatement_loop
+    comes immediately after preamble_loop so the longer-prefix
+    catcher wins first-match-wins when a reply matches both."""
+    names = default_hook_pipeline().names()
+    assert names[0] == "preamble_loop"
+    assert names[1] == "intent_restatement_loop"
+    # Both run before truncated, teaser, etc.
+    assert names.index("intent_restatement_loop") < names.index("truncated")
+    assert names.index("intent_restatement_loop") < names.index("teaser")
+
+
+def test_intent_restatement_loop_yields_to_preamble_loop_on_long_lcp() -> None:
+    """When both catchers would match, PreambleLoopHook fires first
+    (placement). Confirms the two catchers don't double-fire on the
+    same round — first-match semantics."""
+    # Both replies open with intent-phrase ('I need to') AND share
+    # ≥100-char prefix → both would match individually, but
+    # PreambleLoop runs first.
+    long_shared = (
+        "I need to implement the full GTA2 browser clone according to "
+        "the specification including all required mechanics. "
+    )
+    pipe = default_hook_pipeline()
+    ctx = BailContext(
+        reply=ModelReply(
+            content=long_shared + "The structure needs to start from a skeleton.",
+            tool_calls=(),
+        ),
+        tools_ran_this_turn=False,
+        discarded_openings=(long_shared + "Let me create a proper implementation now:",),
+    )
+    outcome = pipe.run_bail(ctx, disabled=frozenset())
+    assert isinstance(outcome, Nudge)
+    assert "PREAMBLE LOOP" in outcome.text
+    assert "INTENT RESTATEMENT" not in outcome.text

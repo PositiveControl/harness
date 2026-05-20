@@ -15,6 +15,7 @@ Hooks dispatch in the order shown within each phase — first-match semantics, s
 | Name | Shape |
 | --- | --- |
 | `preamble_loop` | Current reply shares a long opening prefix with the last discarded draft this turn; widening the token budget would buy longer preamble, not progress. Nudges the model to skip intent restatement and produce concrete output. |
+| `intent_restatement_loop` | Current reply and most recent discarded both open with an intent-phrase ('I'll <verb>', 'Let me <verb>', 'Now I'll <verb>') and share ≥30 chars of that statement. Catches the structural loop shape PreambleLoopHook's 100-char floor misses. |
 | `truncated` | Reply hit the token budget; auto-widen + retry. |
 | `unparseable` | Reply had a malformed <tool_call> block. |
 | `teaser` | Reply announced more work but emitted no tool call. |

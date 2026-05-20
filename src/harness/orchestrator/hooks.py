@@ -800,6 +800,101 @@ class PreambleLoopHook:
         return Nudge(_PREAMBLE_LOOP_NUDGE)
 
 
+# Intent-phrase opener regex for IntentRestatementLoopHook
+# (harness-a4q4). Matches the first ~120 chars of a reply against
+# the shape `(intent-phrase) (verb)` where intent-phrase is one of
+# the planning markers that show up when a model restates intent
+# instead of acting. Observed on both Qwen 2.5 7B and Qwen3-Coder-30B
+# (Mark's 2026-05-20 + 2026-05-21 GTA2 sessions, respectively) — the
+# pathology is task-shape sensitive, not model-size sensitive.
+# Case-insensitive. Verbs include the coding-task vocabulary
+# ('create', 'implement', 'write', 'build', 'set up', 'add',
+# 'modify') AND the meta-action verbs the existing TOOL_INTENT_RE
+# catches ('search', 'read', 'check', 'list', etc.) — the loop-shape
+# doesn't care which slot the verb lives in, only that the model is
+# saying 'I will VERB' instead of doing.
+_INTENT_PHRASE_RE = re.compile(
+    rf"^\s*"
+    rf"(?:i{_APOS_CLASS}?ll|now\s+i{_APOS_CLASS}?ll|let\s+me|"
+    rf"i\s+need\s+to|i{_APOS_CLASS}?m\s+going\s+to|"
+    rf"first[,]?\s+i{_APOS_CLASS}?ll|first[,]?\s+let\s+me|"
+    rf"next[,]?\s+i{_APOS_CLASS}?ll|i\s+will|let{_APOS_CLASS}?s)\s+"
+    r"(?:now\s+|just\s+|first\s+|then\s+|go\s+ahead\s+and\s+|"
+    r"start\s+by\s+|begin\s+by\s+)?"
+    r"(?:create|implement|write|build|set\s+up|add|modify|update|"
+    r"edit|change|configure|design|generate|produce|search|look\s+up|"
+    r"find|check|read|run|fetch|call|invoke|execute|list|grep|open|"
+    r"browse|query|retrieve|download|inspect|examine|gather|pull|"
+    r"start|begin|continue|work|tackle|address|handle)\b",
+    re.IGNORECASE,
+)
+
+
+# Minimum shared-prefix length for IntentRestatementLoopHook
+# (harness-a4q4). Lower than PreambleLoopHook's 100-char floor
+# because the intent-phrase gate already filters out generic
+# conversational openers — a 30-char LCP between two replies that
+# BOTH open with an intent-statement is a strong loop signal even
+# when the textual LCP is too short for PreambleLoopHook. Mark's
+# 2026-05-21 GTA2 session: replies 1-3 shared "Now I'll create the
+# game.js file with the implementation" (~56 chars) under intent-
+# phrase openers; PreambleLoop's 100-char floor missed it.
+_INTENT_RESTATEMENT_MIN_LCP = 30
+
+
+_INTENT_RESTATEMENT_LOOP_NUDGE = (
+    "[INTENT RESTATEMENT LOOP — your last two replies both opened "
+    "with an 'I'll <verb> the <thing>' sentence. The model is "
+    "restating the plan in slightly different wording each round, "
+    "not producing output. Your next reply MUST NOT start with "
+    "another intent statement. Emit either a tool call (no narrative) "
+    "or the concrete content the user asked for. If you do not have "
+    "the information needed to produce that content, say so plainly — "
+    "do not restate what you are about to do.]"
+)
+
+
+@dataclass(frozen=True)
+class IntentRestatementLoopHook:
+    """Bail catcher: the current reply AND the most recent discarded
+    opening BOTH start with an intent-statement ('Now I'll create…',
+    'Let me write…') AND share a meaningful prefix in that statement
+    (harness-a4q4).
+
+    Distinct from PreambleLoopHook by design — PreambleLoop catches
+    long-LCP (≥100 char) textual loops with high precision but low
+    recall; this catcher catches structural loops with a lower LCP
+    floor (30 chars) gated by the intent-phrase regex on both sides,
+    keeping false-positive risk low without missing the shorter-
+    shared-prefix shape Mark's 2026-05-21 session hit (56-char LCP).
+
+    Placement: AFTER PreambleLoopHook so the more specific long-LCP
+    signal wins first-match-wins ordering — both catchers' Nudges
+    are similar in spirit but the longer-prefix case deserves the
+    PreambleLoop-specific text.
+
+    Gate: discarded_openings non-empty AND _INTENT_PHRASE_RE matches
+    the start of BOTH the current reply and the most recent discarded
+    opening AND their LCP is ≥ _INTENT_RESTATEMENT_MIN_LCP."""
+
+    name: str = "intent_restatement_loop"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if not ctx.discarded_openings:
+            return Continue()
+        if not ctx.reply.content:
+            return Continue()
+        last_opening = ctx.discarded_openings[-1]
+        current_opening = ctx.reply.content
+        if not _INTENT_PHRASE_RE.match(current_opening):
+            return Continue()
+        if not _INTENT_PHRASE_RE.match(last_opening):
+            return Continue()
+        if _longest_common_prefix_len(current_opening, last_opening) < _INTENT_RESTATEMENT_MIN_LCP:
+            return Continue()
+        return Nudge(_INTENT_RESTATEMENT_LOOP_NUDGE)
+
+
 _UNPARSEABLE_NUDGE = (
     "Your last <tool_call> block was malformed and could not be parsed. "
     "Re-emit it as a single line of valid JSON inside <tool_call>…</tool_call>: "
@@ -4924,6 +5019,12 @@ HOOK_SHAPES: dict[str, str] = {
         "4-round write_file → unknown_tool → load_tool → edit_file "
         "loop. Preserves the harness-2tq safety-shrink guard."
     ),
+    "intent_restatement_loop": (
+        "Current reply and most recent discarded both open with an "
+        "intent-phrase ('I'll <verb>', 'Let me <verb>', 'Now I'll "
+        "<verb>') and share ≥30 chars of that statement. Catches the "
+        "structural loop shape PreambleLoopHook's 100-char floor misses."
+    ),
     "preamble_loop": (
         "Current reply shares a long opening prefix with the last "
         "discarded draft this turn; widening the token budget would "
@@ -5135,6 +5236,14 @@ def default_hook_pipeline(
         # nudges that would also have matched (truncated, teaser, etc.)
         # are bypassed for this round.
         PreambleLoopHook(),
+        # intent_restatement_loop (harness-a4q4): the structural
+        # complement to preamble_loop. PreambleLoop wants ≥100-char
+        # LCP (textual signal, high precision); this catches the
+        # shorter-LCP shape where both replies open with an intent-
+        # phrase and share ≥30 chars of that statement. Placement
+        # AFTER PreambleLoop so the longer-prefix case wins first
+        # under first-match semantics.
+        IntentRestatementLoopHook(),
         TruncatedHook(),
         UnparseableHook(),
         TeaserHook(),
@@ -5528,6 +5637,7 @@ __all__ = [
     "FinalizeOutcome",
     "Halt",
     "HookPipeline",
+    "IntentRestatementLoopHook",
     "ListCountMismatchHook",
     "MetaConfirmHook",
     "MissingCitationHook",
