@@ -499,7 +499,11 @@ class ChatApp(App[None]):
         semantic_store: SemanticStore | None = None,
         facts: int = 0,
         facts_threshold: float = 0.45,
-        max_tokens: int = 1024,
+        # harness-gt0m: 1024 → 2048. Matches the orchestrator's
+        # new default; tool-use turns and persona-rewrite passes
+        # both stay under the 4-6K coherence ceiling and rarely
+        # trip truncated_retry now.
+        max_tokens: int = 2048,
         temperature: float = 0.7,
         registry: ToolRegistry | None = None,
         router: Router | None = None,

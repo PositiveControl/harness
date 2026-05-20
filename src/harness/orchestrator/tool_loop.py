@@ -945,8 +945,17 @@ def run_tool_loop(
     max_rounds: int = 8,
     confirm: ConfirmFn | None = None,
     observe: ObserverFn | None = None,
-    max_tokens: int = 1024,
-    wrap_up_max_tokens: int = 1024,
+    # Defaults bumped 1024 → 2048 (harness-gt0m). Tool-use turns
+    # routinely emit a tool call AND a paragraph of reasoning;
+    # 1024 was clipping legitimate work and tripping
+    # truncated_retry on routine rounds. 2048 costs ~13s extra
+    # wall-clock at 150 tok/s on M4 Pro (still interactive) and
+    # stays well under the 4-6K coherence ceiling for Qwen 2.5
+    # 7B / Qwen3-Coder-30B. Ceiling at _MAX_TOKENS_CEILING
+    # (32768) and the bail-retry budget are unchanged — those
+    # are the safety rail, not the operating point.
+    max_tokens: int = 2048,
+    wrap_up_max_tokens: int = 2048,
     temperature: float = 0.5,
     router: Router | None = None,
     hooks: HookPipeline | None = None,

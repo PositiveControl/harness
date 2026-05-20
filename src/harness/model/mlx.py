@@ -50,7 +50,15 @@ class MLXAdapter:
         repo: str = "mlx-community/Qwen2.5-7B-Instruct-4bit",
         *,
         adapter_path: str | None = None,
-        context_window: int = 131_072,
+        # harness-gt0m: 131_072 → 32_768. Qwen 2.5's native attention
+        # is solid at 32K; the 128K nominal is YaRN-extended and
+        # suffers lost-in-the-middle past ~64K. Lower default keeps
+        # `--compact-at` (default 0.8 * context_window) firing at a
+        # useful threshold (~26K vs ~105K, where it effectively never
+        # fired interactively) and trims KV-cache memory pressure.
+        # Callers who genuinely need long-doc work can override via
+        # the constructor.
+        context_window: int = 32_768,
         cache_limit_mb: int | None = None,
         draft_repo: str | None = None,
     ) -> None:
