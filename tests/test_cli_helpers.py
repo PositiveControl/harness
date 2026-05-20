@@ -507,3 +507,82 @@ def test_topic_boundary_suffix_mute_wins_over_scope() -> None:
     suffix = _topic_boundary_suffix(state, allowed_sessions=("X",))
     assert "reset this conversation" in suffix
     assert "SESSION-SCOPED" not in suffix
+
+
+# ---------- _make_write_file_redirect_hook (harness-hf4r) ----------
+
+
+def test_write_file_redirect_hook_constructed_for_lazy_loaded_write_file(
+    tmp_path: object,
+) -> None:
+    """harness-hf4r regression: the hook must be constructed even
+    when write_file is NOT yet registered at session start. With
+    --tool-set minimal the model discovers write_file via
+    tool_search + load_tool mid-session; the hook's closures
+    consult the LIVE registry at call time, so a hook that was
+    None-ed out at construction time never fires.
+
+    Mark's 2026-05-20T21:47 GTA session: minimal tool set →
+    load_tool registers write_file mid-session → model emits
+    write_file on an existing path → existing path errors
+    instead of the redirect firing → loop exhausts."""
+    from pathlib import Path as _Path
+
+    from harness.cli_classic import _make_write_file_redirect_hook
+    from harness.orchestrator.hooks import (
+        BailContext,  # noqa: F401  # type pin for Skip return shape
+        PreToolContext,
+        Skip,
+    )
+    from harness.tools import EditFileTool, ToolCall, ToolRegistry, WriteFileTool
+
+    workspace = _Path(tmp_path)  # type: ignore[arg-type]
+    registry = ToolRegistry()
+    # Registry starts EMPTY — no write_file, no edit_file. The hook
+    # must still construct (returns a real WriteFileRedirectHook,
+    # not None). This is the regression that harness-hf4r fixes.
+    hook = _make_write_file_redirect_hook(registry=registry, workspace_path=workspace)
+    assert hook is not None
+    assert hook.name == "write_file_redirect"
+
+    # Now lazy-load write_file + edit_file the way load_tool does
+    # mid-session, plus pre-create the target so the redirect path
+    # has something to read.
+    registry.register(WriteFileTool(root=workspace))
+    registry.register(EditFileTool(root=workspace))
+    (workspace / "game.js").write_text(
+        "// existing 50 bytes minimum content here for safe redirect"
+    )
+
+    # Fire the hook on a write_file call against the existing path.
+    # The hook should Skip with the edit_file redirect result.
+    call = ToolCall(
+        name="write_file",
+        arguments={
+            "path": "game.js",
+            "content": "// new content also at least 50 bytes minimum for safe redirect",
+        },
+    )
+    outcome = hook.check(PreToolContext(call=call, seen_calls={}))
+    assert isinstance(outcome, Skip)
+    assert "write_file → edit_file" in outcome.result.output
+    assert outcome.result.success is True
+
+
+def test_write_file_redirect_hook_no_op_on_unrelated_tool(tmp_path: object) -> None:
+    """Always-constructed hook must be cheap on non-write_file
+    calls — Continue is the only outcome for unrelated tools, so
+    the always-on cost (harness-hf4r) is bounded to one is-eq check
+    per pre_tool dispatch."""
+    from pathlib import Path as _Path
+
+    from harness.cli_classic import _make_write_file_redirect_hook
+    from harness.orchestrator.hooks import Continue, PreToolContext
+    from harness.tools import ToolCall, ToolRegistry
+
+    workspace = _Path(tmp_path)  # type: ignore[arg-type]
+    hook = _make_write_file_redirect_hook(registry=ToolRegistry(), workspace_path=workspace)
+    assert hook is not None
+    call = ToolCall(name="read_file", arguments={"path": "anything"})
+    outcome = hook.check(PreToolContext(call=call, seen_calls={}))
+    assert isinstance(outcome, Continue)

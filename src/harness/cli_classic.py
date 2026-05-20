@@ -115,8 +115,19 @@ def _make_write_file_redirect_hook(
 ) -> Any:
     """Wire a WriteFileRedirectHook against the session's live
     registry + workspace, or return None if neither is available
-    (e.g. tool-less chat). Returns None when write_file isn't even
-    in the catalog — without it the hook would be dead weight.
+    (e.g. tool-less chat).
+
+    Note (harness-hf4r): the hook is constructed regardless of
+    whether write_file is currently in the registry. Sessions with
+    `--tool-set minimal` start without write_file, then the model
+    discovers and load_tool's it mid-session. If the hook had been
+    constructed eagerly with a 'write_file not in registry → None'
+    short-circuit, the redirect would never have fired on those
+    lazy-loaded turns — the exact case that prompted the redirect
+    in the first place (Mark's 2026-05-20T21:47 GTA session). The
+    hook's own check() already gates on `ctx.call.name == "write_file"`
+    so the always-constructed hook is a no-op cost on every non-
+    write_file call.
 
     Three closures bridge the hook (pure data) to the live session:
 
@@ -128,17 +139,15 @@ def _make_write_file_redirect_hook(
       when it's registered-but-inactive (the load_tool companion
       pairing usually means it's already active alongside
       write_file). Returns True iff edit_file is callable after the
-      call.
+      call. Returns False (causing the hook to fall through to
+      Continue) when edit_file isn't even in the catalog — the
+      existing multi-round write_file → unknown_tool → load_tool
+      recovery path runs unchanged.
     - `invoke_edit_file(path, old, new)` dispatches the registry's
       edit_file tool and returns its ToolResult so the hook can feed
       it back as the Skip payload.
     """
     if registry is None or workspace_path is None:
-        return None
-    # write_file may not be registered at all — minimal/router-only
-    # sessions skip the redirect entirely. The hook is opt-in on
-    # write_file availability; nothing else changes.
-    if "write_file" not in registry:
         return None
 
     from harness.orchestrator.hooks import WriteFileRedirectHook
