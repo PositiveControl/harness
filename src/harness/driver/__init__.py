@@ -11,6 +11,15 @@ Subsequent phases (executor, planner) compose around these.
 from harness.driver.bd import DriverBd, DriverBdError
 from harness.driver.handoff import Handoff, build_handoff
 from harness.driver.loop import LoopConfig, LoopResult, run_loop
+from harness.driver.planner import (
+    PlanDraft,
+    PlanItem,
+    PlannerConfig,
+    PlannerError,
+    commit_plan,
+    run_planner,
+    write_draft,
+)
 from harness.driver.state import LoopRunState
 
 __all__ = [
@@ -20,6 +29,13 @@ __all__ = [
     "LoopConfig",
     "LoopResult",
     "LoopRunState",
+    "PlanDraft",
+    "PlanItem",
+    "PlannerConfig",
+    "PlannerError",
     "build_handoff",
+    "commit_plan",
     "run_loop",
+    "run_planner",
+    "write_draft",
 ]
