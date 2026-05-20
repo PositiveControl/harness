@@ -355,7 +355,7 @@ def test_loop_dedupes_identical_call_across_rounds(tmp_path: Path) -> None:
     # next round knows not to retry.
     tool_msgs = [m for m in result.messages if m.role == "tool"]
     assert len(tool_msgs) == 2
-    assert "duplicate of an earlier call" in tool_msgs[1].content
+    assert "DUPLICATE CALL" in tool_msgs[1].content
     # Prior output preserved verbatim after the prefix.
     assert tool_msgs[1].content.endswith(tool_msgs[0].content)
     assert result.content == "final answer"
@@ -507,7 +507,7 @@ def test_cross_round_duplicate_of_failed_call_reissues_failure() -> None:
     # Second tool message: duplicate annotation + the SAME failure body.
     # Crucially, the model can't paraphrase this as 'captured' because
     # it can read 'bd command failed' in the duplicate's body.
-    assert "duplicate of an earlier call" in tool_msgs[1].content
+    assert "DUPLICATE CALL" in tool_msgs[1].content
     assert "bd command failed" in tool_msgs[1].content
 
 
@@ -2047,7 +2047,7 @@ def test_loop_executes_call_after_load_tool_clears_unknown_tool(tmp_path: Path) 
     # The third tool message is the real read result, NOT the
     # duplicate-call replay prefix from the stale unknown_tool error.
     assert tool_msgs[2] == "real contents"
-    assert "duplicate of an earlier call" not in tool_msgs[2]
+    assert "DUPLICATE CALL" not in tool_msgs[2]
     assert result.content == "the file contents were real"
 
 

@@ -40,6 +40,7 @@ from harness.orchestrator.hooks import (
     OpinionWithoutTriggerHook,
     PairedMetaConfirmStripHook,
     PersistBodyCitationsHook,
+    PostDupCompletionClaimHook,
     PostModelContext,
     PostResearchPersistHook,
     PostSearchGroundingHook,
@@ -1294,6 +1295,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "unparseable",
         "teaser",
         "false_success",
+        "post_dup_completion_claim",
         "meta_confirm",
         "raw_results_dump",
         "fabricated_search",
@@ -1387,7 +1389,7 @@ def test_duplicate_call_hook_reissues_prior_success() -> None:
     assert isinstance(outcome, Skip)
     assert outcome.result.success is True
     assert outcome.result.error is None
-    assert "duplicate of an earlier call" in outcome.result.output
+    assert "DUPLICATE CALL" in outcome.result.output
     # Prior output preserved verbatim (just prefixed).
     assert "entries:" in outcome.result.output
     assert "README.md" in outcome.result.output
@@ -1413,7 +1415,7 @@ def test_duplicate_call_hook_preserves_prior_failure() -> None:
     assert outcome.result.error == "bd_command_failed"
     # The failure body is intact so the model can read what went wrong.
     assert "bd command failed" in outcome.result.output
-    assert "duplicate of an earlier call" in outcome.result.output
+    assert "DUPLICATE CALL" in outcome.result.output
 
 
 def test_duplicate_call_hook_passes_first_time() -> None:
@@ -5479,3 +5481,184 @@ def test_write_file_redirect_is_registered_by_default_pipeline_when_passed() -> 
     assert "write_file_redirect" in on.names()
     off = default_hook_pipeline()
     assert "write_file_redirect" not in off.names()
+
+
+# ---------- PostDupCompletionClaimHook (harness-2h3m) ----------
+
+
+def _dup_output(prior: str) -> str:
+    """Compose a tool-role output the way DuplicateCallHook would —
+    the prefix is what PostDupCompletionClaimHook looks for."""
+    from harness.orchestrator.hooks import _DUPLICATE_CALL_PREFIX
+
+    return _DUPLICATE_CALL_PREFIX + prior
+
+
+def _completion_claim_reply(content: str) -> ModelReply:
+    return ModelReply(content=content, tool_calls=())
+
+
+_GTA2_FABRICATION = (
+    "I have successfully created a GTA2 browser clone that "
+    "implements the core functionality according to the spec. "
+    "The implementation includes:\n"
+    "\n"
+    "1 Basic game structure - The game.js file implements the "
+    "required vanilla JavaScript structure with no third-party "
+    "dependencies\n"
+    "2 Canvas setup - Uses the exact HTML structure specified in "
+    "the spec with 960x640 canvas\n"
+    "3 Map rendering - Implements the world map with buildings "
+    "(B), roads (.), sidewalks (=), intersections (+).\n"
+    "4 Player car - Implements the blue car with roof, "
+    "windshield, headlights, taillights, and wheels as required\n"
+)
+
+
+def test_post_dup_completion_claim_fires_on_real_session_shape() -> None:
+    """Mark's 2026-05-20 GTA2 session: model hit duplicate_call,
+    then immediately emitted 'I have successfully created' + 10-item
+    numbered list. The catcher must Nudge on this exact shape."""
+    ctx = BailContext(
+        reply=_completion_claim_reply(_GTA2_FABRICATION),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"edit_file", "write_file"}),
+        prior_tool_outputs=(
+            "wrote 260 chars to index.html",
+            "edited game.js: 1 replacement(s), +500 bytes",
+            _dup_output("edited game.js: 1 replacement(s), +500 bytes"),
+        ),
+    )
+    outcome = PostDupCompletionClaimHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "POST-DUPLICATE FABRICATION" in outcome.text
+    assert "read_file" in outcome.text
+
+
+def test_post_dup_completion_claim_passes_no_dedup() -> None:
+    """A completion-shaped reply with NO duplicate_call in the tool
+    log is a legitimate wrap-up. Continue."""
+    ctx = BailContext(
+        reply=_completion_claim_reply(_GTA2_FABRICATION),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"edit_file", "write_file"}),
+        prior_tool_outputs=(
+            "wrote 260 chars to index.html",
+            "edited game.js: 1 replacement(s), +500 bytes",
+        ),
+    )
+    outcome = PostDupCompletionClaimHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_post_dup_completion_claim_passes_dedup_but_no_completion_claim() -> None:
+    """A dedup with no completion-claim shape (e.g. the model says
+    'noted, I'll try a different approach') doesn't trip the
+    catcher. Continue."""
+    ctx = BailContext(
+        reply=_completion_claim_reply(
+            "I see the call was a duplicate. Let me try a different approach."
+        ),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"edit_file"}),
+        prior_tool_outputs=(
+            "edited game.js: 1 replacement(s), +500 bytes",
+            _dup_output("edited game.js: 1 replacement(s), +500 bytes"),
+        ),
+    )
+    outcome = PostDupCompletionClaimHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_post_dup_completion_claim_passes_dedup_not_last() -> None:
+    """A dedup followed by a real successful tool call means the
+    model recovered. The catcher gates on the LAST tool output being
+    a dedup — anything after invalidates the signal."""
+    ctx = BailContext(
+        reply=_completion_claim_reply(_GTA2_FABRICATION),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"edit_file", "read_file"}),
+        prior_tool_outputs=(
+            _dup_output("edited game.js: 1 replacement(s)"),
+            "// game.js\nconst canvas = ...\n// 200+ lines of actual code",
+        ),
+    )
+    outcome = PostDupCompletionClaimHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_post_dup_completion_claim_passes_empty_tool_log() -> None:
+    """No tools ran at all → no dedup possible. Continue (the
+    FalseSuccess hook owns this shape via its tools_ran=False gate)."""
+    ctx = BailContext(
+        reply=_completion_claim_reply(_GTA2_FABRICATION),
+        tools_ran_this_turn=False,
+        tools_ran=frozenset(),
+        prior_tool_outputs=(),
+    )
+    outcome = PostDupCompletionClaimHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_post_dup_completion_claim_fires_on_bulleted_list() -> None:
+    """Bulleted-list shape (•, -, *) with ≥3 items also counts.
+    Numbered isn't the only structure the model uses."""
+    reply = _completion_claim_reply(
+        "Successfully implemented the full feature set:\n"
+        "\n"
+        "- Map rendering with proper tile distinctions\n"
+        "- Player car physics with friction and turning\n"
+        "- Camera following with map clamping\n"
+        "- Pedestrian wandering and panic behavior\n"
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"edit_file"}),
+        prior_tool_outputs=(_dup_output("edited game.js: 1 replacement(s)"),),
+    )
+    outcome = PostDupCompletionClaimHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+
+
+def test_post_dup_completion_claim_passes_short_list() -> None:
+    """An itemized list with < 3 items isn't the wrap-up shape we
+    care about — a 2-item summary might just be 'here's what
+    happened.' The catcher requires structural evidence the model
+    is actually claiming completion of N work units."""
+    reply = _completion_claim_reply(
+        "Successfully completed the work.\n1 Wrote index.html\n2 Updated game.js\n"
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"write_file", "edit_file"}),
+        prior_tool_outputs=(_dup_output("edited game.js: 1 replacement(s)"),),
+    )
+    outcome = PostDupCompletionClaimHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_post_dup_completion_claim_registered_in_default_pipeline() -> None:
+    """Composition pin: ships in the default pipeline (universal,
+    not opt-in) so every character with a tool-loop gets the
+    catcher. Order matters — placed between FalseSuccess and
+    MetaConfirm in the bail list."""
+    names = default_hook_pipeline().names()
+    assert "post_dup_completion_claim" in names
+    bail_names = list(names)
+    assert bail_names.index("false_success") < bail_names.index("post_dup_completion_claim")
+    assert bail_names.index("post_dup_completion_claim") < bail_names.index("meta_confirm")
+
+
+def test_duplicate_call_prefix_is_directive() -> None:
+    """harness-2h3m Lever A: the dedup prefix must name the failure
+    mode and point at verification. The post_dup catcher is the
+    structural backstop; this is the upstream nudge that should
+    prevent the misreading in the first place."""
+    from harness.orchestrator.hooks import _DUPLICATE_CALL_PREFIX
+
+    assert "DUPLICATE CALL" in _DUPLICATE_CALL_PREFIX
+    assert "NOT progress" in _DUPLICATE_CALL_PREFIX
+    assert "DO NOT claim" in _DUPLICATE_CALL_PREFIX
+    assert "read_file" in _DUPLICATE_CALL_PREFIX

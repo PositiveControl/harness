@@ -51,10 +51,18 @@ DUPLICATE_CALL_NUDGE = (
 
 # Prefix the prior tool result with this annotation when re-issuing on a
 # duplicate. Preserves the original success/error/output so the model
-# can't paraphrase a prior failure as success (harness-v5w).
+# can't paraphrase a prior failure as success (harness-v5w). Directive
+# tightened (harness-2h3m) to head off the post-duplicate completion
+# fabrication: a dedup is NOT evidence of progress, and the model must
+# not summarize the turn as "done" based on it. Verification language
+# ("call read_file …") points the model at a concrete next action
+# instead of letting it pivot to a fake completion summary.
 _DUPLICATE_CALL_PREFIX = (
-    "[duplicate of an earlier call this turn — re-issuing the prior "
-    "result; do NOT emit this call again]\n\n"
+    "[DUPLICATE CALL — you already made this exact call this turn. "
+    "The prior result is below. This is NOT progress. DO NOT claim "
+    "the task is done based on this. If you believe the work is "
+    "finished, call read_file (or the equivalent for your domain) "
+    "to verify the actual state matches what you intended to do.]\n\n"
 )
 
 
@@ -751,6 +759,97 @@ class FalseSuccessHook:
         if FALSE_SUCCESS_RE.search(ctx.reply.content):
             return Nudge(_FALSE_SUCCESS_NUDGE)
         return Continue()
+
+
+# Honest fallback nudge when the model emits a "look at everything I did"
+# wrap-up immediately after a duplicate_call dedup (harness-2h3m). The
+# dedup result means the model re-issued an identical call; it's NOT
+# evidence the task succeeded. Forces a verification step before the
+# next reply, naming the specific failure mode so the model can't
+# paraphrase the nudge as "ok, here's another success summary."
+_POST_DUP_COMPLETION_NUDGE = (
+    "[POST-DUPLICATE FABRICATION — your last tool result was a "
+    "duplicate-call dedup, which means you re-emitted an identical "
+    "call instead of making progress. Before listing what you "
+    "'implemented', call read_file on the file(s) you claim to have "
+    "changed and verify the contents match your claims. If they "
+    "don't, acknowledge that and continue the actual work. Do NOT "
+    "fabricate a completion summary based on a duplicate-call "
+    "result.]"
+)
+
+
+# Regex catalog for the completion-claim shape. Combined: at least one
+# completion-language phrase + a numbered or bulleted list of ≥3 items.
+# Tuned to the failure shape from Mark's 2026-05-20 GTA2 session
+# ("I have successfully created…" + "1 Basic… 2 Canvas… 3 Map…").
+_COMPLETION_CLAIM_PHRASES_RE = re.compile(
+    r"\b("
+    r"successfully (?:created|built|implemented|completed)|"
+    r"i (?:have|'ve) successfully|"
+    r"the implementation (?:includes|covers|follows|features)|"
+    r"implementation that (?:meets|covers|includes|follows)|"
+    r"implements all (?:the )?(?:required|functional|technical) (?:features|requirements)|"
+    r"meets all (?:the )?(?:functional |technical )?requirements|"
+    r"complete implementation"
+    r")\b",
+    re.IGNORECASE,
+)
+_NUMBERED_LIST_ITEM_RE = re.compile(r"^\s*\d+[\.\)]?\s+\S", re.MULTILINE)
+_BULLETED_LIST_ITEM_RE = re.compile(r"^\s*[•·*\-]\s+\S", re.MULTILINE)
+_POST_DUP_LIST_MIN_ITEMS = 3
+
+
+def _has_completion_claim_shape(text: str) -> bool:
+    """The reply has both (a) completion-language and (b) a list of
+    ≥3 items, numbered or bulleted. Either alone is insufficient — a
+    plain 'I completed X' isn't fabrication, and an itemized list
+    without completion claims is just structure."""
+    if not _COMPLETION_CLAIM_PHRASES_RE.search(text):
+        return False
+    numbered = len(_NUMBERED_LIST_ITEM_RE.findall(text))
+    if numbered >= _POST_DUP_LIST_MIN_ITEMS:
+        return True
+    bulleted = len(_BULLETED_LIST_ITEM_RE.findall(text))
+    return bulleted >= _POST_DUP_LIST_MIN_ITEMS
+
+
+@dataclass(frozen=True)
+class PostDupCompletionClaimHook:
+    """Bail catcher: the LAST tool-role message this turn was a
+    duplicate_call dedup AND the reply claims task completion with
+    itemized features (harness-2h3m).
+
+    The model paraphrases the dedup result ('this is a repeat of an
+    earlier call') as 'the work is done' and emits a confident wrap-
+    up listing features it 'implemented' — most of which weren't
+    actually verified. None of the existing fabrication catchers
+    cover this shape: FabricatedSearch/Itemization gate on web-search
+    fabrication; FalseSuccess gates on tools_ran=False (here tools
+    DID run); ConfidentFactualClaim wants no tool to have run.
+
+    Signals (all required):
+      1. prior_tool_outputs non-empty.
+      2. The LAST output starts with _DUPLICATE_CALL_PREFIX — the
+         model's most recent tool input was 'duplicate, no progress.'
+      3. The reply has both completion-language AND a numbered or
+         bulleted list of ≥3 items.
+
+    Response: Nudge with _POST_DUP_COMPLETION_NUDGE — name the
+    pathology and force the model to verify via read_file before
+    claiming done."""
+
+    name: str = "post_dup_completion_claim"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if not ctx.prior_tool_outputs:
+            return Continue()
+        last_output = ctx.prior_tool_outputs[-1]
+        if not last_output.startswith(_DUPLICATE_CALL_PREFIX):
+            return Continue()
+        if not _has_completion_claim_shape(ctx.reply.content):
+            return Continue()
+        return Nudge(_POST_DUP_COMPLETION_NUDGE)
 
 
 _META_CONFIRM_NUDGE = (
@@ -4734,6 +4833,12 @@ HOOK_SHAPES: dict[str, str] = {
         "4-round write_file → unknown_tool → load_tool → edit_file "
         "loop. Preserves the harness-2tq safety-shrink guard."
     ),
+    "post_dup_completion_claim": (
+        "Last tool result was a duplicate_call dedup AND the reply "
+        "claims task completion with an itemized list — the model "
+        "is paraphrasing 'no progress' as 'done'. Forces read_file "
+        "verification before completion summaries."
+    ),
     "duplicate_call": "Identical (name, args) call this turn; re-issues prior result.",
     "tool_search_loop": (
         "tool_search called repeatedly without load_tool — model is treating it as a search engine."
@@ -4930,6 +5035,14 @@ def default_hook_pipeline(
         UnparseableHook(),
         TeaserHook(),
         FalseSuccessHook(),
+        # post_dup_completion_claim (harness-2h3m): catches the
+        # specific shape where the model paraphrases a duplicate_call
+        # dedup as 'task done' and emits an itemized completion
+        # summary. Placed AFTER FalseSuccess so the simpler 0-tools
+        # case gets first pass; placed BEFORE MetaConfirm + the
+        # fabrication catchers because it's a more specific signal
+        # than generic completion-language detection.
+        PostDupCompletionClaimHook(),
         MetaConfirmHook(),
         # raw_results_dump (harness-s451) sits BETWEEN MetaConfirm and
         # FabricatedSearch. Gates on the OPPOSITE condition from the
@@ -5317,6 +5430,7 @@ __all__ = [
     "Nudge",
     "NumericFabricationHook",
     "PairedMetaConfirmStripHook",
+    "PostDupCompletionClaimHook",
     "PostModelContext",
     "PostModelHook",
     "PostModelOutcome",

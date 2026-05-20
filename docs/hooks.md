@@ -18,6 +18,7 @@ Hooks dispatch in the order shown within each phase — first-match semantics, s
 | `unparseable` | Reply had a malformed <tool_call> block. |
 | `teaser` | Reply announced more work but emitted no tool call. |
 | `false_success` | Reply claims a file edit without a write-tier tool call. |
+| `post_dup_completion_claim` | Last tool result was a duplicate_call dedup AND the reply claims task completion with an itemized list — the model is paraphrasing 'no progress' as 'done'. Forces read_file verification before completion summaries. |
 | `meta_confirm` | Reply asks user to confirm in chat instead of calling the tool. |
 | `raw_results_dump` | Reply repeats tool output verbatim instead of synthesizing as the prompt asked. |
 | `fabricated_search` | Reply narrates web-search activity but no web tool ran. |

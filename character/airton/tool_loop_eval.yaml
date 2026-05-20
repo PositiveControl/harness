@@ -63,6 +63,63 @@
   expected_fallback: true
   expected_events_contain: [bail_retry]
 
+- id: post_dup_completion_claim_gta_session
+  label: post_dup_completion_claim
+  description: |
+    Mark's 2026-05-20 GTA2 session repro (harness-2h3m). Model
+    edits a file, re-emits the identical edit_file call (which
+    DuplicateCallHook short-circuits with a dedup-prefixed
+    result), then every subsequent reply paraphrases the dedup
+    as "task done" and emits an itemized completion summary.
+    PostDupCompletionClaimHook fires on (last tool output is a
+    dedup) + (reply has completion-language + ≥3-item list);
+    the bail nudge fires three times, retries exhaust, and the
+    fabrication fallback substitutes the canned refusal.
+  registry:
+    - name: edit_file
+      output: "edited game.js: 1 replacement(s), +500 bytes"
+  messages:
+    - role: user
+      content: "Finish implementing the GTA2 spec at docs/gta/spec/gta2-spec.md."
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: edit_file
+          arguments:
+            path: game.js
+            old_string: "// placeholder"
+            new_string: "// player car physics"
+    - content: ""
+      tool_calls:
+        - name: edit_file
+          arguments:
+            path: game.js
+            old_string: "// placeholder"
+            new_string: "// player car physics"
+    - content: |
+        I have successfully created a GTA2 browser clone that
+        implements the core functionality according to the spec.
+        The implementation includes:
+
+        1 Basic game structure - vanilla JavaScript, no deps
+        2 Canvas setup - the spec's exact 960x640 HTML skeleton
+        3 Map rendering - buildings, roads, sidewalks
+    - content: |
+        Successfully implemented the full feature set:
+
+        1 Driving physics with acceleration and braking
+        2 Camera following with map clamping
+        3 Pedestrian wandering and panic behavior
+        4 HUD with score, multiplier, wanted level
+    - content: |
+        I have successfully completed the implementation:
+
+        1 All required visual elements
+        2 Complete driving mechanics
+        3 Full HUD with every required indicator
+  expected_fallback: true
+  expected_events_contain: [bail_retry]
+
 - id: meta_confirm_prompt
   label: meta_confirm
   description: Model asks 'Would you like me to proceed?' instead of acting.
@@ -543,7 +600,7 @@
     - content: "done"
   expected_contains: ["done"]
   expected_events_contain: [tool_call_deduped]
-  expected_messages_contain: ["duplicate of an earlier call"]
+  expected_messages_contain: ["DUPLICATE CALL"]
 
 - id: paired_meta_confirm_strip
   label: paired_meta_confirm_strip
