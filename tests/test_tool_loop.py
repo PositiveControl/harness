@@ -3455,6 +3455,188 @@ def test_wrap_up_event_round_index_aligns_with_total_iteration(tmp_path: Path) -
     assert round_completes[-1].round_index == 1
 
 
+# ---------- inbox (mid-turn injection, harness-6fr0) ----------
+
+
+def test_inbox_drained_message_lands_in_next_round_context(tmp_path: Path) -> None:
+    """Injection drained at the top of the second iteration must
+    appear in the messages the adapter sees on that round."""
+    (tmp_path / "hi.txt").write_text("contents")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "hi.txt"}),),
+            ),
+            ModelReply(content="ack with injected context"),
+        ]
+    )
+
+    # Inbox yields once on the second consultation; consult counter
+    # so it doesn't fire forever (the loop calls drain twice per
+    # round — start of while + after _execute_tool_calls).
+    calls: list[int] = [0]
+
+    def inbox() -> list[ChatMessage]:
+        calls[0] += 1
+        if calls[0] == 2:
+            return [ChatMessage(role="user", content="wait actually check 'hi.txt' twice")]
+        return []
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read hi.txt")],
+        registry,
+        inbox=inbox,
+    )
+
+    # Adapter saw two rounds. Round 2's messages must include the
+    # injected user-role line — it landed between the tool-role
+    # result and the next model call.
+    assert len(adapter.calls_seen) == 2
+    round2_user_msgs = [m for m in adapter.calls_seen[1] if m.role == "user"]
+    contents = [m.content for m in round2_user_msgs]
+    assert "wait actually check 'hi.txt' twice" in contents
+    # And one message_injected event was emitted with the text.
+    injected = [e for e in result.events if e.kind == "message_injected"]
+    assert len(injected) == 1
+    assert injected[0].delta == "wait actually check 'hi.txt' twice"
+
+
+def test_inbox_none_is_noop() -> None:
+    """The default `inbox=None` path must not emit any
+    message_injected events and must not alter the message
+    thread."""
+    adapter = _ScriptedAdapter(replies=[ModelReply(content="bye")])
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="hi")],
+        ToolRegistry(),
+        inbox=None,
+    )
+    assert result.content == "bye"
+    assert not any(e.kind == "message_injected" for e in result.events)
+
+
+def test_inbox_appends_n_separate_messages(tmp_path: Path) -> None:
+    """Multiple injections drained at the same boundary must be
+    appended as N separate user-role ChatMessages — no
+    concatenation."""
+    (tmp_path / "hi.txt").write_text("c")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "hi.txt"}),),
+            ),
+            ModelReply(content="done"),
+        ]
+    )
+
+    fired = [False]
+
+    def inbox() -> list[ChatMessage]:
+        if fired[0]:
+            return []
+        fired[0] = True
+        return [
+            ChatMessage(role="user", content="first injection"),
+            ChatMessage(role="user", content="second injection"),
+        ]
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read")],
+        registry,
+        inbox=inbox,
+    )
+    injected = [e for e in result.events if e.kind == "message_injected"]
+    assert len(injected) == 2
+    assert [e.delta for e in injected] == ["first injection", "second injection"]
+    # Both also land in the working thread as separate user
+    # messages — not merged.
+    user_msgs = [m.content for m in result.messages if m.role == "user"]
+    assert user_msgs.count("first injection") == 1
+    assert user_msgs.count("second injection") == 1
+
+
+def test_inbox_template_safe_position(tmp_path: Path) -> None:
+    """Injection must NEVER land between an assistant(tool_calls)
+    message and its tool-role result. The drain at the top of the
+    next round is the earliest legal position."""
+    (tmp_path / "hi.txt").write_text("c")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "hi.txt"}),),
+            ),
+            ModelReply(content="done"),
+        ]
+    )
+
+    fired = [False]
+
+    def inbox() -> list[ChatMessage]:
+        if fired[0]:
+            return []
+        fired[0] = True
+        return [ChatMessage(role="user", content="mid-turn note")]
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read")],
+        registry,
+        inbox=inbox,
+    )
+
+    # Walk the working thread. Every assistant(tool_calls=…) must be
+    # immediately followed by a tool-role message — no user-role
+    # message may interleave.
+    for i, msg in enumerate(result.messages):
+        if msg.role == "assistant" and msg.tool_calls:
+            assert i + 1 < len(result.messages)
+            assert result.messages[i + 1].role == "tool", (
+                f"non-tool message {result.messages[i + 1].role!r} "
+                "followed an assistant tool-call — chat template invariant broken"
+            )
+
+
+def test_inbox_empty_content_skipped() -> None:
+    """A drained ChatMessage with empty content must NOT land in
+    the working thread — just like the deque drain on the TUI side
+    treats it as nothing typed."""
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(),
+            ),
+        ]
+    )
+
+    def inbox() -> list[ChatMessage]:
+        return [ChatMessage(role="user", content="")]
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="hi")],
+        ToolRegistry(),
+        inbox=inbox,
+    )
+    assert not any(e.kind == "message_injected" for e in result.events)
+    assert all(m.content != "" or m.role != "user" for m in result.messages)
+
+
 # Explicit import to confirm we can pass pytest from the tests folder
 def test_tools_module_importable() -> None:
     import harness.tools  # noqa: F401 — import-for-side-effect check

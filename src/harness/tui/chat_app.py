@@ -109,6 +109,16 @@ class _ChatAppState:
     # 'a turn is running' — toggled on the UI thread in _start_turn
     # and _finish_turn so reads are race-free.
     pending_prompts: deque[str] = field(default_factory=deque)
+    # Soft-inject queue (harness-6fr0). Distinct from pending_prompts:
+    # entries here are drained mid-turn by the worker via
+    # run_tool_loop's `inbox` callable and appended to the running
+    # model context as user-role messages — no restart. UI thread
+    # appends; worker thread popleft via _drain_injections. Python's
+    # deque is thread-safe for those primitives. If a turn ends with
+    # un-drained entries, _finish_turn / action_interrupt promote
+    # them into pending_prompts so nothing the user typed gets
+    # silently dropped.
+    pending_injections: deque[str] = field(default_factory=deque)
     is_busy: bool = False
     # Persistent elapsed-time (harness-jsu): the most recent turn's
     # wall-clock duration, retained so the idle metrics strip reads
@@ -445,6 +455,15 @@ class ChatApp(App[None]):
         # keypress — interrupt has to be reachable mid-turn when the
         # prompt is where the user's hands already are.
         Binding("ctrl+x", "interrupt", "interrupt", priority=True),
+        # Soft-inject (harness-6fr0): submit a mid-turn user message
+        # WITHOUT restarting the loop. The orchestrator drains the
+        # injection queue at iteration boundaries and appends each
+        # as a separate user-role ChatMessage. Bound to alt+enter
+        # (Option+Return on macOS) since plain Enter already means
+        # "queue, run after current turn" and Ctrl+X already means
+        # "interrupt + run new turn now". priority=True so the
+        # focused Input doesn't eat the chord.
+        Binding("alt+enter", "inject", "inject", priority=True),
         # Slash-palette navigation (harness-kg9). priority=True so
         # Enter is intercepted before Input's Submitted fires, letting
         # us replace the input value with the highlighted command.
@@ -901,6 +920,81 @@ class ChatApp(App[None]):
         log.write(line)
         self._refresh_metrics()
 
+    def action_inject(self) -> None:
+        """UI-thread. Alt+Enter binding (harness-6fr0). Send the
+        current Input value into the running tool loop as a mid-turn
+        injection, without restarting the turn.
+
+        - Empty Input: no-op (don't pollute the log with a phantom
+          marker on stray keypress).
+        - Input non-empty but no turn running: fall through to a
+          normal turn start so the keybinding doesn't fail silently
+          when the user happens to hit it between turns.
+        - Input non-empty AND a turn is running: push into
+          pending_injections and echo `[injected] <text>` in the
+          log. The worker drains the queue at the next iteration
+          boundary inside run_tool_loop and appends each entry as
+          a separate user-role ChatMessage."""
+        prompt = self.query_one("#prompt", Input)
+        text = prompt.value.strip()
+        if not text:
+            return
+        prompt.value = ""
+        if not self._state.is_busy:
+            self._start_turn(text)
+            return
+        self._inject_prompt(text)
+
+    def _inject_prompt(self, text: str) -> None:
+        """UI-thread. Append text to the injection queue (drained
+        mid-turn by the worker via _drain_injections) and echo a
+        dim `[injected]` marker so the user sees it landed.
+        Distinct style from `queued` so the two modes are visually
+        unambiguous in the transcript."""
+        self._state.pending_injections.append(text)
+        log = self.query_one("#output", RichLog)
+        line = Text()
+        line.append("[injected] ", style="dim magenta")
+        line.append(text, style="dim")
+        log.write(line)
+        self._refresh_metrics()
+
+    def _drain_injections(self) -> list[ChatMessage]:
+        """Worker-thread. Drain every pending injection and return
+        as a list of user-role ChatMessages (separate entries, no
+        concatenation). Returns an empty list when the deque is
+        empty — the orchestrator's drain_inbox no-ops on empty
+        results. deque.popleft is thread-safe with concurrent UI-
+        thread appends so no lock is needed here."""
+        msgs: list[ChatMessage] = []
+        while True:
+            try:
+                text = self._state.pending_injections.popleft()
+            except IndexError:
+                break
+            msgs.append(ChatMessage(role="user", content=text))
+        return msgs
+
+    def _promote_stale_injections(self) -> None:
+        """UI-thread. If a turn ended (or was interrupted) with
+        un-drained injections, push them to the front of
+        pending_prompts so they become the next turn(s). Preserves
+        the user's typed order: injections fire before any later
+        Enter-queued prompts. The contract is `nothing the user
+        typed disappears silently` — a turn that exited too fast
+        for drain_inbox to see the injection must still surface it."""
+        if not self._state.pending_injections:
+            return
+        stale: list[str] = []
+        while True:
+            try:
+                stale.append(self._state.pending_injections.popleft())
+            except IndexError:
+                break
+        # Prepend in order so injections fire before later-queued prompts.
+        for text in reversed(stale):
+            self._state.pending_prompts.appendleft(text)
+
     def _start_turn(self, text: str) -> None:
         """UI-thread. Echo the user turn into the log and kick the
         worker. Separated from on_input_submitted so _finish_turn can
@@ -1054,6 +1148,7 @@ class ChatApp(App[None]):
                     ),
                     scope_redirect_template=self._character.scope_redirect_template,
                     scope_lexicon=self._character.scope_lexicon,
+                    inbox=self._drain_injections,
                 )
                 if self._state.turn_seq != seq:
                     return  # interrupted; drop partial reply + skip persistence
@@ -1202,6 +1297,10 @@ class ChatApp(App[None]):
         log = self.query_one("#output", RichLog)
         log.write(Text("⏹ interrupted", style="bold red"))
         self.query_one("#prompt", Input).focus()
+        # Promote any injections that the worker never got a chance
+        # to drain so the user's typed messages still land — they
+        # become the head of the next-turn queue (harness-6fr0).
+        self._promote_stale_injections()
         if self._state.pending_prompts:
             next_text = self._state.pending_prompts.popleft()
             self._start_turn(next_text)
@@ -1222,6 +1321,11 @@ class ChatApp(App[None]):
         self._state.is_busy = False
         self._recompute_ctx_used()
         self.query_one("#prompt", Input).focus()
+        # Same promote-then-drain order as action_interrupt: a turn
+        # that exited too fast for the worker to see an injection
+        # surfaces it as the next turn instead of dropping it
+        # (harness-6fr0).
+        self._promote_stale_injections()
         if self._state.pending_prompts:
             next_text = self._state.pending_prompts.popleft()
             self._start_turn(next_text)

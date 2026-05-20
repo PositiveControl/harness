@@ -220,6 +220,16 @@ class ToolLoopEvent:
     budget — they're bookkeeping, not work. Observers + evals use
     the event to audit which rounds got the exemption.
 
+    `message_injected` (harness-6fr0) fires when the orchestrator
+    drained a user-role ChatMessage from the optional `inbox` callable
+    and appended it to the working thread mid-turn (without
+    restarting the loop). `delta` carries the injected text — the
+    UI already echoed it at submit time, so observers can use the
+    event for audit / evals without re-rendering. Drains run at
+    iteration boundaries only (top of while and after
+    _execute_tool_calls); never between an assistant(tool_calls=…)
+    and its tool-role results, which would break the chat template.
+
     `wrap_up_forced` (harness-0gss) fires once when the loop ran out
     of work budget on a round that emitted tool calls that actually
     ran. The orchestrator runs one additional adapter call with a
@@ -892,6 +902,7 @@ def run_tool_loop(
     scope_redirect_template: str | None = None,
     scope_lexicon: tuple[str, ...] = (),
     plan: Plan | None = None,
+    inbox: Callable[[], list[ChatMessage]] | None = None,
 ) -> ToolLoopResult:
     """Drive a model + tool registry until the model emits a text-only
     reply or `max_rounds` rounds are spent.
@@ -948,6 +959,20 @@ def run_tool_loop(
     package then sees the search_memory result as part of an episodic
     slot if its YAML wires one).
 
+    `inbox`, when set, is consulted between iterations for new
+    user-role messages that the UI accepted mid-turn (harness-6fr0).
+    Each call returns a (possibly empty) list of ChatMessages; the
+    orchestrator appends them to the working thread as separate
+    user turns (no concatenation) and emits one `message_injected`
+    event per drained message so observers can audit. Drains run at
+    two safe positions: top of the main while loop (before the next
+    model round) and immediately after `_execute_tool_calls`
+    returns. Never between an assistant(tool_calls=…) and its
+    tool-role results — that breaks the Qwen 2.5 chat template.
+    `turn_user_message` is captured from `working[:initial_count]`
+    and stays frozen to the original prompt, so grounding hooks do
+    NOT treat injected text as the turn's subject.
+
     `banter_tracker`, when set, intercepts banter-shaped user messages
     (epic harness-jjm9) BEFORE any forced grounding, router pass, or
     model round. On a hit, the tracker composes a joke or redirect
@@ -997,6 +1022,29 @@ def run_tool_loop(
         events.append(event)
         if observe is not None:
             observe(event)
+
+    def drain_inbox(round_idx: int) -> None:
+        """Pull any pending mid-turn injections (harness-6fr0) into
+        the working thread as separate user-role messages. Each
+        drained message becomes its own ChatMessage — the UI
+        echoed it at submit time, so we just emit a
+        `message_injected` event per item for audit/evals and
+        skip empties. Safe only at iteration boundaries; callers
+        must not invoke between an assistant(tool_calls=…) and
+        its tool-role results."""
+        if inbox is None:
+            return
+        for msg in inbox():
+            if not msg.content:
+                continue
+            working.append(msg)
+            emit(
+                ToolLoopEvent(
+                    kind="message_injected",
+                    round_index=round_idx,
+                    delta=msg.content,
+                )
+            )
 
     # Tracks whether any tool call THIS TURN returned success=True. The
     # fabrication catchers gate on this: if every tool this turn errored,
@@ -1157,6 +1205,12 @@ def run_tool_loop(
     while work_rounds < max_rounds and total_iterations < hard_ceiling:
         round_idx = total_iterations
         total_iterations += 1
+        # Drain mid-turn injections (harness-6fr0) BEFORE the model
+        # round so the next model call sees the new user messages
+        # in its context. Safe here — any prior round's tool-role
+        # results were appended contiguously after their
+        # assistant(tool_calls=…) on the previous iteration.
+        drain_inbox(round_idx)
         tools_already_ran = any(m.role == "tool" for m in working[initial_count:])
         emit(ToolLoopEvent(kind="round_start", round_index=round_idx))
         last_reply = _run_model_round(
@@ -1278,6 +1332,14 @@ def run_tool_loop(
             attempted_calls=attempted_calls,
         )
         any_tool_succeeded = any_tool_succeeded or round_success
+        # Second drain (harness-6fr0). All tool-role results for the
+        # current round are now appended; injecting a user message
+        # here is template-safe (assistant + N tool messages are
+        # contiguous above). The next iteration's drain at the top
+        # of the loop would catch this too — draining here just
+        # means the user's message is in the working thread before
+        # work-round accounting decides whether to continue.
+        drain_inbox(round_idx)
 
         # Work-round accounting (harness-rlza). A round counts as "work"
         # only if at least one of the model's tool calls named a content
