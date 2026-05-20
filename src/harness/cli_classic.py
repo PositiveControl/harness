@@ -341,6 +341,10 @@ def build_classic_registry(
                 else None
             ),
             default_site_filter=character.search_web_default_site_filter,
+            # Share the FetchUrlTool denylist so a 403 logged this
+            # session deprioritizes the host on the next search
+            # (harness-xncq).
+            denylist=_open_fetch_denylist(),
         ),
         # Mirror cli.py (TUI path): honor character.fetch_url_allowed_hosts
         # so per-character allowlists (airton_f's scholar.google.com /

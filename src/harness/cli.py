@@ -1653,6 +1653,10 @@ def _build_tool_registry_for_tui(
             default_site_filter=(
                 character.search_web_default_site_filter if character is not None else None
             ),
+            # Share the same denylist FetchUrlTool writes to so a 403
+            # logged this session deprioritizes the host on the next
+            # search (harness-xncq).
+            denylist=_open_fetch_denylist(),
         ),
         "fetch_url": lambda: FetchUrlTool(
             allowed_hosts=(

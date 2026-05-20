@@ -415,3 +415,240 @@ def test_allowlist_surfaces_late_hits_within_max_results(
     assert "3. [external] B" in out
     # E shouldn't appear (sliced off).
     assert "snip-e" not in out
+
+
+# ---------- denylist annotation (harness-xncq) ----------
+
+
+def _denylisted_results_body() -> bytes:
+    """Canned DDG-shape HTML: three results from distinct hosts. The
+    denylist tests block one host out-of-band and check the marker
+    placement / sort order."""
+    return (
+        b"<html><body>"
+        b'<div class="result">'
+        b'<a class="result__a" href="https://www.accuweather.com/forecast">'
+        b"AccuWeather Nairobi Forecast</a>"
+        b'<a class="result__snippet">Current weather.</a>'
+        b"</div>"
+        b'<div class="result">'
+        b'<a class="result__a" href="https://wttr.in/Nairobi">'
+        b"wttr.in Nairobi</a>"
+        b'<a class="result__snippet">ASCII forecast.</a>'
+        b"</div>"
+        b'<div class="result">'
+        b'<a class="result__a" href="https://weather.gov/forecast/nairobi">'
+        b"weather.gov Nairobi</a>"
+        b'<a class="result__snippet">Government forecast.</a>'
+        b"</div>"
+        b"</body></html>"
+    )
+
+
+def test_denylist_marks_blocked_hosts_and_sinks_them(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """harness-xncq motivating repro: a host that previously logged a
+    sticky 403 (www.accuweather.com) must be annotated `[denylisted]`
+    and sorted below `[external]` hits so the model knows to skip it
+    BEFORE wasting a fetch_url round."""
+    from harness.store.fetch_denylist import FetchDenylistStore
+
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen_for(_denylisted_results_body()))
+
+    denylist = FetchDenylistStore(tmp_path / "harness.sqlite")
+    denylist.record(
+        host="www.accuweather.com",
+        status=403,
+        reason="Forbidden",
+        url="https://www.accuweather.com/forecast",
+    )
+
+    tool = SearchWebTool(denylist=denylist)
+    out = tool.call(query="nairobi weather")
+    lines = [line for line in out.splitlines() if line[:2] in ("1.", "2.", "3.")]
+
+    # AccuWeather drops from raw position 1 to last; wttr.in + weather.gov
+    # take positions 1 + 2.
+    assert lines[0].startswith("1. wttr.in Nairobi")
+    assert lines[1].startswith("2. weather.gov Nairobi")
+    # Denylisted hit lands last with the marker spelling the status.
+    assert "[denylisted — HTTP 403]" in lines[2]
+    assert "AccuWeather" in lines[2]
+
+
+def test_denylist_marker_uses_recorded_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """The marker echoes the HTTP status the denylist recorded so the
+    model has audit context inline. 401 surfaces as 401, not 403."""
+    from harness.store.fetch_denylist import FetchDenylistStore
+
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen_for(_denylisted_results_body()))
+
+    denylist = FetchDenylistStore(tmp_path / "harness.sqlite")
+    denylist.record(
+        host="www.accuweather.com",
+        status=401,
+        reason="Unauthorized",
+        url="https://www.accuweather.com/forecast",
+    )
+
+    out = SearchWebTool(denylist=denylist).call(query="nairobi weather")
+    assert "[denylisted — HTTP 401]" in out
+
+
+def test_denylist_silent_when_no_hits_match(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """When the denylist is configured but none of the result hosts
+    are blocked, the output stays unmarked + DDG's order is preserved.
+    Allowlist-style markers don't leak when the allowlist isn't set."""
+    from harness.store.fetch_denylist import FetchDenylistStore
+
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen_for(_denylisted_results_body()))
+
+    denylist = FetchDenylistStore(tmp_path / "harness.sqlite")
+    denylist.record(
+        host="some-other-host.example.com",
+        status=403,
+        reason="Forbidden",
+        url="https://some-other-host.example.com/",
+    )
+
+    out = SearchWebTool(denylist=denylist).call(query="nairobi weather")
+    assert "[denylisted" not in out
+    assert "[allowlisted]" not in out
+    assert "[external]" not in out
+    # DDG raw ordering preserved.
+    lines = [line for line in out.splitlines() if line[:2] in ("1.", "2.", "3.")]
+    assert lines[0].startswith("1. AccuWeather Nairobi")
+    assert lines[1].startswith("2. wttr.in Nairobi")
+    assert lines[2].startswith("3. weather.gov Nairobi")
+
+
+def test_denylist_without_allowlist_does_not_emit_external_marker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """With denylist set but allowlist unset, non-denylisted results
+    must stay UNMARKED (no `[external]`). The `[external]` marker only
+    means 'non-allowlisted', and emitting it without an allowlist
+    would mislead the model into looking for an allowlist context
+    that doesn't exist."""
+    from harness.store.fetch_denylist import FetchDenylistStore
+
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen_for(_denylisted_results_body()))
+
+    denylist = FetchDenylistStore(tmp_path / "harness.sqlite")
+    denylist.record(
+        host="www.accuweather.com",
+        status=403,
+        reason="Forbidden",
+        url="https://www.accuweather.com/forecast",
+    )
+
+    out = SearchWebTool(denylist=denylist).call(query="nairobi weather")
+    lines = [line for line in out.splitlines() if line[:2] in ("1.", "2.", "3.")]
+    # Non-denylisted lines have NO marker.
+    assert lines[0] == "1. wttr.in Nairobi — https://wttr.in/Nairobi"
+    assert lines[1] == "2. weather.gov Nairobi — https://weather.gov/forecast/nairobi"
+
+
+def test_allowlist_wins_over_denylist_for_same_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """Defensive: if an operator both allowlists and denylists the
+    same host (unusual but legal), the allowlist wins. The operator's
+    explicit allow is the stronger signal than the auto-recorded 4xx."""
+    from harness.store.fetch_denylist import FetchDenylistStore
+
+    body = (
+        b"<html><body>"
+        b'<div class="result"><a class="result__a" href="https://arxiv.org/abs/2401">'
+        b'paper</a><a class="result__snippet">Preprint.</a></div>'
+        b"</body></html>"
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen_for(body))
+
+    denylist = FetchDenylistStore(tmp_path / "harness.sqlite")
+    denylist.record(
+        host="arxiv.org",
+        status=403,
+        reason="Forbidden",
+        url="https://arxiv.org/abs/2401",
+    )
+
+    tool = SearchWebTool(
+        allowed_hosts=frozenset({"arxiv.org"}),
+        denylist=denylist,
+    )
+    out = tool.call(query="anything")
+    # Allowlist marker; no denylist annotation.
+    assert "[allowlisted] paper" in out
+    assert "[denylisted" not in out
+
+
+def test_denylist_with_allowlist_sort_tiers(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """Three-tier sort: allowlisted (0) before external (1) before
+    denylisted (2). Verify with a 3-result body covering all three
+    classifications."""
+    from harness.store.fetch_denylist import FetchDenylistStore
+
+    body = (
+        b"<html><body>"
+        # Position 1 (raw): denylisted
+        b'<div class="result"><a class="result__a" href="https://www.accuweather.com/forecast">'
+        b'AccuWeather</a><a class="result__snippet">Blocked.</a></div>'
+        # Position 2 (raw): external
+        b'<div class="result"><a class="result__a" href="https://wttr.in/Nairobi">'
+        b'wttr.in</a><a class="result__snippet">ASCII.</a></div>'
+        # Position 3 (raw): allowlisted
+        b'<div class="result"><a class="result__a" href="https://weather.gov/nairobi">'
+        b'weather.gov</a><a class="result__snippet">Gov source.</a></div>'
+        b"</body></html>"
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen_for(body))
+
+    denylist = FetchDenylistStore(tmp_path / "harness.sqlite")
+    denylist.record(
+        host="www.accuweather.com",
+        status=403,
+        reason="Forbidden",
+        url="https://www.accuweather.com/forecast",
+    )
+
+    tool = SearchWebTool(
+        allowed_hosts=frozenset({"weather.gov"}),
+        denylist=denylist,
+    )
+    out = tool.call(query="nairobi weather")
+    lines = [line for line in out.splitlines() if line[:2] in ("1.", "2.", "3.")]
+    # Sort: allowlisted -> external -> denylisted.
+    assert lines[0].startswith("1. [allowlisted] weather.gov")
+    assert lines[1].startswith("2. [external] wttr.in")
+    assert lines[2].startswith("3. [denylisted — HTTP 403] AccuWeather")
+
+
+def test_denylist_expired_entries_do_not_annotate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """is_blocked() filters expired rows (>30 days). A host whose last
+    sighting is past the TTL must NOT be marked — `harness denylist
+    list --expired` can still inspect it, but day-to-day searches see
+    it as a normal external."""
+    from datetime import UTC, datetime, timedelta
+
+    from harness.store.fetch_denylist import FetchDenylistStore
+
+    monkeypatch.setattr(urllib.request, "urlopen", _stub_urlopen_for(_denylisted_results_body()))
+
+    denylist = FetchDenylistStore(tmp_path / "harness.sqlite", ttl_days=30)
+    old = datetime.now(UTC) - timedelta(days=60)
+    denylist.record(
+        host="www.accuweather.com",
+        status=403,
+        reason="Forbidden",
+        url="https://www.accuweather.com/forecast",
+        now=old,
+    )
+
+    out = SearchWebTool(denylist=denylist).call(query="nairobi weather")
+    assert "[denylisted" not in out

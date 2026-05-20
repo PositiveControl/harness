@@ -15,8 +15,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from harness.tools.base import ToolSpec
+
+if TYPE_CHECKING:
+    from harness.store.fetch_denylist import FetchDenylistStore
 
 _DEFAULT_TIMEOUT_S = 10
 _USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 harness-search"
@@ -85,7 +89,15 @@ class SearchWebTool:
     on a scoped corpus: the agent sees what's out there, but the
     sources it can actually fetch land first. None (default) means
     no reranking and no markers — the unbounded-web behavior for
-    general-purpose characters."""
+    general-purpose characters.
+
+    When `denylist` is supplied (the same FetchDenylistStore the
+    FetchUrlTool holds — harness-xncq), hosts that previously logged
+    a sticky 401/403 get marked `[denylisted — HTTP NNN]` and sink
+    below `[external]` in the result ordering. Annotation rather than
+    filtering: the model sees that the host is poisoned without losing
+    audit visibility, and the marker teaches the connection between
+    the search-time signal and the eventual fetch_url short-circuit."""
 
     default_max_results: int = 5
     timeout_s: int = _DEFAULT_TIMEOUT_S
@@ -97,6 +109,14 @@ class SearchWebTool:
     # remember the operator on every call. Override path: the model
     # writes `query site:<other>` and the prepend is skipped.
     default_site_filter: str | None = None
+    # Persistent fetch_url denylist (harness-4dgm + harness-xncq).
+    # When set, each result is classified against is_blocked(host);
+    # denylisted hits get a `[denylisted — HTTP NNN]` marker and sink
+    # below `[external]`. Plumbed by the CLI bootstrap to point at the
+    # same per-character store that FetchUrlTool writes to, so a 403
+    # logged this session deprioritizes the host on the next search
+    # without restart.
+    denylist: FetchDenylistStore | None = None
 
     @property
     def spec(self) -> ToolSpec:
@@ -198,10 +218,20 @@ class SearchWebTool:
             is_allowlisted = self.allowed_hosts is not None and _host_matches_allowlist(
                 host, self.allowed_hosts
             )
+            # Denylist classification (harness-xncq). Allowlist wins
+            # over denylist if a host somehow lands in both — the
+            # operator's explicit allow is the stronger signal than the
+            # auto-logged 4xx.
+            denylist_status: int | None = None
+            if self.denylist is not None and not is_allowlisted and host:
+                blocked = self.denylist.is_blocked(host)
+                if blocked is not None:
+                    denylist_status = blocked.last_status
             snippet = _strip_tags(snippets[idx]) if idx < len(snippets) else ""
             classified.append(
                 _Result(
                     is_allowlisted=is_allowlisted,
+                    denylist_status=denylist_status,
                     original_idx=idx,
                     url=url_clean,
                     title=_strip_tags(title_html),
@@ -209,18 +239,27 @@ class SearchWebTool:
                 )
             )
 
-        if self.allowed_hosts is not None:
-            # Stable sort: allowlisted hits float to the top while
-            # preserving DDG's intra-group ranking. Python's sort is
-            # stable so the secondary key (original_idx) only matters
-            # when two results share is_allowlisted.
-            classified.sort(key=lambda r: (not r.is_allowlisted, r.original_idx))
+        # Stable sort: allowlisted hits float to the top, denylisted
+        # hits sink below external. Python's sort is stable so
+        # original_idx only matters within a tier. The sort runs
+        # whenever EITHER allowlist or denylist is configured — both
+        # change the natural DDG ordering, and we want consistent
+        # placement.
+        if self.allowed_hosts is not None or self.denylist is not None:
+            classified.sort(
+                key=lambda r: (
+                    0 if r.is_allowlisted else (2 if r.denylist_status is not None else 1),
+                    r.original_idx,
+                )
+            )
 
         lines: list[str] = []
         any_snippet = False
         for display_idx, result in enumerate(classified[:n], start=1):
             marker = ""
-            if self.allowed_hosts is not None:
+            if result.denylist_status is not None:
+                marker = f" [denylisted — HTTP {result.denylist_status}]"
+            elif self.allowed_hosts is not None:
                 marker = " [allowlisted]" if result.is_allowlisted else " [external]"
             entry = f"{display_idx}.{marker} {result.title} — {result.url}"
             if result.snippet:
@@ -261,11 +300,15 @@ class SearchWebTool:
 
 @dataclass(frozen=True)
 class _Result:
-    """Parsed search result plus allowlist classification. Internal —
-    keeps the call() body readable + the sort key correct (Python
-    can't sort dicts; named-tuple / dataclass is the clean answer)."""
+    """Parsed search result plus allowlist + denylist classification.
+    Internal — keeps the call() body readable + the sort key correct
+    (Python can't sort dicts; named-tuple / dataclass is the clean
+    answer). `denylist_status` is the last HTTP status the denylist
+    recorded for this host (typically 401/403) or None when the host
+    isn't blocked."""
 
     is_allowlisted: bool
+    denylist_status: int | None
     original_idx: int
     url: str
     title: str
