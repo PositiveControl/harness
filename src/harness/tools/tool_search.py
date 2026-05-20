@@ -243,7 +243,16 @@ class ToolSearchTool:
         remaining = len(candidates) - len(visible)
         if remaining > 0:
             lines.append(f"  (+{remaining} more — increase `limit` or narrow the search)")
-        header = f"{len(visible)} of {len(candidates)} tool(s)"
+        # Header phrasing intentionally differs between N == M and N < M
+        # (harness-1zun). The old shared "N of M tool(s)" line read like
+        # the catalog grew between successive tool_search calls when the
+        # only thing that changed was `limit`. Splitting the shapes makes
+        # the asymmetry explicit: "showing N of M matching" says N is
+        # rendered count, M is candidates pool.
+        if remaining > 0:
+            header = f"showing {len(visible)} of {len(candidates)} matching tool(s)"
+        else:
+            header = f"{len(candidates)} matching tool(s)"
         # Nudge the agent toward the discovery flow's next step. Without
         # this, small models that found a candidate often replied
         # "you'd want X but I can't run it" instead of activating it.

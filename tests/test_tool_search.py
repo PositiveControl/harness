@@ -221,7 +221,9 @@ def test_output_caps_at_limit_with_overflow_marker() -> None:
         )
     tool = ToolSearchTool(catalog=cat)
     out = tool.call(query="search", limit=3)
-    assert "3 of 15 tool(s)" in out
+    # N < M shape (harness-1zun): "showing 3 of 15 matching tool(s)" so
+    # the reader can tell M is the candidates pool, not catalog growth.
+    assert "showing 3 of 15 matching tool(s)" in out
     assert "search-00" in out
     assert "search-02" in out
     assert "(+12 more" in out
@@ -233,7 +235,43 @@ def test_default_limit_is_ten() -> None:
     for i in range(20):
         cat.register(ToolCatalogEntry(name=f"x-{i}", tags=("foo",)))
     out = ToolSearchTool(catalog=cat).call(query="x-")
-    assert "10 of 20" in out
+    assert "showing 10 of 20 matching tool(s)" in out
+
+
+def test_header_phrasing_when_limit_meets_candidates() -> None:
+    """harness-1zun: when N == M (all candidates fit under limit), the
+    header drops the 'showing N of M' framing for the cleaner '{M}
+    matching tool(s)' shape. The asymmetric phrasing is what makes
+    the limit < candidates case read unambiguously."""
+    cat = ToolCatalog()
+    for i in range(3):
+        cat.register(ToolCatalogEntry(name=f"x-{i}", tags=("foo",)))
+    out = ToolSearchTool(catalog=cat).call(query="x-", limit=10)
+    # No 'showing N of M' line — everything fit.
+    assert "showing" not in out.splitlines()[0]
+    assert "3 matching tool(s)" in out
+    # And no '+N more' overflow marker.
+    assert "+0 more" not in out
+    assert "more —" not in out
+
+
+def test_header_phrasing_when_limit_below_candidates() -> None:
+    """harness-1zun positive: when limit < candidates, the header
+    spells out the count split so a second call with a higher limit
+    doesn't read as 'the catalog grew between calls' (the original
+    2026-05-19 session repro)."""
+    cat = ToolCatalog()
+    for i in range(7):
+        cat.register(ToolCatalogEntry(name=f"k-{i:02d}", tags=("search",)))
+    tool = ToolSearchTool(catalog=cat)
+
+    # Same query, limit=1 → '1 of 7 matching' (rendered count vs pool).
+    one = tool.call(query="search", limit=1)
+    assert "showing 1 of 7 matching tool(s)" in one
+    # Same query, limit=10 → '7 matching tool(s)' (all fit).
+    ten = tool.call(query="search", limit=10)
+    assert "7 matching tool(s)" in ten
+    assert "showing" not in ten.splitlines()[0]
 
 
 # --- registry integration ----------------------------------------------
