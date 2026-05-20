@@ -1920,6 +1920,76 @@ def test_set_catalog_upgrades_error_shape_for_existing_registry() -> None:
     assert "load_tool(name='search_web')" in upgraded
 
 
+def test_loop_executes_call_after_load_tool_clears_unknown_tool(tmp_path: Path) -> None:
+    """harness-cck4 end-to-end: model emits a call before the tool is
+    activated (gets the yczi catalog-aware unknown_tool error), then
+    activates the tool via a side-effect 'late_register' tool, then
+    re-emits the original call. Without the cck4 carve-out
+    DuplicateCallHook replays the stale unknown_tool error and the
+    tool never runs. With the fix, the second emission EXECUTES."""
+    (tmp_path / "hi.txt").write_text("real contents")
+
+    registry = ToolRegistry()
+
+    # late_register: when the model calls this tool, it registers
+    # read_file into the same registry as a side effect. Stands in for
+    # the real load_tool path without needing the full catalog + builder
+    # machinery.
+    @dataclass
+    class _LateRegister:
+        target_registry: ToolRegistry
+        spec: ToolSpec = field(
+            default_factory=lambda: ToolSpec(
+                name="late_register",
+                description="Register read_file into the registry as a side effect.",
+                parameters={"type": "object", "properties": {}, "required": []},
+                tier="read",
+            )
+        )
+
+        def call(self) -> str:
+            self.target_registry.register(ReadFileTool(root=tmp_path))
+            return "read_file registered"
+
+    registry.register(_LateRegister(target_registry=registry))
+
+    read_call = ToolCall(name="read_file", arguments={"path": "hi.txt"})
+    adapter = _ScriptedAdapter(
+        replies=[
+            # R1: read_file before activation → unknown_tool error.
+            ModelReply(content="", tool_calls=(read_call,)),
+            # R2: side-effect register the tool.
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="late_register", arguments={}),),
+            ),
+            # R3: re-emit read_file with the same args. Without the
+            # cck4 fix this would be deduped against the R1 result;
+            # with the fix it actually executes.
+            ModelReply(content="", tool_calls=(read_call,)),
+            ModelReply(content="the file contents were real"),
+        ]
+    )
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read hi.txt")],
+        registry,
+    )
+
+    tool_msgs = [m.content for m in result.messages if m.role == "tool"]
+    # Three tool-role messages: unknown_tool error, late_register ack,
+    # real read_file contents (NOT a duplicate-call replay).
+    assert len(tool_msgs) == 3
+    assert "unknown tool: 'read_file'" in tool_msgs[0]
+    assert "registered" in tool_msgs[1]
+    # The third tool message is the real read result, NOT the
+    # duplicate-call replay prefix from the stale unknown_tool error.
+    assert tool_msgs[2] == "real contents"
+    assert "duplicate of an earlier call" not in tool_msgs[2]
+    assert result.content == "the file contents were real"
+
+
 # ---------- Qwen tool-call parser ----------
 
 

@@ -1421,6 +1421,52 @@ def test_duplicate_call_hook_passes_first_time() -> None:
     assert isinstance(outcome, Continue)
 
 
+def test_duplicate_call_hook_falls_through_for_unknown_tool_error() -> None:
+    """harness-cck4 carve-out: the registry's 'unknown_tool' error is
+    the one error code load_tool/synthesize_tool can fix mid-turn. A
+    duplicate after load_tool activated the missing tool MUST execute,
+    not replay the stale absent-from-registry result."""
+    call = ToolCall(name="read_file", arguments={"path": "docs/spec.md"})
+    prior_unknown = ToolResult(
+        tool_name="read_file",
+        output=(
+            "unknown tool: 'read_file'. The tool exists in the catalog but "
+            "is not active in this session. Call load_tool(name='read_file') "
+            "first..."
+        ),
+        success=False,
+        error="unknown_tool",
+    )
+    seen = {("read_file", '{"path": "docs/spec.md"}'): prior_unknown}
+    outcome = DuplicateCallHook().check(PreToolContext(call=call, seen_calls=seen))
+    # Falls through — the call goes to the registry for a real execution.
+    assert isinstance(outcome, Continue)
+
+
+def test_duplicate_call_hook_still_dedups_other_error_codes() -> None:
+    """The unknown_tool carve-out is narrow. TypeError / FileNotFoundError /
+    HTTP errors / bd_command_failed / unknown_kwarg etc. remain
+    persistent for the same args — re-running them produces the same
+    failure, so dedup still applies."""
+    call = ToolCall(name="read_file", arguments={"path": "/nope.md"})
+    for err in (
+        "FileNotFoundError: /nope.md",
+        "TypeError: bad arg",
+        "unknown_kwarg:foo",
+        "bd_command_failed",
+    ):
+        prior = ToolResult(
+            tool_name="read_file",
+            output=f"error calling read_file: {err}",
+            success=False,
+            error=err,
+        )
+        seen = {("read_file", '{"path": "/nope.md"}'): prior}
+        outcome = DuplicateCallHook().check(PreToolContext(call=call, seen_calls=seen))
+        assert isinstance(outcome, Skip), f"non-unknown_tool error {err!r} should still dedup"
+        assert outcome.result.error == err
+
+
 # ---------- tool_search loop (harness-lmwm) ----------
 
 

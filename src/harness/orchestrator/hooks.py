@@ -3156,7 +3156,19 @@ class DuplicateCallHook:
     prefixed with a duplicate annotation. If the prior call failed, the
     duplicate is also marked as failed — feeding back success=True for
     a duplicate of a failed call made the model hallucinate success
-    (harness-v5w)."""
+    (harness-v5w).
+
+    Carve-out for `unknown_tool` (harness-cck4): the registry's
+    'unknown tool' error is the one error code whose root cause —
+    tool absent from the registry — load_tool / synthesize_tool can
+    fix mid-turn. After the model follows the yczi recovery hint and
+    activates the tool, the original call deserves a real execution,
+    not a replay of the stale absent-from-registry result. Re-running
+    is safe either way: the tool now succeeds, or fails again with
+    the same unknown_tool error and the model gets the recovery hint
+    a second time. Other failure codes (TypeError, FileNotFoundError,
+    HTTP errors, …) remain deduped — they're persistent for the same
+    args."""
 
     name: str = "duplicate_call"
 
@@ -3164,6 +3176,8 @@ class DuplicateCallHook:
         key = _call_key(ctx.call)
         prior = ctx.seen_calls.get(key)
         if prior is None:
+            return Continue()
+        if prior.error == "unknown_tool":
             return Continue()
         return Skip(
             ToolResult(
