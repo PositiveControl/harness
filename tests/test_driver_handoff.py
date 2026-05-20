@@ -1,0 +1,435 @@
+"""Tests for src/harness/driver/handoff.py — harness-2gut."""
+
+from __future__ import annotations
+
+import subprocess
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from harness.driver import handoff as handoff_mod
+from harness.driver.handoff import (
+    MAX_DECISIONS,
+    MAX_OBSERVATIONS,
+    RENDER_CHAR_CAP,
+    Handoff,
+    build_handoff,
+)
+from harness.driver.state import LoopRunState
+from harness.store._bd_types import BeadsIssue, _issue_from_json
+
+# --- helpers ---------------------------------------------------------
+
+
+def _issue(
+    issue_id: str,
+    *,
+    title: str = "",
+    description: str = "",
+    acceptance: str = "",
+    status: str = "open",
+    priority: int = 2,
+    labels: tuple[str, ...] = (),
+    created_at: str = "2026-05-20T00:00:00Z",
+) -> BeadsIssue:
+    raw: dict[str, Any] = {
+        "id": issue_id,
+        "title": title,
+        "status": status,
+        "priority": priority,
+        "issue_type": "task",
+        "labels": list(labels),
+        "description": description,
+        "acceptance_criteria": acceptance,
+        "created_at": created_at,
+    }
+    return _issue_from_json(raw)
+
+
+def _state(
+    *,
+    loop_run_id: str = "abcd1234",
+    epic_id: str = "harness-e9oq",
+    started_at_sha: str = "deadbeef",
+    closed: Sequence[str] = (),
+) -> LoopRunState:
+    s = LoopRunState.fresh(
+        epic_id=epic_id,
+        max_turns=20,
+        started_at_sha=started_at_sha,
+    )
+    # Reach in: tests want a deterministic id.
+    s.loop_run_id = loop_run_id
+    s.closed_this_run.extend(closed)
+    return s
+
+
+class _FakeBd:
+    """Drop-in for DriverBd that returns pre-baked records.
+
+    Only implements the surface build_handoff calls: `show` and
+    `thoughts_in_loop_run`. Extra methods would surface as
+    AttributeError so tests catch unexpected drift."""
+
+    def __init__(
+        self,
+        *,
+        issues: dict[str, BeadsIssue] | None = None,
+        thoughts: Sequence[BeadsIssue] = (),
+        show_errors: set[str] | None = None,
+    ) -> None:
+        self._issues = issues or {}
+        self._thoughts = list(thoughts)
+        self._show_errors = show_errors or set()
+        self.show_calls: list[str] = []
+
+    def show(self, issue_id: str) -> BeadsIssue:
+        self.show_calls.append(issue_id)
+        if issue_id in self._show_errors:
+            from harness.driver.bd import DriverBdError
+
+            raise DriverBdError(f"simulated bd error for {issue_id}")
+        return self._issues[issue_id]
+
+    def thoughts_in_loop_run(
+        self,
+        loop_run_id: str,
+        *,
+        types: Sequence[str] | None = None,
+    ) -> list[BeadsIssue]:
+        return list(self._thoughts)
+
+
+def _install_git_diff(monkeypatch: pytest.MonkeyPatch, stdout: str, returncode: int = 0) -> None:
+    """Stub `subprocess.run` to return a fixed git diff result."""
+
+    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=args[0] if args else [],
+            returncode=returncode,
+            stdout=stdout,
+            stderr="",
+        )
+
+    monkeypatch.setattr("harness.driver.handoff.subprocess.run", fake_run)
+
+
+# --- Handoff.render() ------------------------------------------------
+
+
+def _base_handoff(**overrides: Any) -> Handoff:
+    base: dict[str, Any] = {
+        "loop_run_id": "abcd1234",
+        "epic_id": "harness-e9oq",
+        "current_issue": "harness-x (P2 task)\nTitle: do the thing",
+        "parent_epic_summary": "harness-e9oq — [epic] harness loop",
+        "files_touched": ("M src/foo.py", "A tests/test_foo.py"),
+        "closed_this_run": ("harness-a",),
+        "decisions": ("decision one", "decision two"),
+        "observations": ("observation one",),
+        "open_questions": ("question one",),
+        "prior_attempt_failure": None,
+    }
+    base.update(overrides)
+    return Handoff(**base)
+
+
+def test_render_includes_all_sections() -> None:
+    out = _base_handoff().render()
+    assert "[SESSION HANDOFF — loop_run=abcd1234 epic=harness-e9oq]" in out
+    assert "Current issue:" in out
+    assert "harness-x (P2 task)" in out
+    assert "Parent epic:" in out
+    assert "harness-e9oq — [epic] harness loop" in out
+    assert "Files touched this loop run:" in out
+    assert "  M src/foo.py" in out
+    assert "  A tests/test_foo.py" in out
+    assert "Closed this loop run:" in out
+    assert "  harness-a" in out
+    assert "Decisions:" in out
+    assert "  - decision one" in out
+    assert "Observations:" in out
+    assert "  - observation one" in out
+    assert "Open questions:" in out
+    assert "  - question one" in out
+    assert "[END HANDOFF]" in out
+
+
+def test_render_omits_parent_epic_when_none() -> None:
+    out = _base_handoff(parent_epic_summary=None).render()
+    assert "Parent epic:" not in out
+
+
+def test_render_inserts_prior_attempt_block_when_set() -> None:
+    out = _base_handoff(prior_attempt_failure="fabrication_fallback fired").render()
+    assert "[PRIOR ATTEMPT FAILED]" in out
+    assert "fabrication_fallback fired" in out
+    # And it appears BEFORE the current-issue block.
+    assert out.index("[PRIOR ATTEMPT FAILED]") < out.index("Current issue:")
+
+
+def test_render_prior_attempt_block_absent_on_first_attempt() -> None:
+    out = _base_handoff().render()
+    assert "[PRIOR ATTEMPT FAILED]" not in out
+
+
+def test_render_uses_placeholders_when_lists_are_empty() -> None:
+    out = _base_handoff(
+        files_touched=(),
+        closed_this_run=(),
+        decisions=(),
+        observations=(),
+        open_questions=(),
+    ).render()
+    assert "(none yet)" in out
+    assert "(none recorded this run)" in out
+    assert "(none open)" in out
+
+
+def test_render_drops_oldest_decisions_when_over_budget() -> None:
+    # Construct decisions / observations large enough to blow the cap;
+    # render() should drop the OLDEST (tail) entries until under cap.
+    # Decisions list is newest-first per the contract.
+    big_decision_lines = tuple(f"decision-{i}: " + ("x" * 200) for i in range(MAX_DECISIONS))
+    big_observation_lines = tuple(
+        f"observation-{i}: " + ("y" * 200) for i in range(MAX_OBSERVATIONS)
+    )
+    out = _base_handoff(
+        decisions=big_decision_lines,
+        observations=big_observation_lines,
+    ).render()
+    assert len(out) <= RENDER_CHAR_CAP
+    # Newest entry must survive.
+    assert "decision-0" in out
+    # Oldest entry must have been dropped.
+    assert "decision-9" not in out
+
+
+def test_render_never_drops_open_questions_even_over_budget() -> None:
+    # Open questions are load-bearing. Pile on questions large enough
+    # to push past cap, render anyway, confirm every question survives.
+    huge_questions = tuple(f"q-{i}: " + ("z" * 400) for i in range(20))
+    out = _base_handoff(
+        decisions=(),
+        observations=(),
+        open_questions=huge_questions,
+    ).render()
+    # Length may exceed cap (open questions can't be dropped) — that's
+    # intentional, accept the bloat rather than lose load-bearing data.
+    for i in range(20):
+        assert f"q-{i}:" in out
+
+
+def test_render_drops_observations_after_decisions_when_decisions_already_empty() -> None:
+    out = _base_handoff(
+        decisions=(),
+        observations=tuple(f"obs-{i}: " + ("y" * 400) for i in range(MAX_OBSERVATIONS)),
+    ).render()
+    assert len(out) <= RENDER_CHAR_CAP
+    # Newest observation survives, oldest does not.
+    assert "obs-0" in out
+    assert "obs-9" not in out
+
+
+# --- build_handoff ---------------------------------------------------
+
+
+def test_build_handoff_pulls_current_issue_and_epic(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    current = _issue(
+        "harness-x",
+        title="do the thing",
+        description="why this matters",
+        acceptance="(1) thing done",
+        priority=2,
+    )
+    epic = _issue("harness-e9oq", title="[epic] harness loop")
+    bd = _FakeBd(issues={"harness-x": current, "harness-e9oq": epic})
+    _install_git_diff(monkeypatch, stdout="M\tsrc/foo.py\n")
+
+    state = _state()
+    handoff = build_handoff(state, "harness-x", bd, git_root=tmp_path)
+
+    assert "harness-x (P2 task)" in handoff.current_issue
+    assert "Title: do the thing" in handoff.current_issue
+    assert "why this matters" in handoff.current_issue
+    assert "(1) thing done" in handoff.current_issue
+    assert handoff.parent_epic_summary == "harness-e9oq — [epic] harness loop"
+    assert handoff.files_touched == ("M\tsrc/foo.py",)
+
+
+def test_build_handoff_categorises_thoughts_by_label(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    current = _issue("harness-x", title="t")
+    epic = _issue("harness-e9oq", title="e")
+    decision = _issue(
+        "harness-d1",
+        title="picked plan A",
+        labels=("thought:decision",),
+        status="closed",
+    )
+    observation = _issue(
+        "harness-o1",
+        title="saw a thing",
+        labels=("thought:observation",),
+        status="closed",
+    )
+    open_q = _issue("harness-q1", title="why?", labels=("thought:question",), status="open")
+    closed_q = _issue(
+        "harness-q2",
+        title="answered",
+        labels=("thought:question",),
+        status="closed",
+    )
+    bd = _FakeBd(
+        issues={"harness-x": current, "harness-e9oq": epic},
+        thoughts=[decision, observation, open_q, closed_q],
+    )
+    _install_git_diff(monkeypatch, stdout="")
+
+    handoff = build_handoff(_state(), "harness-x", bd, git_root=tmp_path)
+
+    assert handoff.decisions == ("picked plan A",)
+    assert handoff.observations == ("saw a thing",)
+    # Closed questions don't show — only open ones.
+    assert handoff.open_questions == ("why?",)
+
+
+def test_build_handoff_truncates_decisions_to_top_n(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    current = _issue("harness-x", title="t")
+    epic = _issue("harness-e9oq", title="e")
+    # 20 decisions; thoughts_in_loop_run returns them newest-first
+    # (the fake mimics DriverBd's sort).
+    decisions = [
+        _issue(
+            f"harness-d{i}",
+            title=f"decision-{i}",
+            labels=("thought:decision",),
+            status="closed",
+        )
+        for i in range(20)
+    ]
+    bd = _FakeBd(
+        issues={"harness-x": current, "harness-e9oq": epic},
+        thoughts=decisions,
+    )
+    _install_git_diff(monkeypatch, stdout="")
+
+    handoff = build_handoff(_state(), "harness-x", bd, git_root=tmp_path)
+    assert len(handoff.decisions) == MAX_DECISIONS
+    # The newest (decision-0) survives; oldest (decision-19) does not.
+    assert "decision-0" in handoff.decisions
+    assert "decision-19" not in handoff.decisions
+
+
+def test_build_handoff_open_questions_never_truncated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    current = _issue("harness-x", title="t")
+    epic = _issue("harness-e9oq", title="e")
+    questions = [
+        _issue(
+            f"harness-q{i}",
+            title=f"q-{i}",
+            labels=("thought:question",),
+            status="open",
+        )
+        for i in range(30)
+    ]
+    bd = _FakeBd(
+        issues={"harness-x": current, "harness-e9oq": epic},
+        thoughts=questions,
+    )
+    _install_git_diff(monkeypatch, stdout="")
+
+    handoff = build_handoff(_state(), "harness-x", bd, git_root=tmp_path)
+    assert len(handoff.open_questions) == 30
+
+
+def test_build_handoff_carries_state_closed_list(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    current = _issue("harness-x", title="t")
+    epic = _issue("harness-e9oq", title="e")
+    bd = _FakeBd(issues={"harness-x": current, "harness-e9oq": epic})
+    _install_git_diff(monkeypatch, stdout="")
+
+    state = _state(closed=("harness-a", "harness-b"))
+    handoff = build_handoff(state, "harness-x", bd, git_root=tmp_path)
+    assert handoff.closed_this_run == ("harness-a", "harness-b")
+
+
+def test_build_handoff_swallows_epic_errors_to_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    current = _issue("harness-x", title="t")
+    bd = _FakeBd(
+        issues={"harness-x": current},
+        show_errors={"harness-e9oq"},
+    )
+    _install_git_diff(monkeypatch, stdout="")
+    handoff = build_handoff(_state(), "harness-x", bd, git_root=tmp_path)
+    assert handoff.parent_epic_summary is None
+
+
+def test_build_handoff_propagates_current_issue_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from harness.driver.bd import DriverBdError
+
+    bd = _FakeBd(show_errors={"harness-x"})
+    _install_git_diff(monkeypatch, stdout="")
+    with pytest.raises(DriverBdError):
+        build_handoff(_state(), "harness-x", bd, git_root=tmp_path)
+
+
+def test_build_handoff_returns_empty_files_on_git_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    current = _issue("harness-x", title="t")
+    epic = _issue("harness-e9oq", title="e")
+    bd = _FakeBd(issues={"harness-x": current, "harness-e9oq": epic})
+    _install_git_diff(monkeypatch, stdout="", returncode=128)
+    handoff = build_handoff(_state(), "harness-x", bd, git_root=tmp_path)
+    assert handoff.files_touched == ()
+
+
+def test_build_handoff_threads_prior_attempt_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    current = _issue("harness-x", title="t")
+    epic = _issue("harness-e9oq", title="e")
+    bd = _FakeBd(issues={"harness-x": current, "harness-e9oq": epic})
+    _install_git_diff(monkeypatch, stdout="")
+    handoff = build_handoff(
+        _state(),
+        "harness-x",
+        bd,
+        git_root=tmp_path,
+        prior_attempt_failure="fab fired",
+    )
+    assert handoff.prior_attempt_failure == "fab fired"
+    # And it lands in the rendered output as a top block.
+    rendered = handoff.render()
+    assert "[PRIOR ATTEMPT FAILED]" in rendered
+    assert "fab fired" in rendered
+
+
+# --- git stub fallback ---------------------------------------------
+
+
+def test_git_diff_filenotfound_returns_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def boom(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("no git")
+
+    monkeypatch.setattr("harness.driver.handoff.subprocess.run", boom)
+    result = handoff_mod._git_diff_name_status(tmp_path, "deadbeef")
+    assert result == ()
