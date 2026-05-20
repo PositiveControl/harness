@@ -42,6 +42,14 @@ def _truncate_desc(desc: str, *, limit: int = _DESCRIPTION_EXCERPT_CHARS) -> str
     return desc[: limit - 3] + "..."
 
 
+def _is_family_name(catalog: ToolCatalog, name: str) -> bool:
+    """True iff at least one catalog entry has `family == name`. Used
+    by hbvm to detect `tag=<family-name>` misuse — no tool carries
+    its own family in its tag tuple, so such an intersection is
+    always empty."""
+    return any(e.family == name for e in catalog.entries.values())
+
+
 def _format_entry(entry: ToolCatalogEntry, *, live_description: str | None = None) -> str:
     """One result block — name + family + description excerpt + tags.
 
@@ -117,28 +125,42 @@ class ToolSearchTool:
                             "('population of Nairobi') returns nothing, "
                             "retry with the abstract action you need "
                             "('search', 'web', 'lookup', 'fetch'). Empty "
-                            "query returns the empty list unless `tag` or "
-                            "`family` is set."
+                            "query returns the empty list unless `family` "
+                            "or `tag` is set."
+                        ),
+                    },
+                    # PRIMARY axis — listed before `tag` deliberately
+                    # (harness-u2ap). Families are the broad grouping
+                    # small models recognize ('filesystem', 'research');
+                    # tags are fine-grained capability words inside a
+                    # family. Reaching for family= first lands the
+                    # right tools more often than reaching for tag=.
+                    "family": {
+                        "type": "string",
+                        "description": (
+                            "PRIMARY filter — restrict to tools in this "
+                            "family. Families are the broad grouping: "
+                            "'filesystem' (read/write files), 'research' "
+                            "(web + lookup), 'memory' (episodic / "
+                            "semantic recall), 'reckon' (time + math), "
+                            "'git' (vcs read), 'ops' (bd task tracker), "
+                            "'meta' (self-inspect + discovery). Reach "
+                            "for family= before tag= — it's the axis "
+                            "small models get right more often."
                         ),
                     },
                     "tag": {
                         "type": "string",
                         "description": (
-                            "Restrict results to tools carrying this tag. "
-                            "Optional — query alone is usually enough. "
-                            "Pick a tag matching the step you need a "
-                            "tool for NOW (e.g. 'search', 'lookup', "
-                            "'fetch' for data; 'fs-read' for files), "
-                            "not what you'll do with the data later."
-                        ),
-                    },
-                    "family": {
-                        "type": "string",
-                        "description": (
-                            "Restrict results to tools in this family "
-                            "(e.g. 'research' for data lookup, "
-                            "'filesystem' for files, 'memory' for "
-                            "recall). Optional."
+                            "Fine-grained capability filter WITHIN a "
+                            "family. Use family= first; tag= only "
+                            "narrows further. Pick a tag matching the "
+                            "IMMEDIATE step you need a tool for, not "
+                            "what you'll do with the data later. "
+                            "Passing a family name here (e.g. "
+                            "tag='filesystem') is auto-corrected to "
+                            "family= since family names are never in "
+                            "tag tuples."
                         ),
                     },
                     "limit": {
@@ -162,6 +184,31 @@ class ToolSearchTool:
     ) -> str:
         if limit <= 0:
             raise ValueError(f"limit must be positive, got {limit!r}")
+
+        # Track the original tag value before any swap (harness-hbvm)
+        # so the empty-result path (harness-8gk8) can still surface
+        # the tag-was-a-family-name correction in the narrow case
+        # where the swap couldn't fire because family= was also set.
+        original_tag = tag
+
+        # harness-hbvm: tag and family are different axes. tags are
+        # fine-grained capability words inside a family (read, file,
+        # open); families are the broad grouping (filesystem,
+        # research). Passing a family name as `tag` always yields an
+        # empty intersection because no tool has its own family in
+        # its tag tuple. Auto-correct: when tag=<known-family> and
+        # family= wasn't independently set, swap tag → family.
+        swap_note = ""
+        if tag is not None and family is None and _is_family_name(self.catalog, tag):
+            swapped = tag
+            family = tag
+            tag = None
+            swap_note = (
+                f"\n(NOTE: '{swapped}' is a FAMILY name, not a tag — "
+                f"auto-corrected tag={swapped!r} to family={swapped!r}. "
+                "tag= is for fine-grained capability words; family= "
+                "is the broad grouping.)"
+            )
 
         # Phase 1: pull a candidate set. Each source contributes; we
         # intersect with subsequent filters below. Empty query + no
@@ -240,6 +287,20 @@ class ToolSearchTool:
             if family is not None:
                 constraints.append(f"family={family!r}")
             constraint_text = ", ".join(constraints) or "no constraints"
+            # harness-8gk8: if the ORIGINAL tag value was a known
+            # family name, lead the empty-result hint with a pointed
+            # correction. With hbvm in place this only fires in the
+            # narrow case where family= was independently set (so the
+            # swap couldn't fire) — but when it does, the model needs
+            # to know exactly which axis it got wrong.
+            family_correction = ""
+            if original_tag is not None and _is_family_name(self.catalog, original_tag):
+                family_correction = (
+                    f"NOTE: '{original_tag}' is a FAMILY name, not a tag. "
+                    f"Retry with family={original_tag!r} (or drop the "
+                    "filter and rely on query=). tag= is the wrong "
+                    "axis for that value.\n"
+                )
             # Recovery hint (harness-mkzk). The empty-result line is the
             # last thing the model sees before deciding to refuse or
             # rephrase, so it has to teach the recovery shape inline.
@@ -247,7 +308,7 @@ class ToolSearchTool:
             # 'weather in Nairobi') and conclude "no such tool exists"
             # because the catalog indexes by capability, not subject.
             return (
-                f"no tools found ({constraint_text}).\n"
+                family_correction + f"no tools found ({constraint_text}).\n"
                 "Recovery: the catalog indexes tools by CAPABILITY "
                 "(what they DO), not by topic. Try a capability-shaped "
                 "query — e.g. query='search' to find data-gathering "
@@ -283,7 +344,7 @@ class ToolSearchTool:
             "\nNext step: call `load_tool(name=<one of the above>)` to "
             "activate it for the next round."
         )
-        return f"{header}:{fallback_note}\n" + "\n".join(lines) + suffix
+        return f"{header}:{swap_note}{fallback_note}\n" + "\n".join(lines) + suffix
 
     def _live_description(self, name: str) -> str | None:
         """Pull the description off the registry's live spec when the

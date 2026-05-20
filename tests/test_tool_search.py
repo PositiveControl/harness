@@ -523,6 +523,117 @@ def test_top_level_description_steers_toward_data_tools_for_lookups() -> None:
     )
 
 
+# --- tag-equals-family auto-rescue (harness-hbvm) ----------------------
+
+
+def test_tag_equals_family_name_auto_swaps_to_family() -> None:
+    """harness-hbvm: tag and family are different axes. The common
+    small-model mistake is passing tag=<family-name> ('filesystem',
+    'research') — that never intersects because no tool has its own
+    family in its tag tuple. Auto-correct by swapping tag → family."""
+    tool = ToolSearchTool(catalog=_seeded_catalog())
+    out = tool.call(query="", tag="filesystem")
+    # The single filesystem-family tool surfaces.
+    assert "grep" in out
+    # Non-filesystem tools are excluded by the swapped family filter.
+    assert "now (reckon)" not in out
+    assert "search_web" not in out
+    # The swap is announced inline so the model learns the distinction.
+    assert "auto-corrected" in out.lower()
+    assert "tag='filesystem'" in out
+    assert "family='filesystem'" in out
+    assert "FAMILY name" in out
+
+
+def test_tag_equals_family_swap_combines_with_query() -> None:
+    """The swap fires before phase 1, then query still narrows. So
+    query='read' + tag='filesystem' yields filesystem-family tools
+    that match 'read' (grep does; search_web also has the 'read' tag
+    but is research-family — excluded post-swap)."""
+    tool = ToolSearchTool(catalog=_seeded_catalog())
+    out = tool.call(query="read", tag="filesystem")
+    assert "grep" in out
+    # search_web has 'read' as a tag but isn't filesystem-family.
+    assert "search_web" not in out
+
+
+def test_tag_equals_family_swap_does_not_fire_when_family_already_set() -> None:
+    """When family= is independently set, don't swap — the caller had
+    a reason. The intersection is likely empty (no tool has family X
+    AND tag = X-the-family-name), and the empty-result hint will
+    explain (covered by the 8gk8 test below)."""
+    tool = ToolSearchTool(catalog=_seeded_catalog())
+    out = tool.call(query="zzz-no-match", tag="filesystem", family="research")
+    # Swap message must NOT appear — swap didn't fire.
+    assert "auto-corrected" not in out.lower()
+
+
+def test_tag_value_not_matching_any_family_does_not_swap() -> None:
+    """tag='time' is a real tag (now has it), not a family. Behavior
+    unchanged from pre-hbvm: by_tag('time') returns 'now'."""
+    tool = ToolSearchTool(catalog=_seeded_catalog())
+    out = tool.call(query="", tag="time")
+    assert "now" in out
+    assert "calc" not in out
+    assert "auto-corrected" not in out.lower()
+
+
+# --- schema ordering (harness-u2ap) ------------------------------------
+
+
+def test_schema_lists_family_before_tag() -> None:
+    """harness-u2ap: family= is the higher-leverage filter for small
+    models; the schema should advertise it before tag=. JSON-schema
+    property order is visible to the model as the field listing,
+    and reordering nudges them to reach for family first."""
+    spec = ToolSearchTool(catalog=ToolCatalog()).spec
+    keys = list(spec.parameters["properties"].keys())
+    assert keys.index("family") < keys.index("tag"), (
+        f"family must come before tag in schema, got order: {keys}"
+    )
+
+
+def test_family_description_lists_known_families() -> None:
+    """The family= description should name the actual families a
+    caller can reach for — small models won't otherwise know which
+    strings are valid family names."""
+    spec = ToolSearchTool(catalog=ToolCatalog()).spec
+    family_desc = spec.parameters["properties"]["family"]["description"]
+    for name in ("filesystem", "research", "memory", "reckon"):
+        assert name in family_desc, f"family description must mention {name!r}"
+    # And the desc should call out that family= is the primary axis.
+    assert "PRIMARY" in family_desc or "primary" in family_desc.lower()
+
+
+def test_tag_description_warns_about_family_swap() -> None:
+    """The tag= description should warn that passing a family name as
+    tag is auto-corrected, so callers learn the distinction from the
+    schema alone instead of needing an empty-result round-trip."""
+    spec = ToolSearchTool(catalog=ToolCatalog()).spec
+    tag_desc = spec.parameters["properties"]["tag"]["description"]
+    assert "auto-correct" in tag_desc.lower()
+    assert "family" in tag_desc.lower()
+
+
+# --- empty-result family-aware hint (harness-8gk8) --------------------
+
+
+def test_empty_result_hint_names_family_when_tag_was_family() -> None:
+    """harness-8gk8: the narrow case where hbvm's swap didn't fire
+    (because family= was independently set) AND nothing matched.
+    The empty-result hint must still tell the caller their tag=
+    value was a family name."""
+    tool = ToolSearchTool(catalog=_seeded_catalog())
+    # tag='filesystem' AND family='research' — swap blocked (family
+    # already set). Intersection: empty. Phase 3b: query yields zero.
+    # Phase 3a: by_tag('filesystem') is empty (no tool has 'filesystem'
+    # as a tag). Empty-result fires.
+    out = tool.call(query="zzz-no-match", tag="filesystem", family="research")
+    assert "no tools found" in out
+    assert "'filesystem' is a FAMILY name" in out
+    assert "family='filesystem'" in out
+
+
 def test_phase_3a_fallback_note_carries_verification_hint() -> None:
     """When a query yields zero and tool_search falls back to
     tag-alone, the note must signal that this is a rescue, not a
