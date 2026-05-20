@@ -36,6 +36,7 @@ from harness.orchestrator import (
     _META_CONFIRM_RE,
     _TOOL_INTENT_RE,
     ToolLoopEvent,
+    format_truncated_retry_suffix,
 )
 from harness.persona import PersonaAdapter
 from harness.persona.caveman_rewriter import CavemanRewriter, load_register_map
@@ -1284,8 +1285,12 @@ def _render_tool_event(
         # in-flight stream buffer so we don't keep a partial-then-
         # full double and flag the break so the user knows the
         # upcoming reply supersedes the partial they just saw.
+        # Budget progression annotation (harness-738f) lets the
+        # user diagnose runaway-preamble vs. healthy-tail-clip
+        # without re-running with trace logging.
         stream_renderer.stop()
-        console.print("[dim]⋯ truncated, retrying with wider budget…[/dim]")
+        suffix = format_truncated_retry_suffix(event.budget_before, event.budget_after)
+        console.print(f"[dim]⋯ truncated, retrying with wider budget{suffix}…[/dim]")
     elif event.kind == "bail_retry":
         # 0-tool-calls reply tripped a fabrication / teaser catcher;
         # orchestrator appended a nudge and is re-running. Drop the

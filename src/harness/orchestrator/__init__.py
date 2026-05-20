@@ -11,6 +11,7 @@ from harness.orchestrator.tool_loop import (
     ObserverFn,
     ToolLoopEvent,
     ToolLoopResult,
+    format_truncated_retry_suffix,
     run_tool_loop,
 )
 
@@ -27,5 +28,6 @@ __all__ = [
     "ObserverFn",
     "ToolLoopEvent",
     "ToolLoopResult",
+    "format_truncated_retry_suffix",
     "run_tool_loop",
 ]

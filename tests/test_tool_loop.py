@@ -6,7 +6,11 @@ from pathlib import Path
 
 from harness.model.adapter import ChatMessage
 from harness.model.mlx import _parse_qwen_tool_calls
-from harness.orchestrator import ToolLoopEvent, run_tool_loop
+from harness.orchestrator import (
+    ToolLoopEvent,
+    format_truncated_retry_suffix,
+    run_tool_loop,
+)
 from harness.orchestrator.hooks import default_hook_pipeline
 from harness.tools import (
     ModelReply,
@@ -1178,6 +1182,63 @@ def test_wrap_up_cap_widens_on_truncated_recovery() -> None:
     retry_events = [e for e in result.events if e.kind == "truncated_retry"]
     assert len(retry_events) == 1
     assert retry_events[0].round_index == 1
+    # harness-738f: the event carries the effective per-round budget
+    # before and after the doubling so the renderer can show the
+    # progression inline (`128 → 256`).
+    assert retry_events[0].budget_before == 128
+    assert retry_events[0].budget_after == 256
+
+
+def test_truncated_retry_emits_ceiling_marker_when_clamped() -> None:
+    """harness-738f: when on_truncated() clamps at _MAX_TOKENS_CEILING,
+    the event reports equal before/after so renderers can swap the
+    arrow for a `; ceiling` annotation. Drives the round at exactly
+    the ceiling so a doubling attempt has nowhere to grow."""
+
+    from harness.orchestrator.tool_loop import _MAX_TOKENS_CEILING
+
+    @dataclass
+    class _CapturingAdapter:
+        calls: list[int] = field(default_factory=list)
+
+        def complete_with_tools(
+            self,
+            messages: Iterable[ChatMessage],
+            *,
+            tools: list[ToolSpec] | None = None,
+            max_tokens: int = 1024,
+            temperature: float = 0.5,
+        ) -> ModelReply:
+            self.calls.append(max_tokens)
+            if len(self.calls) == 1:
+                # First round: truncated. Recovery widens but clamps
+                # at the ceiling.
+                return ModelReply(content="partial", was_truncated=True)
+            return ModelReply(content="ok")
+
+    adapter = _CapturingAdapter()
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="hi")],
+        ToolRegistry(),
+        max_tokens=_MAX_TOKENS_CEILING,
+    )
+    retry_events = [e for e in result.events if e.kind == "truncated_retry"]
+    assert len(retry_events) == 1
+    assert retry_events[0].budget_before == _MAX_TOKENS_CEILING
+    assert retry_events[0].budget_after == _MAX_TOKENS_CEILING
+    assert result.content == "ok"
+
+
+def test_format_truncated_retry_suffix() -> None:
+    """harness-738f: the shared helper renders the same parenthetical
+    for both renderers (CLI Rich + TUI Textual). Three paths:
+    normal doubling, ceiling clamp, missing data."""
+    assert format_truncated_retry_suffix(1024, 2048) == " (1024 → 2048)"
+    assert format_truncated_retry_suffix(32768, 32768) == " (32768; ceiling)"
+    assert format_truncated_retry_suffix(None, 2048) == ""
+    assert format_truncated_retry_suffix(1024, None) == ""
+    assert format_truncated_retry_suffix(None, None) == ""
 
 
 def test_loop_catches_bare_tool_intent() -> None:

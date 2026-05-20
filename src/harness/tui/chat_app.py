@@ -44,7 +44,11 @@ from harness.cli import (
 )
 from harness.cli import _RetrievalState as _RetrievalHealth
 from harness.model.adapter import ChatMessage
-from harness.orchestrator import ToolLoopEvent, run_tool_loop
+from harness.orchestrator import (
+    ToolLoopEvent,
+    format_truncated_retry_suffix,
+    run_tool_loop,
+)
 from harness.tui.confirm import (
     ALWAYS,
     APPROVE,
@@ -1427,9 +1431,12 @@ class ChatApp(App[None]):
             # re-running with a doubled budget. Drop any unflushed
             # partial in the stream buffer and flag the break so the
             # user knows the next reply replaces the partial above,
-            # not appends to it (harness-6rl).
+            # not appends to it (harness-6rl). Budget progression
+            # parenthetical (harness-738f) makes runaway-preamble
+            # vs. healthy-tail-clip diagnosable from the log alone.
             self._stream.reset()
-            log.write(Text("⋯ truncated, retrying with wider budget…", style="dim"))
+            suffix = format_truncated_retry_suffix(event.budget_before, event.budget_after)
+            log.write(Text(f"⋯ truncated, retrying with wider budget{suffix}…", style="dim"))
         elif event.kind == "bail_retry":
             # 0-tool-calls reply tripped a fabrication / teaser
             # catcher; orchestrator appended a nudge and is re-running.

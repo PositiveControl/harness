@@ -120,6 +120,7 @@ __all__ = [
     "ToolLoopResult",
     "_catcher_enabled",
     "_looks_like_ab_fabrication",
+    "format_truncated_retry_suffix",
     "run_tool_loop",
 ]
 
@@ -248,7 +249,10 @@ class ToolLoopEvent:
     doubled budget. Renderers should discard their in-flight stream
     buffer and print a dim marker so the user knows the upcoming reply
     replaces the partial one they just saw, not appends to it
-    (harness-6rl).
+    (harness-6rl). The event carries `budget_before` / `budget_after`
+    so renderers can annotate the marker with the budget progression
+    (`1024 → 2048`) or a ceiling note when doubling clamped at
+    `_MAX_TOKENS_CEILING` (harness-738f).
 
     `bail_retry` fires when a 0-tool-calls reply tripped a fabrication /
     teaser / meta-confirm / intent catcher and the orchestrator is
@@ -289,6 +293,39 @@ class ToolLoopEvent:
     # '⋯ discarding draft, retrying (catcher_name)…' so a mysterious
     # retry is diagnosable without re-running with trace logging.
     catcher: str = ""
+    # Effective per-round token budget on a `truncated_retry` event,
+    # captured BEFORE and AFTER _BailController.on_truncated()
+    # doubled the cap (harness-738f). Lets the CLI / TUI render
+    # '(1024 → 2048)' inline so the user can tell at a glance
+    # whether retries are progressing toward a real ceiling or
+    # burning the whole budget on preamble each time. None for every
+    # other event kind. When `budget_after == budget_before` the
+    # doubling clamped at `_MAX_TOKENS_CEILING` and renderers should
+    # show a '; ceiling' annotation instead of an arrow.
+    budget_before: int | None = None
+    budget_after: int | None = None
+
+
+def format_truncated_retry_suffix(budget_before: int | None, budget_after: int | None) -> str:
+    """Render the parenthetical that follows the
+    `truncated, retrying with wider budget` marker (harness-738f).
+    Shared between cli.py's Rich renderer and tui/chat_app.py's
+    Textual renderer so both surfaces stay in sync.
+
+    Returns:
+      - `""` if either budget is None (older event from a non-
+        truncation source or a tool_loop running before the field
+        was added — defensive).
+      - `" (before → after)"` on the normal doubling path.
+      - `" (after; ceiling)"` when the doubling clamped at
+        `_MAX_TOKENS_CEILING` so the values are equal — useful
+        signal that the next retry won't get any wider, which
+        means a fourth truncation will exhaust the bail budget."""
+    if budget_before is None or budget_after is None:
+        return ""
+    if budget_after > budget_before:
+        return f" ({budget_before} → {budget_after})"
+    return f" ({budget_after}; ceiling)"
 
 
 @dataclass
@@ -1246,8 +1283,22 @@ def run_tool_loop(
             if not isinstance(bail_outcome, Continue) and can_retry:
                 bail.consume_retry()
                 if isinstance(bail_outcome, Truncated):
+                    # Capture the effective per-round budget before
+                    # and after the doubling so the renderer can show
+                    # `(1024 → 2048)` inline (harness-738f). Equal
+                    # values mean we clamped at _MAX_TOKENS_CEILING —
+                    # renderers signal that distinctly.
+                    budget_before = bail.round_max_tokens(tools_already_ran)
                     bail.on_truncated()
-                    emit(ToolLoopEvent(kind="truncated_retry", round_index=round_idx))
+                    budget_after = bail.round_max_tokens(tools_already_ran)
+                    emit(
+                        ToolLoopEvent(
+                            kind="truncated_retry",
+                            round_index=round_idx,
+                            budget_before=budget_before,
+                            budget_after=budget_after,
+                        )
+                    )
                 else:
                     # Must fire BEFORE the nudge is queued so the CLI /
                     # TUI can drop the in-flight stream buffer — each
