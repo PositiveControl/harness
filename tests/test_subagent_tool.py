@@ -202,16 +202,11 @@ def test_subagent_max_depth_exceeded_returns_error(tmp_path: Path) -> None:
 
 def test_subagent_budget_exhaustion_reports_cleanly(tmp_path: Path) -> None:
     """Child that keeps re-calling tools without a final reply until
-    max_rounds runs out returns the exhaustion marker, not empty.
-
-    Post-harness-0gss: with the wrap-up round, the orchestrator runs
-    ONE more model call after the work budget hits. If that wrap-up
-    also tool-call-only (model still won't synthesize), the
-    orchestrator strips its tool call, content stays empty, and the
-    canned exhaustion path fires — exactly what the subagent wraps.
-    Test now provides a third looping_reply so the wrap-up gets a
-    tool-call-only reply rather than the adapter's empty-queue
-    default."""
+    max_rounds runs out now returns the fabrication_fallback canned
+    refusal (via EmptyReplyAfterToolsHook, harness-uk34) rather than
+    the debug "[tool loop exhausted...]" sentinel. The subagent
+    passes that through to the parent without re-wrapping — the
+    canned refusal is already user-facing."""
     (tmp_path / "a.txt").write_text("A\n")
     parent = _registry_with(ReadFileTool(root=tmp_path))
     looping_reply = ModelReply(
@@ -221,7 +216,14 @@ def test_subagent_budget_exhaustion_reports_cleanly(tmp_path: Path) -> None:
     adapter = _ScriptedAdapter(replies=[looping_reply] * 3)
     tool = SpawnSubagentTool(adapter=adapter, registry=parent, hooks=default_hook_pipeline())
     out = tool.call(task="read endlessly", tools=["read_file"], max_rounds=2)
-    assert "budget exhausted" in out or "loop returned empty content" in out
+    # Either the fabrication-fallback refusal landed (preferred new
+    # path) OR the old "budget exhausted" wrapper (if anything else
+    # in the stack still triggers the sentinel — defensive).
+    assert (
+        "didn't land cleanly" in out
+        or "budget exhausted" in out
+        or "loop returned empty content" in out
+    )
 
 
 # ---------- hooks share across boundary ----------

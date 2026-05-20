@@ -3489,10 +3489,12 @@ def test_wrap_up_strips_tool_calls_from_wrap_up_reply(tmp_path: Path) -> None:
     assert len(tool_msgs) == 1
 
 
-def test_wrap_up_empty_reply_falls_back_to_exhausted_message(tmp_path: Path) -> None:
+def test_wrap_up_empty_reply_substitutes_fabrication_fallback(tmp_path: Path) -> None:
     """If the wrap-up reply has neither text nor a usable tool call,
-    the orchestrator returns the canned 'tool loop exhausted' message
-    instead of an empty string."""
+    EmptyReplyAfterToolsHook (harness-uk34) fires Nudge in the
+    wrap-up bail; fabrication_fallback then substitutes the canned
+    refusal so the user sees a meaningful message instead of the
+    "[tool loop exhausted without final reply]" debug sentinel."""
     (tmp_path / "hi.txt").write_text("contents")
     registry = ToolRegistry()
     registry.register(ReadFileTool(root=tmp_path))
@@ -3515,7 +3517,11 @@ def test_wrap_up_empty_reply_falls_back_to_exhausted_message(tmp_path: Path) -> 
         max_rounds=1,
     )
 
-    assert "[tool loop exhausted without final reply]" in result.content
+    # New behavior: the canned refusal substitutes for the empty wrap-up.
+    # The debug sentinel is reserved for cases where no catcher fires
+    # (e.g. no tools ran AND wrap-up isn't even eligible).
+    assert "[tool loop exhausted without final reply]" not in result.content
+    assert "didn't land cleanly" in result.content or "couldn't" in result.content
 
 
 def test_wrap_up_skipped_when_no_content_tool_succeeded() -> None:

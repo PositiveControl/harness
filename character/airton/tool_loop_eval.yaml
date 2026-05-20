@@ -63,6 +63,39 @@
   expected_fallback: true
   expected_events_contain: [bail_retry]
 
+- id: empty_reply_after_tools_silent_giveup
+  label: empty_reply_after_tools
+  description: |
+    Mark's 2026-05-20T22:01 GTA session repro (harness-uk34) on
+    Qwen3-Coder-30B. Model successfully read 3 files via read_file
+    (a content tool), then on the next round emitted EMPTY content
+    + NO tool calls. Before this catcher, the regex-shape bail
+    catchers couldn't see empty content; the orchestrator treated
+    Continue as 'final answer' and exited with the sentinel.
+    EmptyReplyAfterToolsHook fires Nudge on every empty round
+    until retries exhaust and fabrication_fallback substitutes.
+
+    Reply 0 calls read_file. Replies 1+ are empty — the model
+    'giving up' without producing output. Three empty retries
+    exhaust the bail budget; canned fallback substitutes.
+  registry:
+    - name: read_file
+      output: "# placeholder doc body"
+  messages:
+    - role: user
+      content: "Read docs/spec.md and summarize."
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: read_file
+          arguments: { path: "docs/spec.md" }
+    - content: ""
+    - content: ""
+    - content: ""
+    - content: ""
+  expected_fallback: true
+  expected_events_contain: [bail_retry]
+
 - id: intent_restatement_loop_gta2_followup
   label: intent_restatement_loop
   description: |

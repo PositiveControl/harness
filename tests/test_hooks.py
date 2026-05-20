@@ -22,6 +22,7 @@ from harness.orchestrator.hooks import (
     ConfidentFactualClaimHook,
     Continue,
     DuplicateCallHook,
+    EmptyReplyAfterToolsHook,
     FabricatedItemizationHook,
     FabricatedSearchHook,
     FabricatedSectionHook,
@@ -1299,6 +1300,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "unparseable",
         "teaser",
         "false_success",
+        "empty_reply_after_tools",
         "post_dup_completion_claim",
         "meta_confirm",
         "raw_results_dump",
@@ -5927,3 +5929,70 @@ def test_intent_restatement_loop_yields_to_preamble_loop_on_long_lcp() -> None:
     assert isinstance(outcome, Nudge)
     assert "PREAMBLE LOOP" in outcome.text
     assert "INTENT RESTATEMENT" not in outcome.text
+
+
+# ---------- EmptyReplyAfterToolsHook (harness-uk34) ----------
+
+
+def test_empty_reply_after_tools_fires_on_silent_giveup() -> None:
+    """Mark's 2026-05-20T22:01 GTA session: model read 3 docs
+    successfully, then emitted nothing. The catcher must Nudge so
+    the model is forced to either continue tooling or synthesize."""
+    ctx = BailContext(
+        reply=ModelReply(content="", tool_calls=()),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"read_file", "list_dir"}),
+    )
+    outcome = EmptyReplyAfterToolsHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "EMPTY REPLY" in outcome.text
+    assert "synthesize" in outcome.text.lower()
+
+
+def test_empty_reply_after_tools_treats_whitespace_as_empty() -> None:
+    """Whitespace-only replies are functionally empty — the catcher
+    must fire so the model can't sneak past with a single space."""
+    ctx = BailContext(
+        reply=ModelReply(content="   \n\n  \t  ", tool_calls=()),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"read_file"}),
+    )
+    outcome = EmptyReplyAfterToolsHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+
+
+def test_empty_reply_after_tools_passes_when_no_tools_ran() -> None:
+    """No tools ran this turn → different pathology (FalseSuccess /
+    ConfidentFactualClaim / etc. own the no-tools-no-content case).
+    Continue so this catcher doesn't double-cover."""
+    ctx = BailContext(
+        reply=ModelReply(content="", tool_calls=()),
+        tools_ran_this_turn=False,
+        tools_ran=frozenset(),
+    )
+    outcome = EmptyReplyAfterToolsHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_empty_reply_after_tools_passes_when_reply_has_content() -> None:
+    """A reply with actual content — even an empty-looking
+    placeholder — is the regex-shape catchers' territory.
+    Continue."""
+    ctx = BailContext(
+        reply=ModelReply(content="Here is the summary of what I found.", tool_calls=()),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"read_file"}),
+    )
+    outcome = EmptyReplyAfterToolsHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_empty_reply_after_tools_placement_in_default_pipeline() -> None:
+    """Pin: catcher sits AFTER false_success (so the no-tools-ran
+    path keeps priority) and BEFORE post_dup_completion_claim (the
+    empty-reply signal is more mechanical and deserves its own
+    nudge first)."""
+    names = default_hook_pipeline().names()
+    assert "empty_reply_after_tools" in names
+    assert names.index("false_success") < names.index("empty_reply_after_tools")
+    assert names.index("empty_reply_after_tools") < names.index("post_dup_completion_claim")

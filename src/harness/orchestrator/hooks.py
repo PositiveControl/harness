@@ -947,6 +947,66 @@ class FalseSuccessHook:
         return Continue()
 
 
+# Force-synthesis nudge when the model silently gives up after
+# productive tool work (harness-uk34). Empty content is invisible
+# to the regex-shape catchers (FalseSuccess / Teaser / Fabrication
+# all need text to match), so the orchestrator was treating the
+# silent reply as the final answer and exiting with the sentinel
+# "[tool loop exhausted without final reply]". Mark's 2026-05-20
+# GTA session repro on Qwen3-Coder-30B: model read three docs
+# successfully, then emitted nothing.
+_EMPTY_REPLY_AFTER_TOOLS_NUDGE = (
+    "[EMPTY REPLY — your last reply produced NO content and NO "
+    "tool calls, but earlier tool calls in this turn returned "
+    "useful data. An empty reply is not acceptable. You MUST "
+    "either: (a) call another tool to gather more, or (b) "
+    "synthesize what the prior tool calls returned into a final "
+    "answer for the user. If the task is too large for one "
+    "session, say so plainly and name the next concrete step. "
+    "Do not stay silent.]"
+)
+
+
+@dataclass(frozen=True)
+class EmptyReplyAfterToolsHook:
+    """Bail catcher: the reply is empty AND tools succeeded earlier
+    this turn (harness-uk34).
+
+    The regex-shape catchers (Teaser, FalseSuccess, MetaConfirm,
+    FabricatedSearch, …) all gate on text patterns; they're
+    invisible to a zero-content reply. Without this catcher, an
+    empty reply paired with a successful tool history sails through
+    the bail pipeline as Continue, the orchestrator exits, and the
+    user sees the '[tool loop exhausted without final reply]'
+    sentinel instead of a synthesis of the work that just ran.
+
+    Placement: AFTER FalseSuccessHook so the no-tools-ran path (a
+    different pathology that FalseSuccess owns) keeps priority,
+    BEFORE the regex-shape catchers downstream because the empty
+    signal is more mechanical than they are and deserves the
+    empty-specific nudge.
+
+    Gate:
+      - `ctx.reply.content.strip() == ""` — narrative is empty.
+      - `ctx.tools_ran_this_turn is True` — some tool succeeded.
+        (The call site only invokes bail when reply.tool_calls is
+        already empty, so we don't re-check that here.)
+
+    Response: Nudge with _EMPTY_REPLY_AFTER_TOOLS_NUDGE — forces
+    the model to either continue tooling or synthesize. Repeated
+    empty replies exhaust the bail budget and fabrication_fallback
+    substitutes the canned refusal."""
+
+    name: str = "empty_reply_after_tools"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if not ctx.tools_ran_this_turn:
+            return Continue()
+        if ctx.reply.content.strip():
+            return Continue()
+        return Nudge(_EMPTY_REPLY_AFTER_TOOLS_NUDGE)
+
+
 # Honest fallback nudge when the model emits a "look at everything I did"
 # wrap-up immediately after a duplicate_call dedup (harness-2h3m). The
 # dedup result means the model re-issued an identical call; it's NOT
@@ -5019,6 +5079,12 @@ HOOK_SHAPES: dict[str, str] = {
         "4-round write_file → unknown_tool → load_tool → edit_file "
         "loop. Preserves the harness-2tq safety-shrink guard."
     ),
+    "empty_reply_after_tools": (
+        "Reply is empty AND tools succeeded earlier this turn — "
+        "regex-shape catchers can't see empty content. Forces the "
+        "model to either continue tooling or synthesize instead of "
+        "exiting silently with the '[tool loop exhausted]' sentinel."
+    ),
     "intent_restatement_loop": (
         "Current reply and most recent discarded both open with an "
         "intent-phrase ('I'll <verb>', 'Let me <verb>', 'Now I'll "
@@ -5248,6 +5314,15 @@ def default_hook_pipeline(
         UnparseableHook(),
         TeaserHook(),
         FalseSuccessHook(),
+        # empty_reply_after_tools (harness-uk34): catches the silent-
+        # give-up shape — model produced useful tool work earlier in
+        # the turn, then emitted nothing on the wrap-up round. The
+        # regex-shape catchers downstream are invisible to empty
+        # content; without this catcher the orchestrator would exit
+        # with the "[tool loop exhausted without final reply]"
+        # sentinel. Positioned AFTER FalseSuccess so the no-tools-ran
+        # path (different pathology) keeps priority.
+        EmptyReplyAfterToolsHook(),
         # post_dup_completion_claim (harness-2h3m): catches the
         # specific shape where the model paraphrases a duplicate_call
         # dedup as 'task done' and emits an itemized completion
@@ -5627,6 +5702,7 @@ __all__ = [
     "CatcherDoc",
     "Continue",
     "DuplicateCallHook",
+    "EmptyReplyAfterToolsHook",
     "FabricatedItemizationHook",
     "FabricatedSearchHook",
     "FabricatedSectionHook",
