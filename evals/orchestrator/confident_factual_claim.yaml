@@ -1,0 +1,143 @@
+# Confident-factual-claim fixtures (harness-wpo0).
+#
+# Pins ConfidentFactualClaimHook: user asked a factual question naming
+# a specific entity; only meta-tools (tool_search / load_tool /
+# introspect / spawn_subagent) ran, or no tool at all; reply emits a
+# bare confident "X is Y" claim with no hedge. The plain bare-claim
+# shape isn't caught by fabricated_search (wants result-list patterns),
+# fabricated_itemization (wants itemization), thin_source_fabrication
+# (wants a tool body to compare against), or missing_citation (only
+# for corpus-grounded characters).
+#
+# Schema mirrors character/airton/tool_loop_eval.yaml. Replayed by
+# `harness eval tool-loop --fixture evals/orchestrator/confident_factual_claim.yaml`.
+
+# ---------- positive: Kenya national bird repro ----------
+
+- id: confident_factual_kenya_ostrich
+  label: confident_factual_claim
+  description: |
+    Session repro 2026-05-19. User asked 'what is the national bird
+    of Kenya?'. Model called tool_search seven times without ever
+    progressing to load_tool / search_web. Round 1 reply emits a
+    bare 'The national bird of Kenya is the ostrich' — confident,
+    no hedge, factually wrong. The catcher's nudge fires; round 2
+    retry hedges and recommends a real search.
+  messages:
+    - role: user
+      content: "What is the national bird of Kenya?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: tool_search
+          arguments: { query: "national bird of country" }
+    - content: ""
+      tool_calls:
+        - name: tool_search
+          arguments: { query: "Kenya bird symbol" }
+    - content: |
+        The national bird of Kenya is the ostrich.
+    - content: |
+        I shouldn't have asserted that without checking. Without
+        a content tool call, I can't verify a national-symbol claim.
+        Kenya's unofficial national bird is generally said to be the
+        lilac-breasted roller, but I'd want search_web confirmation
+        before stating it as fact.
+  expected_contains: ["search_web", "verify"]
+  expected_events_contain: [bail_retry]
+
+# ---------- positive: Nairobi population, no tool ----------
+
+- id: confident_factual_nairobi_population
+  label: confident_factual_claim
+  description: |
+    Same shape, different entity. User asked the population of a
+    named city; model called no tool at all and emitted a bare
+    numeric claim. Catcher fires; retry hedges by naming the
+    training-data caveat.
+  messages:
+    - role: user
+      content: "What is the population of Nairobi?"
+  scripted_replies:
+    - content: |
+        The population of Nairobi is approximately 4.4 million.
+    - content: |
+        Based on my training data, Nairobi's population was around
+        4.4 million as of 2022 — I'd need search_web to confirm the
+        current figure. Want me to look it up?
+  expected_contains: ["search_web"]
+  expected_events_contain: [bail_retry]
+
+# ---------- control: same shape, hedged reply ----------
+
+- id: confident_factual_hedged_no_fire
+  label: control
+  description: |
+    Same user prompt and tool-shape as the positive, but the model
+    already hedges its claim ('I believe', 'unofficially'). The
+    hedge gate must filter this out so a model that's already being
+    appropriately cautious doesn't get nudged.
+  messages:
+    - role: user
+      content: "What is the national bird of Kenya?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: tool_search
+          arguments: { query: "Kenya bird symbol" }
+    - content: |
+        Unofficially, I believe the national bird of Kenya is the
+        lilac-breasted roller — but Kenya hasn't formally designated
+        one, so this comes from convention rather than law.
+  expected_contains: ["lilac-breasted", "Unofficially"]
+  expected_events_not_contain: [bail_retry]
+
+# ---------- control: content tool ran ----------
+
+- id: confident_factual_with_search_no_fire
+  label: control
+  description: |
+    Same prompt and same bare-claim reply shape, but this time a
+    real content tool (search_web) ran. The catcher must defer to
+    thin_source_fabrication / missing_citation / numeric_fabrication
+    — fabrication-after-real-source has its own catchers.
+  registry:
+    - name: search_web
+      output: |
+        1. Kenya doesn't have an official national bird, but the
+           lilac-breasted roller is widely regarded as the unofficial
+           one. — birdlife.org
+        2. List of national symbols of Kenya — wikipedia.org
+  messages:
+    - role: user
+      content: "What is the national bird of Kenya?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: search_web
+          arguments: { query: "Kenya national bird" }
+    - content: |
+        Kenya hasn't officially designated a national bird; the
+        lilac-breasted roller is the unofficial one, per BirdLife.
+  expected_contains: ["lilac-breasted"]
+  expected_events_not_contain: [bail_retry]
+
+# ---------- control: generic question, no proper noun ----------
+
+- id: confident_factual_generic_no_fire
+  label: control
+  description: |
+    User asked a generic question that doesn't name a specific
+    entity ('what is the capital of a country?'). The named-entity
+    gate must filter this out — parametric answers to generic
+    questions are often correct and don't deserve a bail.
+  messages:
+    - role: user
+      content: "What is the capital of a country?"
+  scripted_replies:
+    - content: |
+        A country's capital is its primary administrative city —
+        usually where the head of state and central government
+        institutions are based. Examples vary widely.
+  expected_contains: ["capital"]
+  expected_events_not_contain: [bail_retry]

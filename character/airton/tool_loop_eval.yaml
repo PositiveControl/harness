@@ -169,6 +169,40 @@
   expected_contains: ["Prioritized by location and severity", "High severity"]
   expected_events_contain: [bail_retry]
 
+- id: confident_factual_claim_kenya_ostrich
+  label: confident_factual_claim
+  description: |
+    Bare factual fabrication (harness-wpo0). Session repro 2026-05-19.
+    User asked 'what is the national bird of Kenya?' (capitalized
+    for the fixture; the original chat used lowercase). Model called
+    tool_search seven times — all meta, zero content tools — then
+    emitted 'The national bird of Kenya is the ostrich' as a bare
+    confident claim. Factually wrong (correct: lilac-breasted
+    roller, unofficial). The catcher's nudge fires on round 1;
+    round 2's scripted retry hedges and points at search_web.
+  messages:
+    - role: user
+      content: "What is the national bird of Kenya?"
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: tool_search
+          arguments: { query: "national bird of country" }
+    - content: ""
+      tool_calls:
+        - name: tool_search
+          arguments: { query: "Kenya bird symbol" }
+    - content: |
+        The national bird of Kenya is the ostrich.
+    - content: |
+        I should not have asserted that without checking. Without
+        calling search_web or fetch_url, I cannot verify a national
+        symbol claim — Kenya's actual unofficial national bird is
+        the lilac-breasted roller, but I'd want to confirm.
+        Want me to search_web for the official source?
+  expected_contains: ["search_web", "verify"]
+  expected_events_contain: [bail_retry]
+
 - id: incomplete_multipart_nairobi_gender
   label: incomplete_multipart
   description: |

@@ -24,6 +24,7 @@ Hooks dispatch in the order shown within each phase — first-match semantics, s
 | `fabricated_itemization` | Reply fabricates additional list items beyond what was real. |
 | `thin_source_fabrication` | Reply makes specific numeric claims off a tool body that contained almost none. |
 | `incomplete_multipart` | Multi-part prompt; reply gives up on missing sub-ask instead of another tool call. |
+| `confident_factual_claim` | Reply asserts a bare factual claim about a named entity; no content tool ran and the claim isn't hedged. |
 | `ab_fabrication` | Reply imitates ab_ops output without a real tool call. |
 | `tool_intent` | Reply restates a tool-call intent as prose, no actual call. |
 | `missing_citation` | Reply references the corpus substantively without an anchor. |

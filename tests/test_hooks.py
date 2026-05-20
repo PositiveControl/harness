@@ -19,6 +19,7 @@ from harness.orchestrator.hooks import (
     ArgumentGroundingHook,
     AssembleContextOnceHook,
     BailContext,
+    ConfidentFactualClaimHook,
     Continue,
     DuplicateCallHook,
     FabricatedItemizationHook,
@@ -856,6 +857,194 @@ def test_incomplete_multipart_hook_single_ask_under_threshold() -> None:
         assert _multipart_ask_count(prompt) < 2, f"ask-counter overfired on single-ask {prompt!r}"
 
 
+# ---------- confident_factual_claim (harness-wpo0) ----------
+
+# Session repro 2026-05-19: user asked 'what is the national bird of
+# kenya?'. Model called tool_search seven times (all meta), zero
+# content tools, then emitted the bare 'X is Y' claim. Factually wrong.
+
+
+def test_confident_factual_claim_fires_on_kenya_ostrich_repro() -> None:
+    """The motivating repro shape, capitalized. User asks a question
+    about a named entity; only meta-tools ran; reply makes a bare
+    confident claim with no hedge. The catcher must Nudge."""
+    ctx = BailContext(
+        reply=_reply("The national bird of Kenya is the ostrich."),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"tool_search"}),
+        user_message="What is the national bird of Kenya?",
+    )
+    outcome = ConfidentFactualClaimHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "confident factual claim" in outcome.text.lower()
+    # Recovery path must name BOTH content-tool options + the
+    # hedge alternative.
+    assert "search_web" in outcome.text
+    assert "fetch_url" in outcome.text
+    assert "hedge" in outcome.text.lower()
+
+
+def test_confident_factual_claim_fires_on_nairobi_population_no_tool() -> None:
+    """Different named entity, different copula shape, still bare
+    confident claim with no content tool. Catcher must Nudge."""
+    ctx = BailContext(
+        reply=_reply("The population of Nairobi is approximately 5,000,000."),
+        tools_ran_this_turn=False,  # no tool at all this turn
+        tools_ran=frozenset(),
+        user_message="What is the population of Nairobi?",
+    )
+    assert isinstance(ConfidentFactualClaimHook().check(ctx), Nudge)
+
+
+def test_confident_factual_claim_silent_when_content_tool_ran() -> None:
+    """A content tool (search_web / fetch_url / search_memory / …)
+    legitimizes the claim — defer to thin_source_fabrication /
+    raw_results_dump / numeric_fabrication / missing_citation
+    instead."""
+    ctx = BailContext(
+        reply=_reply("The national bird of Kenya is the ostrich."),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        user_message="What is the national bird of Kenya?",
+    )
+    assert isinstance(ConfidentFactualClaimHook().check(ctx), Continue)
+
+
+def test_confident_factual_claim_silent_on_hedged_reply() -> None:
+    """A reply that already hedges its claim ('I believe', 'I'm not
+    sure', 'unofficially', 'according to my training') is signalling
+    uncertainty correctly — nothing to nudge."""
+    base_user = "What is the national bird of Kenya?"
+    hedged_replies = [
+        "I believe the national bird of Kenya is the ostrich.",
+        "I think the national bird of Kenya is the ostrich.",
+        "Unofficially, the national bird of Kenya is the lilac-breasted roller.",
+        (
+            "I'm not certain, but based on my training data, the national "
+            "bird of Kenya is the lilac-breasted roller."
+        ),
+        "The national bird of Kenya might be the lilac-breasted roller.",
+        (
+            "I cannot verify this without a tool call, but the national "
+            "bird of Kenya is the lilac-breasted roller."
+        ),
+        "The national bird of Kenya is allegedly the lilac-breasted roller.",
+        "To my knowledge, the national bird of Kenya is the lilac-breasted roller.",
+    ]
+    for reply in hedged_replies:
+        ctx = BailContext(
+            reply=_reply(reply),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"tool_search"}),
+            user_message=base_user,
+        )
+        assert isinstance(ConfidentFactualClaimHook().check(ctx), Continue), (
+            f"hedged reply tripped the catcher: {reply!r}"
+        )
+
+
+def test_confident_factual_claim_silent_on_generic_question() -> None:
+    """No proper noun in the user message ('what is the capital of a
+    country?') — the question is generic enough that a parametric
+    answer is often fine. Catcher stays silent."""
+    ctx = BailContext(
+        reply=_reply("The capital of a country is its primary administrative city."),
+        tools_ran_this_turn=False,
+        tools_ran=frozenset(),
+        user_message="What is the capital of a country?",
+    )
+    assert isinstance(ConfidentFactualClaimHook().check(ctx), Continue)
+
+
+def test_confident_factual_claim_silent_on_non_question() -> None:
+    """User message isn't a factual question ('please summarize what
+    we did today', 'thanks for the help'). The catcher's question-
+    shape gate must filter these out so chit-chat and meta turns
+    don't trip the named-entity check."""
+    ctx = BailContext(
+        reply=_reply("The plan is the next step."),
+        tools_ran_this_turn=False,
+        tools_ran=frozenset(),
+        user_message="Please summarize what we did with the Nairobi plan.",
+    )
+    assert isinstance(ConfidentFactualClaimHook().check(ctx), Continue)
+
+
+def test_confident_factual_claim_silent_on_empty_user_message() -> None:
+    """No user message — the catcher can't tell whether the reply is
+    a factual claim about something the user asked about. Silent."""
+    ctx = BailContext(
+        reply=_reply("Kenya is in East Africa."),
+        tools_ran_this_turn=False,
+        tools_ran=frozenset(),
+        user_message=None,
+    )
+    assert isinstance(ConfidentFactualClaimHook().check(ctx), Continue)
+
+
+def test_confident_factual_claim_silent_on_reply_without_copula() -> None:
+    """Reply has no copula assertion — it's a question, a refusal, or
+    a deferral, not a claim. Catcher must stay silent."""
+    refusals = [
+        "I can't answer that without checking a source. Want me to search?",
+        "What time frame did you have in mind for Kenya?",
+        "Let me look that up for Kenya.",
+    ]
+    for reply in refusals:
+        ctx = BailContext(
+            reply=_reply(reply),
+            tools_ran_this_turn=True,
+            tools_ran=frozenset({"tool_search"}),
+            user_message="What is the national bird of Kenya?",
+        )
+        assert isinstance(ConfidentFactualClaimHook().check(ctx), Continue), (
+            f"non-claim reply tripped the catcher: {reply!r}"
+        )
+
+
+def test_confident_factual_claim_has_named_entity_helper() -> None:
+    """Direct exercise of `_has_named_entity` to pin the proper-noun
+    heuristic. Capitalized 3+ letter tokens NOT at sentence start AND
+    NOT in the stop-set must register; sentence-initial interrogatives
+    and articles must not."""
+    from harness.orchestrator.hooks import _has_named_entity
+
+    # Positive: mid-sentence capitalized entity
+    assert _has_named_entity("What is the national bird of Kenya?")
+    assert _has_named_entity("What is the population of Nairobi?")
+    assert _has_named_entity("Tell me about Mount Kilimanjaro.")
+    assert _has_named_entity("Who is the president of France?")
+    # Positive: entity appears both sentence-initially AND mid-sentence
+    assert _has_named_entity("Kenya is a country. What is its capital, Kenya?")
+
+    # Negative: lowercase entity tokens
+    assert not _has_named_entity("what is the national bird of kenya?")
+    # Negative: generic question with no proper noun
+    assert not _has_named_entity("What is the capital of a country?")
+    # Negative: only sentence-initial capitalized words (interrogatives,
+    # articles, and other stop-set tokens)
+    assert not _has_named_entity("What is the answer?")
+    assert not _has_named_entity("Who is the leader?")
+    # Negative: empty / whitespace
+    assert not _has_named_entity("")
+    assert not _has_named_entity("   ")
+
+
+def test_confident_factual_claim_silent_on_meta_only_with_lowercase_entity() -> None:
+    """Deliberate conservative gap: lowercase entity tokens in
+    user_message don't trip the named-entity check. Documented in
+    the hook docstring as a false-negative tradeoff to keep
+    false-positives bounded. Pinned here so the behavior change is
+    intentional, not accidental."""
+    ctx = BailContext(
+        reply=_reply("The national bird of Kenya is the ostrich."),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"tool_search"}),
+        user_message="what is the national bird of kenya?",
+    )
+    assert isinstance(ConfidentFactualClaimHook().check(ctx), Continue)
+
+
 def test_fabricated_search_hook_fires_after_meta_tool_only() -> None:
     """harness-q7kn: load_tool / tool_search / introspect are meta-tools
     (plumbing for the discovery loop). They must NOT disarm the
@@ -1110,6 +1299,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "fabricated_itemization",
         "thin_source_fabrication",
         "incomplete_multipart",
+        "confident_factual_claim",
         "ab_fabrication",
         "tool_intent",
         "missing_citation",

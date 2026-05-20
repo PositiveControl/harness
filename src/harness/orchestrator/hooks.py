@@ -1223,6 +1223,286 @@ class IncompleteMultipartHook:
         return Nudge(_INCOMPLETE_MULTIPART_NUDGE)
 
 
+# Confident factual claim about a named entity, no content tool ran
+# (harness-wpo0). Session repro 2026-05-19: user asked "what is the
+# national bird of kenya?" The model called tool_search seven times,
+# never progressed to load_tool / search_web, then emitted "The
+# national bird of Kenya is the ostrich" as the final reply. Confident
+# factual claim, no grounding, factually wrong.
+#
+# Existing catchers don't close this:
+#   - fabricated_search wants "here are the results" / placeholder URLs.
+#   - fabricated_itemization wants a numbered-list shape.
+#   - thin_source_fabrication needs prior_tool_outputs to compare against.
+#   - missing_citation only runs for corpus-grounded characters.
+#   - ungrounded_citation wants a §-anchor in the reply.
+# A bare "X is Y" sentence with no tool output to anchor against falls
+# through every gate.
+#
+# Multi-gate detector keeps false positives bounded — each gate eliminates
+# a category of legitimate replies that look superficially like the
+# fabrication shape.
+
+
+# Gate 1: factual-question shape in user_message. Either starts with
+# an interrogative pronoun OR contains the "X is/are Y" copula-question
+# fragment. Reasonably reliable; permissive enough to catch the
+# variants users actually write ("what is the …", "who is …", "tell
+# me what …", "the … is what?").
+_FACTUAL_QUESTION_RE = re.compile(
+    r"^\s*(?:what|who|when|where|why|how|which|whose)\b"
+    r"|\?\s*$"
+    r"|\b(?:what|who|which|whose)\s+(?:is|are|was|were)\b",
+    re.IGNORECASE,
+)
+
+# Gate 2 (helper): capitalized 3+ letter tokens in user_message that
+# aren't sentence-initial and aren't articles / interrogatives /
+# auxiliaries. Approximation for "user named a specific entity"
+# ('Kenya', 'Nairobi', 'Mount Kilimanjaro'). False negatives on
+# lowercase entity tokens ('kenya') are deliberate: a user that didn't
+# capitalize the entity is more likely to accept a parametric answer.
+_PROPER_NOUN_CANDIDATE_RE = re.compile(r"\b([A-Z][a-z]{2,})\b")
+
+# Capitalized tokens that commonly appear as proper-noun candidates
+# but are actually generic English (sentence starters, articles,
+# pronouns, auxiliaries, conjunctions, imperatives). Anything matched
+# here is dropped from the proper-noun count.
+_NON_PROPER_NOUN_TOKENS: frozenset[str] = frozenset(
+    {
+        # Interrogatives
+        "What",
+        "Who",
+        "When",
+        "Where",
+        "Why",
+        "How",
+        "Which",
+        "Whose",
+        # Auxiliaries
+        "Is",
+        "Are",
+        "Was",
+        "Were",
+        "Be",
+        "Been",
+        "Being",
+        "Do",
+        "Does",
+        "Did",
+        "Done",
+        "Doing",
+        "Have",
+        "Has",
+        "Had",
+        "Having",
+        "Can",
+        "Could",
+        "May",
+        "Might",
+        "Must",
+        "Shall",
+        "Should",
+        "Will",
+        "Would",
+        # Articles / determiners
+        "The",
+        "This",
+        "That",
+        "These",
+        "Those",
+        "Some",
+        "Any",
+        # Conjunctions / connectors
+        "And",
+        "But",
+        "Nor",
+        "For",
+        "Yet",
+        "Also",
+        "Plus",
+        "Then",
+        # Pronouns
+        "You",
+        "Your",
+        "They",
+        "Them",
+        "Their",
+        "We",
+        "Our",
+        "Ours",
+        # Common imperatives that begin questions or asks
+        "Tell",
+        "Give",
+        "Show",
+        "List",
+        "Find",
+        "Get",
+        "Name",
+        "Explain",
+        "Describe",
+        "Help",
+        "Please",
+        "Search",
+        "Lookup",
+        "Look",
+        # Polite framings
+        "Hello",
+        "Hey",
+        "Hi",
+        "Greetings",
+    }
+)
+
+
+def _has_named_entity(text: str) -> bool:
+    """True iff `text` contains at least one capitalized 3+ letter
+    token that isn't sentence-initial and isn't in
+    `_NON_PROPER_NOUN_TOKENS`.
+
+    Conservative approximation for 'user named a specific entity'.
+    The sentence-initial filter handles the 'Where is Paris?' shape
+    where 'Where' is capitalized by orthographic convention. Multiple
+    occurrences disambiguate: a token that appears both sentence-
+    initially AND mid-sentence is treated as a proper noun on the
+    mid-sentence hit."""
+    if not text:
+        return False
+    sentence_starts: set[int] = {0}
+    for m in re.finditer(r"[.!?]\s+|\n+", text):
+        sentence_starts.add(m.end())
+    for m in _PROPER_NOUN_CANDIDATE_RE.finditer(text):
+        token = m.group(1)
+        if token in _NON_PROPER_NOUN_TOKENS:
+            continue
+        if m.start() in sentence_starts:
+            # Sentence-initial capitalization is ambiguous. Skip unless
+            # the same token also appears mid-sentence elsewhere.
+            others = [
+                other
+                for other in _PROPER_NOUN_CANDIDATE_RE.finditer(text)
+                if other.group(1) == token and other.start() not in sentence_starts
+            ]
+            if not others:
+                continue
+        return True
+    return False
+
+
+# Gate 4: copula assertion in reply. Matches "X is Y" / "X is the Y"
+# / "X are Y" — the bare-claim shape. Intentionally permissive: any
+# present/past-tense copula followed by a noun-phrase head. The
+# conjunction of all other gates keeps the false-positive bound tight.
+_COPULA_ASSERTION_RE = re.compile(
+    r"\b(?:is|are|was|were)\s+(?:not\s+)?(?:(?:a|an|the|in|on|of|at)\s+)?[A-Za-z]{3,}",
+    re.IGNORECASE,
+)
+
+
+# Gate 5: hedging language in reply. A model that already qualifies
+# its claim ("I think", "unofficially", "according to my training")
+# is signalling uncertainty correctly — no need to nudge. Matches
+# the dominant English hedge patterns; intentionally narrow so the
+# absence-of-hedge gate stays meaningful.
+_CONFIDENT_FACTUAL_HEDGE_RE = re.compile(
+    r"\b(?:"
+    r"i\s+(?:think|believe|guess|suspect|imagine|reckon|recall)"
+    r"|i(?:'m|\s+am)\s+(?:not\s+sure|uncertain|not\s+certain)"
+    r"|i\s+(?:cannot|can't|don't)\s+verify"
+    r"|i\s+don't\s+know(?:\s+for\s+(?:sure|certain))?"
+    r"|might\s+be|may\s+be|could\s+be"
+    r"|possibly|perhaps|maybe"
+    r"|unofficially|not\s+officially|not\s+official"
+    r"|allegedly|reportedly|supposedly|purportedly"
+    r"|sometimes|often\s+(?:called|considered|regarded)"
+    r"|(?:according\s+to|based\s+on)\s+(?:my\s+)?training"
+    r"|without\s+verifying"
+    r"|to\s+my\s+knowledge"
+    r"|as\s+far\s+as\s+i\s+know"
+    r"|it'?s\s+(?:said|believed|thought)"
+    r"|widely\s+(?:believed|thought|considered|regarded)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+_CONFIDENT_FACTUAL_CLAIM_NUDGE = (
+    "Your reply makes a confident factual claim about a named entity "
+    "the user asked about, but NO data-gathering tool ran this turn — "
+    "only meta-tools (tool_search / load_tool / introspect / "
+    "spawn_subagent) at most, or no tool at all. Bare confident claims "
+    "about named entities — especially proper nouns — are how you "
+    "hallucinate. Either: (a) call search_web or fetch_url to verify "
+    "the claim BEFORE asserting it, or (b) explicitly hedge — "
+    '"I\'m not certain, but based on training data..." — and let the '
+    "user decide whether to trust the parametric answer. Do not "
+    "guess and present the guess as fact."
+)
+
+
+@dataclass(frozen=True)
+class ConfidentFactualClaimHook:
+    """Catch the bare factual-fabrication shape when only meta-tools
+    ran (harness-wpo0). Session repro 2026-05-19: user asked 'what is
+    the national bird of kenya?'; model called tool_search seven times,
+    zero content tools, then emitted 'The national bird of Kenya is
+    the ostrich' (factually wrong — correct: lilac-breasted roller,
+    unofficial). The plain 'X is Y' shape falls through
+    fabricated_search / fabricated_itemization / thin_source_fabrication
+    because none of their structural triggers (result lists,
+    itemization markers, thin-body comparison) apply.
+
+    Trigger conditions (ALL must hold):
+      1. user_message is non-empty.
+      2. user_message looks like a factual question — starts with an
+         interrogative pronoun, contains 'what/who/which … is/are',
+         or ends with '?'.
+      3. user_message contains at least one named entity (capitalized
+         3+ letter token, not sentence-initial, not an article /
+         pronoun / auxiliary).
+      4. No content tool ran this turn (`_content_tools_ran(ctx)` is
+         False). Meta-tools at most, or no tool at all.
+      5. Reply contains a copula assertion — 'X is Y' / 'X is the Y'
+         / 'X are Y'. The bare-claim shape.
+      6. Reply does NOT contain hedging language ('I think', 'I
+         believe', 'might be', 'unofficially', 'according to my
+         training', etc.). A model that already qualifies its claim
+         doesn't need a catcher.
+
+    Silent cases (by design — high false-positive risk if any gate
+    is dropped):
+      - Lowercase user-message entity tokens ('kenya'): the user that
+        didn't capitalize is more likely to accept a parametric
+        answer; we don't nudge.
+      - Generic questions without specific entities ('what is the
+        capital of a country?'): no proper noun, no nudge.
+      - Hedged replies ('I believe X is Y'): hedge present, silent.
+
+    Position in the bail pipeline: AFTER thin_source_fabrication
+    (needs a tool body) AND AFTER incomplete_multipart (multi-part
+    omission is a more specific shape). Before MissingCitationHook
+    so corpus-grounded characters still get the citation check on
+    the same reply if it survives this gate. Universal — failure
+    mode is character-agnostic."""
+
+    name: str = "confident_factual_claim"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if not ctx.user_message:
+            return Continue()
+        if _content_tools_ran(ctx):
+            return Continue()
+        if not _FACTUAL_QUESTION_RE.search(ctx.user_message):
+            return Continue()
+        if not _has_named_entity(ctx.user_message):
+            return Continue()
+        if not _COPULA_ASSERTION_RE.search(ctx.reply.content):
+            return Continue()
+        if _CONFIDENT_FACTUAL_HEDGE_RE.search(ctx.reply.content):
+            return Continue()
+        return Nudge(_CONFIDENT_FACTUAL_CLAIM_NUDGE)
+
+
 _AB_FABRICATION_NUDGE = (
     "Your reply looks like fabricated tool output (ab_ops capture "
     "receipt / tiered plan / fake scope abbreviation). You did NOT "
@@ -4270,6 +4550,10 @@ HOOK_SHAPES: dict[str, str] = {
     "incomplete_multipart": (
         "Multi-part prompt; reply gives up on missing sub-ask instead of another tool call."
     ),
+    "confident_factual_claim": (
+        "Reply asserts a bare factual claim about a named entity; "
+        "no content tool ran and the claim isn't hedged."
+    ),
     "ab_fabrication": "Reply imitates ab_ops output without a real tool call.",
     "tool_intent": "Reply restates a tool-call intent as prose, no actual call.",
     "ambiguous_context": "Reply silently picks one variant of an ambiguous term.",
@@ -4518,6 +4802,13 @@ def default_hook_pipeline(
         # omission-of-content; a reply that BOTH fabricates AND
         # gives-up should get the fabrication nudge first.
         IncompleteMultipartHook(),
+        # confident_factual_claim (harness-wpo0): the bare
+        # 'X is Y' fabrication shape — user asked about a named entity,
+        # only meta-tools (or nothing) ran, reply makes a confident
+        # claim with no hedge. Position AFTER thin_source_fabrication
+        # and incomplete_multipart so the more-specific catchers get
+        # first pass on replies that also match this gate.
+        ConfidentFactualClaimHook(),
     ]
     # ab_fabrication: ab_ops capture/plan/remember imitation shapes.
     # Self-gates on `tools_ran_this_turn=False`; non-ab characters
