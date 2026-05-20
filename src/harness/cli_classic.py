@@ -73,6 +73,7 @@ from harness.tools import (
     ToolCall,
     ToolCatalog,
     ToolRegistry,
+    ToolResult,
     ToolSearchTool,
     TzConvertTool,
     WriteFileTool,
@@ -107,6 +108,83 @@ def _classic_session_tool_catalog() -> ToolCatalog:
     return cat
 
 
+def _make_write_file_redirect_hook(
+    *,
+    registry: ToolRegistry | None,
+    workspace_path: Path | None,
+) -> Any:
+    """Wire a WriteFileRedirectHook against the session's live
+    registry + workspace, or return None if neither is available
+    (e.g. tool-less chat). Returns None when write_file isn't even
+    in the catalog — without it the hook would be dead weight.
+
+    Three closures bridge the hook (pure data) to the live session:
+
+    - `read_existing(path)` reads `<workspace>/<path>` as UTF-8 text
+      and returns the content. Non-existent files and decode failures
+      yield None so the hook treats them as 'not redirectable' and
+      Continues.
+    - `ensure_edit_file_active()` adds edit_file to the active set
+      when it's registered-but-inactive (the load_tool companion
+      pairing usually means it's already active alongside
+      write_file). Returns True iff edit_file is callable after the
+      call.
+    - `invoke_edit_file(path, old, new)` dispatches the registry's
+      edit_file tool and returns its ToolResult so the hook can feed
+      it back as the Skip payload.
+    """
+    if registry is None or workspace_path is None:
+        return None
+    # write_file may not be registered at all — minimal/router-only
+    # sessions skip the redirect entirely. The hook is opt-in on
+    # write_file availability; nothing else changes.
+    if "write_file" not in registry:
+        return None
+
+    from harness.orchestrator.hooks import WriteFileRedirectHook
+
+    root = workspace_path.resolve()
+
+    def read_existing(path: str) -> str | None:
+        try:
+            target = (root / path).resolve()
+            # Reject paths that escape the workspace root — the hook
+            # treats them as 'not redirectable' so write_file's own
+            # escape check fires the same error the model is used to.
+            target.relative_to(root)
+        except (OSError, ValueError):
+            return None
+        if not target.exists() or not target.is_file():
+            return None
+        try:
+            return target.read_text()
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    def ensure_edit_file_active() -> bool:
+        if "edit_file" not in registry:
+            return False
+        if "edit_file" in registry.active_names():
+            return True
+        try:
+            registry.set_active(set(registry.active_names()) | {"edit_file"})
+        except Exception:
+            return False
+        return "edit_file" in registry.active_names()
+
+    def invoke_edit_file(path: str, old: str, new: str) -> ToolResult:
+        return registry.call(
+            "edit_file",
+            {"path": path, "old_string": old, "new_string": new},
+        )
+
+    return WriteFileRedirectHook(
+        read_existing=read_existing,
+        ensure_edit_file_active=ensure_edit_file_active,
+        invoke_edit_file=invoke_edit_file,
+    )
+
+
 def _build_hook_pipeline(
     *,
     summarize_tool_results: bool,
@@ -115,6 +193,8 @@ def _build_hook_pipeline(
     console: Console,
     character_path: Path,
     character: Character,
+    registry: ToolRegistry | None = None,
+    workspace_path: Path | None = None,
 ) -> HookPipeline | None:
     """Build a HookPipeline override when the character has a corpus
     chunks dir (so FabricatedSectionHook gets its anchor index) OR
@@ -151,7 +231,22 @@ def _build_hook_pipeline(
         )
     grammar = character.citation_grammar
     catchers = character.catchers
-    if not summarize_tool_results and not valid_anchors and grammar is None and not catchers:
+    # Build the write_file → edit_file redirect hook (harness-hnt7)
+    # when the session has both a registry containing write_file and a
+    # workspace path. None otherwise — the orchestrator's module
+    # default pipeline doesn't carry the hook either, so behavior is
+    # unchanged for those sessions.
+    redirect_hook = _make_write_file_redirect_hook(
+        registry=registry,
+        workspace_path=workspace_path,
+    )
+    if (
+        not summarize_tool_results
+        and not valid_anchors
+        and grammar is None
+        and not catchers
+        and redirect_hook is None
+    ):
         return None
 
     from harness.orchestrator.hooks import (
@@ -165,6 +260,7 @@ def _build_hook_pipeline(
         catchers=catchers,
         scope_redirect_template=character.scope_redirect_template,
         character_name=character.name,
+        write_file_redirect_hook=redirect_hook,
     )
 
     if not summarize_tool_results:
@@ -970,6 +1066,8 @@ def run_classic_chat(
         console=console,
         character_path=settings.character_path,
         character=character,
+        registry=registry,
+        workspace_path=workspace_path,
     )
 
     banter_tracker = load_default_tracker(settings.character_path)

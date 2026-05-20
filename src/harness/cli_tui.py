@@ -165,6 +165,8 @@ def run_tui(
         console=console,
         character_path=settings.character_path,
         character=character,
+        registry=registry,
+        workspace_path=workspace_path,
     )
 
     ChatApp(

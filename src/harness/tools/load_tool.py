@@ -59,6 +59,16 @@ from harness.tools.catalog import ToolCatalog
 # tools to leak into a session.
 _TOOL_COMPANIONS: dict[str, tuple[str, ...]] = {
     "search_web": ("fetch_url",),
+    # write_file ↔ edit_file (harness-hnt7). A model that loads one
+    # almost always needs the other within the same task — the GTA2
+    # session 2026-05-20 burned multiple round-trips because the model
+    # had write_file but not edit_file when it tried to modify the
+    # file it just created. Bidirectional pairing keeps the
+    # WriteFileRedirectHook's `ensure_edit_file_active` cheap (the
+    # companion already landed at load time) and lets the model treat
+    # the pair as one capability.
+    "write_file": ("edit_file",),
+    "edit_file": ("write_file",),
 }
 
 

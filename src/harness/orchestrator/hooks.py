@@ -3189,6 +3189,141 @@ class DuplicateCallHook:
         )
 
 
+# Default no-op closures for the WriteFileRedirectHook (harness-hnt7).
+# An unwired hook (no read_existing / no ensure_edit_file_active) is a
+# no-op — every call returns the "not redirectable" Continue path so
+# tests can construct the hook in isolation without dragging in a real
+# filesystem or registry. The CLI / chat session overrides these with
+# closures bound to the live workspace + tool registry.
+
+
+def _no_read_existing(_path: str) -> str | None:
+    return None
+
+
+def _no_ensure_edit_file_active() -> bool:
+    return False
+
+
+def _no_invoke_edit_file(_path: str, _old: str, _new: str) -> ToolResult:
+    return ToolResult(
+        tool_name="edit_file",
+        output="write_file_redirect: edit_file invocation closure not wired",
+        success=False,
+        error="not_wired",
+    )
+
+
+@dataclass(frozen=True)
+class WriteFileRedirectHook:
+    """Pre-tool hook: short-circuit a `write_file(path, content)` call
+    on an EXISTING path by dispatching `edit_file(path, old_string=
+    <current contents>, new_string=content)` from inside the hook and
+    feeding back the edit_file result as the tool-role message
+    (harness-hnt7).
+
+    Without this hook the loop burns 4 round-trips on the common
+    "create a file, then modify it" pattern: write_file fails with
+    'already exists', the model parses the error, emits an edit_file
+    call which 404s because edit_file isn't in the active set, the
+    model emits load_tool, then finally re-emits edit_file. With the
+    hook a single Skip carries the edit_file result and the model
+    only sees one tool turn for what it intended as one write.
+
+    Skip semantics — the tool-role message stays named for the
+    original write_file call (so the model knows it was its own
+    emission that got handled) and the output starts with the
+    redirect prefix so the model is honestly told what happened. The
+    hook does NOT lie about which tool actually ran.
+
+    Carve-outs:
+      - `overwrite=True`: explicit replace; Continue (normal path).
+      - Path does not exist: Continue (normal write_file create).
+      - New content < half existing size AND < 1KB: preserve the
+        harness-2tq safety-shrink check; Skip with the same error
+        write_file would have raised, no redirect.
+      - New content identical to existing: idempotent success Skip
+        (edit_file would reject as no-op).
+      - edit_file not in registry AND ensure_edit_file_active
+        returned False: Continue. The model gets the existing
+        multi-round recovery path — no worse than today.
+
+    `read_existing(path)` returns the current contents as a `str`,
+    or None when the file doesn't exist / isn't UTF-8 text. The hook
+    treats None as 'not redirectable.'
+    `ensure_edit_file_active()` attempts to add edit_file to the
+    active registry (building from the catalog if needed). Returns
+    True iff edit_file is callable after the call.
+    `invoke_edit_file(path, old, new)` dispatches the edit_file tool
+    and returns its ToolResult.
+    """
+
+    name: str = "write_file_redirect"
+    read_existing: Callable[[str], str | None] = field(default=_no_read_existing)
+    ensure_edit_file_active: Callable[[], bool] = field(default=_no_ensure_edit_file_active)
+    invoke_edit_file: Callable[[str, str, str], ToolResult] = field(default=_no_invoke_edit_file)
+
+    def check(self, ctx: PreToolContext) -> PreToolOutcome:
+        if ctx.call.name != "write_file":
+            return Continue()
+        args = ctx.call.arguments
+        path = args.get("path")
+        content = args.get("content")
+        if not isinstance(path, str) or not isinstance(content, str):
+            return Continue()
+        if args.get("overwrite") is True:
+            return Continue()
+        existing = self.read_existing(path)
+        if existing is None:
+            return Continue()
+        # harness-2tq safety-shrink guard — preserved on the redirect
+        # path so the model still gets the 'looks like you meant to
+        # append' nudge instead of a silent destroy-via-edit.
+        existing_bytes = len(existing.encode("utf-8"))
+        new_bytes = len(content.encode("utf-8"))
+        if new_bytes < existing_bytes // 2 and new_bytes < 1024:
+            return Skip(
+                ToolResult(
+                    tool_name="write_file",
+                    output=(
+                        f"refusing to overwrite {path}: new content is "
+                        f"{new_bytes} bytes but the existing file is "
+                        f"{existing_bytes} bytes. This looks like you "
+                        f"meant to append or edit, not replace. Use "
+                        f"edit_file(path={path!r}, old_string='', "
+                        f"new_string=<line to append>) to append, or set "
+                        f"an explicit old_string to replace a specific "
+                        f"section."
+                    ),
+                    success=False,
+                    error="suspicious_shrink",
+                )
+            )
+        # Idempotent: same content already in the file. edit_file
+        # would reject this as a no-op; surface a clean success
+        # instead so the model doesn't see a confusing error.
+        if content == existing:
+            return Skip(
+                ToolResult(
+                    tool_name="write_file",
+                    output=(f"(write_file → no-op: {path} already has this content)"),
+                    success=True,
+                )
+            )
+        if not self.ensure_edit_file_active():
+            return Continue()
+        edit_result = self.invoke_edit_file(path, existing, content)
+        prefix = f"(write_file → edit_file: {path} existed) "
+        return Skip(
+            ToolResult(
+                tool_name="write_file",
+                output=prefix + edit_result.output,
+                success=edit_result.success,
+                error=edit_result.error,
+            )
+        )
+
+
 _TOOL_SEARCH_LOOP_NUDGE = (
     "[tool_search loop — you have called tool_search {count} times this "
     "turn without loading any candidate. The catalog has not changed "
@@ -4593,6 +4728,12 @@ HOOK_SHAPES: dict[str, str] = {
     # post_model-phase catchers (operate on the raw ModelReply).
     # (none today — phase exists for future use.)
     # pre_tool-phase catchers (gate tool execution).
+    "write_file_redirect": (
+        "write_file on an existing path is redirected to edit_file "
+        "in-hook; the model sees a single tool turn instead of the "
+        "4-round write_file → unknown_tool → load_tool → edit_file "
+        "loop. Preserves the harness-2tq safety-shrink guard."
+    ),
     "duplicate_call": "Identical (name, args) call this turn; re-issues prior result.",
     "tool_search_loop": (
         "tool_search called repeatedly without load_tool — model is treating it as a search engine."
@@ -4743,6 +4884,7 @@ def default_hook_pipeline(
     catchers: tuple[str, ...] = (),
     scope_redirect_template: str | None = None,
     character_name: str | None = None,
+    write_file_redirect_hook: WriteFileRedirectHook | None = None,
 ) -> HookPipeline:
     """Build the shipping pipeline. Order mirrors the pre-refactor
     `_diagnose_bail` branch order so first-match semantics stay
@@ -4922,17 +5064,28 @@ def default_hook_pipeline(
     # Pre-tool catchers. Built mutably so opt-in characters can
     # tack on FetchUrlGuardHook without forcing every non-paste-only
     # persona to inherit it.
-    pre_tool: list[PreToolHook] = [
-        DuplicateCallHook(),
-        # tool_search_loop (harness-lmwm): after duplicate_call (which
-        # uses an exact (name, args) key) and before argument_grounding
-        # (which inspects arg domains). Gates a different signal —
-        # 'tool_search called repeatedly with refined queries, no
-        # load_tool yet' — that duplicate_call doesn't see because
-        # the args differ across attempts.
-        ToolSearchLoopHook(),
-        ArgumentGroundingHook(),
-    ]
+    pre_tool: list[PreToolHook] = []
+    # write_file_redirect (harness-hnt7) runs BEFORE duplicate_call so
+    # a redirected write_file doesn't get pre-empted by an unrelated
+    # earlier hook. Only registered when the caller supplied a wired
+    # hook — None means "no workspace + registry handles available,"
+    # so the redirect path stays off and the loop falls back to the
+    # existing write_file error → load_tool → edit_file recovery.
+    if write_file_redirect_hook is not None:
+        pre_tool.append(write_file_redirect_hook)
+    pre_tool.extend(
+        [
+            DuplicateCallHook(),
+            # tool_search_loop (harness-lmwm): after duplicate_call (which
+            # uses an exact (name, args) key) and before argument_grounding
+            # (which inspects arg domains). Gates a different signal —
+            # 'tool_search called repeatedly with refined queries, no
+            # load_tool yet' — that duplicate_call doesn't see because
+            # the args differ across attempts.
+            ToolSearchLoopHook(),
+            ArgumentGroundingHook(),
+        ]
+    )
     # fetch_url_guard: airton_c_tfr-style paste-only characters block
     # speculative fetch_url calls (those without a URL in the user's
     # message). Placed after argument_grounding so a real URL still
@@ -5188,6 +5341,7 @@ __all__ = [
     "UncitedSubstantiveReplyHook",
     "UngroundedCitationHook",
     "UnparseableHook",
+    "WriteFileRedirectHook",
     "default_hook_pipeline",
     "looks_like_ab_fabrication",
 ]

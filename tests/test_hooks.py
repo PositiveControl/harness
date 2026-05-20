@@ -62,6 +62,7 @@ from harness.orchestrator.hooks import (
     UncitedSubstantiveReplyHook,
     UngroundedCitationHook,
     UnparseableHook,
+    WriteFileRedirectHook,
     default_hook_pipeline,
 )
 from harness.tools.base import ModelReply, ToolCall, ToolResult
@@ -5306,3 +5307,175 @@ def test_persist_body_citations_wires_into_pipeline_when_opted_in() -> None:
     assert "persist_body_citations" in on.names()
     off = default_hook_pipeline(catchers=())
     assert "persist_body_citations" not in off.names()
+
+
+# ---------- WriteFileRedirectHook (harness-hnt7) ----------
+
+
+def _make_redirect_hook(
+    *,
+    existing: dict[str, str],
+    edit_active: bool = True,
+    edit_log: list[tuple[str, str, str]] | None = None,
+) -> WriteFileRedirectHook:
+    """Build a WriteFileRedirectHook wired against an in-memory file
+    map. `existing` maps path → current content; absent paths return
+    None from read_existing. `edit_active=True` means
+    ensure_edit_file_active reports success. Captures edit_file
+    invocations into `edit_log` if provided."""
+
+    def read_existing(path: str) -> str | None:
+        return existing.get(path)
+
+    def ensure_edit_file_active() -> bool:
+        return edit_active
+
+    def invoke_edit_file(path: str, old: str, new: str) -> ToolResult:
+        if edit_log is not None:
+            edit_log.append((path, old, new))
+        return ToolResult(
+            tool_name="edit_file",
+            output=f"edited {path}: 1 replacement(s), {len(new) - len(old):+d} bytes",
+            success=True,
+        )
+
+    return WriteFileRedirectHook(
+        read_existing=read_existing,
+        ensure_edit_file_active=ensure_edit_file_active,
+        invoke_edit_file=invoke_edit_file,
+    )
+
+
+def test_write_file_redirect_passes_through_non_write_file() -> None:
+    """Hook MUST NOT fire on calls other than write_file — Continue is
+    the only safe outcome for unrelated tools."""
+    hook = _make_redirect_hook(existing={})
+    call = ToolCall(name="read_file", arguments={"path": "x"})
+    outcome = hook.check(PreToolContext(call=call, seen_calls={}))
+    assert isinstance(outcome, Continue)
+
+
+def test_write_file_redirect_passes_through_when_path_absent() -> None:
+    """write_file on a NEW path is the legitimate create case;
+    Continue so write_file's normal create-and-write path runs."""
+    hook = _make_redirect_hook(existing={})
+    call = ToolCall(
+        name="write_file",
+        arguments={"path": "new.txt", "content": "hello world"},
+    )
+    outcome = hook.check(PreToolContext(call=call, seen_calls={}))
+    assert isinstance(outcome, Continue)
+
+
+def test_write_file_redirect_passes_through_on_explicit_overwrite() -> None:
+    """`overwrite=True` is explicit user intent to replace; the hook
+    must NOT intercept — write_file's own overwrite path (with the
+    harness-2tq shrink guard) runs."""
+    hook = _make_redirect_hook(existing={"game.js": "old content"})
+    call = ToolCall(
+        name="write_file",
+        arguments={
+            "path": "game.js",
+            "content": "new content of about the same length",
+            "overwrite": True,
+        },
+    )
+    outcome = hook.check(PreToolContext(call=call, seen_calls={}))
+    assert isinstance(outcome, Continue)
+
+
+def test_write_file_redirect_dispatches_edit_file_on_existing_path() -> None:
+    """The core fix: write_file(path, content) where path exists and
+    overwrite is unset → Skip with the edit_file result, prefixed so
+    the model knows the redirect happened. edit_file was invoked with
+    old_string=<current>, new_string=<content>."""
+    existing = {"game.js": "// existing 50+ bytes of placeholder content here"}
+    log: list[tuple[str, str, str]] = []
+    hook = _make_redirect_hook(existing=existing, edit_log=log)
+    new_content = "// new content also at least 50+ bytes of placeholder code here"
+    call = ToolCall(
+        name="write_file",
+        arguments={"path": "game.js", "content": new_content},
+    )
+    outcome = hook.check(PreToolContext(call=call, seen_calls={}))
+    assert isinstance(outcome, Skip)
+    assert outcome.result.success is True
+    assert outcome.result.tool_name == "write_file"
+    assert "write_file → edit_file" in outcome.result.output
+    assert "game.js existed" in outcome.result.output
+    # edit_file invoked with old=existing, new=content
+    assert len(log) == 1
+    path, old, new = log[0]
+    assert path == "game.js"
+    assert old == existing["game.js"]
+    assert new == new_content
+
+
+def test_write_file_redirect_preserves_safety_shrink_guard() -> None:
+    """harness-2tq: refuse a write that shrinks the file by > half AND
+    is under 1KB — the model almost certainly meant to append, not
+    replace. Hook must Skip with the same error write_file would have
+    raised; no redirect happens (edit_log stays empty)."""
+    existing = {"notes.md": "x" * 4000}
+    log: list[tuple[str, str, str]] = []
+    hook = _make_redirect_hook(existing=existing, edit_log=log)
+    call = ToolCall(
+        name="write_file",
+        arguments={"path": "notes.md", "content": "one more line"},
+    )
+    outcome = hook.check(PreToolContext(call=call, seen_calls={}))
+    assert isinstance(outcome, Skip)
+    assert outcome.result.success is False
+    assert outcome.result.error == "suspicious_shrink"
+    assert "looks like you meant to append" in outcome.result.output
+    # No edit_file dispatch — the shrink guard fired first.
+    assert log == []
+
+
+def test_write_file_redirect_idempotent_on_identical_content() -> None:
+    """Content already in the file — edit_file would raise no-op;
+    return a clean success Skip instead so the model doesn't see a
+    confusing error and the round still 'counts' as a successful write."""
+    existing = {"a.txt": "same content here"}
+    log: list[tuple[str, str, str]] = []
+    hook = _make_redirect_hook(existing=existing, edit_log=log)
+    call = ToolCall(
+        name="write_file",
+        arguments={"path": "a.txt", "content": "same content here"},
+    )
+    outcome = hook.check(PreToolContext(call=call, seen_calls={}))
+    assert isinstance(outcome, Skip)
+    assert outcome.result.success is True
+    assert "no-op" in outcome.result.output
+    # No edit_file dispatch — we short-circuited before invoking it.
+    assert log == []
+
+
+def test_write_file_redirect_falls_through_when_edit_file_inactive() -> None:
+    """If edit_file is neither active nor activatable, the hook must
+    fall through so the existing multi-round recovery path runs. The
+    fix is opt-in on edit_file availability — no worse than today
+    when the dependency is missing."""
+    existing = {"f.py": "def foo(): pass\n# more lines here for length floor"}
+    log: list[tuple[str, str, str]] = []
+    hook = _make_redirect_hook(existing=existing, edit_active=False, edit_log=log)
+    call = ToolCall(
+        name="write_file",
+        arguments={
+            "path": "f.py",
+            "content": "def foo(): pass\n# slightly different content here too",
+        },
+    )
+    outcome = hook.check(PreToolContext(call=call, seen_calls={}))
+    assert isinstance(outcome, Continue)
+    assert log == []
+
+
+def test_write_file_redirect_is_registered_by_default_pipeline_when_passed() -> None:
+    """Composition pin: the pipeline registers the hook ONLY when a
+    wired instance is passed; absent it, pre_tool stays at its prior
+    shape so existing characters don't get surprise behavior."""
+    on = default_hook_pipeline(write_file_redirect_hook=_make_redirect_hook(existing={}))
+    assert "write_file_redirect" in on.names()
+    off = default_hook_pipeline()
+    assert "write_file_redirect" not in off.names()
