@@ -3,7 +3,10 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from harness.tools.catalog import ToolCatalog
 
 
 @dataclass(frozen=True)
@@ -146,7 +149,7 @@ class ToolRegistry:
     calls. Registry is mutable (CLI configures it per session); tool
     instances are read-only after construction."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, catalog: ToolCatalog | None = None) -> None:
         self._tools: dict[str, Tool] = {}
         # Per-registration description overrides. Applied at specs()
         # emission so every downstream consumer (router, model schema,
@@ -166,6 +169,18 @@ class ToolRegistry:
         # set_active() stay inactive until added explicitly. Reset
         # to all-active via clear_active().
         self._active_names: set[str] | None = None
+        # Optional catalog handle (harness-yczi). When set, the
+        # unknown-tool error path consults it: catalog-known names get
+        # a load_tool-recovery hint; genuine misses point at
+        # tool_search. Registries built without a catalog keep the
+        # legacy single-shape error.
+        self._catalog: ToolCatalog | None = catalog
+
+    def set_catalog(self, catalog: ToolCatalog | None) -> None:
+        """Wire (or unwire) a ToolCatalog for unknown-tool
+        disambiguation. Optional — registries without a catalog use
+        the legacy 'not found, here's the active list' error."""
+        self._catalog = catalog
 
     def register(self, tool: Tool) -> None:
         name = tool.spec.name
@@ -245,9 +260,29 @@ class ToolRegistry:
         same call. Generic Python TypeError messages don't enumerate
         valid kwargs, so the model has no way to know what to drop."""
         if name not in self._tools:
+            active = list(self.active_names())
+            if self._catalog is not None and self._catalog.get(name) is not None:
+                # Catalog-known but not active this session: the model
+                # called a tool whose schema it hadn't yet pulled in.
+                # Hand back a load_tool-recovery hint instead of the
+                # generic 'unknown' shape, which the model otherwise
+                # reads as 'no such tool anywhere' and doom-loops on
+                # tool_search (harness-yczi).
+                msg = (
+                    f"unknown tool: {name!r}. The tool exists in the catalog "
+                    f"but is not active in this session. Call "
+                    f"load_tool(name={name!r}) first to activate it, then "
+                    f"retry. Currently active: {active}."
+                )
+            else:
+                msg = (
+                    f"unknown tool: {name!r}. Not in the catalog. "
+                    f"Currently active: {active}. Use tool_search to find "
+                    f"an available tool, or tell the user you cannot answer."
+                )
             return ToolResult(
                 tool_name=name,
-                output=f"unknown tool: {name!r}. Available: {self.names()}",
+                output=msg,
                 success=False,
                 error="unknown_tool",
             )

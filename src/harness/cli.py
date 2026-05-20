@@ -1716,7 +1716,12 @@ def _build_tool_registry_for_tui(
     # pass after the concrete tools are in place.
     _deferred = {"introspect", "spawn_subagent"}
 
-    registry = ToolRegistry()
+    # Wire the session's builtin catalog into the registry so the
+    # unknown-tool error path can distinguish 'name exists but isn't
+    # loaded' from 'genuine miss' (harness-yczi). The same catalog
+    # backs tool_search / load_tool, so the recovery hint we hand
+    # back stays consistent with what those discovery tools see.
+    registry = ToolRegistry(catalog=_session_tool_catalog())
     for name in wanted_names:
         if name in _deferred:
             continue

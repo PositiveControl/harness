@@ -420,7 +420,10 @@ def build_classic_registry(
     # one place and mirrors the TUI builder.
     _deferred = {"introspect", "spawn_subagent"}
 
-    registry = ToolRegistry()
+    # Wire the builtin catalog so unknown-tool errors include the
+    # load_tool-recovery hint when the model calls a catalog-known
+    # tool that wasn't activated (harness-yczi).
+    registry = ToolRegistry(catalog=_classic_session_tool_catalog())
     for name in wanted_names:
         if name in _deferred:
             continue

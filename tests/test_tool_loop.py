@@ -1835,6 +1835,91 @@ def test_loop_handles_unknown_tool_gracefully() -> None:
     assert "tool_call_end" not in kinds
 
 
+# ---------- registry unknown-tool error shapes (harness-yczi) -------
+
+
+def test_unknown_tool_without_catalog_uses_legacy_shape() -> None:
+    """Registry built without a catalog gives the generic miss error —
+    points the model at tool_search, no load_tool recovery hint."""
+    registry = ToolRegistry()
+    result = registry.call("nonexistent", {})
+
+    assert not result.success
+    assert result.error == "unknown_tool"
+    assert "unknown tool: 'nonexistent'" in result.output
+    assert "load_tool" not in result.output
+    assert "tool_search" in result.output
+
+
+def test_unknown_tool_with_catalog_miss_points_at_tool_search() -> None:
+    """Catalog wired but the name isn't in it either: same shape as
+    no-catalog — a genuine miss, the model should fall back to
+    tool_search."""
+    from datetime import UTC, datetime
+
+    from harness.tools.catalog import ToolCatalog, seed_builtins_into
+
+    catalog = ToolCatalog()
+    seed_builtins_into(catalog, now_iso=datetime.now(UTC).isoformat(timespec="seconds"))
+
+    registry = ToolRegistry(catalog=catalog)
+    result = registry.call("totally_made_up_tool_xyz", {})
+
+    assert not result.success
+    assert result.error == "unknown_tool"
+    assert "unknown tool: 'totally_made_up_tool_xyz'" in result.output
+    assert "Not in the catalog" in result.output
+    assert "tool_search" in result.output
+    # The hint must not falsely promise that load_tool will help — the
+    # name genuinely doesn't exist.
+    assert "Call load_tool" not in result.output
+
+
+def test_unknown_tool_in_catalog_hints_at_load_tool() -> None:
+    """Catalog-known name not registered this session: recover the
+    model with a load_tool(name=X) hint instead of routing it back
+    through tool_search (the doom-loop failure mode from harness-yczi
+    session repro)."""
+    from datetime import UTC, datetime
+
+    from harness.tools.catalog import ToolCatalog, seed_builtins_into
+
+    catalog = ToolCatalog()
+    seed_builtins_into(catalog, now_iso=datetime.now(UTC).isoformat(timespec="seconds"))
+    # `search_web` is in the builtin catalog seed but not registered
+    # on a bare registry — exactly the session-repro shape.
+    assert catalog.get("search_web") is not None
+
+    registry = ToolRegistry(catalog=catalog)
+    result = registry.call("search_web", {"query": "anything"})
+
+    assert not result.success
+    assert result.error == "unknown_tool"
+    assert "unknown tool: 'search_web'" in result.output
+    assert "exists in the catalog" in result.output
+    assert "load_tool(name='search_web')" in result.output
+
+
+def test_set_catalog_upgrades_error_shape_for_existing_registry() -> None:
+    """A registry constructed without a catalog can be retrofitted via
+    set_catalog(); subsequent unknown-tool errors gain the recovery
+    hint without rebuilding the registry."""
+    from datetime import UTC, datetime
+
+    from harness.tools.catalog import ToolCatalog, seed_builtins_into
+
+    registry = ToolRegistry()
+    legacy = registry.call("search_web", {}).output
+    assert "load_tool" not in legacy
+
+    catalog = ToolCatalog()
+    seed_builtins_into(catalog, now_iso=datetime.now(UTC).isoformat(timespec="seconds"))
+    registry.set_catalog(catalog)
+
+    upgraded = registry.call("search_web", {}).output
+    assert "load_tool(name='search_web')" in upgraded
+
+
 # ---------- Qwen tool-call parser ----------
 
 
