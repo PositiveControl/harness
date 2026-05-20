@@ -558,13 +558,21 @@ class BailContext:
     `prior_tool_outputs` is the tuple of tool-role message contents
     executed earlier this turn (in order). Catchers compare the reply
     against actual tool output — e.g. SourceCountInflationHook flags
-    a 5-item reply when the search returned 1 (harness-lynw)."""
+    a 5-item reply when the search returned 1 (harness-lynw).
+
+    `discarded_openings` is the tuple of opening-N-chars captures of
+    every reply that's been discarded earlier this turn via bail
+    Nudge / Truncated (harness-jwp3). PreambleLoopHook compares the
+    current reply's opening against this list to spot runaway-
+    preamble loops where the budget keeps doubling but the model
+    keeps emitting the same intent-restatement sentence."""
 
     reply: ModelReply
     tools_ran_this_turn: bool
     tools_ran: frozenset[str] = frozenset()
     user_message: str | None = None
     prior_tool_outputs: tuple[str, ...] = ()
+    discarded_openings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -707,6 +715,89 @@ class TruncatedHook:
 
     def check(self, ctx: BailContext) -> BailOutcome:
         return Truncated() if ctx.reply.was_truncated else Continue()
+
+
+# Minimum shared-prefix length that trips PreambleLoopHook
+# (harness-jwp3). 100 chars spans a full opening sentence ('I need
+# to implement the full GTA2 browser clone according to the spec.')
+# plus some lead-in to the second sentence. Wide enough to avoid
+# false positives on generic openings ('Let me' / 'I'll') but narrow
+# enough that variation past the first sentence still counts as a
+# loop. Compares longest-common-prefix, not fixed-position prefix,
+# so 'I need to implement … spec. Let me create…' vs 'I need to
+# implement … spec. The implementation…' (~80 chars LCP) doesn't
+# trip but 'I need to implement … with all required features' vs
+# the same opener with a different tail (~140 chars LCP) does.
+# Tunable as a module constant.
+_PREAMBLE_LOOP_MIN_LENGTH = 100
+
+
+def _longest_common_prefix_len(a: str, b: str) -> int:
+    """Return the count of characters two strings share at the start.
+    Cheap O(min(len(a), len(b))). Used by PreambleLoopHook to detect
+    'same intent restatement' across discarded drafts (harness-jwp3)."""
+    limit = min(len(a), len(b))
+    i = 0
+    while i < limit and a[i] == b[i]:
+        i += 1
+    return i
+
+
+_PREAMBLE_LOOP_NUDGE = (
+    "[PREAMBLE LOOP — your last reply began with the same opening "
+    "sentence as the previous discarded draft. The wider token "
+    "budget is not the problem; the model is restating intent "
+    "instead of producing output. Your next reply MUST start with "
+    "either a tool call (no narrative preamble) or with the actual "
+    "concrete content the user asked for. Do NOT restate what you "
+    "are about to do — just do it.]"
+)
+
+
+@dataclass(frozen=True)
+class PreambleLoopHook:
+    """Bail catcher: the current reply shares a long opening prefix
+    with the most recent discarded draft this turn (harness-jwp3).
+
+    Mark's 2026-05-20 GTA2 session: model emitted 'I need to
+    implement the full GTA2 browser clone according to the spec…'
+    six times in a row at growing token budgets (truncated_retry
+    1024 → 2048 → 4096 → 8192) without ever producing useful
+    output. The budget wasn't the bottleneck — the model was stuck
+    restating intent. truncated_retry kept doubling the budget on
+    the assumption that more tokens = closer to finishing; past 2
+    retries that's wrong.
+
+    Gate: `discarded_openings` non-empty AND the current reply's
+    first _PREAMBLE_LOOP_MIN_LENGTH chars equal the last discarded
+    opening's first _PREAMBLE_LOOP_MIN_LENGTH chars. Both must be
+    long enough to clear the floor — a short reply that happens to
+    share a 10-char prefix doesn't trip the catcher.
+
+    Placement: FIRST in the bail list. The shared-opening signal
+    cross-cuts every other catcher's surface — a reply could be
+    truncated AND looping, or fabricated AND looping. First-match
+    semantics mean the loop nudge wins over the more specific
+    catchers; rapid escape from the loop is more valuable than a
+    catcher-specific nudge that the model would also ignore.
+
+    On match, Nudge with text that names the pathology and
+    demands the next reply skip preamble entirely. Repeated
+    matches exhaust the retry budget naturally and
+    fabrication_fallback substitutes the canned refusal."""
+
+    name: str = "preamble_loop"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if not ctx.discarded_openings:
+            return Continue()
+        if not ctx.reply.content:
+            return Continue()
+        last_opening = ctx.discarded_openings[-1]
+        current_opening = ctx.reply.content
+        if _longest_common_prefix_len(current_opening, last_opening) < _PREAMBLE_LOOP_MIN_LENGTH:
+            return Continue()
+        return Nudge(_PREAMBLE_LOOP_NUDGE)
 
 
 _UNPARSEABLE_NUDGE = (
@@ -4833,6 +4924,12 @@ HOOK_SHAPES: dict[str, str] = {
         "4-round write_file → unknown_tool → load_tool → edit_file "
         "loop. Preserves the harness-2tq safety-shrink guard."
     ),
+    "preamble_loop": (
+        "Current reply shares a long opening prefix with the last "
+        "discarded draft this turn; widening the token budget would "
+        "buy longer preamble, not progress. Nudges the model to skip "
+        "intent restatement and produce concrete output."
+    ),
     "post_dup_completion_claim": (
         "Last tool result was a duplicate_call dedup AND the reply "
         "claims task completion with an itemized list — the model "
@@ -5031,6 +5128,13 @@ def default_hook_pipeline(
     catchers_set = frozenset(catchers)
 
     bail: list[BailHook] = [
+        # preamble_loop (harness-jwp3): runs FIRST so a reply that's
+        # both truncated AND looping gets the loop-break nudge instead
+        # of the wider-budget retry that wouldn't help. First-match
+        # semantics: once the loop signal fires, the catcher-specific
+        # nudges that would also have matched (truncated, teaser, etc.)
+        # are bypassed for this round.
+        PreambleLoopHook(),
         TruncatedHook(),
         UnparseableHook(),
         TeaserHook(),
@@ -5440,6 +5544,7 @@ __all__ = [
     "PreToolContext",
     "PreToolHook",
     "PreToolOutcome",
+    "PreambleLoopHook",
     "Replace",
     "ReplaceResult",
     "ReservedSquawkCodeHook",

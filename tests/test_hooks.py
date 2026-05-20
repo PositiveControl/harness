@@ -44,6 +44,7 @@ from harness.orchestrator.hooks import (
     PostModelContext,
     PostResearchPersistHook,
     PostSearchGroundingHook,
+    PreambleLoopHook,
     PreToolContext,
     RawResultsDumpHook,
     Replace,
@@ -1291,6 +1292,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         ),
     )
     assert pipe.names() == (
+        "preamble_loop",
         "truncated",
         "unparseable",
         "teaser",
@@ -5662,3 +5664,116 @@ def test_duplicate_call_prefix_is_directive() -> None:
     assert "NOT progress" in _DUPLICATE_CALL_PREFIX
     assert "DO NOT claim" in _DUPLICATE_CALL_PREFIX
     assert "read_file" in _DUPLICATE_CALL_PREFIX
+
+
+# ---------- PreambleLoopHook (harness-jwp3) ----------
+
+
+_GTA2_PREAMBLE_A = (
+    "I need to implement the full GTA2 browser clone according to "
+    "the spec. Let me create a proper implementation of the game.js "
+    "file with all required features."
+)
+_GTA2_PREAMBLE_B = (
+    "I need to implement the full GTA2 browser clone according to "
+    "the spec. Let me create a proper implementation of the game.js "
+    "file with all required features from the spec."
+)
+_GTA2_PREAMBLE_DIFFERENT = (
+    "Let me start by reading the spec to figure out what's needed. "
+    "I'll then create the game.js file with a stub that builds out "
+    "section by section."
+)
+
+
+def test_preamble_loop_fires_on_runaway_session_shape() -> None:
+    """Mark's 2026-05-20 GTA2 session: model emitted the same opening
+    sentence across multiple truncated_retry rounds. The catcher must
+    Nudge when the current reply shares ≥ _PREAMBLE_LOOP_MIN_LENGTH
+    chars with the most recent discarded opening."""
+    ctx = BailContext(
+        reply=ModelReply(content=_GTA2_PREAMBLE_B, tool_calls=()),
+        tools_ran_this_turn=False,
+        discarded_openings=(_GTA2_PREAMBLE_A,),
+    )
+    outcome = PreambleLoopHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "PREAMBLE LOOP" in outcome.text
+    assert "do NOT restate" in outcome.text.lower() or "just do it" in outcome.text.lower()
+
+
+def test_preamble_loop_passes_when_no_prior_discards() -> None:
+    """First reply of a turn: discarded_openings is empty.
+    Continue — there's no prior to compare against."""
+    ctx = BailContext(
+        reply=ModelReply(content=_GTA2_PREAMBLE_A, tool_calls=()),
+        tools_ran_this_turn=False,
+        discarded_openings=(),
+    )
+    outcome = PreambleLoopHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_preamble_loop_passes_when_openings_diverge() -> None:
+    """Legitimate retry where the model produces a different opening
+    than the discarded draft. Continue — not a loop, even though a
+    prior discard exists."""
+    ctx = BailContext(
+        reply=ModelReply(content=_GTA2_PREAMBLE_DIFFERENT, tool_calls=()),
+        tools_ran_this_turn=False,
+        discarded_openings=(_GTA2_PREAMBLE_A,),
+    )
+    outcome = PreambleLoopHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_preamble_loop_passes_when_either_opening_too_short() -> None:
+    """A short reply ('Done.') or a short prior discard ('OK.') can't
+    cross the floor. Continue — too little data to call it a loop."""
+    ctx = BailContext(
+        reply=ModelReply(content="Done.", tool_calls=()),
+        tools_ran_this_turn=False,
+        discarded_openings=("Done.",),
+    )
+    outcome = PreambleLoopHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_preamble_loop_passes_when_reply_empty() -> None:
+    """Tool-call-only reply where content is empty doesn't pre-amble
+    by definition. Continue."""
+    ctx = BailContext(
+        reply=ModelReply(content="", tool_calls=()),
+        tools_ran_this_turn=False,
+        discarded_openings=(_GTA2_PREAMBLE_A,),
+    )
+    outcome = PreambleLoopHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
+def test_preamble_loop_fires_before_truncated_in_pipeline_order() -> None:
+    """Placement pin (harness-jwp3): the loop signal cross-cuts every
+    other catcher. A truncated reply that ALSO loops should get the
+    loop nudge, not another budget-doubling retry. First-match
+    semantics enforce this."""
+    names = default_hook_pipeline().names()
+    assert names[0] == "preamble_loop"
+    assert names.index("preamble_loop") < names.index("truncated")
+    assert names.index("preamble_loop") < names.index("teaser")
+    assert names.index("preamble_loop") < names.index("false_success")
+
+
+def test_preamble_loop_fires_on_truncated_reply_with_loop_signal() -> None:
+    """A reply that's BOTH truncated AND loops must fire the loop
+    catcher (not Truncated) because the loop catcher runs first.
+    Confirms the placement gives the right behavior end-to-end
+    without needing to disable truncated."""
+    pipe = default_hook_pipeline()
+    ctx = BailContext(
+        reply=ModelReply(content=_GTA2_PREAMBLE_B, tool_calls=(), was_truncated=True),
+        tools_ran_this_turn=False,
+        discarded_openings=(_GTA2_PREAMBLE_A,),
+    )
+    outcome = pipe.run_bail(ctx, disabled=frozenset())
+    assert isinstance(outcome, Nudge)
+    assert "PREAMBLE LOOP" in outcome.text

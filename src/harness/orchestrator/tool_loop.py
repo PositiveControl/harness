@@ -149,6 +149,16 @@ _MAX_TOKENS_CEILING = 32768
 # catchers enough room to converge on one clean draft.
 _BAIL_RETRIES_PER_TURN = 3
 
+# Per-turn discarded-draft capture size for the PreambleLoopHook
+# (harness-jwp3). 200 chars is wide enough to span the opening
+# sentence + the start of the second sentence on the runaway-preamble
+# shape Mark saw on 2026-05-20 ("I need to implement the full GTA2
+# browser clone according to the spec. Let me create a proper
+# implementation of the game.js file…"). The hook compares the first
+# _PREAMBLE_LOOP_MIN_LENGTH chars of each capture so a slight
+# variation past the first sentence still counts as a loop.
+_PREAMBLE_OPENING_CHARS = 200
+
 
 def _has_lexicon_hit(user_message: str, lexicon: tuple[str, ...]) -> bool:
     """Word-boundary, case-insensitive presence check for any token in
@@ -696,6 +706,14 @@ class _BailController:
         self.current_max_tokens = max_tokens
         self.current_wrap_up_max_tokens = wrap_up_max_tokens
         self._retries = _BAIL_RETRIES_PER_TURN
+        # Per-turn ledger of discarded-draft openings (harness-jwp3).
+        # Each entry is `reply.content[:_PREAMBLE_OPENING_CHARS]` for a
+        # reply that just got a bail Nudge or Truncated outcome. The
+        # PreambleLoopHook compares the current reply's opening against
+        # this list to detect 'same intent restatement, retried with a
+        # wider budget' loops where doubling the budget buys longer
+        # preamble, not progress.
+        self.discarded_openings: list[str] = []
 
     def round_max_tokens(self, tools_already_ran: bool) -> int:
         """Post-tool rounds are wrap-up rounds — tighter cap."""
@@ -1272,6 +1290,7 @@ def run_tool_loop(
                     tools_ran=frozenset(succeeded_tools),
                     user_message=turn_user_message,
                     prior_tool_outputs=tuple(m.content for m in working if m.role == "tool"),
+                    discarded_openings=tuple(bail.discarded_openings),
                 ),
                 disabled=_disabled_snapshot(),
             )
@@ -1282,6 +1301,12 @@ def run_tool_loop(
             can_retry = bail.retries_left > 0 and total_iterations < hard_ceiling
             if not isinstance(bail_outcome, Continue) and can_retry:
                 bail.consume_retry()
+                # Record the discarded opening BEFORE the retry fires so
+                # PreambleLoopHook on the next round can compare against
+                # it (harness-jwp3). Bounds the capture to
+                # _PREAMBLE_OPENING_CHARS — the rest of the discarded
+                # draft is gone with the retry anyway.
+                bail.discarded_openings.append(last_reply.content[:_PREAMBLE_OPENING_CHARS])
                 if isinstance(bail_outcome, Truncated):
                     # Capture the effective per-round budget before
                     # and after the doubling so the renderer can show
@@ -1456,6 +1481,7 @@ def run_tool_loop(
                 tools_ran=frozenset(succeeded_tools),
                 user_message=turn_user_message,
                 prior_tool_outputs=tuple(m.content for m in working if m.role == "tool"),
+                discarded_openings=tuple(bail.discarded_openings),
             ),
             disabled=_disabled_snapshot(),
         )

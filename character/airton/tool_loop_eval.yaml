@@ -63,6 +63,34 @@
   expected_fallback: true
   expected_events_contain: [bail_retry]
 
+- id: preamble_loop_gta_runaway
+  label: preamble_loop
+  description: |
+    Mark's 2026-05-20 GTA2 session repro (harness-jwp3). Model
+    emits the same opening sentence across multiple discarded
+    retries. Reply 0 trips Teaser ('Let me … :') which captures
+    the opening into discarded_openings; reply 1 onward also opens
+    with the same sentence, so PreambleLoopHook fires (placed
+    first in the bail order) on each subsequent retry. Three
+    matching retries exhaust the bail budget and the canned
+    fabrication_fallback substitutes.
+  scripted_replies:
+    # Shared opening spans ≥ _PREAMBLE_LOOP_MIN_LENGTH chars (the
+    # full first sentence is ~118 chars), so the LCP check trips.
+    # Reply 0 trips Teaser (ends with "Let me … :") which captures
+    # the opening into discarded_openings. Replies 1-3 share the
+    # same opening but their tails are calm declaratives that don't
+    # trip any other catcher — preamble_loop is the only one that
+    # can bail them. Disable preamble_loop and replies 1-3 are
+    # accepted as final answers; that makes the attribution
+    # 'preamble_loop has a unique effect' assertion meaningful.
+    - content: "I need to implement the full GTA2 browser clone according to the specification including all required mechanics. Let me create a proper implementation now:"
+    - content: "I need to implement the full GTA2 browser clone according to the specification including all required mechanics. The implementation is straightforward but requires careful structural choices throughout the codebase."
+    - content: "I need to implement the full GTA2 browser clone according to the specification including all required mechanics. The implementation is straightforward and the structure needs to be built out one section at a time."
+    - content: "I need to implement the full GTA2 browser clone according to the specification including all required mechanics. The implementation needs to start with the core skeleton and grow from there."
+  expected_fallback: true
+  expected_events_contain: [bail_retry]
+
 - id: post_dup_completion_claim_gta_session
   label: post_dup_completion_claim
   description: |
