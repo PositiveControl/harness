@@ -319,6 +319,12 @@ denylist_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(denylist_app, name="denylist")
+# Multi-turn driver subcommands (harness-e9oq). `harness drive plan`
+# and `harness drive loop` — namespaced under `drive` so they don't
+# collide with the existing `harness plan` runtime-typed-plan tools.
+from harness.driver.cli import drive_app  # noqa: E402 — registers below
+
+app.add_typer(drive_app, name="drive")
 console = Console()
 
 
