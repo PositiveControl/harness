@@ -310,12 +310,19 @@ def _list_runs(workspace: Path) -> None:
 
 def _print_result(result: LoopResult) -> None:
     """Print a one-line summary + any halt / interrupt details that
-    the operator needs to act on."""
+    the operator needs to act on. For dry-run exits, also render the
+    assembled handoff so the operator can verify the executor's view
+    before burning real turns (harness-2pj3)."""
     typer.echo(
         f"loop_run={result.loop_run_id} exit={result.exit_reason} "
         f"turns_used={result.turns_used} closed={len(result.closed)}"
     )
-    if result.exit_reason == "halted":
+    if result.exit_reason == "dry_run" and result.handoffs:
+        # One handoff per dry-run by contract (the loop assembles + exits
+        # after the first iteration). Render to stdout so it's pipeable.
+        typer.echo("")
+        typer.echo(result.handoffs[0].render())
+    elif result.exit_reason == "halted":
         typer.echo(
             f"HALTED on {result.halted_on} — flagged via `bd human`. "
             f"Inspect with `bd show {result.halted_on}` and `bd human-list`.",

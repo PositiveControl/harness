@@ -303,6 +303,60 @@ def test_drive_loop_allow_dirty_overrides(monkeypatch: pytest.MonkeyPatch, works
     assert result.exit_code == 0, result.output
 
 
+def test_drive_loop_dry_run_renders_handoff_to_stdout(
+    monkeypatch: pytest.MonkeyPatch, workspace: Path
+) -> None:
+    """harness-2pj3: --dry-run must render the assembled handoff so the
+    operator can inspect it before burning real turns. Previously the
+    handoff lived in LoopResult.handoffs[0] but was never printed."""
+    from harness.driver.handoff import Handoff
+
+    _stub_load_character(monkeypatch)
+    handoff = Handoff(
+        loop_run_id="abc12345",
+        epic_id="harness-e9oq",
+        current_issue="harness-x (P2 task)\nTitle: dry-run smoke",
+        parent_epic_summary="harness-e9oq — [epic] test",
+        files_touched=(),
+        closed_this_run=(),
+        decisions=(),
+        observations=(),
+        open_questions=(),
+        prior_attempt_failure=None,
+    )
+    _stub_run_loop(
+        monkeypatch,
+        LoopResult(
+            loop_run_id="abc12345",
+            epic_id="harness-e9oq",
+            closed=[],
+            halted_on=None,
+            turns_used=0,
+            exit_reason="dry_run",
+            handoffs=[handoff],
+        ),
+    )
+    result = runner.invoke(
+        drive_app,
+        [
+            "loop",
+            "--epic",
+            "harness-e9oq",
+            "--workspace",
+            str(workspace),
+            "--dry-run",
+            "--allow-dirty",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # Summary line still present.
+    assert "exit=dry_run" in result.stdout
+    # Handoff block appears.
+    assert "[SESSION HANDOFF — loop_run=abc12345 epic=harness-e9oq]" in result.stdout
+    assert "harness-x (P2 task)" in result.stdout
+    assert "[END HANDOFF]" in result.stdout
+
+
 def test_drive_loop_rejects_epic_and_resume_together(workspace: Path) -> None:
     result = runner.invoke(
         drive_app,
