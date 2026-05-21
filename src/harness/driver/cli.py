@@ -48,6 +48,7 @@ from harness.driver.planner import (
     write_draft,
 )
 from harness.driver.state import LoopRunState
+from harness.model.adapter import ModelAdapter
 from harness.model.factory import AdapterName, make_adapter
 
 drive_app = typer.Typer(
@@ -91,6 +92,21 @@ def plan_command(
         "--model",
         help="Model adapter for the planner: echo | mlx | ollama.",
     ),
+    model_repo: str | None = typer.Option(
+        None,
+        "--model-repo",
+        help="Override default HF repo (mlx) or Ollama model tag (ollama).",
+    ),
+    lora_path: str | None = typer.Option(
+        None,
+        "--lora-path",
+        help="LoRA adapter path (MLX only).",
+    ),
+    draft_repo: str | None = typer.Option(
+        None,
+        "--draft-repo",
+        help="Speculative-decoding draft model HF repo (MLX only).",
+    ),
     commit: bool = typer.Option(
         False,
         "--commit",
@@ -126,7 +142,12 @@ def plan_command(
     if not spec.exists():
         raise typer.BadParameter(f"spec {spec} does not exist")
 
-    adapter = make_adapter(_validate_model(model))
+    adapter = _resolve_driver_adapter(
+        model,
+        model_repo=model_repo,
+        lora_path=lora_path,
+        draft_repo=draft_repo,
+    )
     config = PlannerConfig(
         spec_path=spec,
         epic_title=epic_title,
@@ -192,6 +213,21 @@ def loop_command(
         "--model",
         help="Model adapter for executor turns: echo | mlx | ollama.",
     ),
+    model_repo: str | None = typer.Option(
+        None,
+        "--model-repo",
+        help="Override default HF repo (mlx) or Ollama model tag (ollama).",
+    ),
+    lora_path: str | None = typer.Option(
+        None,
+        "--lora-path",
+        help="LoRA adapter path (MLX only).",
+    ),
+    draft_repo: str | None = typer.Option(
+        None,
+        "--draft-repo",
+        help="Speculative-decoding draft model HF repo (MLX only).",
+    ),
     character_path: Path = typer.Option(
         Path("./character/airton"),
         "--character",
@@ -227,7 +263,12 @@ def loop_command(
         )
         raise typer.Exit(code=2)
 
-    adapter = make_adapter(_validate_model(model))
+    adapter = _resolve_driver_adapter(
+        model,
+        model_repo=model_repo,
+        lora_path=lora_path,
+        draft_repo=draft_repo,
+    )
     character = load_character(character_path)
     bd = DriverBd(bd_dir=workspace)
     config = LoopConfig(
@@ -262,6 +303,50 @@ def _validate_model(name: str) -> AdapterName:
     if name not in ("echo", "mlx", "ollama"):
         raise typer.BadParameter(f"--model must be one of: echo | mlx | ollama (got {name!r})")
     return name  # type: ignore[return-value]  # Literal narrowed by the check above
+
+
+def _resolve_driver_adapter(
+    name: str,
+    *,
+    model_repo: str | None,
+    lora_path: str | None,
+    draft_repo: str | None,
+) -> ModelAdapter:
+    """Driver-scoped adapter resolver (harness-gu6k). Mirrors the
+    relevant subset of cli._resolve_adapter:
+      - default path: make_adapter(name)
+      - --model-repo: instantiate MLXAdapter or OllamaAdapter directly
+      - --lora-path / --draft-repo: mlx-only, raise BadParameter otherwise
+
+    Persona wrapping / chain_rewrites are NOT supported — drive
+    deliberately runs without voice retrieval or persona rewrite (see
+    harness-ml66)."""
+    validated = _validate_model(name)
+    if lora_path and validated != "mlx":
+        raise typer.BadParameter("--lora-path requires --model mlx.")
+    if draft_repo and validated != "mlx":
+        raise typer.BadParameter("--draft-repo requires --model mlx.")
+    if not (model_repo or lora_path or draft_repo):
+        return make_adapter(validated)
+    if validated == "mlx":
+        from harness.model.mlx import MLXAdapter
+
+        mlx_kwargs: dict[str, object] = {}
+        if model_repo:
+            mlx_kwargs["repo"] = model_repo
+        if lora_path:
+            mlx_kwargs["adapter_path"] = lora_path
+        if draft_repo:
+            mlx_kwargs["draft_repo"] = draft_repo
+        return MLXAdapter(**mlx_kwargs)  # type: ignore[arg-type]
+    if validated == "ollama":
+        from harness.model.ollama import OllamaAdapter
+
+        return OllamaAdapter(model=model_repo) if model_repo else OllamaAdapter()
+    # echo: model_repo not meaningful; refuse rather than silently ignore.
+    raise typer.BadParameter(
+        f"--model-repo not supported for --model {validated}; use mlx or ollama."
+    )
 
 
 # Paths that are routinely "dirty" during normal harness usage and

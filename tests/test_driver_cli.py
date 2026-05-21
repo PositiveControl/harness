@@ -489,6 +489,71 @@ def test_git_tree_dirty_check_ignores_untracked_files(
     assert not cli_mod._git_tree_is_dirty(tmp_path)
 
 
+def test_resolve_driver_adapter_passes_model_repo_to_mlx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """harness-gu6k: --model-repo with --model mlx should instantiate
+    MLXAdapter with repo=<value>, NOT go through make_adapter."""
+    seen: dict[str, Any] = {}
+
+    class _FakeMLX:
+        def __init__(self, **kwargs: Any) -> None:
+            seen.update(kwargs)
+
+    import harness.model.mlx as mlx_mod
+
+    monkeypatch.setattr(mlx_mod, "MLXAdapter", _FakeMLX)
+    cli_mod._resolve_driver_adapter(
+        "mlx",
+        model_repo="mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit-dwq-v2",
+        lora_path=None,
+        draft_repo=None,
+    )
+    assert seen == {"repo": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit-dwq-v2"}
+
+
+def test_resolve_driver_adapter_rejects_lora_with_ollama() -> None:
+    """harness-gu6k: --lora-path is MLX-only; raise on mismatch."""
+    import typer as typer_mod
+
+    with pytest.raises(typer_mod.BadParameter, match="lora-path requires --model mlx"):
+        cli_mod._resolve_driver_adapter(
+            "ollama",
+            model_repo=None,
+            lora_path="/some/lora",
+            draft_repo=None,
+        )
+
+
+def test_resolve_driver_adapter_rejects_draft_with_echo() -> None:
+    """harness-gu6k: --draft-repo is MLX-only; --model echo can't use it."""
+    import typer as typer_mod
+
+    with pytest.raises(typer_mod.BadParameter, match="draft-repo requires --model mlx"):
+        cli_mod._resolve_driver_adapter(
+            "echo",
+            model_repo=None,
+            lora_path=None,
+            draft_repo="some/draft-repo",
+        )
+
+
+def test_resolve_driver_adapter_default_path_calls_make_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """harness-gu6k: without --model-repo / --lora-path / --draft-repo,
+    fall through to the factory's default path."""
+    called: list[str] = []
+
+    def fake_make_adapter(name: str) -> object:
+        called.append(name)
+        return object()
+
+    monkeypatch.setattr("harness.driver.cli.make_adapter", fake_make_adapter)
+    cli_mod._resolve_driver_adapter("mlx", model_repo=None, lora_path=None, draft_repo=None)
+    assert called == ["mlx"]
+
+
 def test_validate_model_rejects_unknown_name() -> None:
     import typer as typer_mod
 
