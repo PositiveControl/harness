@@ -415,8 +415,8 @@ def test_drive_loop_list_runs_enumerates_state_files(
 def test_git_tree_dirty_check_runs_subprocess(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The real _git_tree_is_dirty shells out to git; verify it does
-    when not patched out."""
+    """The real _git_tree_is_dirty shells out to git diff (tracked-only,
+    no untracked noise — harness-m0g4)."""
     calls: list[list[str]] = []
 
     def fake_run(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -425,7 +425,7 @@ def test_git_tree_dirty_check_runs_subprocess(
 
     monkeypatch.setattr("harness.driver.cli.subprocess.run", fake_run)
     assert not cli_mod._git_tree_is_dirty(tmp_path)
-    assert calls == [["git", "status", "--porcelain"]]
+    assert calls == [["git", "diff", "--name-only", "HEAD"]]
 
 
 def test_git_tree_dirty_check_returns_false_when_git_missing(
@@ -435,6 +435,57 @@ def test_git_tree_dirty_check_returns_false_when_git_missing(
         raise FileNotFoundError("no git")
 
     monkeypatch.setattr("harness.driver.cli.subprocess.run", boom)
+    assert not cli_mod._git_tree_is_dirty(tmp_path)
+
+
+def test_git_tree_dirty_check_ignores_beads_only_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-m0g4: .beads/ files are bd-managed state. The executor
+    writes to them via shell `bd close <id>` every successful turn —
+    treating them as user-facing dirty would gate every loop run."""
+    diff_output = ".beads/export-state.json\n.beads/interactions.jsonl\n.beads/issues.jsonl\n"
+
+    def fake_run(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout=diff_output, stderr=""
+        )
+
+    monkeypatch.setattr("harness.driver.cli.subprocess.run", fake_run)
+    assert not cli_mod._git_tree_is_dirty(tmp_path)
+
+
+def test_git_tree_dirty_check_trips_on_non_beads_tracked_change(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-m0g4: a non-.beads/ tracked modification still trips the
+    gate. Mixing .beads/ noise with a real change must NOT mask the
+    real change."""
+    diff_output = ".beads/export-state.json\nsrc/harness/driver/cli.py\n"
+
+    def fake_run(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout=diff_output, stderr=""
+        )
+
+    monkeypatch.setattr("harness.driver.cli.subprocess.run", fake_run)
+    assert cli_mod._git_tree_is_dirty(tmp_path)
+
+
+def test_git_tree_dirty_check_ignores_untracked_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-m0g4: untracked files (`.coverage`, scratch outputs) are
+    invisible to the handoff's `git diff --name-status` and shouldn't
+    gate. `git diff --name-only HEAD` excludes them by design — verify
+    the empty-stdout path returns False."""
+
+    def fake_run(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        # Untracked files don't appear in `git diff --name-only HEAD`
+        # — they appear in `git status --porcelain`, which we no longer use.
+        return subprocess.CompletedProcess(args=["git"], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("harness.driver.cli.subprocess.run", fake_run)
     assert not cli_mod._git_tree_is_dirty(tmp_path)
 
 

@@ -264,14 +264,29 @@ def _validate_model(name: str) -> AdapterName:
     return name  # type: ignore[return-value]  # Literal narrowed by the check above
 
 
+# Paths that are routinely "dirty" during normal harness usage and
+# don't represent meaningful uncommitted work (harness-m0g4):
+#   - `.beads/`: bd's own state files (export-state.json, interactions.jsonl,
+#     issues.jsonl). Every `bd close` / `bd update` an executor turn runs
+#     via shell modifies these — the loop is GOING to dirty them
+#     legitimately. Excluding them up front is the only way the dirty
+#     gate stays useful.
+_DIRTY_CHECK_IGNORE_PREFIXES: tuple[str, ...] = (".beads/",)
+
+
 def _git_tree_is_dirty(workspace: Path) -> bool:
-    """True iff `git status --porcelain` produces any output. On any
-    git error (no repo, no git) returns False so the loop can still
-    run in a non-git workspace — operators who actually want the
-    dirty-check enabled will be inside a real repo."""
+    """True iff any TRACKED, non-`.beads/` file is modified relative to
+    HEAD. Untracked files are ignored — they're invisible to the
+    handoff's `git diff --name-status` and can't make the diff
+    misleading. On any git error (no repo, no git) returns False so the
+    loop can still run in a non-git workspace.
+
+    Uses `git diff --name-only HEAD` (staged + unstaged tracked
+    changes) instead of `git status --porcelain` so untracked files
+    don't gate (harness-m0g4)."""
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain"],  # noqa: S607 — git on PATH is expected
+            ["git", "diff", "--name-only", "HEAD"],  # noqa: S607 — git on PATH is expected
             cwd=workspace,
             capture_output=True,
             text=True,
@@ -281,7 +296,14 @@ def _git_tree_is_dirty(workspace: Path) -> bool:
         return False
     if result.returncode != 0:
         return False
-    return bool(result.stdout.strip())
+    for raw_line in (result.stdout or "").splitlines():
+        path = raw_line.strip()
+        if not path:
+            continue
+        if any(path.startswith(prefix) for prefix in _DIRTY_CHECK_IGNORE_PREFIXES):
+            continue
+        return True
+    return False
 
 
 def _list_runs(workspace: Path) -> None:

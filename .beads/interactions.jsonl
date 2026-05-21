@@ -206,3 +206,4 @@
 {"id":"int-4832258a","kind":"field_change","created_at":"2026-05-21T16:24:47.787786Z","actor":"Mark Evans","issue_id":"harness-dset","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-6c7f0cab","kind":"field_change","created_at":"2026-05-21T16:33:33.345321Z","actor":"Mark Evans","issue_id":"harness-2uso","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-5843547d","kind":"field_change","created_at":"2026-05-21T16:52:24.482443Z","actor":"Mark Evans","issue_id":"harness-mzce","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-126d21af","kind":"field_change","created_at":"2026-05-21T18:50:15.790324Z","actor":"Mark Evans","issue_id":"harness-2pj3","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
