@@ -266,7 +266,16 @@ class ToolLoopEvalResult:
         return frozenset(c.id for c in self.cases if c.passed)
 
 
-_FALLBACK_SENTINEL = "my attempts to call one didn't land cleanly"
+# Two sentinels — `FabricationFallbackHook` branches on the terminal
+# catcher (harness-dset): non-loop catchers keep the generic "didn't
+# land cleanly" text; loop catchers (preamble_loop /
+# intent_restatement_loop) get the "stuck restating my plan" text
+# instead. The eval framework treats EITHER substituted text as a
+# fallback firing.
+_FALLBACK_SENTINELS: tuple[str, ...] = (
+    "my attempts to call one didn't land cleanly",
+    "stuck restating my plan instead of producing output",
+)
 
 
 def _run_scenario(scenario: dict[str, Any]) -> ToolLoopCase:
@@ -365,7 +374,7 @@ def _run_scenario(scenario: dict[str, Any]) -> ToolLoopCase:
     missing = tuple(s for s in contains if s not in result.content)
     unexpected = tuple(s for s in not_contains if s in result.content)
     expected_fallback = bool(scenario.get("expected_fallback", False))
-    fallback_triggered = _FALLBACK_SENTINEL in result.content
+    fallback_triggered = any(s in result.content for s in _FALLBACK_SENTINELS)
 
     event_kinds = {e.kind for e in result.events}
     want_events = tuple(str(s) for s in scenario.get("expected_events_contain", []))

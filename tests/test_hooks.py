@@ -2025,6 +2025,79 @@ def test_fabrication_fallback_passes_on_clean_reply() -> None:
     assert isinstance(outcome, Continue)
 
 
+def test_fabrication_fallback_swaps_to_loop_text_for_preamble_loop_catcher() -> None:
+    """When the terminal Nudge came from preamble_loop, the generic
+    fabrication text ("didn't land cleanly") is wrong — tools may have
+    landed cleanly AND made real progress. Substitute the loop-specific
+    fallback that names the actual pathology + lists succeeded tools
+    (harness-dset)."""
+    reply = _reply("I'll implement the full GTA2 clone.")
+    outcome = FabricationFallbackHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Nudge("preamble loop nudge", catcher="preamble_loop"),
+            tools_ran=frozenset({"write_file", "read_file"}),
+        )
+    )
+    assert isinstance(outcome, Halt)
+    assert "stuck restating my plan" in outcome.reply.content
+    # Tools succeeded list flattens deterministically (sorted).
+    assert "read_file, write_file" in outcome.reply.content
+    # Generic text DOES NOT appear.
+    assert "didn't land cleanly" not in outcome.reply.content
+
+
+def test_fabrication_fallback_swaps_to_loop_text_for_intent_restatement_loop() -> None:
+    """intent_restatement_loop is the structural sibling of preamble_loop
+    — same loop-specific fallback applies (harness-dset)."""
+    reply = _reply("Let me implement the entire thing.")
+    outcome = FabricationFallbackHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Nudge("intent nudge", catcher="intent_restatement_loop"),
+            tools_ran=frozenset({"edit_file"}),
+        )
+    )
+    assert isinstance(outcome, Halt)
+    assert "stuck restating my plan" in outcome.reply.content
+    assert "edit_file" in outcome.reply.content
+
+
+def test_fabrication_fallback_loop_text_handles_zero_tools_ran() -> None:
+    """A preamble loop on a pure-narrative turn (no tools ran) still
+    gets the loop-specific fallback, with '(none)' for the tools
+    fragment so the operator knows nothing landed (harness-dset)."""
+    reply = _reply("I'll think about this carefully.")
+    outcome = FabricationFallbackHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Nudge("nudge", catcher="preamble_loop"),
+            tools_ran=frozenset(),
+        )
+    )
+    assert isinstance(outcome, Halt)
+    assert "(none)" in outcome.reply.content
+
+
+def test_fabrication_fallback_uses_generic_text_for_non_loop_catchers() -> None:
+    """Non-loop catchers (false_success, teaser, fabricated_search,
+    etc.) keep the generic 'didn't land cleanly' fallback. Pinned so
+    the harness-dset change doesn't inadvertently swap copy for other
+    catchers."""
+    reply = _reply("I successfully implemented everything.")
+    outcome = FabricationFallbackHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Nudge("false success nudge", catcher="false_success"),
+            tools_ran=frozenset({"read_file"}),
+        )
+    )
+    assert isinstance(outcome, Halt)
+    assert "didn't land cleanly" in outcome.reply.content
+    # Loop-specific phrasing must NOT appear.
+    assert "stuck restating" not in outcome.reply.content
+
+
 # ---------- ungrounded citation hook ----------
 
 

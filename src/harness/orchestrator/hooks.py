@@ -79,6 +79,40 @@ EXHAUSTED_FABRICATION_FALLBACK = (
 )
 
 
+# Loop-specific fallback when the terminal catcher was `preamble_loop`
+# or `intent_restatement_loop` (harness-dset). The fabrication
+# fallback text was a lie in this case — tools may have landed cleanly
+# AND made real progress; the model just got stuck restating its plan
+# instead of producing more output. Mark's 2026-05-20 GTA2 session
+# repro'd this: write_file landed 260 chars to disk, the next round
+# truncated, the wider-budget retry repeated the opener, preamble_loop
+# fired, fabrication_fallback substituted the generic "didn't land
+# cleanly" text — but `index.html` was on disk.
+#
+# Callers (`_loop_fallback_text`) splice the tools-that-actually-
+# succeeded list into `{tools}` so the operator sees what survived.
+_LOOP_FALLBACK_TEMPLATE = (
+    "I got stuck restating my plan instead of producing output and ran "
+    "out of retries. Tool calls that did succeed this turn: {tools}. "
+    "Try narrowing the scope — one file or one feature at a time, or "
+    "split this across multiple turns."
+)
+
+# Catchers that should produce the loop-specific fallback rather than
+# the generic fabrication one. Public so eval / observability tools can
+# pin the set without poking internals.
+LOOP_FALLBACK_CATCHERS: frozenset[str] = frozenset({"preamble_loop", "intent_restatement_loop"})
+
+
+def _loop_fallback_text(tools_ran: frozenset[str]) -> str:
+    """Render `_LOOP_FALLBACK_TEMPLATE` with the executed-tools list
+    flattened into a comma-separated string, or "(none)" when no tools
+    ran (preamble loops sometimes fire on pure-narrative turns too).
+    Sorted for deterministic output."""
+    tools_fragment = ", ".join(sorted(tools_ran)) if tools_ran else "(none)"
+    return _LOOP_FALLBACK_TEMPLATE.format(tools=tools_fragment)
+
+
 # ---------- regex library (shared with cli stream filter) ----------
 
 
@@ -4985,7 +5019,15 @@ class FabricationFallbackHook:
     """Substitute the canned refusal when bail retries are exhausted
     and the reply STILL trips a non-truncated bail outcome. Without
     this, the user would see the model's final hallucinated paragraph
-    as the turn's answer (harness-24xj)."""
+    as the turn's answer (harness-24xj).
+
+    Catcher-aware fallback (harness-dset): when the terminal Nudge
+    came from a loop-shape catcher (preamble_loop /
+    intent_restatement_loop), substitute the loop-specific fallback
+    that names the actual pathology and lists the tools that DID
+    succeed this turn — telling the user "didn't land cleanly" is a
+    lie when the model wrote real files and just got stuck repeating
+    its plan."""
 
     name: str = "fabrication_fallback"
 
@@ -4997,9 +5039,13 @@ class FabricationFallbackHook:
         if not isinstance(last, Nudge):
             return Continue()
         reply = ctx.reply
+        if last.catcher in LOOP_FALLBACK_CATCHERS:
+            content = _loop_fallback_text(ctx.tools_ran)
+        else:
+            content = EXHAUSTED_FABRICATION_FALLBACK
         return Halt(
             ModelReply(
-                content=EXHAUSTED_FABRICATION_FALLBACK,
+                content=content,
                 tool_calls=(),
                 was_truncated=reply.was_truncated,
                 had_unparseable_call=reply.had_unparseable_call,
