@@ -5,6 +5,28 @@ from pathlib import Path
 
 from harness.tools.base import ToolSpec
 
+# 1 MB cap on inlined file contents in error messages. For 200-line
+# game.js (~6 KB) this is trivially under; for a million-line monolith
+# we truncate rather than blow out the model's context. Constrained-
+# model design: better than nothing, bounded against pathological size.
+_INLINE_CONTENTS_CAP_BYTES = 1024 * 1024
+
+
+def _format_file_contents(path: str, contents: str) -> str:
+    """Render `contents` as a delimited block the model can quote
+    verbatim. Cap at `_INLINE_CONTENTS_CAP_BYTES` so a runaway file
+    doesn't balloon the response. Bracketed with explicit BEGIN/END
+    markers so the model knows where the live data is. Public for
+    tests."""
+    if len(contents) > _INLINE_CONTENTS_CAP_BYTES:
+        head = contents[:_INLINE_CONTENTS_CAP_BYTES]
+        suffix = (
+            f"\n... [truncated; file is {len(contents)} bytes, "
+            f"capped at {_INLINE_CONTENTS_CAP_BYTES} for inline display]"
+        )
+        contents = head + suffix
+    return f"--- CURRENT CONTENTS OF {path} (BEGIN) ---\n{contents}\n--- END {path} ---"
+
 
 @dataclass
 class EditFileTool:
@@ -95,9 +117,12 @@ class EditFileTool:
     ) -> str:
         if not old_string and not new_string:
             raise ValueError("old_string and new_string are both empty — nothing to do")
-        if old_string and old_string == new_string:
-            raise ValueError("old_string and new_string are identical — edit is a no-op")
 
+        # Path validation + read happens FIRST so the helpful error
+        # messages below can include current file contents. The model
+        # routinely hallucinates an old_string that doesn't match the
+        # actual file; without ground truth in the error response the
+        # next round emits a near-identical broken call (harness-w0gw).
         root = self.root.resolve()
         target = (self.root / path).resolve()
         try:
@@ -114,6 +139,14 @@ class EditFileTool:
         except UnicodeDecodeError as exc:
             raise ValueError(f"{path} is not a UTF-8 text file") from exc
 
+        if old_string and old_string == new_string:
+            raise ValueError(
+                "old_string and new_string are identical — edit is a no-op. "
+                "Your edit doesn't change anything. Pick a different "
+                "new_string, or revise old_string to point at code you "
+                "actually intend to change.\n" + _format_file_contents(path, original)
+            )
+
         # Append mode: empty old_string → new_string goes at the end.
         if not old_string:
             updated = original + new_string
@@ -123,14 +156,18 @@ class EditFileTool:
         count = original.count(old_string)
         if count == 0:
             raise ValueError(
-                f"old_string not found in {path}. Re-read the file and match "
-                f"it exactly, including indentation and trailing whitespace."
+                f"old_string not found in {path}. Use the file contents "
+                f"below to construct an old_string that matches verbatim "
+                f"(including indentation and trailing whitespace). Do NOT "
+                f"re-emit the same edit — that won't help.\n"
+                + _format_file_contents(path, original)
             )
         if count > 1 and not replace_all:
             raise ValueError(
-                f"old_string matches {count} places in {path}. Add surrounding "
-                f"context to make it unique, or pass replace_all=true to "
-                f"replace every match."
+                f"old_string matches {count} places in {path}. Add "
+                f"surrounding context to make it unique, or pass "
+                f"replace_all=true to replace every match.\n"
+                + _format_file_contents(path, original)
             )
 
         updated = (

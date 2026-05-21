@@ -48,6 +48,7 @@ Hooks dispatch in the order shown within each phase — first-match semantics, s
 
 | Name | Shape |
 | --- | --- |
+| `edit_file_dedup_loop` | Catch the model in an edit_file dedup loop on old_string mismatch / no-op. Skip + nudge to call read_file first or quote the inlined file contents — breaks the loop at the source instead of letting the generic dedup nudge fire. |
 | `duplicate_call` | Identical (name, args) call this turn; re-issues prior result. |
 | `tool_search_loop` | tool_search called repeatedly without load_tool — model is treating it as a search engine. |
 | `argument_grounding` | Tool args name domains not in user message or prior tool output. |

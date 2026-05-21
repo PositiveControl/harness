@@ -1320,6 +1320,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "scope_redirect",
         "ambiguous_context",
         "paired_meta_confirm_strip",
+        "edit_file_dedup_loop",
         "duplicate_call",
         "tool_search_loop",
         "argument_grounding",
@@ -2178,6 +2179,116 @@ def test_auto_load_on_unknown_with_write_file_redirect_together() -> None:
     assert activations == ["write_file"]
     assert isinstance(redirect.check(ctx), Continue)
     assert redirect_calls == ["new.md"]
+
+
+# ---------- edit_file_dedup_loop hook (harness-w0gw) ----------
+
+
+def test_edit_file_dedup_loop_fires_when_last_output_had_old_string_mismatch() -> None:
+    """harness-w0gw: when the last tool output was an edit_file old_string
+    mismatch AND the next call is edit_file on the same path, Skip with
+    a recovery nudge before the dispatch fires (so the loop breaks at
+    the source instead of letting duplicate_call's generic nudge fire)."""
+    from harness.orchestrator.hooks import EditFileDedupLoopHook
+    from harness.tools.base import ToolCall
+
+    hook = EditFileDedupLoopHook()
+    outcome = hook.check(
+        PreToolContext(
+            call=ToolCall(name="edit_file", arguments={"path": "game.js"}),
+            seen_calls={},
+            prior_tool_outputs=(
+                "error calling edit_file: old_string not found in game.js. "
+                "Use the file contents below to construct an old_string ...",
+            ),
+        )
+    )
+    assert isinstance(outcome, Skip)
+    assert outcome.result.tool_name == "edit_file"
+    assert outcome.result.success is False
+    assert outcome.result.error == "edit_file_dedup_loop"
+    assert "EDIT-FILE LOOP DETECTED" in outcome.result.output
+    assert "game.js" in outcome.result.output
+
+
+def test_edit_file_dedup_loop_fires_on_noop_error() -> None:
+    """harness-w0gw: same hook covers the 'old_string and new_string are
+    identical' shape — both are loop-prone failure modes."""
+    from harness.orchestrator.hooks import EditFileDedupLoopHook
+    from harness.tools.base import ToolCall
+
+    hook = EditFileDedupLoopHook()
+    outcome = hook.check(
+        PreToolContext(
+            call=ToolCall(name="edit_file", arguments={"path": "game.js"}),
+            seen_calls={},
+            prior_tool_outputs=(
+                "error calling edit_file: old_string and new_string are "
+                "identical — edit is a no-op...",
+            ),
+        )
+    )
+    assert isinstance(outcome, Skip)
+
+
+def test_edit_file_dedup_loop_silent_on_non_edit_file_call() -> None:
+    """Other tool calls aren't caught even when the last output has the
+    trigger substring (false positive guard)."""
+    from harness.orchestrator.hooks import EditFileDedupLoopHook
+    from harness.tools.base import ToolCall
+
+    hook = EditFileDedupLoopHook()
+    outcome = hook.check(
+        PreToolContext(
+            call=ToolCall(name="read_file", arguments={"path": "game.js"}),
+            seen_calls={},
+            prior_tool_outputs=("error calling edit_file: old_string not found in game.js",),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_edit_file_dedup_loop_silent_on_clean_prior_output() -> None:
+    """No prior failure → no skip. First edit_file attempt goes through."""
+    from harness.orchestrator.hooks import EditFileDedupLoopHook
+    from harness.tools.base import ToolCall
+
+    hook = EditFileDedupLoopHook()
+    outcome = hook.check(
+        PreToolContext(
+            call=ToolCall(name="edit_file", arguments={"path": "game.js"}),
+            seen_calls={},
+            prior_tool_outputs=("(top-level): f game.js d gta/",),
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_edit_file_dedup_loop_silent_with_empty_prior_outputs() -> None:
+    from harness.orchestrator.hooks import EditFileDedupLoopHook
+    from harness.tools.base import ToolCall
+
+    hook = EditFileDedupLoopHook()
+    outcome = hook.check(
+        PreToolContext(
+            call=ToolCall(name="edit_file", arguments={"path": "game.js"}),
+            seen_calls={},
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_edit_file_dedup_loop_in_default_pipeline_before_duplicate_call() -> None:
+    """Pipeline placement: the loop catcher MUST run before
+    DuplicateCallHook so the specific recovery nudge fires before the
+    generic dedup nudge."""
+    from harness.orchestrator.hooks import default_hook_pipeline
+
+    pipeline = default_hook_pipeline()
+    names = [doc.name for doc in pipeline.describe() if doc.phase == "pre_tool"]
+    assert "edit_file_dedup_loop" in names
+    assert "duplicate_call" in names
+    assert names.index("edit_file_dedup_loop") < names.index("duplicate_call")
 
 
 def test_fabrication_fallback_uses_generic_text_for_non_loop_catchers() -> None:

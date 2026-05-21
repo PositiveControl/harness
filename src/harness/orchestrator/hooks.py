@@ -3629,6 +3629,83 @@ class AutoLoadOnUnknownHook:
         return Continue()
 
 
+# Substrings the EditFileDedupLoopHook scans for in the previous tool
+# output. They come verbatim from src/harness/tools/edit_file.py's
+# augmented error messages (harness-w0gw). Public so a future
+# refactoring on edit_file's error shape can update both sites
+# together.
+EDIT_FILE_LOOP_TRIGGER_SUBSTRINGS: tuple[str, ...] = (
+    "old_string not found in",
+    "edit is a no-op",
+)
+
+
+_EDIT_FILE_DEDUP_LOOP_NUDGE = (
+    "[EDIT-FILE LOOP DETECTED — your most recent edit_file call on "
+    "{path} failed with old_string mismatch (or no-op). The error "
+    "response above included the current file contents verbatim. Use "
+    "those to construct a NEW old_string that matches the file's "
+    "actual text, OR call read_file({path}) for fresh contents. Do "
+    "NOT re-emit the same broken edit. This dispatch is skipped to "
+    "break the loop.]"
+)
+
+
+@dataclass(frozen=True)
+class EditFileDedupLoopHook:
+    """Pre-tool hook: catch the model in an edit_file dedup loop.
+
+    The pattern (harness-w0gw, from Mark's 2026-05-21 GTA2 §6 halt):
+      1. Model emits edit_file with an old_string the file doesn't
+         contain (fabricated content, or stale mental model of the
+         file).
+      2. edit_file fails with "old_string not found in <path>" — now
+         the error includes the current file contents verbatim.
+      3. Model re-emits a slight variation of the same broken call.
+         DuplicateCallHook would catch an exact re-emission, but the
+         model often varies whitespace / line counts; the dedup
+         misses, edit_file fails again, fab_fallback halts the turn.
+
+    This hook catches the SECOND edit_file call on the same path when
+    the most recent tool output was an edit_file mismatch error.
+    Outcome: Skip with a synthesized ToolResult that explicitly tells
+    the model to re-read or quote the inlined file contents. Breaks
+    the loop at the source.
+
+    Placement: BEFORE duplicate_call so the loop is caught before the
+    generic dedup nudge (which doesn't mention re-reading and the
+    model routinely ignores).
+
+    Gate:
+      - `ctx.call.name == "edit_file"` — we only care about edit_file.
+      - `ctx.prior_tool_outputs` non-empty — there was a prior call.
+      - The last tool output contains one of the trigger substrings.
+
+    Stateless: every check reads only ctx; no per-hook accumulator
+    needed. The trigger-substring scan is fast (O(len(last output)));
+    no compiled regex required."""
+
+    name: str = "edit_file_dedup_loop"
+
+    def check(self, ctx: PreToolContext) -> PreToolOutcome:
+        if ctx.call.name != "edit_file":
+            return Continue()
+        if not ctx.prior_tool_outputs:
+            return Continue()
+        last_output = ctx.prior_tool_outputs[-1]
+        if not any(s in last_output for s in EDIT_FILE_LOOP_TRIGGER_SUBSTRINGS):
+            return Continue()
+        path = ctx.call.arguments.get("path", "<unknown>")
+        return Skip(
+            ToolResult(
+                tool_name="edit_file",
+                output=_EDIT_FILE_DEDUP_LOOP_NUDGE.format(path=path),
+                success=False,
+                error="edit_file_dedup_loop",
+            )
+        )
+
+
 # Default no-op closures for the WriteFileRedirectHook (harness-hnt7).
 # An unwired hook (no read_existing / no ensure_edit_file_active) is a
 # no-op — every call returns the "not redirectable" Continue path so
@@ -5186,6 +5263,12 @@ HOOK_SHAPES: dict[str, str] = {
         "unknown_tool → load_tool → retry penalty per first-use. Fast "
         "path; failures fall through to the existing recovery."
     ),
+    "edit_file_dedup_loop": (
+        "Catch the model in an edit_file dedup loop on old_string "
+        "mismatch / no-op. Skip + nudge to call read_file first or "
+        "quote the inlined file contents — breaks the loop at the "
+        "source instead of letting the generic dedup nudge fire."
+    ),
     "write_file_redirect": (
         "write_file on an existing path is redirected to edit_file "
         "in-hook; the model sees a single tool turn instead of the "
@@ -5600,6 +5683,12 @@ def default_hook_pipeline(
         pre_tool.append(write_file_redirect_hook)
     pre_tool.extend(
         [
+            # edit_file_dedup_loop (harness-w0gw): BEFORE duplicate_call
+            # because the dedup nudge is too generic for the edit_file
+            # mismatch loop. The specific 'old_string not found' / 'edit
+            # is a no-op' signals deserve a targeted nudge that names
+            # the recovery path (re-read or quote the inlined contents).
+            EditFileDedupLoopHook(),
             DuplicateCallHook(),
             # tool_search_loop (harness-lmwm): after duplicate_call (which
             # uses an exact (name, args) key) and before argument_grounding
@@ -5802,6 +5891,7 @@ __all__ = [
     "ARG_DOMAIN_RE",
     "BARE_CLAIM_RE",
     "DUPLICATE_CALL_NUDGE",
+    "EDIT_FILE_LOOP_TRIGGER_SUBSTRINGS",
     "EXHAUSTED_FABRICATION_FALLBACK",
     "FABRICATED_AB_CAPTURE_RE",
     "FABRICATED_AB_SCOPE_RE",
@@ -5827,6 +5917,7 @@ __all__ = [
     "CatcherDoc",
     "Continue",
     "DuplicateCallHook",
+    "EditFileDedupLoopHook",
     "EmptyReplyAfterToolsHook",
     "FabricatedItemizationHook",
     "FabricatedSearchHook",

@@ -146,6 +146,51 @@
   expected_fallback: true
   expected_events_contain: [bail_retry]
 
+- id: edit_file_dedup_loop_old_string_mismatch
+  label: edit_file_dedup_loop
+  description: |
+    Mark's 2026-05-21 GTA2 §6 halt repro (harness-w0gw). Model emits
+    edit_file with an old_string that doesn't match the file (often
+    fabricated or stale mental model). edit_file returns an error
+    response that now inlines the current file contents. Model
+    re-emits a similar edit_file call rather than reading + quoting
+    the inlined contents. EditFileDedupLoopHook fires pre_tool on the
+    second call, Skips with a recovery nudge naming the path and
+    explicit next steps. Breaks the loop at the source rather than
+    letting duplicate_call's generic dedup nudge fire (which the
+    model routinely ignores).
+  registry:
+    - name: edit_file
+      output: |
+        error calling edit_file: old_string not found in game.js. Use
+        the file contents below to construct an old_string that
+        matches verbatim (including indentation and trailing
+        whitespace).
+        --- CURRENT CONTENTS OF game.js (BEGIN) ---
+        let keys = {};
+        --- END game.js ---
+      success: false
+  messages:
+    - role: user
+      content: "Extend game.js per §6."
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: edit_file
+          arguments:
+            path: game.js
+            old_string: "// content the model fabricated"
+            new_string: "let peds = [];"
+    - content: ""
+      tool_calls:
+        - name: edit_file
+          arguments:
+            path: game.js
+            old_string: "// still doesn't match the actual file"
+            new_string: "let peds = [];"
+    - content: "The edit failed because my old_string didn't match what's in game.js."
+  expected_events_contain: [tool_call_deduped]
+
 - id: post_dup_completion_claim_gta_session
   label: post_dup_completion_claim
   description: |
