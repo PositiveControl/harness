@@ -1189,6 +1189,59 @@ def test_wrap_up_cap_widens_on_truncated_recovery() -> None:
     assert retry_events[0].budget_after == 256
 
 
+def test_truncated_retry_caps_at_per_turn_budget() -> None:
+    """harness-ndsu: consecutive truncated_retry events are capped at
+    `_TRUNCATED_RETRIES_PER_TURN` (default 2). On the third truncated
+    outcome the orchestrator converts to a bail Nudge instead of
+    doubling the budget further — prevents the stuck-generating-prose
+    pattern from burning ~15 min of inference while the budget walks
+    to _MAX_TOKENS_CEILING.
+
+    Setup: adapter always returns truncated. Verify:
+      - exactly 2 truncated_retry events fire (not 3+)
+      - on the third truncated outcome, a bail_retry event fires
+        with catcher='truncated_retry_cap' (the synthetic nudge)
+      - budget doesn't exceed 4x original (2 doublings)"""
+
+    @dataclass
+    class _AlwaysTruncated:
+        calls: list[int] = field(default_factory=list)
+
+        def complete_with_tools(
+            self,
+            messages: Iterable[ChatMessage],
+            *,
+            tools: list[ToolSpec] | None = None,
+            max_tokens: int = 1024,
+            temperature: float = 0.5,
+        ) -> ModelReply:
+            self.calls.append(max_tokens)
+            return ModelReply(content="partial", was_truncated=True)
+
+    adapter = _AlwaysTruncated()
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="generate something long")],
+        ToolRegistry(),
+        max_tokens=1024,
+        wrap_up_max_tokens=1024,
+    )
+    truncated_events = [e for e in result.events if e.kind == "truncated_retry"]
+    bail_events = [e for e in result.events if e.kind == "bail_retry"]
+    # Two truncated retries fire (cap), then the third Truncated
+    # outcome rewrites to Nudge → bail_retry event with the cap catcher.
+    assert len(truncated_events) == 2, (
+        f"expected 2 truncated_retry events (cap), got {len(truncated_events)}: "
+        f"{[(e.budget_before, e.budget_after) for e in truncated_events]}"
+    )
+    cap_bail = [e for e in bail_events if e.catcher == "truncated_retry_cap"]
+    assert len(cap_bail) >= 1
+    # Budget capped at 4x (2 doublings from 1024): max budget seen = 4096.
+    assert max(adapter.calls) == 4096, (
+        f"budget should cap at 4096 (2 doublings); saw {adapter.calls}"
+    )
+
+
 def test_truncated_retry_emits_ceiling_marker_when_clamped() -> None:
     """harness-738f: when on_truncated() clamps at _MAX_TOKENS_CEILING,
     the event reports equal before/after so renderers can swap the

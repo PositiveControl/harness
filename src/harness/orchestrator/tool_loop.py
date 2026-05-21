@@ -26,6 +26,7 @@ from harness.orchestrator.hooks import (
     FinalizeContext,
     Halt,
     HookPipeline,
+    Nudge,
     PostModelContext,
     PostToolContext,
     PreToolContext,
@@ -148,6 +149,34 @@ _MAX_TOKENS_CEILING = 32768
 # Three retries gives an opinionated character with multiple bail
 # catchers enough room to converge on one clean draft.
 _BAIL_RETRIES_PER_TURN = 3
+
+# Per-turn cap on consecutive truncated_retry events (harness-ndsu).
+# Each truncated_retry doubles the per-round token cap; unbounded
+# (other than _MAX_TOKENS_CEILING) means a model stuck generating
+# long-form prose burns ~minutes of inference per retry while the
+# budget climbs toward 32768. Mark's 2026-05-21 GTA2 §6 turn 9 hit
+# 3 truncated_retry events in 13 min before the operator killed
+# the process; the model was emitting single-char fragments by the
+# 8192-token retry — context coherence had already collapsed.
+# Default 2 keeps the worst case at 4x original budget. Set on
+# _BailController; future revisions can plumb a CLI override
+# without touching the orchestrator.
+_TRUNCATED_RETRIES_PER_TURN = 2
+
+# Synthetic bail-nudge text appended when the truncated-retry cap
+# fires (harness-ndsu). The model gets one more shot at the round
+# but this time as a bail_retry — the orchestrator stops doubling
+# the budget and tells the model what its actual problem is.
+_TRUNCATED_RETRY_CAP_NUDGE = (
+    "[TRUNCATED-RETRY CAP — your reply has been truncated by the "
+    "token cap on multiple consecutive retries. Wider budgets are "
+    "not the answer; you are generating long-form prose where a tool "
+    "call or a short final answer is what's needed. STOP writing "
+    "code or specs inline as text. Either: (a) emit a tool call "
+    "(edit_file, write_file, etc.) to do the actual work, or (b) "
+    "emit a brief final answer that wraps up what's been done so "
+    "far. Do not restate the plan, do not narrate intent.]"
+)
 
 # Per-turn discarded-draft capture size for the PreambleLoopHook
 # (harness-jwp3). 200 chars is wide enough to span the opening
@@ -700,12 +729,25 @@ class _BailController:
     (harness-jly).
 
     `consume_retry()` decrements the retry budget. Returns True
-    when a retry is still allowed; False once exhausted."""
+    when a retry is still allowed; False once exhausted.
 
-    def __init__(self, max_tokens: int, wrap_up_max_tokens: int) -> None:
+    `consume_truncated_retry()` decrements a SEPARATE per-turn cap
+    on consecutive truncated_retry events (harness-ndsu). Unbounded
+    truncation retries (until _MAX_TOKENS_CEILING) burn ~minutes of
+    inference per retry when the model gets stuck in a generate-long-
+    form-prose pattern — small models hit this regularly. The cap
+    (default 2) bounds the burn at ~4x original budget."""
+
+    def __init__(
+        self,
+        max_tokens: int,
+        wrap_up_max_tokens: int,
+        truncated_retries_per_turn: int = _TRUNCATED_RETRIES_PER_TURN,
+    ) -> None:
         self.current_max_tokens = max_tokens
         self.current_wrap_up_max_tokens = wrap_up_max_tokens
         self._retries = _BAIL_RETRIES_PER_TURN
+        self._truncated_retries = truncated_retries_per_turn
         # Per-turn ledger of discarded-draft openings (harness-jwp3).
         # Each entry is `reply.content[:_PREAMBLE_OPENING_CHARS]` for a
         # reply that just got a bail Nudge or Truncated outcome. The
@@ -734,6 +776,22 @@ class _BailController:
             return False
         self._retries -= 1
         return True
+
+    def consume_truncated_retry(self) -> bool:
+        """Decrement the truncated-retry budget (harness-ndsu).
+        Returns True if a truncated retry can still fire, False if
+        the per-turn cap is exhausted. Independent of `consume_retry`:
+        once truncated retries are exhausted the orchestrator converts
+        the Truncated outcome into a bail Nudge instead of doubling
+        the token budget further."""
+        if self._truncated_retries <= 0:
+            return False
+        self._truncated_retries -= 1
+        return True
+
+    @property
+    def truncated_retries_left(self) -> int:
+        return self._truncated_retries
 
     @property
     def retries_left(self) -> int:
@@ -1308,6 +1366,17 @@ def run_tool_loop(
             # gate on `total_iterations < hard_ceiling` so a pathological
             # bail-retry storm can't outrun the safety ceiling.
             can_retry = bail.retries_left > 0 and total_iterations < hard_ceiling
+            # Convert Truncated → Nudge when the per-turn truncated
+            # cap is hit (harness-ndsu). Doubling the budget further
+            # would burn minutes of inference on a model stuck
+            # generating prose; instead we route through the bail
+            # branch with a synthetic nudge telling the model what
+            # its actual problem is.
+            if isinstance(bail_outcome, Truncated) and bail.truncated_retries_left <= 0:
+                bail_outcome = Nudge(
+                    _TRUNCATED_RETRY_CAP_NUDGE,
+                    catcher="truncated_retry_cap",
+                )
             if not isinstance(bail_outcome, Continue) and can_retry:
                 bail.consume_retry()
                 # Record the discarded opening BEFORE the retry fires so
@@ -1317,6 +1386,14 @@ def run_tool_loop(
                 # draft is gone with the retry anyway.
                 bail.discarded_openings.append(last_reply.content[:_PREAMBLE_OPENING_CHARS])
                 if isinstance(bail_outcome, Truncated):
+                    # Decrement the truncated-retry counter. We already
+                    # gated above on truncated_retries_left > 0 (otherwise
+                    # the outcome was rewritten to a Nudge) so this
+                    # consume always succeeds — assert as defensive
+                    # check.
+                    assert bail.consume_truncated_retry(), (
+                        "truncated_retries_left invariant violated"
+                    )
                     # Capture the effective per-round budget before
                     # and after the doubling so the renderer can show
                     # `(1024 → 2048)` inline (harness-738f). Equal
