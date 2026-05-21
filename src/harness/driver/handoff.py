@@ -250,10 +250,11 @@ def build_handoff(
 
 def _format_issue(issue: BeadsIssue) -> str:
     """Compact human/model-readable issue block. Pulls title +
-    description + acceptance criteria from `issue.raw`. Description
-    and acceptance are kept verbatim (no trimming) — the executor
-    needs the full acceptance criteria to know when to close, and
-    descriptions are part of the contract."""
+    description + acceptance criteria + notes from `issue.raw`.
+    All four are kept verbatim — the executor needs the full
+    acceptance criteria to know when to close, descriptions and
+    notes are part of the contract (operators add notes when
+    reopening an issue with violation feedback)."""
     raw = issue.raw
     lines: list[str] = [
         f"{issue.id} (P{issue.priority} {issue.issue_type})",
@@ -265,6 +266,14 @@ def _format_issue(issue: BeadsIssue) -> str:
     acceptance = (raw.get("acceptance_criteria") or "").strip()
     if acceptance:
         lines.extend(["Acceptance:", acceptance])
+    notes = (raw.get("notes") or "").strip()
+    if notes:
+        lines.extend(
+            [
+                "Notes (operator-supplied; read these — they often carry retry feedback):",
+                notes,
+            ]
+        )
     return "\n".join(lines)
 
 

@@ -29,6 +29,7 @@ def _issue(
     title: str = "",
     description: str = "",
     acceptance: str = "",
+    notes: str = "",
     status: str = "open",
     priority: int = 2,
     labels: tuple[str, ...] = (),
@@ -43,6 +44,7 @@ def _issue(
         "labels": list(labels),
         "description": description,
         "acceptance_criteria": acceptance,
+        "notes": notes,
         "created_at": created_at,
     }
     return _issue_from_json(raw)
@@ -259,6 +261,28 @@ def test_build_handoff_pulls_current_issue_and_epic(
     assert "(1) thing done" in handoff.current_issue
     assert handoff.parent_epic_summary == "harness-e9oq — [epic] harness loop"
     assert handoff.files_touched == ("M\tsrc/foo.py",)
+
+
+def test_build_handoff_surfaces_bd_notes_in_current_issue(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Operator-supplied bd notes (added when reopening an issue with
+    feedback) MUST reach the executor via the current_issue block.
+    Without this the violation list the operator wrote is invisible."""
+    current = _issue(
+        "harness-x",
+        title="do the thing",
+        description="why this matters",
+        acceptance="(1) thing done",
+        notes="REOPENED: prior attempt used e.key instead of e.code; fix per §15.4",
+    )
+    epic = _issue("harness-e9oq", title="[epic] harness loop")
+    bd = _FakeBd(issues={"harness-x": current, "harness-e9oq": epic})
+    _install_git_diff(monkeypatch, stdout="")
+    handoff = build_handoff(_state(), "harness-x", bd, git_root=tmp_path)
+    assert "Notes" in handoff.current_issue
+    assert "REOPENED" in handoff.current_issue
+    assert "e.key instead of e.code" in handoff.current_issue
 
 
 def test_build_handoff_categorises_thoughts_by_label(
