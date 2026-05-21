@@ -266,6 +266,32 @@ def test_render_omits_workspace_block_when_path_none() -> None:
     assert "Workspace" not in out
 
 
+def test_render_includes_targeted_fix_banner_when_set() -> None:
+    """harness-lefw: the MODE:TARGETED-FIX banner renders at the top of
+    the handoff (before [PRIOR ATTEMPT FAILED] and Current issue:) so
+    it's the first thing the model reads. The banner explicitly forbids
+    write_file on existing paths and steers to edit_file."""
+    out = _base_handoff(
+        targeted_fix=True,
+        prior_attempt_failure="forbidden-pattern hit: TODO",
+    ).render()
+    assert "[MODE: TARGETED-FIX]" in out
+    assert "edit_file" in out
+    assert "Do NOT call write_file on an existing path" in out
+    assert 'reason="rewrite-required"' in out
+    # Banner precedes both prior-attempt and current-issue.
+    assert out.index("[MODE: TARGETED-FIX]") < out.index("[PRIOR ATTEMPT FAILED]")
+    assert out.index("[MODE: TARGETED-FIX]") < out.index("Current issue:")
+
+
+def test_render_omits_targeted_fix_banner_by_default() -> None:
+    """harness-lefw: targeted_fix=False (the default for first-attempt
+    issues without a REGRESSION marker) leaves the handoff banner-free."""
+    out = _base_handoff().render()
+    assert "[MODE: TARGETED-FIX]" not in out
+    assert "rewrite-required" not in out
+
+
 def test_render_empty_workspace_contents_shows_placeholder() -> None:
     """harness-po0v: workspace set but empty contents → '(empty)' marker
     so the model sees the workspace orientation but knows there's
@@ -349,6 +375,38 @@ def test_build_handoff_pulls_current_issue_and_epic(
     assert "(1) thing done" in handoff.current_issue
     assert handoff.parent_epic_summary == "harness-e9oq — [epic] harness loop"
     assert handoff.files_touched == ("M\tsrc/foo.py",)
+
+
+def test_build_handoff_plumbs_targeted_fix_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-lefw: the targeted_fix arg threads through build_handoff
+    into the Handoff dataclass so the caller (loop.run_loop) can flip
+    MODE banner rendering on/off without touching render() internals."""
+    current = _issue("harness-x", title="do the thing")
+    epic = _issue("harness-e9oq", title="[epic] harness loop")
+    bd = _FakeBd(issues={"harness-x": current, "harness-e9oq": epic})
+    _install_git_diff(monkeypatch, stdout="")
+
+    handoff = build_handoff(_state(), "harness-x", bd, git_root=tmp_path, targeted_fix=True)
+    assert handoff.targeted_fix is True
+    assert "[MODE: TARGETED-FIX]" in handoff.render()
+
+
+def test_build_handoff_defaults_targeted_fix_false(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-lefw: targeted_fix defaults to False so existing callers
+    (tests, future bindings) get the historical "no banner" behavior
+    without opting in."""
+    current = _issue("harness-x", title="do the thing")
+    epic = _issue("harness-e9oq", title="[epic] harness loop")
+    bd = _FakeBd(issues={"harness-x": current, "harness-e9oq": epic})
+    _install_git_diff(monkeypatch, stdout="")
+
+    handoff = build_handoff(_state(), "harness-x", bd, git_root=tmp_path)
+    assert handoff.targeted_fix is False
+    assert "[MODE: TARGETED-FIX]" not in handoff.render()
 
 
 def test_build_handoff_surfaces_bd_notes_in_current_issue(

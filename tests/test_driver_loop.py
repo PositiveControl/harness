@@ -42,6 +42,7 @@ def _issue(
     priority: int = 2,
     labels: tuple[str, ...] = (),
     dependencies: list[dict[str, Any]] | None = None,
+    notes: str = "",
 ) -> BeadsIssue:
     raw: dict[str, Any] = {
         "id": issue_id,
@@ -51,6 +52,7 @@ def _issue(
         "issue_type": "task",
         "labels": list(labels),
         "dependencies": dependencies or [],
+        "notes": notes,
         "created_at": "2026-05-20T00:00:00Z",
     }
     return _issue_from_json(raw)
@@ -829,6 +831,139 @@ def test_run_loop_uses_configured_log_path(monkeypatch: pytest.MonkeyPatch, tmp_
     cfg = _config(tmp_path, log_path=custom_log)
     run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
     assert custom_log.exists()
+
+
+# --- write_file redirect hook wiring + targeted-fix banner (harness-lefw) -
+
+
+def test_run_loop_wires_write_file_redirect_hook(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-lefw: the executor's tool loop must receive a hook pipeline
+    that includes WriteFileRedirectHook with workspace-bound closures.
+    Without this the safety-shrink guard never fires inside the driver
+    and a model rewrite wipes prior work (today's GTA2 §1 regression)."""
+    from harness.orchestrator.hooks import WriteFileRedirectHook
+
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    captured_hooks: list[Any] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **kwargs: Any
+    ) -> ToolLoopResult:
+        captured_hooks.append(kwargs.get("hooks"))
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+
+    assert len(captured_hooks) == 1
+    pipeline = captured_hooks[0]
+    assert pipeline is not None, "default_hook_pipeline must be passed to run_tool_loop"
+    redirects = [h for h in pipeline.pre_tool if isinstance(h, WriteFileRedirectHook)]
+    assert len(redirects) == 1, (
+        "Driver must wire exactly one WriteFileRedirectHook in pre_tool "
+        f"(found {len(redirects)} in {[type(h).__name__ for h in pipeline.pre_tool]})"
+    )
+    hook = redirects[0]
+    # Closures must be wired — module defaults return None / False / a
+    # not_wired error result, so a wired hook is detectable by the
+    # closure not being the module default.
+    from harness.orchestrator.hooks import (
+        _no_ensure_edit_file_active,
+        _no_read_existing,
+    )
+
+    assert hook.read_existing is not _no_read_existing
+    assert hook.ensure_edit_file_active is not _no_ensure_edit_file_active
+
+
+def test_run_loop_targeted_fix_banner_renders_on_second_attempt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-lefw: on the second attempt of the same issue (attempt
+    counts > 0 entering the iteration), the MODE:TARGETED-FIX banner
+    appears in the system prompt the model sees. First attempt: no
+    banner."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], [issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    seen_prompts: list[str] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        seen_prompts.append(messages[0].content)
+        call_idx = len(seen_prompts)
+        if call_idx == 1:
+            return ToolLoopResult(content="incomplete", messages=[], rounds=1, events=[])
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+
+    assert len(seen_prompts) == 2
+    # First attempt: no banner.
+    assert "[MODE: TARGETED-FIX]" not in seen_prompts[0]
+    # Second attempt: banner present.
+    assert "[MODE: TARGETED-FIX]" in seen_prompts[1]
+
+
+def test_run_loop_targeted_fix_banner_renders_on_regression_marker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-lefw: even on the FIRST attempt, the MODE banner appears
+    when the bd issue's notes contain the operator's REGRESSION marker.
+    Today's case: operator reopens harness-90j0 with
+    'REGRESSION 2026-05-21: ...' notes, fresh loop run starts → banner
+    must fire on attempt 1 so the model doesn't rewrite from scratch."""
+    issue_a = _issue(
+        "harness-a",
+        title="A",
+        status="open",
+        notes="REGRESSION 2026-05-21: typo at line 62, fix the one char",
+    )
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    seen_prompts: list[str] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        seen_prompts.append(messages[0].content)
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+
+    assert len(seen_prompts) == 1
+    assert "[MODE: TARGETED-FIX]" in seen_prompts[0]
 
 
 # --- constants ------------------------------------------------------

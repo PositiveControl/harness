@@ -73,7 +73,6 @@ from harness.tools import (
     ToolCall,
     ToolCatalog,
     ToolRegistry,
-    ToolResult,
     ToolSearchTool,
     TzConvertTool,
     WriteFileTool,
@@ -113,84 +112,16 @@ def _make_write_file_redirect_hook(
     registry: ToolRegistry | None,
     workspace_path: Path | None,
 ) -> Any:
-    """Wire a WriteFileRedirectHook against the session's live
-    registry + workspace, or return None if neither is available
-    (e.g. tool-less chat).
+    """Thin wrapper around `make_write_file_redirect_hook` — kept for
+    the existing call sites in this module. Extracted to
+    `harness.orchestrator.hook_wiring` (harness-lefw) so the driver's
+    executor turns can wire the same hook against their workspace +
+    registry without duplicating closures."""
+    from harness.orchestrator.hook_wiring import make_write_file_redirect_hook
 
-    Note (harness-hf4r): the hook is constructed regardless of
-    whether write_file is currently in the registry. Sessions with
-    `--tool-set minimal` start without write_file, then the model
-    discovers and load_tool's it mid-session. If the hook had been
-    constructed eagerly with a 'write_file not in registry → None'
-    short-circuit, the redirect would never have fired on those
-    lazy-loaded turns — the exact case that prompted the redirect
-    in the first place (Mark's 2026-05-20T21:47 GTA session). The
-    hook's own check() already gates on `ctx.call.name == "write_file"`
-    so the always-constructed hook is a no-op cost on every non-
-    write_file call.
-
-    Three closures bridge the hook (pure data) to the live session:
-
-    - `read_existing(path)` reads `<workspace>/<path>` as UTF-8 text
-      and returns the content. Non-existent files and decode failures
-      yield None so the hook treats them as 'not redirectable' and
-      Continues.
-    - `ensure_edit_file_active()` adds edit_file to the active set
-      when it's registered-but-inactive (the load_tool companion
-      pairing usually means it's already active alongside
-      write_file). Returns True iff edit_file is callable after the
-      call. Returns False (causing the hook to fall through to
-      Continue) when edit_file isn't even in the catalog — the
-      existing multi-round write_file → unknown_tool → load_tool
-      recovery path runs unchanged.
-    - `invoke_edit_file(path, old, new)` dispatches the registry's
-      edit_file tool and returns its ToolResult so the hook can feed
-      it back as the Skip payload.
-    """
-    if registry is None or workspace_path is None:
-        return None
-
-    from harness.orchestrator.hooks import WriteFileRedirectHook
-
-    root = workspace_path.resolve()
-
-    def read_existing(path: str) -> str | None:
-        try:
-            target = (root / path).resolve()
-            # Reject paths that escape the workspace root — the hook
-            # treats them as 'not redirectable' so write_file's own
-            # escape check fires the same error the model is used to.
-            target.relative_to(root)
-        except (OSError, ValueError):
-            return None
-        if not target.exists() or not target.is_file():
-            return None
-        try:
-            return target.read_text()
-        except (OSError, UnicodeDecodeError):
-            return None
-
-    def ensure_edit_file_active() -> bool:
-        if "edit_file" not in registry:
-            return False
-        if "edit_file" in registry.active_names():
-            return True
-        try:
-            registry.set_active(set(registry.active_names()) | {"edit_file"})
-        except Exception:
-            return False
-        return "edit_file" in registry.active_names()
-
-    def invoke_edit_file(path: str, old: str, new: str) -> ToolResult:
-        return registry.call(
-            "edit_file",
-            {"path": path, "old_string": old, "new_string": new},
-        )
-
-    return WriteFileRedirectHook(
-        read_existing=read_existing,
-        ensure_edit_file_active=ensure_edit_file_active,
-        invoke_edit_file=invoke_edit_file,
+    return make_write_file_redirect_hook(
+        registry=registry,
+        workspace_path=workspace_path,
     )
 
 

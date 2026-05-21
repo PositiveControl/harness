@@ -113,6 +113,14 @@ class Handoff:
         workspace items, prefixed by `f` (file) or `d` (directory).
         Mirrors the `list_dir` tool's output shape so the model has
         an immediate orientation without burning a tool call.
+      - `targeted_fix`: when True, prepends a MODE banner instructing
+        the executor to make minimal edits via edit_file and NOT call
+        write_file on existing paths. Set by the caller (loop runner)
+        when the bd issue is being retried in this run, or when the
+        operator has annotated the issue's notes with "REGRESSION".
+        Pairs with the WriteFileRedirectHook safety-shrink guard
+        (harness-lefw 2026-05-21): two layered defenses against the
+        small-model "rewrite from scratch" reflex on reopen.
     """
 
     loop_run_id: str
@@ -127,6 +135,7 @@ class Handoff:
     prior_attempt_failure: str | None
     workspace_path: Path | None = None
     workspace_contents: tuple[str, ...] = ()
+    targeted_fix: bool = False
 
     def render(self) -> str:
         """Produce the `[SESSION HANDOFF]` block. Applies the render-
@@ -154,6 +163,19 @@ class Handoff:
             f"[SESSION HANDOFF — loop_run={self.loop_run_id} epic={self.epic_id}]",
             "",
         ]
+        if self.targeted_fix:
+            parts.extend(
+                [
+                    "[MODE: TARGETED-FIX]",
+                    "The artifact already exists from a prior implementation in this",
+                    "workspace. Read the file FIRST and make a minimal edit via",
+                    "edit_file. Do NOT call write_file on an existing path; that",
+                    "wipes prior work — including sections this issue does not own.",
+                    "If you believe a full rewrite is required, close this issue with",
+                    'reason="rewrite-required" and stop — the operator will decide.',
+                    "",
+                ]
+            )
         if self.prior_attempt_failure:
             parts.extend(
                 [
@@ -226,6 +248,7 @@ def build_handoff(
     git_root: Path,
     prior_attempt_failure: str | None = None,
     workspace: Path | None = None,
+    targeted_fix: bool = False,
 ) -> Handoff:
     """Assemble a `Handoff` for the next executor turn.
 
@@ -239,8 +262,17 @@ def build_handoff(
     `workspace`, when supplied, is rendered into the handoff so the
     model knows its cwd (saves rounds of path-prefix discovery —
     harness-po0v). Defaults to None for back-compat with callers
-    (e.g. tests) that don't care about workspace orientation."""
-    current_issue = _format_issue(bd.show(current_bd_id))
+    (e.g. tests) that don't care about workspace orientation.
+
+    `targeted_fix` (harness-lefw): when True, the rendered handoff
+    leads with a "MODE: TARGETED-FIX" banner that explicitly forbids
+    write_file on existing paths and steers the model toward
+    edit_file. Caller (loop.run_loop) sets True when the bd issue
+    was retried (`attempt_counts[id] > 0`) or its notes contain the
+    operator's REGRESSION marker. Pairs with the wired
+    WriteFileRedirectHook safety-shrink guard."""
+    issue = bd.show(current_bd_id)
+    current_issue = _format_issue(issue)
 
     parent_epic_summary = _try_epic_summary(bd, state.epic_id)
     files_touched = _git_diff_name_status(git_root, state.started_at_sha)
@@ -272,6 +304,7 @@ def build_handoff(
         prior_attempt_failure=prior_attempt_failure,
         workspace_path=workspace.resolve() if workspace is not None else None,
         workspace_contents=workspace_contents,
+        targeted_fix=targeted_fix,
     )
 
 

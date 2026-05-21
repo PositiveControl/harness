@@ -65,6 +65,7 @@ from harness.driver.handoff import Handoff, build_handoff
 from harness.driver.state import LoopRunState
 from harness.model.adapter import ChatMessage, ModelAdapter
 from harness.orchestrator import ToolLoopEvent, ToolLoopResult, run_tool_loop
+from harness.orchestrator.hook_wiring import make_write_file_redirect_hook
 from harness.orchestrator.hooks import (
     EXHAUSTED_FABRICATION_FALLBACK,
     HookPipeline,
@@ -212,6 +213,13 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             attempt = state.attempt_counts.get(current.id, 0) + 1
             state.attempt_counts[current.id] = attempt
             prior_failure = state.last_failure.get(current.id) if attempt > 1 else None
+            # harness-lefw: signal targeted-fix mode when the loop has
+            # already touched this issue OR the operator left a
+            # "REGRESSION" marker in notes (their convention when
+            # reopening a previously-closed issue). _issue_has_regression
+            # tolerates a missing bd lookup — bd.show is called again
+            # inside build_handoff and a transient miss there raises.
+            targeted_fix = attempt > 1 or _issue_has_regression(bd, current.id)
 
             handoff = build_handoff(
                 state,
@@ -220,6 +228,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 git_root=config.workspace,
                 prior_attempt_failure=prior_failure,
                 workspace=config.workspace,
+                targeted_fix=targeted_fix,
             )
 
             if config.dry_run:
@@ -366,7 +375,18 @@ def _run_executor_turn(
         ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content=EXECUTOR_USER_MESSAGE),
     ]
-    hooks: HookPipeline = default_hook_pipeline()
+    # harness-lefw: wire WriteFileRedirectHook so the safety-shrink guard
+    # catches "rewrite-from-scratch" wipes on reopened issues (the driver
+    # previously ran with module-default hooks, which left this nullable
+    # parameter at None — chat sessions in cli_classic.py have always had
+    # it wired). Closures bind to the executor's workspace + registry.
+    write_file_redirect_hook = make_write_file_redirect_hook(
+        registry=registry,
+        workspace_path=workspace,
+    )
+    hooks: HookPipeline = default_hook_pipeline(
+        write_file_redirect_hook=write_file_redirect_hook,
+    )
     result: ToolLoopResult = run_tool_loop(
         adapter,  # type: ignore[arg-type]  # narrower _ToolCapableAdapter, checked at runtime
         messages,
@@ -462,6 +482,34 @@ def _find_violations(
             if pattern in content:
                 violations.append(f"{rel}: contains {pattern!r}")
     return violations
+
+
+# --- targeted-fix detection ---------------------------------------
+
+
+# Operator convention when reopening a previously-closed bd issue: lead
+# the notes with "REGRESSION YYYY-MM-DD:" so the driver can recognize
+# the retry as a targeted fix. Case-sensitive substring match — the
+# convention is established (e.g. harness-90j0 / harness-vjb6 reopened
+# on 2026-05-21 both carry the literal "REGRESSION 2026-05-21:"). False
+# positives (notes that happen to mention regressions in passing) are
+# mostly harmless: the worst case is an extra MODE banner the model
+# reads and complies with.
+_REGRESSION_MARKER: str = "REGRESSION"
+
+
+def _issue_has_regression(bd: DriverBd, issue_id: str) -> bool:
+    """Best-effort check: does the bd issue's notes contain the
+    operator's regression marker? Swallows DriverBdError so a transient
+    bd hiccup degrades to 'no marker found' — build_handoff is about to
+    call bd.show again anyway and will raise loudly on a real lookup
+    failure. Pure read; no mutation."""
+    try:
+        issue = bd.show(issue_id)
+    except DriverBdError:
+        return False
+    notes = issue.raw.get("notes") or ""
+    return _REGRESSION_MARKER in notes
 
 
 # --- tool registry ------------------------------------------------
