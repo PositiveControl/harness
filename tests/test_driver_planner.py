@@ -501,6 +501,128 @@ def test_planner_system_prompt_pins_load_bearing_phrases() -> None:
     )
 
 
+def test_planner_system_prompt_demands_tool_call_shape() -> None:
+    # harness-mzce: the load-bearing fix for the empty-draft failure
+    # was telling the model NOT to emit prose. Pin both halves of the
+    # directive so a future cleanup doesn't strip them.
+    lowered = PLANNER_SYSTEM_PROMPT.lower()
+    assert "every reply must be a tool call" in lowered or (
+        "every reply MUST be a tool call".lower() in lowered
+    )
+    assert "do not respond with prose" in lowered or (
+        "do NOT respond with prose".lower() in lowered
+    )
+
+
+# --- planner observer + event log -----------------------------------
+
+
+def test_run_planner_invokes_observer_with_tool_loop_events(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The observer wired into run_planner receives events from the
+    inner run_tool_loop AND the planner's own lifecycle markers."""
+    received: list[Any] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, registry: Any, *, observe: Any = None, **_kwargs: Any
+    ) -> ToolLoopResult:
+        # Emit one synthetic tool-call-shaped event so the observer is
+        # exercised end-to-end, then drive plan_add + plan_finish to
+        # complete the planner.
+        from harness.orchestrator import ToolLoopEvent
+        from harness.tools.base import ToolCall
+
+        if observe is not None:
+            observe(
+                ToolLoopEvent(
+                    kind="tool_call_start",
+                    call=ToolCall(name="read_file", arguments={"path": "spec.md"}),
+                )
+            )
+        plan_add = registry.get("plan_add")
+        plan_finish = registry.get("plan_finish")
+        plan_add.call(
+            title="t",
+            description="> a real quote from the spec lives here",
+            spec_quote="a real quote from the spec lives here",
+        )
+        plan_finish.call()
+        return ToolLoopResult(content="", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.planner.run_tool_loop", fake_run_tool_loop)
+    cfg = PlannerConfig(
+        spec_path=tmp_path / "spec.md",
+        epic_title="t",
+        workspace=tmp_path,
+        max_plan_turns=2,
+    )
+    run_planner(adapter=None, config=cfg, observe=received.append)  # type: ignore[arg-type]
+    kinds = [e.kind for e in received]
+    # Lifecycle markers from the planner itself.
+    assert "planner_start" in kinds
+    assert "planner_iteration_start" in kinds
+    assert "planner_finish" in kinds
+    assert "planner_summary" in kinds
+    # And the synthetic tool-call event from the fake inner loop.
+    assert "tool_call_start" in kinds
+
+
+def test_run_planner_writes_event_log_to_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The planner ALWAYS writes a per-run event log under
+    `<workspace>/.harness/planner_<ts>.log`, regardless of whether an
+    external observer was supplied."""
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, registry: Any, *, observe: Any = None, **_kwargs: Any
+    ) -> ToolLoopResult:
+        plan_finish = registry.get("plan_finish")
+        plan_finish.call()
+        return ToolLoopResult(content="", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.planner.run_tool_loop", fake_run_tool_loop)
+    cfg = PlannerConfig(
+        spec_path=tmp_path / "spec.md",
+        epic_title="t",
+        workspace=tmp_path,
+        max_plan_turns=2,
+    )
+    run_planner(adapter=None, config=cfg)  # type: ignore[arg-type]
+    logs = list((tmp_path / ".harness").glob("planner_*.log"))
+    assert len(logs) == 1
+    content = logs[0].read_text()
+    assert "planner_start" in content
+    assert "planner_finish" in content
+    assert "planner_summary" in content
+
+
+def test_run_planner_finish_reason_max_plan_turns_when_not_called(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When max_plan_turns elapses without plan_finish, the summary
+    event records `reason=max_plan_turns`."""
+    received: list[Any] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, *, observe: Any = None, **_kwargs: Any
+    ) -> ToolLoopResult:
+        return ToolLoopResult(content="", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.planner.run_tool_loop", fake_run_tool_loop)
+    cfg = PlannerConfig(
+        spec_path=tmp_path / "spec.md",
+        epic_title="t",
+        workspace=tmp_path,
+        max_plan_turns=2,
+    )
+    run_planner(adapter=None, config=cfg, observe=received.append)  # type: ignore[arg-type]
+    finish_events = [e for e in received if e.kind == "planner_finish"]
+    assert len(finish_events) == 1
+    assert "reason=max_plan_turns" in (finish_events[0].delta or "")
+
+
 def test_issue_from_json_imported() -> None:
     # Smoke test — the import only matters that it resolves; we don't
     # actually use _issue_from_json in planner tests, just confirming

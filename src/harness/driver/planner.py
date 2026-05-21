@@ -50,8 +50,9 @@ contract.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -59,7 +60,7 @@ import yaml
 
 from harness.driver.bd import DriverBd, DriverBdError
 from harness.model.adapter import ChatMessage, ModelAdapter
-from harness.orchestrator import run_tool_loop
+from harness.orchestrator import ToolLoopEvent, run_tool_loop
 from harness.tools import (
     GlobTool,
     GrepTool,
@@ -334,14 +335,20 @@ class PlanFinishTool:
 
 
 PLANNER_SYSTEM_PROMPT = """\
-You are a planner. Your job is to read a spec document and decompose
-it into a list of bd issues that an executor can drive to closure one
-at a time. You do NOT write code. You do NOT suggest implementations.
-You produce a workplan.
+You are a planner. You read a spec document and decompose it into a
+list of bd issues that an executor can drive to closure one at a time.
+You do NOT write code. You do NOT suggest implementations. You produce
+a workplan.
+
+CRITICAL: Every reply MUST be a tool call until you call `plan_finish`.
+Do NOT respond with prose like "I will now decompose this" or "Let me
+read the spec carefully" — those replies waste a turn. If you have
+something to say, say it inside a `plan_add` description or wait until
+`plan_finish` is appropriate.
 
 Process:
-  1. Read the spec via `read_file`.
-  2. For each discrete deliverable, call `plan_add(...)` with:
+  1. First tool call: `read_file(path=<spec_path>)` to load the spec.
+  2. For each discrete deliverable in the spec, call `plan_add(...)` with:
      - title: short bd-style title
      - description: full body. MUST include a '> ' blockquote of the
        relevant spec section.
@@ -365,35 +372,74 @@ Granularity rules:
 """
 
 
+# Observer signature for callers that want to mirror tool-loop events
+# somewhere external (a stderr stream, a log file). The planner's own
+# file logger sits behind a similar signature so callers can supply
+# their own without going through the file path.
+PlannerObserver = Callable[[ToolLoopEvent], None]
+
+
 # --- run_planner -----------------------------------------------------
 
 
-def run_planner(adapter: ModelAdapter, config: PlannerConfig) -> PlanDraft:
+def run_planner(
+    adapter: ModelAdapter,
+    config: PlannerConfig,
+    *,
+    observe: PlannerObserver | None = None,
+) -> PlanDraft:
     """Drive the LLM through up to `max_plan_turns` orchestrator turns
     until it calls `plan_finish` (or the budget runs out). Returns the
     assembled `PlanDraft`. Does NOT touch bd — that's `commit_plan`.
 
     The planner registry is intentionally tiny: `read_file`, `grep`,
     `glob`, plus the two driver-scoped tools. No write/edit/shell — the
-    planner doesn't touch code."""
+    planner doesn't touch code.
+
+    `observe`, when set, receives every `ToolLoopEvent` from the inner
+    `run_tool_loop` calls. The CLI uses this to mirror events to stderr
+    under `--verbose`. The planner ALSO writes a per-run event log
+    under `<workspace>/.harness/planner_<ts>.log` regardless of
+    `observe` — that log is the durable audit trail; `observe` is the
+    live-tail seam (harness-mzce)."""
     state = _PlannerState()
     registry = _build_planner_registry(config.workspace, state)
     user_message = (
-        f"Decompose the spec at `{config.spec_path}` into a workplan. "
-        f"Read it first, then call `plan_add` for each item, then "
-        f"`plan_finish` when done."
+        f"Your first tool call MUST be `read_file(path='{config.spec_path}')`. "
+        f"After reading, emit `plan_add` calls — one per item — followed "
+        f"by `plan_finish`. Do NOT respond with prose; every reply must "
+        f"be a tool call until you call `plan_finish`."
     )
     messages = [
         ChatMessage(role="system", content=PLANNER_SYSTEM_PROMPT),
         ChatMessage(role="user", content=user_message),
     ]
-    for _ in range(config.max_plan_turns):
+    log_path = _planner_log_path(config.workspace)
+    file_observer = _open_event_log(log_path)
+    composite = _compose_observers(file_observer, observe)
+    composite_emitter = _event_emitter_with_state(composite, state)
+    composite_emitter(
+        _synthetic_event(
+            "planner_start",
+            extra=f"spec={config.spec_path} epic_title={config.epic_title!r} "
+            f"max_plan_turns={config.max_plan_turns}",
+        )
+    )
+    for turn_idx in range(config.max_plan_turns):
+        composite_emitter(_synthetic_event("planner_iteration_start", extra=f"turn={turn_idx}"))
         run_tool_loop(
             adapter,  # type: ignore[arg-type]  # narrower _ToolCapableAdapter, checked at runtime
             messages,
             registry,
+            observe=composite,
         )
         if state.finished:
+            composite_emitter(
+                _synthetic_event(
+                    "planner_finish",
+                    extra=f"items={len(state.items)} reason=plan_finish",
+                )
+            )
             break
         # Append a continue-nudge so the next turn picks up where this
         # one left off. Keeps the conversation grounded without re-
@@ -403,15 +449,104 @@ def run_planner(adapter: ModelAdapter, config: PlannerConfig) -> PlanDraft:
                 role="user",
                 content=(
                     "Continue decomposing the spec. Call plan_add for any "
-                    "remaining items; call plan_finish when done."
+                    "remaining items; call plan_finish when done. Remember: "
+                    "every reply must be a tool call."
                 ),
             )
         )
+    else:
+        composite_emitter(
+            _synthetic_event(
+                "planner_finish",
+                extra=f"items={len(state.items)} reason=max_plan_turns",
+            )
+        )
+    composite_emitter(
+        _synthetic_event(
+            "planner_summary",
+            extra=f"items={len(state.items)} log={log_path}",
+        )
+    )
     return PlanDraft(
         epic_title=config.epic_title,
         epic_description=state.epic_description or f"Workplan derived from {config.spec_path}.",
         items=state.items,
     )
+
+
+def _planner_log_path(workspace: Path) -> Path:
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return workspace / ".harness" / f"planner_{ts}.log"
+
+
+def _open_event_log(path: Path) -> PlannerObserver:
+    """Return an observer that appends one line per event to `path`.
+    Best-effort: IO errors don't crash the planner. Lazily creates the
+    parent dir on first write."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def emit(event: ToolLoopEvent) -> None:
+        line = _format_event(event)
+        try:
+            with path.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            # Logging failure is non-fatal — the in-memory state still
+            # carries the work.
+            pass
+
+    return emit
+
+
+def _compose_observers(*observers: PlannerObserver | None) -> PlannerObserver:
+    """Build a single observer that fans out to all non-None inputs.
+    Observer failures are suppressed — a misbehaving observer must not
+    crash the planner."""
+    import contextlib
+
+    live = [o for o in observers if o is not None]
+
+    def emit(event: ToolLoopEvent) -> None:
+        for o in live:
+            with contextlib.suppress(Exception):
+                o(event)
+
+    return emit
+
+
+def _event_emitter_with_state(observer: PlannerObserver, _state: _PlannerState) -> PlannerObserver:
+    """Pass-through wrapper kept as a seam in case future revisions
+    want to inject planner-side state (e.g. items-so-far count) into
+    synthetic events. Today it just returns the observer."""
+    return observer
+
+
+def _synthetic_event(kind: str, *, extra: str = "") -> ToolLoopEvent:
+    """Build a ToolLoopEvent for planner-side lifecycle markers
+    (start / iteration_start / finish / summary). The event's `delta`
+    carries the human-readable extra so observers can render it."""
+    return ToolLoopEvent(kind=kind, delta=extra or None)
+
+
+def _format_event(event: ToolLoopEvent) -> str:
+    """One line per event — timestamp, kind, plus the most relevant
+    payload. Tail-friendly during a live planner run."""
+    ts = datetime.now(UTC).isoformat(timespec="seconds")
+    parts = [ts, event.kind]
+    if event.call is not None:
+        args_preview = repr(event.call.arguments)
+        if len(args_preview) > 200:
+            args_preview = args_preview[:200] + "...]"
+        parts.append(f"call={event.call.name} args={args_preview}")
+    if event.result is not None:
+        success = "ok" if event.result.success else f"FAIL[{event.result.error}]"
+        output_preview = event.result.output.replace("\n", " ")[:160]
+        parts.append(f"result={success} output={output_preview!r}")
+    if event.delta:
+        parts.append(f"delta={event.delta}")
+    if event.catcher:
+        parts.append(f"catcher={event.catcher}")
+    return " | ".join(parts)
 
 
 def write_draft(draft: PlanDraft, path: Path) -> None:

@@ -96,12 +96,20 @@ def plan_command(
         "--commit",
         help="Skip the planner; read --draft and materialize it in bd.",
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="Mirror the planner's tool-loop event stream to stderr.",
+    ),
 ) -> None:
     """Run the planner (default) or commit a reviewed YAML draft (--commit).
 
     Planner mode emits `--draft` (default ./harness-plan-draft.yaml).
     The operator reviews + edits, then re-runs with --commit to
-    materialize.
+    materialize. The planner ALWAYS writes a per-run event log under
+    `<workspace>/.harness/planner_<ts>.log` regardless of --verbose;
+    the flag adds live stderr mirroring for debugging an empty / wrong
+    draft.
     """
     if commit:
         bd = DriverBd(bd_dir=workspace)
@@ -126,12 +134,22 @@ def plan_command(
         max_plan_turns=max_plan_turns,
         draft_path=draft_path,
     )
-    draft = run_planner(adapter, config)
+    observer = _stderr_observer if verbose else None
+    draft = run_planner(adapter, config, observe=observer)
     write_draft(draft, draft_path)
     typer.echo(
         f"wrote plan draft to {draft_path}: {len(draft.items)} item(s). "
         f"Review, then run `harness drive plan --commit {draft_path} --spec {spec}`."
     )
+    if not draft.items:
+        typer.echo(
+            "WARNING: draft has zero items. Check the planner event log at "
+            f"{workspace / '.harness'} (planner_<ts>.log) — the model likely "
+            "emitted prose instead of tool calls, or every plan_add call "
+            "failed validation. Re-run with --verbose to mirror events to "
+            "stderr.",
+            err=True,
+        )
 
 
 # --- harness drive loop ------------------------------------------------
@@ -227,6 +245,17 @@ def loop_command(
 
 
 # --- helpers ----------------------------------------------------------
+
+
+def _stderr_observer(event: object) -> None:
+    """Planner --verbose mirror — formats a ToolLoopEvent for stderr.
+    Imports inside the function so the type isn't required at module
+    load (keeps the CLI's import graph shallow)."""
+    from harness.driver.planner import _format_event
+    from harness.orchestrator import ToolLoopEvent
+
+    if isinstance(event, ToolLoopEvent):
+        typer.echo(_format_event(event), err=True)
 
 
 def _validate_model(name: str) -> AdapterName:

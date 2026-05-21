@@ -56,7 +56,7 @@ def test_drive_plan_runs_and_writes_draft(monkeypatch: pytest.MonkeyPatch, works
     spec.write_text("some content here that the spec contains")
     draft_path = workspace / "plan-draft.yaml"
 
-    def fake_run_planner(_adapter: Any, config: Any) -> PlanDraft:
+    def fake_run_planner(_adapter: Any, config: Any, **_kwargs: Any) -> PlanDraft:
         return PlanDraft(
             epic_title=config.epic_title,
             epic_description="from fake planner",
