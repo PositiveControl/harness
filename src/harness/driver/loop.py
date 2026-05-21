@@ -504,7 +504,16 @@ def _build_executor_registry(workspace: Path) -> ToolRegistry:
 def _load_or_init_state(config: LoopConfig) -> LoopRunState:
     if config.resume_from is not None:
         path = LoopRunState.state_path(config.workspace, config.resume_from)
-        return LoopRunState.load(path)
+        state = LoopRunState.load(path)
+        # Override the loaded state's max_turns with the config value
+        # (harness-iai4). The CLI's --max-turns is user intent — saved
+        # state's stale value would silently make a "resume with a
+        # higher cap" run instantly exhaust. Persist immediately so a
+        # subsequent reload reflects the new cap.
+        if state.max_turns != config.max_turns:
+            state.max_turns = config.max_turns
+            _save_state(state, config.workspace)
+        return state
     sha = _git_head_sha(config.workspace)
     state = LoopRunState.fresh(
         epic_id=config.epic_id,

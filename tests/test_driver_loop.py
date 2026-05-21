@@ -488,6 +488,57 @@ def test_run_loop_resume_rehydrates_state_and_continues(
     assert result.turns_used == 2
 
 
+def test_run_loop_resume_max_turns_override_from_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-iai4: resuming with --max-turns N (config) must override
+    the saved state's max_turns. Otherwise the user's resume + budget-
+    bump intent is silently dropped."""
+    # Seed: max_turns=1, already exhausted (turns_used=1).
+    s = LoopRunState.fresh(epic_id="harness-e9oq", max_turns=1, started_at_sha="seedsha")
+    s.turns_used = 1
+    s.save(LoopRunState.state_path(tmp_path, s.loop_run_id))
+
+    issue_b = _issue("harness-b", title="B", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_b], []],
+        issues={
+            "harness-b": issue_b,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    _stub_run_tool_loop(monkeypatch, outcomes=["close harness-b"], bd=bd)
+    # Resume with --max-turns 3: should override saved max_turns=1.
+    cfg = _config(tmp_path, resume_from=s.loop_run_id, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+    # The override let turn 2 run; harness-b closed; ready empties; success.
+    assert result.exit_reason == "success"
+    assert result.turns_used == 2
+    assert result.closed == ["harness-b"]
+
+
+def test_run_loop_resume_persists_overridden_max_turns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-iai4: the override is persisted to the state file so a
+    subsequent load sees the new value, not the original."""
+    s = LoopRunState.fresh(epic_id="harness-e9oq", max_turns=1, started_at_sha="seedsha")
+    s.turns_used = 1
+    s.save(LoopRunState.state_path(tmp_path, s.loop_run_id))
+
+    bd = _ScenarioBd(
+        ready_sequence=[[]],
+        issues={"harness-e9oq": _issue("harness-e9oq", title="epic")},
+    )
+    _stub_git_head(monkeypatch)
+    cfg = _config(tmp_path, resume_from=s.loop_run_id, max_turns=5)
+    run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+    # Reload state from disk and verify the override stuck.
+    reloaded = LoopRunState.load(LoopRunState.state_path(tmp_path, s.loop_run_id))
+    assert reloaded.max_turns == 5
+
+
 # --- ready_under_epic failure --------------------------------------
 
 
