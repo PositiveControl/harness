@@ -276,10 +276,18 @@ def build_handoff(
 
 
 def _list_workspace_top_level(workspace: Path) -> tuple[str, ...]:
-    """One line per top-level entry in `workspace`. Format mirrors the
-    list_dir tool: `f <name>` for files, `d <name>/` for directories.
-    Skips hidden entries (anything starting with `.`) so the handoff
-    isn't polluted by `.harness/` / `.git/` / `.beads/`.
+    """One line per top-level entry in `workspace`. `ls -F` format —
+    just the name, with a trailing `/` for directories. Skips hidden
+    entries (anything starting with `.`) so the handoff isn't
+    polluted by `.harness/` / `.git/` / `.beads/`.
+
+    Format choice (harness-cb7c): the original `f <name>` / `d <name>/`
+    type-prefixed shape kept getting misparsed by small models as
+    `f/<name>` / `d/<name>` paths — Mark's 2026-05-21 GTA2 §6 retry
+    halted twice when the model emitted `read_file path=d/gta/game.js`
+    interpreting `d gta/` as a path with a `d/` directory prefix.
+    Plain `ls -F` output is what the model has seen in training and
+    parses cleanly.
 
     Best-effort: returns `()` on IO error rather than raising — a
     missing or unreadable workspace shouldn't crash the handoff."""
@@ -292,9 +300,9 @@ def _list_workspace_top_level(workspace: Path) -> tuple[str, ...]:
         if entry.name.startswith("."):
             continue
         if entry.is_dir():
-            lines.append(f"d {entry.name}/")
+            lines.append(f"{entry.name}/")
         else:
-            lines.append(f"f {entry.name}")
+            lines.append(entry.name)
     return tuple(lines)
 
 

@@ -228,3 +228,4 @@
 {"id":"int-7547f70f","kind":"field_change","created_at":"2026-05-21T21:26:24.867121Z","actor":"Mark Evans","issue_id":"harness-frp3","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"auto-closed by loop driver (ad381610)"}}
 {"id":"int-7af55f52","kind":"field_change","created_at":"2026-05-21T21:48:52.586328Z","actor":"Mark Evans","issue_id":"harness-w0gw","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-5b9c7e4d","kind":"field_change","created_at":"2026-05-21T22:15:25.692485Z","actor":"Mark Evans","issue_id":"harness-ndsu","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-e80dedbb","kind":"field_change","created_at":"2026-05-21T22:32:09.180907Z","actor":"Mark Evans","issue_id":"harness-t3xn","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"auto-closed by loop driver (ad381610)"}}

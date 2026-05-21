@@ -239,16 +239,22 @@ def test_render_drops_observations_after_decisions_when_decisions_already_empty(
 
 
 def test_render_includes_workspace_block_when_set() -> None:
-    """harness-po0v: Workspace path + contents render between parent
-    epic and files-touched blocks."""
+    """harness-po0v + harness-cb7c: Workspace path + contents render
+    between parent epic and files-touched blocks, using ls -F format
+    (just name + trailing `/` for dirs — no `f`/`d` type prefix that
+    small models misparse as path components)."""
     out = _base_handoff(
         workspace_path=Path("/some/workspace"),
-        workspace_contents=("f game.js", "d gta/", "f index.html"),
+        workspace_contents=("game.js", "gta/", "index.html"),
     ).render()
     assert "Workspace (your cwd; tool paths are relative to this): /some/workspace" in out
-    assert "  f game.js" in out
-    assert "  d gta/" in out
-    assert "  f index.html" in out
+    assert "  game.js" in out
+    assert "  gta/" in out
+    assert "  index.html" in out
+    # The OLD f/d prefix shape (harness-cb7c) must NOT appear — models
+    # misparsed it as `d/<name>` / `f/<name>` paths.
+    assert "f game.js" not in out
+    assert "d gta/" not in out
     # Lives before files-touched so model orientation comes before the diff.
     assert out.index("Workspace") < out.index("Files touched this loop run:")
 
@@ -297,10 +303,12 @@ def test_build_handoff_lists_workspace_top_level(
     )
     assert handoff.workspace_path == tmp_path.resolve()
     # Sorted: dirs first then files, alphabetical within each group.
+    # ls -F format: trailing `/` for dirs, just the name for files
+    # (harness-cb7c — no f/d type prefix that small models misparse).
     assert handoff.workspace_contents == (
-        "d gta/",
-        "f game.js",
-        "f index.html",
+        "gta/",
+        "game.js",
+        "index.html",
     )
 
 
