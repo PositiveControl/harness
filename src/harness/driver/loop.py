@@ -53,7 +53,7 @@ import contextlib
 import logging
 import signal
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,7 +64,7 @@ from harness.driver.bd import DriverBd, DriverBdError
 from harness.driver.handoff import Handoff, build_handoff
 from harness.driver.state import LoopRunState
 from harness.model.adapter import ChatMessage, ModelAdapter
-from harness.orchestrator import ToolLoopResult, run_tool_loop
+from harness.orchestrator import ToolLoopEvent, ToolLoopResult, run_tool_loop
 from harness.orchestrator.hooks import (
     EXHAUSTED_FABRICATION_FALLBACK,
     HookPipeline,
@@ -137,6 +137,18 @@ class LoopConfig:
     resume_from: str | None = None
     dry_run: bool = False
     log_path: Path | None = None
+    # When set, mirror per-turn tool-loop events to this callable (in
+    # addition to the existing file log). Used by the CLI's --verbose
+    # flag to tee events to stderr. harness-9bpt.
+    extra_observer: Callable[[ToolLoopEvent], None] | None = None
+    # Forbidden substrings checked in workspace files modified during
+    # this run (harness-k52f). After a turn closes its bd issue, if any
+    # of these strings appear in any file modified since loop start,
+    # the turn fails with the violation list as the reason — fed back
+    # to the model via prior_attempt_failure on retry. Default catches
+    # the spec-opening "no TODO / no future improvement" rule that
+    # cross-cuts most workplan specs. Set to `()` to disable.
+    forbidden_patterns: tuple[str, ...] = ("TODO", "FIXME", "XXX", "HACK")
 
 
 @dataclass
@@ -214,15 +226,27 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     handoffs=[handoff],
                 )
 
+            turn_observer = _make_turn_observer(
+                log_path, state.turns_used + 1, config.extra_observer
+            )
             turn_success, turn_reason = _run_executor_turn(
                 adapter=adapter,
                 character=config.character,
                 handoff=handoff,
                 workspace=config.workspace,
+                observe=turn_observer,
             )
             state.turns_used += 1
 
-            success, reason = _classify_post_turn(bd, current.id, turn_success, turn_reason)
+            success, reason = _classify_post_turn(
+                bd,
+                current.id,
+                turn_success,
+                turn_reason,
+                workspace=config.workspace,
+                started_at=state.started_at,
+                forbidden_patterns=config.forbidden_patterns,
+            )
 
             if success:
                 _on_success(bd, state, current.id, log)
@@ -243,12 +267,69 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
 # --- per-turn -----------------------------------------------------
 
 
+# Observer type for the executor's per-turn tool-loop event stream
+# (harness-9bpt). Same shape as planner's PlannerObserver.
+ExecutorObserver = Callable[[ToolLoopEvent], None]
+
+
+def _make_turn_observer(
+    log_path: Path,
+    turn_index: int,
+    extra: ExecutorObserver | None,
+) -> ExecutorObserver:
+    """Build an observer that:
+      1. Appends one line per ToolLoopEvent to `log_path` (prefixed
+         with `turn N |` so the operator can grep per-turn slices).
+      2. Optionally forwards to `extra` — used by the CLI's --verbose
+         flag to mirror to stderr.
+
+    Best-effort IO: log write failures don't crash the turn. Observer
+    failures in `extra` are suppressed for the same reason (matches
+    the planner's _compose_observers contract)."""
+
+    def emit(event: ToolLoopEvent) -> None:
+        line = f"turn {turn_index} | {_format_executor_event(event)}"
+        try:
+            with log_path.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+        if extra is not None:
+            with contextlib.suppress(Exception):
+                extra(event)
+
+    return emit
+
+
+def _format_executor_event(event: ToolLoopEvent) -> str:
+    """Same shape as planner's _format_event — timestamp + kind + most
+    relevant payload. Kept separate so the driver module doesn't import
+    from planner."""
+    ts = datetime.now(UTC).isoformat(timespec="seconds")
+    parts: list[str] = [ts, event.kind]
+    if event.call is not None:
+        args_preview = repr(event.call.arguments)
+        if len(args_preview) > 200:
+            args_preview = args_preview[:200] + "...]"
+        parts.append(f"call={event.call.name} args={args_preview}")
+    if event.result is not None:
+        success = "ok" if event.result.success else f"FAIL[{event.result.error}]"
+        output_preview = event.result.output.replace("\n", " ")[:160]
+        parts.append(f"result={success} output={output_preview!r}")
+    if event.delta:
+        parts.append(f"delta={event.delta}")
+    if event.catcher:
+        parts.append(f"catcher={event.catcher}")
+    return " | ".join(parts)
+
+
 def _run_executor_turn(
     *,
     adapter: ModelAdapter,
     character: Character,
     handoff: Handoff,
     workspace: Path,
+    observe: ExecutorObserver | None = None,
 ) -> tuple[bool, str]:
     """Run one executor turn. Returns (succeeded, reason).
 
@@ -257,7 +338,12 @@ def _run_executor_turn(
     (success requires BOTH a clean reply AND the bd issue actually
     being closed). This split keeps the test surface small: the turn
     runner is a pure function of its inputs, and the caller composes
-    the bd check on top."""
+    the bd check on top.
+
+    `observe`, when set, receives every `ToolLoopEvent` from the inner
+    `run_tool_loop` — same shape as the planner's observer
+    (harness-9bpt). The caller is responsible for writing to a log
+    file / stderr; this function is just the seam."""
     registry = _build_executor_registry(workspace)
     # `include_samples=()` strips the voice few-shot block. Identity +
     # values + style rules from `core.yaml` survive — the executor still
@@ -275,6 +361,7 @@ def _run_executor_turn(
         messages,
         registry,
         hooks=hooks,
+        observe=observe,
     )
     if result.content.strip() == EXHAUSTED_FABRICATION_FALLBACK.strip():
         return False, "fabrication_fallback fired"
@@ -286,12 +373,23 @@ def _classify_post_turn(
     current_id: str,
     turn_success: bool,
     turn_reason: str,
+    *,
+    workspace: Path | None = None,
+    started_at: datetime | None = None,
+    forbidden_patterns: tuple[str, ...] = (),
 ) -> tuple[bool, str]:
     """Combine the turn outcome with the post-turn bd state.
 
     Issue must actually be closed for the turn to count as a real win —
     a clean reply with the issue still open means the model didn't
-    finish the work, regardless of how confidently it claimed to."""
+    finish the work, regardless of how confidently it claimed to.
+
+    Forbidden-pattern verification (harness-k52f): when
+    `forbidden_patterns` is non-empty and `workspace` + `started_at`
+    are supplied, the function scans workspace files modified since
+    `started_at` for any of the patterns. Any hit fails the turn
+    even if the bd issue closed — small models will happily close
+    after writing 'TODO' comments that violate spec-opening rules."""
     if not turn_success:
         return False, turn_reason
     try:
@@ -300,7 +398,58 @@ def _classify_post_turn(
         return False, f"post-turn bd.show failed: {exc}"
     if issue.status != "closed":
         return False, f"issue still {issue.status} after turn"
+    # bd issue closed; now check forbidden patterns in the workspace.
+    if forbidden_patterns and workspace is not None and started_at is not None:
+        violations = _find_violations(workspace, started_at, forbidden_patterns)
+        if violations:
+            joined = "; ".join(violations[:5])
+            extra = f" (+{len(violations) - 5} more)" if len(violations) > 5 else ""
+            return False, f"closed but forbidden-pattern hits: {joined}{extra}"
     return True, ""
+
+
+def _find_violations(
+    workspace: Path,
+    started_at: datetime,
+    forbidden_patterns: tuple[str, ...],
+) -> list[str]:
+    """Walk `workspace` for files modified after `started_at` and check
+    each for any of `forbidden_patterns`. Returns one entry per
+    (path, pattern) hit. Empty = no violations (harness-k52f).
+
+    Skips:
+      - hidden dirs (any path component starting with `.`)
+      - files > 1MB (binary-shaped, not worth scanning)
+      - files that aren't decodable as UTF-8 text
+    Best-effort: IO errors are silently skipped — the verification is
+    a safety net, not a contract gate."""
+    if not forbidden_patterns:
+        return []
+    started_ts = started_at.timestamp()
+    violations: list[str] = []
+    for path in workspace.rglob("*"):
+        if not path.is_file():
+            continue
+        rel_parts = path.relative_to(workspace).parts
+        if any(p.startswith(".") for p in rel_parts):
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_mtime < started_ts:
+            continue
+        if stat.st_size > 1024 * 1024:
+            continue
+        try:
+            content = path.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        rel = path.relative_to(workspace)
+        for pattern in forbidden_patterns:
+            if pattern in content:
+                violations.append(f"{rel}: contains {pattern!r}")
+    return violations
 
 
 # --- tool registry ------------------------------------------------

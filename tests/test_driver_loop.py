@@ -533,6 +533,176 @@ def test_run_loop_writes_progress_log(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert "SUCCESS" in content
 
 
+def test_run_loop_executor_observer_writes_to_log(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-9bpt: per-turn tool events get appended to the loop log
+    with a `turn N |` prefix alongside the lifecycle markers."""
+    from harness.orchestrator import ToolLoopEvent
+    from harness.tools.base import ToolCall
+
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    def fake_run_tool_loop(
+        _adapter: Any,
+        _messages: Any,
+        _registry: Any,
+        *,
+        observe: Any = None,
+        **_kwargs: Any,
+    ) -> ToolLoopResult:
+        if observe is not None:
+            observe(
+                ToolLoopEvent(
+                    kind="tool_call_start",
+                    call=ToolCall(name="read_file", arguments={"path": "x.md"}),
+                )
+            )
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    result = run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+
+    log_path = LoopRunState.state_dir(tmp_path) / f"{result.loop_run_id}.log"
+    content = log_path.read_text()
+    assert "turn 1 |" in content
+    assert "tool_call_start" in content
+    assert "call=read_file" in content
+
+
+def test_run_loop_extra_observer_receives_events(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-9bpt: LoopConfig.extra_observer receives every per-turn
+    event so the CLI's --verbose flag can mirror to stderr."""
+    from harness.orchestrator import ToolLoopEvent
+
+    captured: list[ToolLoopEvent] = []
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    def fake_run_tool_loop(
+        _adapter: Any,
+        _messages: Any,
+        _registry: Any,
+        *,
+        observe: Any = None,
+        **_kwargs: Any,
+    ) -> ToolLoopResult:
+        if observe is not None:
+            observe(ToolLoopEvent(kind="round_start"))
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    cfg = _config(tmp_path, extra_observer=captured.append)
+    run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+    assert any(e.kind == "round_start" for e in captured)
+
+
+def test_run_loop_forbidden_pattern_fails_closed_turn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-k52f: a bd-closed issue with a TODO in a modified file
+    fails the turn — closed-with-bad-code is worse than not-closed."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a]],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        (tmp_path / "game.js").write_text("// TODO: implement physics\nfunction gameLoop() {}\n")
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    result = run_loop(_FakeAdapter(), bd, _config(tmp_path, max_turns=1))  # type: ignore[arg-type]
+    # 1 turn, 1 failure, max_turns exhausted before retry.
+    assert result.exit_reason == "exhausted"
+    assert result.closed == []
+
+
+def test_run_loop_no_verify_disables_forbidden_pattern_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-k52f: forbidden_patterns=() disables the check."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        (tmp_path / "game.js").write_text("// TODO: implement physics\n")
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    cfg = _config(tmp_path, forbidden_patterns=())
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-a"]
+
+
+def test_run_loop_forbidden_pattern_check_skips_hidden_dirs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-k52f: hidden dirs (.git, .harness, .beads) are skipped
+    even if they contain forbidden patterns — the loop's own log file
+    must not trip the check on itself."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        hidden = tmp_path / ".harness" / "something.log"
+        hidden.parent.mkdir(parents=True, exist_ok=True)
+        hidden.write_text("TODO: should be ignored\n")
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    result = run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+    assert result.exit_reason == "success"
+
+
 def test_run_loop_uses_configured_log_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     custom_log = tmp_path / "custom.log"
     issue_a = _issue("harness-a", title="A", status="open")

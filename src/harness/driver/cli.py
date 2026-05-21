@@ -243,6 +243,19 @@ def loop_command(
         "--allow-dirty",
         help="Allow running on a dirty git tree (uncommitted changes).",
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="Mirror the executor's per-turn tool-loop event stream to stderr.",
+    ),
+    no_verify: bool = typer.Option(
+        False,
+        "--no-verify",
+        help=(
+            "Disable post-turn forbidden-pattern verification "
+            "(default checks for TODO/FIXME/XXX/HACK in modified files)."
+        ),
+    ),
 ) -> None:
     """Drive a bd epic to closure across multiple turns."""
     if list_runs:
@@ -279,6 +292,8 @@ def loop_command(
         resume_from=resume_from or None,
         dry_run=dry_run,
         log_path=log_path,
+        extra_observer=_stderr_observer if verbose else None,
+        forbidden_patterns=() if no_verify else ("TODO", "FIXME", "XXX", "HACK"),
     )
     result = run_loop(adapter, bd, config)
     _print_result(result)

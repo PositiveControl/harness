@@ -208,3 +208,6 @@
 {"id":"int-5843547d","kind":"field_change","created_at":"2026-05-21T16:52:24.482443Z","actor":"Mark Evans","issue_id":"harness-mzce","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-126d21af","kind":"field_change","created_at":"2026-05-21T18:50:15.790324Z","actor":"Mark Evans","issue_id":"harness-2pj3","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-5cc98915","kind":"field_change","created_at":"2026-05-21T18:54:53.540105Z","actor":"Mark Evans","issue_id":"harness-m0g4","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-1c513e57","kind":"field_change","created_at":"2026-05-21T19:16:04.325823Z","actor":"Mark Evans","issue_id":"harness-gu6k","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-d3dee436","kind":"field_change","created_at":"2026-05-21T19:51:36.474804Z","actor":"Mark Evans","issue_id":"harness-9bpt","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-204f0a12","kind":"field_change","created_at":"2026-05-21T19:51:36.492888Z","actor":"Mark Evans","issue_id":"harness-k52f","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
