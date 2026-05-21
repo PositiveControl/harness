@@ -211,3 +211,6 @@
 {"id":"int-1c513e57","kind":"field_change","created_at":"2026-05-21T19:16:04.325823Z","actor":"Mark Evans","issue_id":"harness-gu6k","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-d3dee436","kind":"field_change","created_at":"2026-05-21T19:51:36.474804Z","actor":"Mark Evans","issue_id":"harness-9bpt","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-204f0a12","kind":"field_change","created_at":"2026-05-21T19:51:36.492888Z","actor":"Mark Evans","issue_id":"harness-k52f","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
+{"id":"int-7d6c6c44","kind":"field_change","created_at":"2026-05-21T19:57:18.480998Z","actor":"Mark Evans","issue_id":"harness-90j0","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
+{"id":"int-2c54cf38","kind":"field_change","created_at":"2026-05-21T19:57:33.55201Z","actor":"Mark Evans","issue_id":"harness-6xdt","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"auto-closed by loop driver (ad381610)"}}
+{"id":"int-9eb9711c","kind":"field_change","created_at":"2026-05-21T20:01:34.236694Z","actor":"Mark Evans","issue_id":"harness-90j0","extra":{"field":"status","new_value":"open","old_value":"closed"}}
