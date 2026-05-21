@@ -149,6 +149,14 @@ class LoopConfig:
     # the spec-opening "no TODO / no future improvement" rule that
     # cross-cuts most workplan specs. Set to `()` to disable.
     forbidden_patterns: tuple[str, ...] = ("TODO", "FIXME", "XXX", "HACK")
+    # Per-turn round budget for the inner run_tool_loop call
+    # (harness-pipb). The orchestrator's default (8) is too tight for
+    # executor turns that do multi-edit work — read spec, read
+    # existing file, edit + verify + edit again — leading to
+    # `wrap_up_forced` firing before the model finishes. 12 gives
+    # ~50% more headroom while keeping each turn bounded (12 rounds *
+    # ~10s/round ≈ 2 min upper bound on M4 Pro).
+    executor_max_rounds: int = 12
 
 
 @dataclass
@@ -211,6 +219,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 bd,
                 git_root=config.workspace,
                 prior_attempt_failure=prior_failure,
+                workspace=config.workspace,
             )
 
             if config.dry_run:
@@ -235,6 +244,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 handoff=handoff,
                 workspace=config.workspace,
                 observe=turn_observer,
+                max_rounds=config.executor_max_rounds,
             )
             state.turns_used += 1
 
@@ -330,6 +340,7 @@ def _run_executor_turn(
     handoff: Handoff,
     workspace: Path,
     observe: ExecutorObserver | None = None,
+    max_rounds: int = 12,
 ) -> tuple[bool, str]:
     """Run one executor turn. Returns (succeeded, reason).
 
@@ -362,6 +373,7 @@ def _run_executor_turn(
         registry,
         hooks=hooks,
         observe=observe,
+        max_rounds=max_rounds,
     )
     if result.content.strip() == EXHAUSTED_FABRICATION_FALLBACK.strip():
         return False, "fabrication_fallback fired"

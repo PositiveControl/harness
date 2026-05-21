@@ -584,6 +584,66 @@ def test_run_loop_writes_progress_log(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert "SUCCESS" in content
 
 
+def test_run_loop_passes_executor_max_rounds_to_tool_loop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-pipb: LoopConfig.executor_max_rounds flows to
+    run_tool_loop(max_rounds=...) so the operator can give the
+    executor more rounds than the orchestrator default of 8."""
+    captured: dict[str, Any] = {}
+
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **kwargs: Any
+    ) -> ToolLoopResult:
+        captured["max_rounds"] = kwargs.get("max_rounds")
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    cfg = _config(tmp_path, executor_max_rounds=20)
+    run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+    assert captured["max_rounds"] == 20
+
+
+def test_run_loop_executor_max_rounds_defaults_to_12(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-pipb: default cap is 12 — meaningful headroom over the
+    orchestrator default of 8."""
+    captured: dict[str, Any] = {}
+
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **kwargs: Any
+    ) -> ToolLoopResult:
+        captured["max_rounds"] = kwargs.get("max_rounds")
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+    assert captured["max_rounds"] == 12
+
+
 def test_run_loop_executor_observer_writes_to_log(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

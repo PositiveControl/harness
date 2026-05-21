@@ -256,6 +256,14 @@ def loop_command(
             "(default checks for TODO/FIXME/XXX/HACK in modified files)."
         ),
     ),
+    executor_max_rounds: int = typer.Option(
+        12,
+        "--executor-max-rounds",
+        help=(
+            "Per-turn round budget for the inner run_tool_loop. Default 12 "
+            "(orchestrator's default 8 is too tight for multi-edit work)."
+        ),
+    ),
 ) -> None:
     """Drive a bd epic to closure across multiple turns."""
     if list_runs:
@@ -294,6 +302,7 @@ def loop_command(
         log_path=log_path,
         extra_observer=_stderr_observer if verbose else None,
         forbidden_patterns=() if no_verify else ("TODO", "FIXME", "XXX", "HACK"),
+        executor_max_rounds=executor_max_rounds,
     )
     result = run_loop(adapter, bd, config)
     _print_result(result)

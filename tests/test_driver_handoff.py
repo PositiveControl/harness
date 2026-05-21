@@ -238,6 +238,86 @@ def test_render_drops_observations_after_decisions_when_decisions_already_empty(
 # --- build_handoff ---------------------------------------------------
 
 
+def test_render_includes_workspace_block_when_set() -> None:
+    """harness-po0v: Workspace path + contents render between parent
+    epic and files-touched blocks."""
+    out = _base_handoff(
+        workspace_path=Path("/some/workspace"),
+        workspace_contents=("f game.js", "d gta/", "f index.html"),
+    ).render()
+    assert "Workspace (your cwd; tool paths are relative to this): /some/workspace" in out
+    assert "  f game.js" in out
+    assert "  d gta/" in out
+    assert "  f index.html" in out
+    # Lives before files-touched so model orientation comes before the diff.
+    assert out.index("Workspace") < out.index("Files touched this loop run:")
+
+
+def test_render_omits_workspace_block_when_path_none() -> None:
+    """harness-po0v: backward-compat — handoffs built without a
+    workspace render normally (no orphan empty block)."""
+    out = _base_handoff().render()
+    assert "Workspace" not in out
+
+
+def test_render_empty_workspace_contents_shows_placeholder() -> None:
+    """harness-po0v: workspace set but empty contents → '(empty)' marker
+    so the model sees the workspace orientation but knows there's
+    nothing in it yet."""
+    out = _base_handoff(
+        workspace_path=Path("/empty/ws"),
+        workspace_contents=(),
+    ).render()
+    assert "Workspace (your cwd; tool paths are relative to this): /empty/ws" in out
+    assert "  (empty)" in out
+
+
+def test_build_handoff_lists_workspace_top_level(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-po0v: build_handoff populates workspace_path +
+    workspace_contents from the supplied workspace dir."""
+    (tmp_path / "game.js").write_text("// js")
+    (tmp_path / "index.html").write_text("<!doctype html>")
+    (tmp_path / "gta").mkdir()
+    # Hidden entries skipped:
+    (tmp_path / ".harness").mkdir()
+    (tmp_path / ".coverage").write_text("")
+
+    current = _issue("harness-x", title="t", description="d")
+    epic = _issue("harness-e9oq", title="e")
+    bd = _FakeBd(issues={"harness-x": current, "harness-e9oq": epic})
+    _install_git_diff(monkeypatch, stdout="")
+    handoff = build_handoff(
+        _state(),
+        "harness-x",
+        bd,
+        git_root=tmp_path,
+        workspace=tmp_path,
+    )
+    assert handoff.workspace_path == tmp_path.resolve()
+    # Sorted: dirs first then files, alphabetical within each group.
+    assert handoff.workspace_contents == (
+        "d gta/",
+        "f game.js",
+        "f index.html",
+    )
+
+
+def test_build_handoff_skips_workspace_when_not_supplied(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-po0v: build_handoff without `workspace=` produces
+    workspace_path=None + empty contents (back-compat)."""
+    current = _issue("harness-x", title="t")
+    epic = _issue("harness-e9oq", title="e")
+    bd = _FakeBd(issues={"harness-x": current, "harness-e9oq": epic})
+    _install_git_diff(monkeypatch, stdout="")
+    handoff = build_handoff(_state(), "harness-x", bd, git_root=tmp_path)
+    assert handoff.workspace_path is None
+    assert handoff.workspace_contents == ()
+
+
 def test_build_handoff_pulls_current_issue_and_epic(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

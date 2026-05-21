@@ -104,6 +104,15 @@ class Handoff:
       - `prior_attempt_failure`: reason from the previous attempt at
         `current_issue`, when the executor is retrying. None on the
         first attempt.
+      - `workspace_path`: absolute path of the executor's cwd. The
+        executor's filesystem tools are sandboxed here; all read/write
+        paths in tool calls are relative to this. Surfacing it up
+        front saves 2-3 rounds per turn the model would otherwise burn
+        on path-prefix discovery (harness-po0v).
+      - `workspace_contents`: one-line-per-entry list of the top-level
+        workspace items, prefixed by `f` (file) or `d` (directory).
+        Mirrors the `list_dir` tool's output shape so the model has
+        an immediate orientation without burning a tool call.
     """
 
     loop_run_id: str
@@ -116,6 +125,8 @@ class Handoff:
     observations: tuple[str, ...]
     open_questions: tuple[str, ...]
     prior_attempt_failure: str | None
+    workspace_path: Path | None = None
+    workspace_contents: tuple[str, ...] = ()
 
     def render(self) -> str:
         """Produce the `[SESSION HANDOFF]` block. Applies the render-
@@ -160,6 +171,16 @@ class Handoff:
         )
         if self.parent_epic_summary:
             parts.extend(["Parent epic:", self.parent_epic_summary, ""])
+        if self.workspace_path is not None:
+            parts.append(
+                f"Workspace (your cwd; tool paths are relative to this): {self.workspace_path}"
+            )
+            parts.append("Contents:")
+            if self.workspace_contents:
+                parts.extend(f"  {line}" for line in self.workspace_contents)
+            else:
+                parts.append("  (empty)")
+            parts.append("")
         parts.append("Files touched this loop run:")
         if self.files_touched:
             parts.extend(f"  {line}" for line in self.files_touched)
@@ -204,6 +225,7 @@ def build_handoff(
     *,
     git_root: Path,
     prior_attempt_failure: str | None = None,
+    workspace: Path | None = None,
 ) -> Handoff:
     """Assemble a `Handoff` for the next executor turn.
 
@@ -212,11 +234,17 @@ def build_handoff(
     field becomes None / empty), since those are context, not the
     contract. A failure to resolve `current_bd_id` raises — that's the
     issue the executor is about to drive, and operating without it
-    would corrupt the turn."""
+    would corrupt the turn.
+
+    `workspace`, when supplied, is rendered into the handoff so the
+    model knows its cwd (saves rounds of path-prefix discovery —
+    harness-po0v). Defaults to None for back-compat with callers
+    (e.g. tests) that don't care about workspace orientation."""
     current_issue = _format_issue(bd.show(current_bd_id))
 
     parent_epic_summary = _try_epic_summary(bd, state.epic_id)
     files_touched = _git_diff_name_status(git_root, state.started_at_sha)
+    workspace_contents = _list_workspace_top_level(workspace) if workspace is not None else ()
 
     thoughts = bd.thoughts_in_loop_run(state.loop_run_id)
     decisions = tuple(
@@ -242,7 +270,32 @@ def build_handoff(
         observations=observations,
         open_questions=open_questions,
         prior_attempt_failure=prior_attempt_failure,
+        workspace_path=workspace.resolve() if workspace is not None else None,
+        workspace_contents=workspace_contents,
     )
+
+
+def _list_workspace_top_level(workspace: Path) -> tuple[str, ...]:
+    """One line per top-level entry in `workspace`. Format mirrors the
+    list_dir tool: `f <name>` for files, `d <name>/` for directories.
+    Skips hidden entries (anything starting with `.`) so the handoff
+    isn't polluted by `.harness/` / `.git/` / `.beads/`.
+
+    Best-effort: returns `()` on IO error rather than raising — a
+    missing or unreadable workspace shouldn't crash the handoff."""
+    try:
+        entries = sorted(workspace.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+    except OSError:
+        return ()
+    lines: list[str] = []
+    for entry in entries:
+        if entry.name.startswith("."):
+            continue
+        if entry.is_dir():
+            lines.append(f"d {entry.name}/")
+        else:
+            lines.append(f"f {entry.name}")
+    return tuple(lines)
 
 
 # --- helpers ---------------------------------------------------------
