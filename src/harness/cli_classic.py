@@ -194,6 +194,49 @@ def _make_write_file_redirect_hook(
     )
 
 
+def _make_auto_load_on_unknown_hook(
+    registry: ToolRegistry | None,
+) -> Any:
+    """Wire an AutoLoadOnUnknownHook against the session's live
+    registry. Returns None when there's no registry (tool-less chat)
+    or when `load_tool` isn't itself in the registry — without
+    load_tool the closure has nothing to dispatch.
+
+    Reuses `LoadToolTool.call` as the activation primitive so the
+    auto-loader inherits all the existing edge cases: builder
+    failures, synthesized-tool restart hints, companion auto-load,
+    no-op confirmation when already active. The closure converts the
+    string-shaped LoadToolTool result into a bool by re-checking the
+    registry's active set after the call (harness-2uso)."""
+    if registry is None:
+        return None
+    try:
+        load_tool_obj = registry.get("load_tool")
+    except KeyError:
+        return None
+    if not isinstance(load_tool_obj, LoadToolTool):
+        # Pessimistic guard: some other tool got registered under the
+        # name 'load_tool'. Skip wiring rather than dispatch into an
+        # unknown shape.
+        return None
+
+    from harness.orchestrator.hooks import AutoLoadOnUnknownHook
+
+    def try_activate(name: str) -> bool:
+        # Fast path — already active, no work to do.
+        if name in registry.active_names():
+            return True
+        try:
+            load_tool_obj.call(name=name)
+        except Exception:
+            # Any error inside load_tool is contained: the unknown_tool
+            # error path will fire downstream as before.
+            return False
+        return name in registry.active_names()
+
+    return AutoLoadOnUnknownHook(try_activate=try_activate)
+
+
 def _build_hook_pipeline(
     *,
     summarize_tool_results: bool,
@@ -249,12 +292,17 @@ def _build_hook_pipeline(
         registry=registry,
         workspace_path=workspace_path,
     )
+    # Build the auto-load-on-unknown hook (harness-2uso) — only fires
+    # when the session has a registry that already contains load_tool.
+    # Saves 2 rounds per first-use of catalog-known tools.
+    auto_load_hook = _make_auto_load_on_unknown_hook(registry=registry)
     if (
         not summarize_tool_results
         and not valid_anchors
         and grammar is None
         and not catchers
         and redirect_hook is None
+        and auto_load_hook is None
     ):
         return None
 
@@ -270,6 +318,7 @@ def _build_hook_pipeline(
         scope_redirect_template=character.scope_redirect_template,
         character_name=character.name,
         write_file_redirect_hook=redirect_hook,
+        auto_load_on_unknown_hook=auto_load_hook,
     )
 
     if not summarize_tool_results:

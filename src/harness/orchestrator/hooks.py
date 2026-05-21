@@ -3568,6 +3568,67 @@ class DuplicateCallHook:
         )
 
 
+# Default no-op closure for the AutoLoadOnUnknownHook (harness-2uso).
+# When the hook isn't wired, the closure reports nothing is loadable —
+# the hook becomes a no-op and the loop falls back to the existing
+# unknown_tool error path. The CLI / chat session overrides this with
+# a closure bound to the live registry + catalog + builders dict.
+
+
+def _no_try_activate(_name: str) -> bool:
+    return False
+
+
+@dataclass(frozen=True)
+class AutoLoadOnUnknownHook:
+    """Pre-tool hook: when the model calls a tool name that's in the
+    catalog but not yet active in this session's registry, try to
+    auto-load it in-hook so the original call dispatches cleanly on
+    the same iteration (harness-2uso).
+
+    Without this, sessions running the `core_minimal` profile pay a
+    fixed 2-round penalty per first-use of every catalog-known tool:
+    the call returns the "unknown tool — call load_tool first" error,
+    the model parses it, emits `load_tool(name=X)`, and only then
+    re-emits the original call. Mark's 2026-05-20 GTA2 session
+    repro'd this: 4 of 10 rounds were pure recovery overhead for
+    read_file + write_file first-uses.
+
+    Placement: BEFORE `write_file_redirect` (harness-hnt7) — so a
+    `write_file` call on a non-existent path with `write_file` not yet
+    loaded resolves to a single clean `write_file` activation rather
+    than redirect-then-load.
+
+    Closure contract:
+      - `try_activate(name)` returns True iff the tool is now active
+        and the original call will dispatch successfully on this same
+        iteration. False means "couldn't activate" — the hook stays
+        out of the way and the existing unknown_tool error path fires
+        as before.
+      - Failures inside `try_activate` (builder raises, session-state
+        missing, registry rejects) MUST be swallowed: a partial
+        activation that surfaces as a Python exception would crash
+        the loop. The CLI's wiring catches and reports — same surface
+        as `load_tool` itself.
+
+    The hook ALWAYS returns `Continue()`. The side effect is the
+    registry mutation that the dispatch immediately downstream
+    benefits from. No Skip / Refuse paths — this is a fast-path
+    optimisation, not a contract gate."""
+
+    name: str = "auto_load_on_unknown"
+    try_activate: Callable[[str], bool] = field(default=_no_try_activate)
+
+    def check(self, ctx: PreToolContext) -> PreToolOutcome:
+        # Fire-and-forget: the closure handles its own success/failure
+        # detection. We don't gate on the return value because both
+        # outcomes (now-active or still-unknown) flow into the same
+        # dispatch path — registry.call() produces the right result
+        # in either case.
+        self.try_activate(ctx.call.name)
+        return Continue()
+
+
 # Default no-op closures for the WriteFileRedirectHook (harness-hnt7).
 # An unwired hook (no read_existing / no ensure_edit_file_active) is a
 # no-op — every call returns the "not redirectable" Continue path so
@@ -5119,6 +5180,12 @@ HOOK_SHAPES: dict[str, str] = {
     # post_model-phase catchers (operate on the raw ModelReply).
     # (none today — phase exists for future use.)
     # pre_tool-phase catchers (gate tool execution).
+    "auto_load_on_unknown": (
+        "A tool call whose name is in the catalog but not yet active is "
+        "auto-loaded in-hook before dispatch, saving the 2-round "
+        "unknown_tool → load_tool → retry penalty per first-use. Fast "
+        "path; failures fall through to the existing recovery."
+    ),
     "write_file_redirect": (
         "write_file on an existing path is redirected to edit_file "
         "in-hook; the model sees a single tool turn instead of the "
@@ -5300,6 +5367,7 @@ def default_hook_pipeline(
     scope_redirect_template: str | None = None,
     character_name: str | None = None,
     write_file_redirect_hook: WriteFileRedirectHook | None = None,
+    auto_load_on_unknown_hook: AutoLoadOnUnknownHook | None = None,
 ) -> HookPipeline:
     """Build the shipping pipeline. Order mirrors the pre-refactor
     `_diagnose_bail` branch order so first-match semantics stay
@@ -5512,6 +5580,16 @@ def default_hook_pipeline(
     # tack on FetchUrlGuardHook without forcing every non-paste-only
     # persona to inherit it.
     pre_tool: list[PreToolHook] = []
+    # auto_load_on_unknown (harness-2uso) runs FIRST so a catalog-known
+    # tool name gets activated before any other pre-tool hook sees it.
+    # Most relevant for write_file_redirect: if write_file itself isn't
+    # in the active set yet, the auto-loader puts it there so the
+    # redirect can find it. Only registered when the caller supplied a
+    # wired hook — None means "no registry+catalog+builders handles
+    # available," so the path stays off and the loop falls back to the
+    # existing unknown_tool recovery.
+    if auto_load_on_unknown_hook is not None:
+        pre_tool.append(auto_load_on_unknown_hook)
     # write_file_redirect (harness-hnt7) runs BEFORE duplicate_call so
     # a redirected write_file doesn't get pre-empted by an unrelated
     # earlier hook. Only registered when the caller supplied a wired
@@ -5742,6 +5820,7 @@ __all__ = [
     "AbFabricationHook",
     "AmbiguousContextHook",
     "ArgumentGroundingHook",
+    "AutoLoadOnUnknownHook",
     "BailContext",
     "BailHook",
     "BailOutcome",

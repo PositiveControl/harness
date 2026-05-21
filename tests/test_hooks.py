@@ -2079,6 +2079,107 @@ def test_fabrication_fallback_loop_text_handles_zero_tools_ran() -> None:
     assert "(none)" in outcome.reply.content
 
 
+# ---------- auto_load_on_unknown hook ----------
+
+
+def test_auto_load_on_unknown_fires_closure_with_tool_name() -> None:
+    """The hook calls try_activate(name) on every pre-tool dispatch.
+    Whatever the closure returns, the hook always Continues — the
+    side effect (registry mutation) is the contract, not the return."""
+    from harness.orchestrator.hooks import AutoLoadOnUnknownHook
+    from harness.tools.base import ToolCall
+
+    calls: list[str] = []
+
+    def try_activate(name: str) -> bool:
+        calls.append(name)
+        return True
+
+    hook = AutoLoadOnUnknownHook(try_activate=try_activate)
+    outcome = hook.check(
+        PreToolContext(
+            call=ToolCall(name="read_file", arguments={"path": "x.md"}),
+            seen_calls={},
+        )
+    )
+    assert isinstance(outcome, Continue)
+    assert calls == ["read_file"]
+
+
+def test_auto_load_on_unknown_continues_even_when_closure_fails() -> None:
+    """A False return from try_activate means the tool couldn't be
+    activated; the hook still Continues so the registry's own
+    unknown_tool error path produces the existing recovery hint
+    (harness-2uso). Failing the hook here would short-circuit recovery."""
+    from harness.orchestrator.hooks import AutoLoadOnUnknownHook
+    from harness.tools.base import ToolCall
+
+    hook = AutoLoadOnUnknownHook(try_activate=lambda _n: False)
+    outcome = hook.check(
+        PreToolContext(
+            call=ToolCall(name="nonexistent_tool", arguments={}),
+            seen_calls={},
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_auto_load_on_unknown_default_closure_is_noop() -> None:
+    """An unwired hook (default closure) is a safe no-op — every call
+    returns Continue. Lets tests construct the hook without a registry
+    handle (and matches the WriteFileRedirectHook default-closure
+    pattern)."""
+    from harness.orchestrator.hooks import AutoLoadOnUnknownHook
+    from harness.tools.base import ToolCall
+
+    hook = AutoLoadOnUnknownHook()
+    outcome = hook.check(
+        PreToolContext(
+            call=ToolCall(name="anything", arguments={}),
+            seen_calls={},
+        )
+    )
+    assert isinstance(outcome, Continue)
+
+
+def test_auto_load_on_unknown_with_write_file_redirect_together() -> None:
+    """Integration: auto_load_on_unknown runs FIRST so write_file
+    gets activated, then write_file_redirect sees an active write_file
+    in the same iteration (harness-2uso, acceptance 5). The hooks
+    cooperate; neither shadows the other."""
+    from harness.orchestrator.hooks import (
+        AutoLoadOnUnknownHook,
+        WriteFileRedirectHook,
+    )
+    from harness.tools.base import ToolCall
+
+    activations: list[str] = []
+
+    def try_activate(name: str) -> bool:
+        activations.append(name)
+        return True
+
+    redirect_calls: list[str] = []
+
+    def read_existing(path: str) -> str | None:
+        redirect_calls.append(path)
+        return None  # File doesn't exist — Continue path
+
+    auto_load = AutoLoadOnUnknownHook(try_activate=try_activate)
+    redirect = WriteFileRedirectHook(read_existing=read_existing)
+
+    ctx = PreToolContext(
+        call=ToolCall(name="write_file", arguments={"path": "new.md", "content": "x"}),
+        seen_calls={},
+    )
+    # Both hooks fire in sequence (caller convention — pipeline runs
+    # them in order). Verify each behaves as expected.
+    assert isinstance(auto_load.check(ctx), Continue)
+    assert activations == ["write_file"]
+    assert isinstance(redirect.check(ctx), Continue)
+    assert redirect_calls == ["new.md"]
+
+
 def test_fabrication_fallback_uses_generic_text_for_non_loop_catchers() -> None:
     """Non-loop catchers (false_success, teaser, fabricated_search,
     etc.) keep the generic 'didn't land cleanly' fallback. Pinned so

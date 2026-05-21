@@ -59,7 +59,7 @@ def test_every_pipeline_hook_has_a_shape_entry() -> None:
 
 def test_hook_shapes_has_no_orphans() -> None:
     """Every HOOK_SHAPES entry must correspond to a hook that's actually
-    registered in the full opt-in pipeline. Two documented exceptions:
+    registered in the full opt-in pipeline. Documented exceptions:
       - `tool_result_summarizer`: opt-in post_tool hook installed by
         the CLI at --summarize-tool-results, not by default_hook_pipeline.
       - `write_file_redirect` (harness-hnt7): opt-in pre_tool hook
@@ -67,11 +67,19 @@ def test_hook_shapes_has_no_orphans() -> None:
         registry containing write_file. Wiring lives in
         cli_classic._make_write_file_redirect_hook; the factory takes
         a parameter to install it.
+      - `auto_load_on_unknown` (harness-2uso): opt-in pre_tool hook
+        installed by the CLI when a session's registry contains
+        load_tool. Wiring lives in
+        cli_classic._make_auto_load_on_unknown_hook.
     """
     pipeline = default_hook_pipeline(catchers=ALL_CATCHERS)
     pipeline_names = {doc.name for doc in pipeline.describe()}
     documented = set(HOOK_SHAPES)
-    cli_installed = {"tool_result_summarizer", "write_file_redirect"}
+    cli_installed = {
+        "tool_result_summarizer",
+        "write_file_redirect",
+        "auto_load_on_unknown",
+    }
     orphans = documented - pipeline_names - cli_installed
     assert not orphans, (
         f"HOOK_SHAPES entries with no matching pipeline hook: "
