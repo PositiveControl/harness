@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -368,6 +369,39 @@ def test_write_file_spec_lists_overwrite_param(tmp_path: Path) -> None:
     assert "overwrite" in spec.parameters["properties"]
     # Pointer to edit_file should live in the description so the model sees it.
     assert "edit_file" in spec.description
+
+
+# --- harness-h6wa: post-write parse gate ---------------------------
+
+
+_requires_node = pytest.mark.skipif(
+    shutil.which("node") is None,
+    reason="parse-check JS integration requires `node` on PATH",
+)
+
+
+@_requires_node
+def test_write_file_rejects_broken_js(tmp_path: Path) -> None:
+    """harness-h6wa: WriteFileTool runs the parse gate too. A new .js
+    file containing a SyntaxError surfaces as a failure, with the
+    parser's stderr in the message — matching EditFileTool's behavior
+    so the model sees the same signal regardless of which write tool
+    it reached for."""
+    tool = WriteFileTool(root=tmp_path)
+    with pytest.raises(ValueError, match="no longer parses"):
+        tool.call(
+            path="broken.js",
+            content="function f() {\n  const x = 1;\n  const x = 2;\n}\n",
+        )
+
+
+@_requires_node
+def test_write_file_passes_valid_js(tmp_path: Path) -> None:
+    """Sanity: valid JS goes through the gate untouched."""
+    tool = WriteFileTool(root=tmp_path)
+    result = tool.call(path="ok.js", content="const x = 1;\n")
+    assert "wrote" in result
+    assert (tmp_path / "ok.js").read_text() == "const x = 1;\n"
 
 
 # ---------- ShellTool ----------
