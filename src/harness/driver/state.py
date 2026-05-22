@@ -64,6 +64,20 @@ class LoopRunState:
     attempt_counts: dict[str, int] = field(default_factory=dict)
     last_failure: dict[str, str] = field(default_factory=dict)
     turns_used: int = 0
+    # harness-kbnl: per-issue FSM resume state. When a turn halts mid-FSM
+    # (e.g. ASSESS completed but IMPLEMENT didn't finish), the next
+    # attempt picks up with the assessment text + last known phase in
+    # the handoff. Plain strings (not enums) so JSON round-trip is
+    # trivial and the field stays operator-readable in the .json
+    # dump — pretty `cat .harness/loop_runs/<id>.json` shows the
+    # state without consumers needing the TurnPhase enum to interpret
+    # values. `last_assessment` stores the most recent
+    # submit_assessment payload (current_state, gap, approach, etc.)
+    # so the handoff can echo it back; `last_test_cmd` stores the
+    # WRITE_TEST artifact so VERIFY knows how to re-run it.
+    last_turn_phase: dict[str, str] = field(default_factory=dict)
+    last_assessment: dict[str, dict[str, Any]] = field(default_factory=dict)
+    last_test_cmd: dict[str, str] = field(default_factory=dict)
 
     # --- construction -------------------------------------------------
 
@@ -142,4 +156,7 @@ class LoopRunState:
             attempt_counts=dict(raw.get("attempt_counts", {})),
             last_failure=dict(raw.get("last_failure", {})),
             turns_used=int(raw.get("turns_used", 0)),
+            last_turn_phase=dict(raw.get("last_turn_phase", {})),
+            last_assessment=dict(raw.get("last_assessment", {})),
+            last_test_cmd=dict(raw.get("last_test_cmd", {})),
         )
