@@ -33,27 +33,45 @@ from typing import Any
 from harness.tools.base import ToolCall
 
 # Number of same-fingerprint calls within a single turn that triggers
-# the nudge. 3 is conservative — two repeats are routine
-# (read-edit-read iteration), three signals fixation. Lower triggers
-# false positives on legitimate iterative work; higher leaves the
-# model stuck longer.
+# the nudge for tools that don't have a tool-specific override. 3 is
+# conservative for shell-verb-style repetition (e.g. running `node`
+# four times to validate a single fix); too low for file-mutating
+# tools where legitimate iterative work (writing a map row by row,
+# multi-step edits to one file) routinely takes 4-5 calls.
 DEFAULT_REPEAT_THRESHOLD: int = 3
 
+# Per-tool threshold overrides. File-mutating tools get a higher
+# threshold (5) — legitimate row-by-row implementation, multi-step
+# edits, and split-up writes all expect 4-5 same-path calls before
+# any nudge makes sense. The original d4e01d68 failure (4 edits with
+# old==new on game.js) is still caught: DuplicateCallHook handles
+# exact-args repeats; this detector backstops with the coarser
+# fingerprint at threshold 5 (harness-qbu3).
+_PER_TOOL_THRESHOLDS: Mapping[str, int] = {
+    "edit_file": 5,
+    "write_file": 5,
+}
 
-# Coarse-fingerprint extractors for the tools we care about. Each
-# entry returns the "target" string for fingerprinting; a missing /
-# unsuitable argument returns None and the call falls back to
-# `(tool_name, "")` — still useful for tools without a natural target
-# (e.g. `git_status`, `now`).
+
+# Coarse-fingerprint extractors for the tools we care about.
+#
+# WHITELIST-ONLY: tools NOT in this map are exempt from the
+# repeat-detector entirely — their fingerprint() returns None and the
+# counter never increments. This guards against false positives on
+# tools where each call is independent work (calc with different
+# expressions, grep with different patterns, fetch_url with different
+# URLs). Failure mode the detector targets is "same kind of work,
+# repeated, no convergence" — a wide net here is wrong (harness-qbu3).
 #
 # For file-mutating tools the path is the obvious anchor: "the model
-# keeps editing the same file" is the failure pattern. For `shell`
-# the first whitespace-delimited token of the command captures the
-# verb ("node", "grep", "pytest") without false-positiving on
-# different sub-commands of the same binary — `node script_a` and
-# `node script_b` share a fingerprint, which is exactly what we want
-# in the d4e01d68 case (different validator scripts in successive
-# iterations).
+# keeps editing the same file" is the failure pattern (or, with the
+# higher threshold, "the model keeps editing the same file WITHOUT
+# making progress"). For `shell` the first whitespace-delimited token
+# of the command captures the verb ("node", "grep", "pytest") without
+# false-positiving on different sub-commands of the same binary —
+# `node script_a` and `node script_b` share a fingerprint, which is
+# exactly what we want in the d4e01d68 case (different validator
+# scripts in successive iterations).
 def _path_arg(args: Mapping[str, Any]) -> str | None:
     value = args.get("path")
     if isinstance(value, str) and value:
@@ -78,23 +96,37 @@ _FINGERPRINT_EXTRACTORS: Mapping[str, Any] = {
     "edit_file": _path_arg,
     "write_file": _path_arg,
     "read_file": _path_arg,
+    "list_dir": _path_arg,
     "shell": _shell_cmd_verb,
 }
 
 
-def fingerprint(call: ToolCall) -> tuple[str, str]:
+def fingerprint(call: ToolCall) -> tuple[str, str] | None:
     """Coarse identity for repeat detection.
 
-    Returns (tool_name, target). `target` is `""` when the tool isn't
-    in the extractor map or when the extractor can't find a natural
-    target — those calls still count toward `(name, "")` repetition,
-    which catches "the model called `git_status` 5 times in this
-    turn" patterns even though they have no path argument."""
+    Returns (tool_name, target) for tools where repetition signals
+    stuckness. Returns None for tools where each call is independent
+    work (calc, grep, glob, fetch_url, git_*, now, date_math, the
+    search tools, meta-tools) — these are explicitly NOT in the
+    extractor whitelist. RepeatCounter.record skips None outright.
+
+    For whitelisted tools, an extractor that can't find its expected
+    arg (e.g. edit_file with no path) still returns (name, "") — the
+    call was malformed but it's still 'the same kind of work on no
+    target', and repetition there is still a stuckness signal."""
     extractor = _FINGERPRINT_EXTRACTORS.get(call.name)
     if extractor is None:
-        return (call.name, "")
+        return None
     target = extractor(call.arguments) or ""
     return (call.name, target)
+
+
+def threshold_for(call: ToolCall) -> int:
+    """Per-tool threshold lookup. File-mutating tools (edit_file /
+    write_file) use the elevated threshold (5); all others fall back
+    to DEFAULT_REPEAT_THRESHOLD (3). Public so the RepeatCounter
+    test surface can inspect what threshold a tool will trip at."""
+    return _PER_TOOL_THRESHOLDS.get(call.name, DEFAULT_REPEAT_THRESHOLD)
 
 
 @dataclass
@@ -102,13 +134,18 @@ class RepeatCounter:
     """Per-turn counter; one instance per `run_tool_loop` invocation.
 
     Each `record(call)` increments the call's fingerprint counter and
-    returns True iff this is the call that first reached `threshold`.
-    Subsequent records on the same fingerprint never return True again —
-    the nudge is one-shot per fingerprint per turn so we don't spam
-    the model after it's already been told to change approach.
+    returns True iff this is the call that first reached the tool's
+    threshold (see `threshold_for`). Subsequent records on the same
+    fingerprint never return True again — the nudge is one-shot per
+    fingerprint per turn so we don't spam the model after it's
+    already been told to change approach.
 
-    Threshold is a constructor argument so the integration tests can
-    override it without touching the module default."""
+    Calls whose fingerprint is None (non-whitelisted tools) are
+    skipped entirely — the counter never increments for them
+    (harness-qbu3). Threshold is per-tool by default; the constructor
+    `threshold` arg only acts as the floor for tools without an
+    explicit override, so most call sites should just instantiate
+    with defaults."""
 
     threshold: int = DEFAULT_REPEAT_THRESHOLD
     _counts: dict[tuple[str, str], int] = field(default_factory=dict)
@@ -116,21 +153,33 @@ class RepeatCounter:
 
     def record(self, call: ToolCall) -> bool:
         """Increment the fingerprint counter; return True the FIRST time
-        the count hits `threshold`. Returns False on subsequent matches
-        — the nudge has already fired for that fingerprint this turn."""
+        the count hits the tool's threshold. Returns False on
+        subsequent matches (nudge already fired) and False
+        unconditionally when the call's fingerprint is None
+        (tool not in the detection whitelist)."""
         key = fingerprint(call)
+        if key is None:
+            return False
         new_count = self._counts.get(key, 0) + 1
         self._counts[key] = new_count
-        if new_count >= self.threshold and key not in self._fired:
+        # Per-tool threshold falls back to the constructor's threshold
+        # for tools without an override. Tests that want to tighten
+        # detection still construct with a low value; production uses
+        # the per-tool map for nuance.
+        per_tool = _PER_TOOL_THRESHOLDS.get(call.name, self.threshold)
+        if new_count >= per_tool and key not in self._fired:
             self._fired.add(key)
             return True
         return False
 
     def count(self, call: ToolCall) -> int:
         """Inspect-only — current cumulative count for a call's
-        fingerprint. Used by the nudge text to mention how many times
-        the model has been called this way."""
-        return self._counts.get(fingerprint(call), 0)
+        fingerprint. Returns 0 when the tool is non-whitelisted
+        (fingerprint is None)."""
+        key = fingerprint(call)
+        if key is None:
+            return 0
+        return self._counts.get(key, 0)
 
 
 def build_nudge_text(call: ToolCall, count: int) -> str:
@@ -147,7 +196,14 @@ def build_nudge_text(call: ToolCall, count: int) -> str:
     failures were 'model's mental model of the file diverged from
     what its edits actually wrote', and `read_file` is the cheap
     corrective."""
-    name, target = fingerprint(call)
+    # Tool name + target. Non-whitelisted tools shouldn't reach this
+    # function (RepeatCounter never returns True for them), but fall
+    # back to the bare name if a caller invokes it anyway (harness-qbu3).
+    fp = fingerprint(call)
+    if fp is None:
+        name, target = call.name, ""
+    else:
+        name, target = fp
     target_clause = f" on `{target}`" if target else ""
     parts = [
         f"[STUCK — `{name}`{target_clause} has run {count} times this turn "
@@ -171,4 +227,5 @@ __all__ = [
     "RepeatCounter",
     "build_nudge_text",
     "fingerprint",
+    "threshold_for",
 ]
