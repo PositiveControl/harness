@@ -34,10 +34,12 @@ from harness.tools.base import ToolSpec
 
 # Hard caps. ``_MAX_INPUT_BYTES`` covers the union of file content +
 # inline stdin so a giant fixture doesn't blow through the bench's
-# memory budget. ``_MAX_OUTPUT_BYTES`` caps the captured stdout/value
-# returned to the model, with a truncation marker on overflow.
+# memory budget. The output cap defaults to 512 KB (small enough for
+# the model) but is overridable per-instance via ``max_output_bytes``
+# — the bench (scripts/bench_file_ops.py) bumps it so wall-clock
+# correctness checks see the full transform.
 _MAX_INPUT_BYTES = 8 * 1024 * 1024
-_MAX_OUTPUT_BYTES = 512 * 1024
+_DEFAULT_MAX_OUTPUT_BYTES = 512 * 1024
 _MAX_EXPR_BYTES = 8 * 1024
 
 _PRE_IMPORTS: tuple[str, ...] = (
@@ -249,6 +251,7 @@ class PythonStreamTool:
     timeout_seconds: float = 15.0
     cpu_limit_seconds: int = 30
     mem_limit_bytes: int = 512 * 1024 * 1024
+    max_output_bytes: int = _DEFAULT_MAX_OUTPUT_BYTES
 
     @property
     def spec(self) -> ToolSpec:
@@ -385,7 +388,7 @@ class PythonStreamTool:
             sign = "+" if delta >= 0 else ""
             return f"[python_stream] rewrote {paths[0]}: {sign}{delta} bytes ({elapsed_ms} ms)"
 
-        return _truncate(output, _MAX_OUTPUT_BYTES)
+        return _truncate(output, self.max_output_bytes)
 
 
 __all__ = ["PythonStreamTool"]

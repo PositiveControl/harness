@@ -32,7 +32,7 @@ from harness.tools.base import ToolSpec
 # apples-to-apples on token cost and validation behavior.
 _MAX_INPUT_BYTES = 8 * 1024 * 1024
 _MAX_STDIN_BYTES = 256 * 1024
-_MAX_OUTPUT_BYTES = 512 * 1024
+_DEFAULT_MAX_OUTPUT_BYTES = 512 * 1024
 _MAX_EXPR_BYTES = 8 * 1024
 
 
@@ -117,6 +117,7 @@ class PypStreamTool:
     root: Path
     timeout_seconds: float = 15.0
     binary: str = field(default="")
+    max_output_bytes: int = _DEFAULT_MAX_OUTPUT_BYTES
 
     def __post_init__(self) -> None:
         if not self.binary:
@@ -233,7 +234,7 @@ class PypStreamTool:
             sign = "+" if delta >= 0 else ""
             return f"[pyp_stream] rewrote {paths[0]}: {sign}{delta} bytes ({elapsed_ms} ms)"
 
-        return _truncate(output, _MAX_OUTPUT_BYTES)
+        return _truncate(output, self.max_output_bytes)
 
 
 __all__ = ["PypStreamTool"]

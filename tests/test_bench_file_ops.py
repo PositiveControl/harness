@@ -178,3 +178,167 @@ def test_distinct_count_oracle_is_integer(fixtures_root: Path) -> None:
     n = int(gold.strip())
     # 100k lines * user-K with K in [0,999] -> close to 1000 distinct.
     assert 950 <= n <= 1_000
+
+
+# --- Phase 3: timing-loop scaffolding --------------------------------------
+
+
+TASK_CALLS = bench_file_ops.TASK_CALLS
+ALL_CANDIDATES = bench_file_ops.ALL_CANDIDATES
+
+
+def test_task_calls_has_entry_for_every_pair() -> None:
+    """Every (task, candidate) pair must be either a real call spec or a
+    documented skip. Missing entries default to a generic skip in the
+    runner; tightening here so a new task added to BENCH_TASKS doesn't
+    silently get scored as 'no call spec registered'."""
+    for task in BENCH_TASKS:
+        candidates = TASK_CALLS.get(task.id, {})
+        for candidate in ALL_CANDIDATES:
+            assert candidate in candidates, f"missing TASK_CALLS[{task.id}][{candidate}]"
+            spec = candidates[candidate]
+            if spec.skip_reason is not None:
+                assert spec.skip_reason.strip(), f"{task.id} {candidate}: empty skip_reason"
+            else:
+                assert spec.kwargs, f"{task.id} {candidate}: empty kwargs but no skip_reason"
+
+
+def test_make_tool_constructs_each_candidate(tmp_path: Path) -> None:
+    for kind in ALL_CANDIDATES:
+        tool = bench_file_ops._make_tool(kind, tmp_path)
+        assert hasattr(tool, "spec"), f"{kind}: tool missing spec property"
+        assert hasattr(tool, "call"), f"{kind}: tool missing call method"
+
+
+def test_make_tool_uses_bumped_output_cap(tmp_path: Path) -> None:
+    """The bench bumps each candidate's max_output_bytes well past the
+    512 KB model-protection default so digest checks see the full
+    transform."""
+    for kind in ALL_CANDIDATES:
+        tool = bench_file_ops._make_tool(kind, tmp_path)
+        assert tool.max_output_bytes >= 8 * 1024 * 1024, f"{kind}: bench cap not bumped"
+
+
+def test_all_py_paths_returns_sorted_relpaths(tmp_path: Path) -> None:
+    """The <ALL_PY> sentinel expands to a deterministic sorted list of
+    paths the multi-file-replace candidates can chew on."""
+    task = next(t for t in BENCH_TASKS if t.id == "multi-file-replace")
+    task.fixture_fn(tmp_path)
+    paths = bench_file_ops._all_py_paths(tmp_path)
+    assert len(paths) == 60
+    assert paths == sorted(paths)
+    assert all(p.startswith("tests_ws/pkg_") and p.endswith(".py") for p in paths)
+
+
+def test_resolve_paths_sentinel_substitutes_all_py(tmp_path: Path) -> None:
+    task = next(t for t in BENCH_TASKS if t.id == "multi-file-replace")
+    task.fixture_fn(tmp_path)
+    resolved = bench_file_ops._resolve_paths_sentinel(
+        "multi-file-replace",
+        tmp_path,
+        {"tool": "sed", "args": ["s/foo/bar/g"], "paths": "<ALL_PY>", "in_place": True},
+    )
+    assert isinstance(resolved["paths"], list)
+    assert len(resolved["paths"]) == 60
+
+
+def test_resolve_paths_sentinel_passthrough_when_no_sentinel(tmp_path: Path) -> None:
+    kwargs = {"tool": "awk", "args": ["{print $3}"], "paths": ["logs/sample.log"]}
+    out = bench_file_ops._resolve_paths_sentinel("extract-col3", tmp_path, kwargs)
+    assert out["paths"] == ["logs/sample.log"]
+    # Other keys preserved as-is.
+    assert out["tool"] == "awk"
+    assert out["args"] == ["{print $3}"]
+
+
+def test_run_pair_records_correct(tmp_path: Path) -> None:
+    """python_stream + extract-col3 is the canonical 'correct' result —
+    no destructive mutation, deterministic oracle. One iteration is
+    enough to confirm the scoring path."""
+    task = next(t for t in BENCH_TASKS if t.id == "extract-col3")
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+    task_dir = workdir / task.id
+    task_dir.mkdir()
+    task.fixture_fn(task_dir)
+    spec = TASK_CALLS["extract-col3"]["python_stream"]
+    rec = bench_file_ops._run_pair(task, "python_stream", spec, workdir, iterations=1)
+    assert rec.correctness == "correct", f"expected correct, got {rec.correctness}: {rec.error}"
+    assert rec.median_s is not None
+    assert rec.median_s > 0
+    assert len(rec.runs_s) == 1
+
+
+def test_run_pair_records_skipped(tmp_path: Path) -> None:
+    task = next(t for t in BENCH_TASKS if t.id == "filter-jsonl")
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+    spec = TASK_CALLS["filter-jsonl"]["stream_edit"]
+    assert spec.skip_reason is not None
+    rec = bench_file_ops._run_pair(task, "stream_edit", spec, workdir, iterations=3)
+    assert rec.correctness == "skipped"
+    assert rec.skip_reason == spec.skip_reason
+    assert rec.runs_s == ()
+    assert rec.median_s is None
+
+
+def test_run_pair_records_error_when_call_raises(tmp_path: Path) -> None:
+    task = next(t for t in BENCH_TASKS if t.id == "extract-col3")
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+    task_dir = workdir / task.id
+    task_dir.mkdir()
+    task.fixture_fn(task_dir)
+    # Deliberately wrong shape: stream_edit needs a `tool` key.
+    broken = bench_file_ops.CandidateCall(
+        kwargs={"args": ["{print $3}"], "paths": ["logs/sample.log"]},
+    )
+    rec = bench_file_ops._run_pair(task, "stream_edit", broken, workdir, iterations=1)
+    assert rec.correctness == "error"
+    assert rec.error is not None
+    assert "TypeError" in rec.error
+
+
+def test_run_pair_in_place_resets_fixture_each_iteration(tmp_path: Path) -> None:
+    """For multi-file-replace, iteration 2 must see the same starting
+    state as iteration 1. Catches a regression where the runner reuses
+    the post-mutation fixture and iteration 2 measures a no-op."""
+    task = next(t for t in BENCH_TASKS if t.id == "multi-file-replace")
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+    spec = TASK_CALLS["multi-file-replace"]["stream_edit"]
+    rec = bench_file_ops._run_pair(task, "stream_edit", spec, workdir, iterations=3)
+    assert rec.correctness == "correct", rec.error
+    # Three iterations: each elapsed time should be on the same order
+    # of magnitude (no iteration drops to ~0 from a no-op).
+    assert len(rec.runs_s) == 3
+    min_s, max_s = min(rec.runs_s), max(rec.runs_s)
+    assert max_s / max(min_s, 1e-6) < 5.0, (
+        f"iteration times diverge: {rec.runs_s} — likely fixture not reset between runs"
+    )
+
+
+def test_format_ms_handles_none_and_ranges() -> None:
+    assert bench_file_ops._format_ms(None) == "—"
+    assert bench_file_ops._format_ms(0.0005).endswith("µs")
+    assert bench_file_ops._format_ms(0.05).endswith("ms")
+    assert bench_file_ops._format_ms(1.5).endswith("s")
+
+
+def test_format_status_maps_correctness() -> None:
+    rec_correct = bench_file_ops.BenchRecord(
+        task="t", candidate="c", runs_s=(), median_s=None, correctness="correct"
+    )
+    rec_incorrect = bench_file_ops.BenchRecord(
+        task="t", candidate="c", runs_s=(), median_s=None, correctness="incorrect"
+    )
+    rec_skipped = bench_file_ops.BenchRecord(
+        task="t", candidate="c", runs_s=(), median_s=None, correctness="skipped"
+    )
+    rec_error = bench_file_ops.BenchRecord(
+        task="t", candidate="c", runs_s=(), median_s=None, correctness="error"
+    )
+    assert bench_file_ops._format_status(rec_correct) == "✓"
+    assert bench_file_ops._format_status(rec_incorrect) == "✗"
+    assert bench_file_ops._format_status(rec_skipped) == "—"
+    assert bench_file_ops._format_status(rec_error) == "ERR"

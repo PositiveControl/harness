@@ -60,9 +60,12 @@ from harness.tools.base import ToolSpec
 # module docstring for the rationale.
 _DISALLOWED_METACHARS: frozenset[str] = frozenset("|`")
 
-# Hard cap on captured stdout returned to the model. Anything past
+# Default cap on captured stdout returned to the model. Anything past
 # this is truncated with a marker so the model knows output was cut.
-_MAX_STDOUT_BYTES = 512 * 1024
+# Overridable per-instance via ``max_output_bytes`` — the bench
+# (scripts/bench_file_ops.py) bumps it to multiple megabytes so the
+# wall-clock correctness check sees the full transform.
+_DEFAULT_MAX_STDOUT_BYTES = 512 * 1024
 
 # Hard cap on inline stdin to keep a runaway prompt from queueing
 # multi-megabyte input through the bench. paths-based input is uncapped
@@ -164,6 +167,7 @@ class StreamEditTool:
     root: Path
     timeout_seconds: float = 15.0
     binaries: dict[str, str] = field(default_factory=dict)
+    max_output_bytes: int = _DEFAULT_MAX_STDOUT_BYTES
 
     def __post_init__(self) -> None:
         # Resolve every verb at construction. A missing binary fails
@@ -340,7 +344,7 @@ class StreamEditTool:
             return (
                 f"[{tool}] exit={proc.returncode} ({elapsed_ms} ms)\nstderr: {stderr or '(empty)'}"
             )
-        return _truncate(proc.stdout, _MAX_STDOUT_BYTES)
+        return _truncate(proc.stdout, self.max_output_bytes)
 
     def _run_in_place(
         self,
