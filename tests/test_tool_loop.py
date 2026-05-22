@@ -511,6 +511,114 @@ def test_cross_round_duplicate_of_failed_call_reissues_failure() -> None:
     assert "bd command failed" in tool_msgs[1].content
 
 
+def test_repeat_detector_nudges_after_threshold_within_turn(tmp_path: Path) -> None:
+    """harness-cna0: when the model calls the same tool on the same
+    target 3+ times within a turn — not exact duplicates, just same
+    fingerprint — the loop appends a user-role nudge telling the
+    model to change approach. Pins the d4e01d68 failure mode: model
+    edits game.js four times without convergence, each call has a
+    distinct `old_string` so DuplicateCallHook can't fire.
+
+    Uses read_file so the tool successfully dispatches each call —
+    the detector only cares about model intent, not tool outcome,
+    but a flaky tool would muddy the test."""
+    (tmp_path / "x.txt").write_text("starter\n")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    # Three read_file calls with DIFFERENT args (so DuplicateCallHook
+    # doesn't intercept), all on the same path. The 3rd should trip
+    # the repeat detector at the default threshold of 3.
+    # offset/line params vary to keep args distinct.
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt", "offset": 1}),),
+            ),
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt", "offset": 2}),),
+            ),
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt", "offset": 3}),),
+            ),
+            ModelReply(content="final"),
+        ]
+    )
+
+    observed: list[ToolLoopEvent] = []
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="poke x")],
+        registry,
+        observe=lambda e: observed.append(e),
+    )
+
+    # Exactly one repeat_detected event — one nudge per fingerprint
+    # per turn, even though the threshold was crossed and additional
+    # calls landed.
+    kinds = [e.kind for e in observed]
+    assert kinds.count("repeat_detected") == 1, (
+        f"expected exactly one repeat_detected event; got kinds={kinds}"
+    )
+
+    # Repeat-detected event carries the call that crossed the
+    # threshold — caller can route to UI annotation if needed.
+    repeat_events = [e for e in observed if e.kind == "repeat_detected"]
+    assert repeat_events[0].call is not None
+    assert repeat_events[0].call.name == "read_file"
+
+    # Working thread now carries the nudge as a user-role message.
+    # Render is "STUCK — ..." per build_nudge_text contract.
+    nudges = [m for m in result.messages if m.role == "user" and "STUCK" in (m.content or "")]
+    assert len(nudges) == 1
+    assert "read_file" in nudges[0].content
+    assert "x.txt" in nudges[0].content
+
+
+def test_repeat_detector_does_not_fire_for_distinct_targets(tmp_path: Path) -> None:
+    """Counter is per-fingerprint, not global. Three read_file calls
+    on DIFFERENT files don't trip the threshold — legitimate
+    multi-file investigation isn't 'stuckness'."""
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (tmp_path / name).write_text(name)
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "a.txt"}),),
+            ),
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "b.txt"}),),
+            ),
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "c.txt"}),),
+            ),
+            ModelReply(content="seen all three"),
+        ]
+    )
+
+    observed: list[ToolLoopEvent] = []
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read all")],
+        registry,
+        observe=lambda e: observed.append(e),
+    )
+
+    kinds = [e.kind for e in observed]
+    assert "repeat_detected" not in kinds, (
+        f"distinct fingerprints must not trip detector; got kinds={kinds}"
+    )
+
+
 def test_loop_does_not_dedupe_different_args(tmp_path: Path) -> None:
     """Same tool with different arguments is not a duplicate — both
     must execute. Guards against an over-aggressive dedup that breaks

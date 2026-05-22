@@ -37,6 +37,7 @@ from harness.orchestrator.hooks import (
     default_hook_pipeline,
     looks_like_ab_fabrication,
 )
+from harness.orchestrator.repeat_detector import RepeatCounter, build_nudge_text
 from harness.persona.banter import BanterStreakTracker, is_banter_prompt
 from harness.tools.base import (
     ModelReply,
@@ -871,6 +872,7 @@ def _execute_tool_calls(
     user_message: str | None,
     succeeded_tools: set[str],
     attempted_calls: dict[tuple[str, str], int] | None = None,
+    repeat_counter: RepeatCounter | None = None,
 ) -> bool:
     """Execute the round's tool calls: in-round dedup, duplicate-call
     hook (cross-round), write-tier confirm, dispatch, append tool-role
@@ -923,6 +925,11 @@ def _execute_tool_calls(
     # unique-per-round set.
     if attempted_calls is None:
         attempted_calls = {}
+    # Repeat-detector nudges accumulated this round (harness-cna0).
+    # Flushed as a single user-role ChatMessage AFTER all tool-role
+    # messages are appended, so the next round sees the nudge as a
+    # fresh user instruction following the round's evidence.
+    pending_nudges: list[str] = []
     for call in deduped:
         key = _call_key(call)
         pre_outcome = hooks.run_pre_tool(
@@ -992,6 +999,33 @@ def _execute_tool_calls(
             any_success = True
             succeeded_tools.add(call.name)
         working.append(ChatMessage(role="tool", content=result.output, name=call.name))
+
+        # harness-cna0: coarse-fingerprint repeat detection. Tracks
+        # (tool_name, target) repetition within the turn. When the
+        # same fingerprint reaches the threshold for the first time,
+        # accumulate a nudge to append after this round's tool-role
+        # messages. The DuplicateCallHook catches exact-args repeats;
+        # this catches the harder case where args differ trivially
+        # (different `old_string` each iteration) but the model is
+        # stuck on the same target file with the same kind of work.
+        if repeat_counter is not None and repeat_counter.record(call):
+            nudge_text = build_nudge_text(call, repeat_counter.count(call))
+            pending_nudges.append(nudge_text)
+            emit(
+                ToolLoopEvent(
+                    kind="repeat_detected",
+                    call=call,
+                    round_index=round_idx,
+                )
+            )
+
+    # One nudge per fingerprint-fire batched into a single user-role
+    # message so the next round sees them grouped. Empty when no
+    # threshold crossed this round. Newline-joined to keep prior
+    # nudges readable when multiple fingerprints fire simultaneously
+    # (rare — usually one).
+    if pending_nudges:
+        working.append(ChatMessage(role="user", content="\n\n".join(pending_nudges)))
     return any_success
 
 
@@ -1139,6 +1173,13 @@ def run_tool_loop(
     # detection catchers (tool_search_loop) read this instead of
     # seen_calls so a dedup-masked loop still trips the threshold.
     attempted_calls: dict[tuple[str, str], int] = {}
+    # Coarse-fingerprint repeat counter (harness-cna0). Tracks
+    # `(tool_name, target)` repetition within this turn so the loop
+    # can nudge the model toward a different approach when it gets
+    # stuck on the same target file / shell verb / etc. without
+    # convergence. One nudge per fingerprint per turn; default
+    # threshold is 3 (see DEFAULT_REPEAT_THRESHOLD).
+    repeat_counter = RepeatCounter()
 
     def emit(event: ToolLoopEvent) -> None:
         events.append(event)
@@ -1492,6 +1533,7 @@ def run_tool_loop(
             user_message=turn_user_message,
             succeeded_tools=succeeded_tools,
             attempted_calls=attempted_calls,
+            repeat_counter=repeat_counter,
         )
         any_tool_succeeded = any_tool_succeeded or round_success
         # Second drain (harness-6fr0). All tool-role results for the

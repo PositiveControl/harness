@@ -64,6 +64,7 @@ from typing import Literal
 
 from harness.character import Character
 from harness.driver.bd import DriverBd, DriverBdError
+from harness.driver.claim_detector import detect_claim_signal
 from harness.driver.handoff import Handoff, build_handoff
 from harness.driver.planner import PlanDraft, PlannerError, VerifyStep
 from harness.driver.state import LoopRunState
@@ -287,7 +288,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             turn_observer = _make_turn_observer(
                 log_path, state.turns_used + 1, config.extra_observer
             )
-            turn_success, turn_reason = _run_executor_turn(
+            turn_success, turn_reason, turn_reply = _run_executor_turn(
                 adapter=adapter,
                 character=config.character,
                 handoff=handoff,
@@ -306,6 +307,19 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 started_at=state.started_at,
                 forbidden_patterns=config.forbidden_patterns,
             )
+
+            # harness-pfvj: claim-without-close detection. When the bd
+            # issue stayed open after the turn but the model's reply
+            # contains a success claim, route through the verify gate
+            # as a pseudo-close. The next-turn handoff then carries
+            # concrete verify-failure feedback (or a softer "you said
+            # done but didn't run bd close" hint when no verify steps
+            # are registered) instead of the vague "issue still open"
+            # reason.
+            if not success and _is_still_open_reason(reason) and detect_claim_signal(turn_reply):
+                reason = _build_claim_without_close_reason(
+                    verify_map, bd, current.id, config.workspace
+                )
 
             if success:
                 # harness-xfh2: the verify gate runs only when the bd
@@ -420,8 +434,8 @@ def _run_executor_turn(
     workspace: Path,
     observe: ExecutorObserver | None = None,
     max_rounds: int = 12,
-) -> tuple[bool, str]:
-    """Run one executor turn. Returns (succeeded, reason).
+) -> tuple[bool, str, str]:
+    """Run one executor turn. Returns (succeeded, reason, reply).
 
     `succeeded` is computed against the post-turn ToolLoopResult only —
     the caller is responsible for the post-turn `bd.show` outcome check
@@ -429,6 +443,12 @@ def _run_executor_turn(
     being closed). This split keeps the test surface small: the turn
     runner is a pure function of its inputs, and the caller composes
     the bd check on top.
+
+    `reply` is the model's final text content for the turn — the same
+    string the operator sees in the progress log. Returned so the caller
+    can run claim-detection (harness-pfvj) when the bd issue stays open
+    after the turn: a confident-but-not-closed reply gets routed through
+    the verify gate as a pseudo-close.
 
     `observe`, when set, receives every `ToolLoopEvent` from the inner
     `run_tool_loop` — same shape as the planner's observer
@@ -466,8 +486,8 @@ def _run_executor_turn(
         max_rounds=max_rounds,
     )
     if result.content.strip() == EXHAUSTED_FABRICATION_FALLBACK.strip():
-        return False, "fabrication_fallback fired"
-    return True, ""
+        return False, "fabrication_fallback fired", result.content
+    return True, "", result.content
 
 
 def _classify_post_turn(
@@ -670,6 +690,56 @@ def _exec_verify_cmd(step: VerifyStep, workspace: Path) -> tuple[int, str]:
     tail_src = stderr or stdout
     tail = tail_src[-VERIFY_STDERR_TAIL_CHARS:]
     return result.returncode, tail
+
+
+# --- claim-without-close (harness-pfvj) ---------------------------
+
+
+# Prefix on `last_failure` entries that originated from the
+# claim-detection path. Matches the `verify_failed:` convention from
+# harness-xfh2 — operators and the next-turn handoff renderer can grep
+# for the prefix to distinguish failure modes.
+_CLAIM_WITHOUT_CLOSE_PREFIX: str = "claim_without_close:"
+
+# Fallback message used when a claim is detected but no verify steps are
+# registered for the issue. Tells the model the concrete next action —
+# "you said you were done, but you didn't run bd close, run it." — so
+# the next handoff has something more actionable than "issue still
+# open after turn". Kept short; the executor's prompt budget is tight.
+_CLAIM_WITHOUT_CLOSE_NO_VERIFY_HINT: str = (
+    "model claimed success in its reply but did not invoke "
+    "`bd close <id>` via shell — run it explicitly when the work is done"
+)
+
+
+def _is_still_open_reason(reason: str) -> bool:
+    """True when `_classify_post_turn` returned the 'issue still
+    {status} after turn' failure shape — the exact path claim-detection
+    cares about. Other failure modes (forbidden-pattern hits, bd.show
+    errors, fabrication-fallback) keep their original reason; the
+    claim-detection rewrite only applies when the bd issue stayed
+    open."""
+    return reason.startswith("issue still ") and reason.endswith(" after turn")
+
+
+def _build_claim_without_close_reason(
+    verify_map: Mapping[str, Sequence[VerifyStep]],
+    bd: DriverBd,
+    issue_id: str,
+    workspace: Path,
+) -> str:
+    """Compose the `last_failure` message for a claim-without-close turn.
+
+    Runs the verify gate when the PlanItem has steps registered — the
+    failure message carries the verify output verbatim (truncated by
+    `_run_issue_verify`). When no steps are registered, falls back to a
+    softer hint pointing the model at the missing `bd close` call. Both
+    cases share the `claim_without_close:` prefix so downstream grep
+    can distinguish them."""
+    verify_failure = _run_issue_verify(verify_map, bd, issue_id, workspace)
+    if verify_failure is not None:
+        return f"{_CLAIM_WITHOUT_CLOSE_PREFIX} {verify_failure}"
+    return f"{_CLAIM_WITHOUT_CLOSE_PREFIX} {_CLAIM_WITHOUT_CLOSE_NO_VERIFY_HINT}"
 
 
 def _try_reopen(bd: DriverBd, issue_id: str) -> bool:

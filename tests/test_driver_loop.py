@@ -1457,3 +1457,268 @@ def test_loop_result_is_dataclass_like() -> None:
     )
     assert r.exit_reason == "success"
     assert r.handoffs == []
+
+
+# --- claim-without-close (harness-pfvj) -----------------------------
+
+
+def test_detect_claim_signal_matches_known_phrases() -> None:
+    """harness-pfvj: the patterns must catch the exact phrase from
+    loop run d4e01d68 turn 3 plus the common variants. Conservative —
+    if a small model invents a new phrasing, the worst case is a
+    false negative (the loop falls back to its existing 'issue still
+    open' path)."""
+    from harness.driver.claim_detector import detect_claim_signal
+
+    # The d4e01d68 phrase verbatim — the load-bearing case.
+    assert detect_claim_signal(
+        "the issue has been resolved and the acceptance criteria from the handoff have been met."
+    )
+    # Variants we expect the same model to produce on adjacent turns.
+    assert detect_claim_signal("Issue is resolved. All acceptance criteria are met.")
+    assert detect_claim_signal("The task is complete.")
+    assert detect_claim_signal("Implementation is complete and tests pass.")
+    assert detect_claim_signal("All requirements satisfied.")
+    assert detect_claim_signal("Everything is in place.")
+    # Case-insensitive end-to-end.
+    assert detect_claim_signal("THE ISSUE HAS BEEN RESOLVED")
+
+
+def test_detect_claim_signal_no_signal_returns_false() -> None:
+    """harness-pfvj: replies with no completion claim — including the
+    negated forms — must NOT trip the detector. False positives here
+    would cause spurious verify-gate runs on still-in-progress turns."""
+    from harness.driver.claim_detector import detect_claim_signal
+
+    assert not detect_claim_signal("")
+    assert not detect_claim_signal("   \n\n")
+    assert not detect_claim_signal("Let me try a different approach.")
+    assert not detect_claim_signal("I'll read the file next.")
+    # Negated forms — the regex isn't lookbehind-anchored, but "not yet
+    # resolved" should still NOT match because the patterns search for
+    # the affirmative substring; this asserts the current behavior.
+    # If a real failure case surfaces with a negation, tighten then.
+    assert not detect_claim_signal("Issue not yet complete; still iterating.")
+
+
+def test_run_loop_claim_without_close_no_verify_steps_softer_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-pfvj: model claims success in its reply but never calls
+    `bd close`, AND no verify steps are registered for the issue.
+    The next-turn handoff carries `claim_without_close:` with the
+    softer 'run bd close explicitly' hint rather than the vague
+    'issue still open after turn' reason."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], [issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    seen_prompts: list[str] = []
+    call_count = [0]
+
+    def fake_run_tool_loop(
+        _adapter: Any, messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        seen_prompts.append(messages[0].content)
+        idx = call_count[0]
+        call_count[0] += 1
+        if idx == 0:
+            # Turn 1: model claims success but does NOT call bd close.
+            # Issue stays open → classify FAIL → claim_without_close path.
+            return ToolLoopResult(
+                content="The issue has been resolved and all acceptance criteria are met.",
+                messages=[],
+                rounds=1,
+                events=[],
+            )
+        # Turn 2: model actually closes the issue this time.
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="closed.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+
+    cfg = _config(tmp_path, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-a"]
+    # The second turn's handoff must carry the claim_without_close hint —
+    # NOT the vague "issue still open after turn" reason.
+    assert len(seen_prompts) == 2
+    assert "[PRIOR ATTEMPT FAILED]" in seen_prompts[1]
+    assert "claim_without_close:" in seen_prompts[1]
+    assert "did not invoke" in seen_prompts[1]
+
+
+def test_run_loop_claim_without_close_verify_fail_surfaces_verify_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-pfvj: when claim-detection fires AND the issue has
+    verify steps, the verify gate runs and its failure output lands
+    in last_failure prefixed with `claim_without_close:`. This is the
+    d4e01d68 case: model says 'tileGrid is properly structured' but
+    verify proves it's still 42-char wide instead of 40."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], [issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    seen_prompts: list[str] = []
+    call_count = [0]
+
+    def fake_run_tool_loop(
+        _adapter: Any, messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        seen_prompts.append(messages[0].content)
+        idx = call_count[0]
+        call_count[0] += 1
+        if idx == 0:
+            # Turn 1: claim-with-no-close, issue stays open.
+            return ToolLoopResult(
+                content="The task is complete. tileGrid is properly structured.",
+                messages=[],
+                rounds=1,
+                events=[],
+            )
+        # Turn 2: model closes for real.
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="closed.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+
+    draft_path = tmp_path / "plan.yaml"
+    _write_draft_with_verify(draft_path, "implement foo", ["smoke.js"])
+
+    exec_calls: list[Any] = []
+    # First call: pseudo-close verify proves the claim was wrong.
+    # Second call: turn 2's bd close runs verify on the success path
+    # and that one passes — model actually fixed it on the retry.
+    exec_results = iter([(1, "row width 42 != expected 40"), (0, "")])
+
+    def fake_exec(step: Any, _ws: Any) -> tuple[int, str]:
+        exec_calls.append(step)
+        return next(exec_results)
+
+    monkeypatch.setattr("harness.driver.loop._exec_verify_cmd", fake_exec)
+
+    cfg = _config(tmp_path, plan_draft_path=draft_path, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-a"]
+    # Verify ran twice: once on the pseudo-close path, once on
+    # turn 2's real-close success path.
+    assert len(exec_calls) == 2
+    # The next handoff carries the verify-output failure under the
+    # claim_without_close prefix.
+    assert "claim_without_close:" in seen_prompts[1]
+    assert "row width 42 != expected 40" in seen_prompts[1]
+
+
+def test_run_loop_open_without_claim_keeps_existing_reason(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-pfvj: turns that leave the issue open WITHOUT a success
+    claim must keep the existing 'issue still open after turn' reason
+    — the new path only fires when the detector matches. This pins
+    the back-compat behavior the bead promises."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], [issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    seen_prompts: list[str] = []
+    call_count = [0]
+
+    def fake_run_tool_loop(
+        _adapter: Any, messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        seen_prompts.append(messages[0].content)
+        idx = call_count[0]
+        call_count[0] += 1
+        if idx == 0:
+            # Turn 1: model wanders off, makes no claim. Issue stays open.
+            return ToolLoopResult(
+                content="I'll need to investigate further next turn.",
+                messages=[],
+                rounds=1,
+                events=[],
+            )
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="closed.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+
+    cfg = _config(tmp_path, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    # The next handoff carries the original "issue still open" reason —
+    # no claim_without_close rewrite.
+    assert "[PRIOR ATTEMPT FAILED]" in seen_prompts[1]
+    assert "issue still open after turn" in seen_prompts[1]
+    assert "claim_without_close:" not in seen_prompts[1]
+
+
+def test_run_loop_claim_without_close_no_verify_does_not_invoke_verify_runner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-pfvj: the verify runner must NOT execute on the
+    claim_without_close path when no verify steps are registered.
+    Guards against a regression that would shell out for nothing."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], [issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    call_count = [0]
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        idx = call_count[0]
+        call_count[0] += 1
+        if idx == 0:
+            return ToolLoopResult(
+                content="The issue has been resolved.",
+                messages=[],
+                rounds=1,
+                events=[],
+            )
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="closed.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+
+    # No plan_draft_path → empty verify_map. _exec_verify_cmd must
+    # never be called.
+    monkeypatch.setattr(
+        "harness.driver.loop._exec_verify_cmd",
+        lambda *_a, **_k: pytest.fail("_exec_verify_cmd should not run with empty verify_map"),
+    )
+
+    cfg = _config(tmp_path, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
