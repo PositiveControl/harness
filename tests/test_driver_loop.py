@@ -966,6 +966,182 @@ def test_run_loop_targeted_fix_banner_renders_on_regression_marker(
     assert "[MODE: TARGETED-FIX]" in seen_prompts[0]
 
 
+# --- workspace snapshot (harness-9ijr) ------------------------------
+
+
+def test_snapshot_workspace_creates_tarball_with_expected_files(tmp_path: Path) -> None:
+    """harness-9ijr: the snapshot helper writes a tar.gz to the
+    expected path under .harness/loop_runs/ and the archive contains
+    every non-excluded file from the workspace."""
+    import tarfile as _tarfile
+
+    from harness.driver.loop import _snapshot_workspace
+
+    (tmp_path / "game.js").write_text("// js\n")
+    (tmp_path / "index.html").write_text("<!doctype html>\n")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "nested.txt").write_text("nested\n")
+
+    snapshot = _snapshot_workspace(tmp_path, "abc1234")
+
+    assert snapshot == tmp_path / ".harness" / "loop_runs" / "abc1234_workspace.tar.gz"
+    assert snapshot.exists()
+
+    with _tarfile.open(snapshot, "r:gz") as tf:
+        names = set(tf.getnames())
+    assert "game.js" in names
+    assert "index.html" in names
+    assert "sub/nested.txt" in names
+
+
+def test_snapshot_workspace_prunes_default_exclude_dirs(tmp_path: Path) -> None:
+    """harness-9ijr: .git / .harness / node_modules / .venv / __pycache__
+    subtrees are not walked, so they never reach the tar. Without the
+    pruning, a 1GB node_modules would balloon the snapshot and a
+    self-referential .harness would archive itself."""
+    import tarfile as _tarfile
+
+    from harness.driver.loop import _snapshot_workspace
+
+    # Files in the workspace ROOT survive; files inside excluded dirs vanish.
+    (tmp_path / "keep.txt").write_text("keep\n")
+    for excluded in (".git", ".harness", "node_modules", ".venv", "__pycache__"):
+        d = tmp_path / excluded
+        d.mkdir()
+        (d / "ignored.txt").write_text("ignored\n")
+
+    snapshot = _snapshot_workspace(tmp_path, "xyz9876")
+
+    with _tarfile.open(snapshot, "r:gz") as tf:
+        names = set(tf.getnames())
+    assert "keep.txt" in names
+    for excluded in (".git", ".harness", "node_modules", ".venv", "__pycache__"):
+        assert f"{excluded}/ignored.txt" not in names, (
+            f"{excluded}/ subtree should be pruned from snapshot"
+        )
+
+
+def test_snapshot_workspace_excludes_pyc_and_pyo_files(tmp_path: Path) -> None:
+    """harness-9ijr: .pyc / .pyo byte-compiled artifacts don't help
+    recovery and bloat the tar. Skipping them is pure win."""
+    import tarfile as _tarfile
+
+    from harness.driver.loop import _snapshot_workspace
+
+    (tmp_path / "code.py").write_text("# src\n")
+    (tmp_path / "code.pyc").write_bytes(b"\x00\x01")
+    (tmp_path / "code.pyo").write_bytes(b"\x00\x02")
+
+    snapshot = _snapshot_workspace(tmp_path, "pyc1")
+    with _tarfile.open(snapshot, "r:gz") as tf:
+        names = set(tf.getnames())
+    assert "code.py" in names
+    assert "code.pyc" not in names
+    assert "code.pyo" not in names
+
+
+def test_snapshot_workspace_raises_when_over_cap(tmp_path: Path) -> None:
+    """harness-9ijr: pre-tar size accounting catches over-cap
+    workspaces and raises SnapshotTooBigError BEFORE any tar bytes are
+    written, so the operator sees a clean error and no partial
+    artifact."""
+    from harness.driver.loop import (
+        SnapshotTooBigError,
+        _snapshot_path,
+        _snapshot_workspace,
+    )
+
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"\x00" * 2048)
+
+    with pytest.raises(SnapshotTooBigError, match="cap"):
+        _snapshot_workspace(tmp_path, "oversize", size_cap_bytes=1024)
+    # No partial tar should exist.
+    assert not _snapshot_path(tmp_path, "oversize").exists()
+
+
+def test_run_loop_writes_snapshot_on_fresh_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-9ijr: snapshot=True (default) emits the tar.gz before
+    turn 1 fires. Recovery point is in place by the time the model
+    can do anything destructive."""
+    (tmp_path / "src.txt").write_text("starter content\n")
+
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    _stub_run_tool_loop(monkeypatch, outcomes=["close harness-a"], bd=bd)
+
+    result = run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+    snapshot_path = tmp_path / ".harness" / "loop_runs" / f"{result.loop_run_id}_workspace.tar.gz"
+    assert snapshot_path.exists()
+
+
+def test_run_loop_no_snapshot_skips_tarball(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-9ijr: passing snapshot=False (CLI --no-snapshot) leaves
+    .harness/loop_runs/<id>_workspace.tar.gz un-created. Operator
+    escape hatch for oversize workspaces or known-tracked trees."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    _stub_run_tool_loop(monkeypatch, outcomes=["close harness-a"], bd=bd)
+
+    result = run_loop(_FakeAdapter(), bd, _config(tmp_path, snapshot=False))  # type: ignore[arg-type]
+    snapshot_path = tmp_path / ".harness" / "loop_runs" / f"{result.loop_run_id}_workspace.tar.gz"
+    assert not snapshot_path.exists()
+
+
+def test_run_loop_resume_skips_snapshot(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """harness-9ijr: resume runs MUST NOT overwrite the original run's
+    snapshot — that tarball is the operator's recovery point. The
+    resume path detects `config.resume_from is not None` and bypasses
+    the snapshot helper."""
+    # Seed a pre-existing state file so resume has something to load.
+    epic_id = "harness-e9oq"
+    state = LoopRunState.fresh(epic_id=epic_id, max_turns=20, started_at_sha="deadbeef")
+    state.loop_run_id = "resumed1"
+    state.save(LoopRunState.state_path(tmp_path, state.loop_run_id))
+
+    # Seed a sentinel snapshot from the "original run" so we can
+    # assert it survives untouched.
+    snapshot_path = tmp_path / ".harness" / "loop_runs" / f"{state.loop_run_id}_workspace.tar.gz"
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_bytes(b"ORIGINAL SNAPSHOT SENTINEL")
+    original_bytes = snapshot_path.read_bytes()
+
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            epic_id: _issue(epic_id, title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    _stub_run_tool_loop(monkeypatch, outcomes=["close harness-a"], bd=bd)
+
+    cfg = _config(tmp_path, resume_from=state.loop_run_id)
+    run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    # Snapshot still has the original bytes — resume didn't overwrite.
+    assert snapshot_path.read_bytes() == original_bytes
+
+
 # --- constants ------------------------------------------------------
 
 

@@ -264,6 +264,17 @@ def loop_command(
             "(orchestrator's default 8 is too tight for multi-edit work)."
         ),
     ),
+    snapshot: bool = typer.Option(
+        True,
+        "--snapshot/--no-snapshot",
+        help=(
+            "Tar+gzip the workspace to .harness/loop_runs/<id>_workspace.tar.gz "
+            "before the first turn (default on; harness-9ijr). Disables for "
+            "workspaces over the 100MB cap or when the operator wants to "
+            "skip the safety net. Resume runs always skip the snapshot — the "
+            "original run's tarball is the recovery point."
+        ),
+    ),
 ) -> None:
     """Drive a bd epic to closure across multiple turns."""
     if list_runs:
@@ -303,6 +314,7 @@ def loop_command(
         extra_observer=_stderr_observer if verbose else None,
         forbidden_patterns=() if no_verify else ("TODO", "FIXME", "XXX", "HACK"),
         executor_max_rounds=executor_max_rounds,
+        snapshot=snapshot,
     )
     result = run_loop(adapter, bd, config)
     _print_result(result)

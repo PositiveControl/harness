@@ -51,8 +51,10 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import signal
 import subprocess
+import tarfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -158,6 +160,17 @@ class LoopConfig:
     # ~50% more headroom while keeping each turn bounded (12 rounds *
     # ~10s/round ≈ 2 min upper bound on M4 Pro).
     executor_max_rounds: int = 12
+    # Tar+gzip the workspace into
+    # .harness/loop_runs/<id>_workspace.tar.gz before the first turn
+    # fires (harness-9ijr). Default on — gitignored workspaces are
+    # otherwise unrecoverable when a runaway model rewrites a file
+    # (today's GTA2 §1 regression that prompted this guard). Resume
+    # runs (`resume_from` set) skip the snapshot — the original run's
+    # snapshot is the operator's restore point and overwriting it
+    # would defeat the purpose. Set False via --no-snapshot for
+    # callers who know what they're doing (large workspaces over the
+    # cap, fully-tracked git trees, throwaway scratch sessions).
+    snapshot: bool = True
 
 
 @dataclass
@@ -193,6 +206,15 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
         f"loop_run={state.loop_run_id} epic={state.epic_id} max_turns={state.max_turns} "
         f"resumed={'yes' if config.resume_from else 'no'}"
     )
+
+    # harness-9ijr: snapshot the workspace once per fresh run BEFORE
+    # the first turn fires. Resume runs inherit the original
+    # snapshot — overwriting it would lose the operator's recovery
+    # point. SnapshotTooBigError aborts the run; the operator chooses
+    # between narrowing --workspace and passing --no-snapshot.
+    if config.snapshot and config.resume_from is None:
+        snapshot_path = _snapshot_workspace(config.workspace, state.loop_run_id)
+        log(f"workspace snapshot: {snapshot_path}")
 
     with _sigint_guard() as interrupted:
         while True:
@@ -764,9 +786,109 @@ def _sigint_guard() -> Iterator[_InterruptFlag]:
         signal.signal(signal.SIGINT, previous)
 
 
+# --- workspace snapshot (harness-9ijr) ----------------------------
+
+
+# Names that are pruned from the snapshot walk (entire subtree
+# skipped). Targets the high-cost / not-our-state directories
+# operators routinely have in workspaces. `.harness` is special:
+# the snapshot tar lives INSIDE this dir, so excluding it prevents
+# the tar from trying to archive itself.
+DEFAULT_SNAPSHOT_EXCLUDE_DIRS: frozenset[str] = frozenset(
+    {".harness", ".git", "node_modules", ".venv", "__pycache__"}
+)
+
+# File-suffix exclusions. `.pyc` byte-compiled artifacts and OS
+# scratch files don't help recovery and bloat the tar; skipping is
+# pure win. Tuple matches `str.endswith`'s signature.
+DEFAULT_SNAPSHOT_EXCLUDE_SUFFIXES: tuple[str, ...] = (".pyc", ".pyo")
+
+# Pre-tar uncompressed size cap. 100MB matches the spec — large
+# enough to capture realistic scratch workspaces (the GTA2 case is
+# <1MB), small enough to force operators to think before they
+# snapshot a node_modules-laden tree.
+SNAPSHOT_SIZE_CAP_BYTES: int = 100 * 1024 * 1024
+
+
+class SnapshotTooBigError(RuntimeError):
+    """Raised when the pre-tar workspace size exceeds the cap. The
+    message names the cap so operators know the threshold to clear
+    or the flag to bypass it."""
+
+
+def _snapshot_path(workspace: Path, loop_run_id: str) -> Path:
+    """`.harness/loop_runs/<id>_workspace.tar.gz` under workspace."""
+    return workspace / ".harness" / "loop_runs" / f"{loop_run_id}_workspace.tar.gz"
+
+
+def _iter_snapshot_files(workspace: Path) -> Iterator[Path]:
+    """Walk workspace yielding files to include in the snapshot.
+
+    Uses os.walk with followlinks=False to avoid infinite loops on
+    self-referential symlinks. Prunes DEFAULT_SNAPSHOT_EXCLUDE_DIRS
+    in-place so we never recurse into them (cheap — saves the cost
+    of statting every node_modules file). Skips files whose basename
+    ends with DEFAULT_SNAPSHOT_EXCLUDE_SUFFIXES."""
+    for root, dirs, files in os.walk(workspace, followlinks=False):
+        dirs[:] = [d for d in dirs if d not in DEFAULT_SNAPSHOT_EXCLUDE_DIRS]
+        for fname in files:
+            if fname.endswith(DEFAULT_SNAPSHOT_EXCLUDE_SUFFIXES):
+                continue
+            yield Path(root) / fname
+
+
+def _snapshot_workspace(
+    workspace: Path,
+    loop_run_id: str,
+    *,
+    size_cap_bytes: int = SNAPSHOT_SIZE_CAP_BYTES,
+) -> Path:
+    """tar+gzip `workspace` to `.harness/loop_runs/<id>_workspace.tar.gz`.
+
+    Returns the snapshot path on success. Raises SnapshotTooBigError when
+    pre-tar uncompressed total exceeds size_cap_bytes — caller MUST
+    abort the run rather than continue without a recoverable
+    starting point.
+
+    Pre-walk size accounting runs first; only after the cap check
+    passes does the tar open. This means an over-cap workspace
+    leaves no partial tar behind. Files that vanish between the
+    size walk and the tar pass (unlikely in practice; the loop's
+    workspace shouldn't be churning) are silently skipped from the
+    tar — `tarfile.add` raises but we don't catch; let it surface
+    so the operator sees the race condition."""
+    total_bytes = 0
+    files_to_include: list[Path] = []
+    for path in _iter_snapshot_files(workspace):
+        try:
+            total_bytes += path.stat().st_size
+        except OSError:
+            continue
+        if total_bytes > size_cap_bytes:
+            mb = size_cap_bytes // (1024 * 1024)
+            raise SnapshotTooBigError(
+                f"workspace size > {mb}MB cap (rooted at {workspace}). "
+                f"Pass --no-snapshot to skip the snapshot guard, or "
+                f"narrow --workspace to a smaller subtree."
+            )
+        files_to_include.append(path)
+
+    snapshot_path = _snapshot_path(workspace, loop_run_id)
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(snapshot_path, "w:gz") as tf:
+        for path in files_to_include:
+            arcname = path.relative_to(workspace)
+            tf.add(path, arcname=str(arcname), recursive=False)
+    return snapshot_path
+
+
 __all__ = [
+    "DEFAULT_SNAPSHOT_EXCLUDE_DIRS",
+    "DEFAULT_SNAPSHOT_EXCLUDE_SUFFIXES",
     "EXECUTOR_USER_MESSAGE",
+    "SNAPSHOT_SIZE_CAP_BYTES",
     "LoopConfig",
     "LoopResult",
+    "SnapshotTooBigError",
     "run_loop",
 ]
