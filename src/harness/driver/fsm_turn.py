@@ -65,6 +65,7 @@ from harness.orchestrator.hooks import (
     HookPipeline,
     default_hook_pipeline,
 )
+from harness.orchestrator.no_write_streak import NoWriteStreakDetector
 from harness.tools import (
     CalcTool,
     DateMathTool,
@@ -376,6 +377,12 @@ def _run_one_phase(
         if original_observe is not None:
             original_observe(event)
 
+    # harness-41b3: arm the no-write-streak detector only for IMPLEMENT.
+    # Other phases (ASSESS / WRITE_TEST / VERIFY / CLOSE) legitimately
+    # do read-only work; nudging them toward edit_file would be wrong.
+    # Constructed fresh per phase invocation — the detector holds
+    # per-turn state and must not leak across phases.
+    no_write_streak = NoWriteStreakDetector() if phase is TurnPhase.IMPLEMENT else None
     result: ToolLoopResult = run_tool_loop(
         adapter,  # type: ignore[arg-type]  # ModelAdapter satisfies _ToolCapableAdapter at runtime
         messages,
@@ -383,6 +390,7 @@ def _run_one_phase(
         hooks=hooks,
         observe=relay,
         max_rounds=max_rounds,
+        no_write_streak=no_write_streak,
     )
     return _PhaseExecutionResult(tool_loop_result=result, succeeded_tools=succeeded_tools)
 

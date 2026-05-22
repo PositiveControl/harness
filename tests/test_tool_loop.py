@@ -3981,6 +3981,158 @@ def test_inbox_empty_content_skipped() -> None:
     assert all(m.content != "" or m.role != "user" for m in result.messages)
 
 
+# --- no-write streak detector (harness-41b3) ----------------------
+
+
+def test_no_write_streak_appends_nudge_when_armed(tmp_path: Path) -> None:
+    """harness-41b3: when the caller arms the no-write-streak detector
+    and the model emits N consecutive non-write tool calls, the loop
+    appends a user-role nudge after the threshold-crossing call. Mirrors
+    the loop run 26c39558 turn 15 pattern: read, grep, grep, list_dir
+    with no edit_file in sight."""
+    from harness.orchestrator.no_write_streak import NoWriteStreakDetector
+
+    (tmp_path / "x.txt").write_text("starter\n")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    # Threshold=3 so the test stays small. Four read_file calls — the
+    # 3rd should trip the detector.
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt", "offset": 1}),),
+            ),
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt", "offset": 2}),),
+            ),
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt", "offset": 3}),),
+            ),
+            ModelReply(content="final"),
+        ]
+    )
+
+    observed: list[ToolLoopEvent] = []
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="poke x")],
+        registry,
+        observe=lambda e: observed.append(e),
+        no_write_streak=NoWriteStreakDetector(threshold=3),
+    )
+
+    kinds = [e.kind for e in observed]
+    assert kinds.count("no_write_streak_detected") == 1, (
+        f"expected exactly one no_write_streak_detected event; got kinds={kinds}"
+    )
+
+    nudges = [
+        m for m in result.messages if m.role == "user" and "NO-WRITE STREAK" in (m.content or "")
+    ]
+    assert len(nudges) == 1
+    assert "edit_file" in nudges[0].content
+    assert "submit_implementation_complete" in nudges[0].content
+
+
+def test_no_write_streak_disarmed_by_default(tmp_path: Path) -> None:
+    """When the caller does NOT pass `no_write_streak`, the detector is
+    inactive — chat REPL / evals / non-IMPLEMENT phases see no change.
+    Five read_file calls with no detector arg must produce zero
+    no_write_streak_detected events."""
+    (tmp_path / "x.txt").write_text("hi\n")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt", "offset": i}),),
+            )
+            for i in range(1, 6)
+        ]
+        + [ModelReply(content="done")]
+    )
+
+    observed: list[ToolLoopEvent] = []
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="poke")],
+        registry,
+        observe=lambda e: observed.append(e),
+    )
+    kinds = [e.kind for e in observed]
+    assert "no_write_streak_detected" not in kinds, (
+        f"detector must be off when caller passes no_write_streak=None; kinds={kinds}"
+    )
+
+
+def test_no_write_streak_reset_by_successful_write(tmp_path: Path) -> None:
+    """A successful write_file resets the counter — read, read, write,
+    read, read does not trip threshold=3 because the write zeroed the
+    streak. Pins that legitimate write-then-investigate flows don't
+    false-positive."""
+    from harness.orchestrator.no_write_streak import NoWriteStreakDetector
+    from harness.tools import WriteFileTool
+
+    (tmp_path / "x.txt").write_text("starter\n")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+    registry.register(WriteFileTool(root=tmp_path))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt", "offset": 1}),),
+            ),
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt", "offset": 2}),),
+            ),
+            ModelReply(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        name="write_file",
+                        arguments={
+                            "path": "x.txt",
+                            "content": "replacement content that is longer than the original",
+                            "overwrite": True,
+                        },
+                    ),
+                ),
+            ),
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt", "offset": 3}),),
+            ),
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt", "offset": 4}),),
+            ),
+            ModelReply(content="done"),
+        ]
+    )
+
+    observed: list[ToolLoopEvent] = []
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="work")],
+        registry,
+        observe=lambda e: observed.append(e),
+        no_write_streak=NoWriteStreakDetector(threshold=3),
+    )
+    kinds = [e.kind for e in observed]
+    assert "no_write_streak_detected" not in kinds, (
+        f"streak must reset after successful write; kinds={kinds}"
+    )
+
+
 # Explicit import to confirm we can pass pytest from the tests folder
 def test_tools_module_importable() -> None:
     import harness.tools  # noqa: F401 — import-for-side-effect check

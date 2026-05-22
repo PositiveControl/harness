@@ -37,6 +37,12 @@ from harness.orchestrator.hooks import (
     default_hook_pipeline,
     looks_like_ab_fabrication,
 )
+from harness.orchestrator.no_write_streak import (
+    NoWriteStreakDetector,
+)
+from harness.orchestrator.no_write_streak import (
+    build_nudge_text as build_no_write_nudge_text,
+)
 from harness.orchestrator.repeat_detector import RepeatCounter, build_nudge_text
 from harness.persona.banter import BanterStreakTracker, is_banter_prompt
 from harness.tools.base import (
@@ -873,6 +879,7 @@ def _execute_tool_calls(
     succeeded_tools: set[str],
     attempted_calls: dict[tuple[str, str], int] | None = None,
     repeat_counter: RepeatCounter | None = None,
+    no_write_streak: NoWriteStreakDetector | None = None,
 ) -> bool:
     """Execute the round's tool calls: in-round dedup, duplicate-call
     hook (cross-round), write-tier confirm, dispatch, append tool-role
@@ -1019,6 +1026,22 @@ def _execute_tool_calls(
                 )
             )
 
+        # harness-41b3: no-write streak detector. Only active when the
+        # caller (today: driver IMPLEMENT phase) supplied one. Fires
+        # once per turn when the model has emitted N tool calls in a
+        # row without any successful write — the spiral pattern that
+        # caused loop run 26c39558 to halt on harness-3jo1 with five
+        # rounds spent reading and zero spent writing.
+        if no_write_streak is not None and no_write_streak.observe(call, result):
+            pending_nudges.append(build_no_write_nudge_text(no_write_streak.streak))
+            emit(
+                ToolLoopEvent(
+                    kind="no_write_streak_detected",
+                    call=call,
+                    round_index=round_idx,
+                )
+            )
+
     # One nudge per fingerprint-fire batched into a single user-role
     # message so the next round sees them grouped. Empty when no
     # threshold crossed this round. Newline-joined to keep prior
@@ -1059,6 +1082,7 @@ def run_tool_loop(
     scope_lexicon: tuple[str, ...] = (),
     plan: Plan | None = None,
     inbox: Callable[[], list[ChatMessage]] | None = None,
+    no_write_streak: NoWriteStreakDetector | None = None,
 ) -> ToolLoopResult:
     """Drive a model + tool registry until the model emits a text-only
     reply or `max_rounds` rounds are spent.
@@ -1534,6 +1558,7 @@ def run_tool_loop(
             succeeded_tools=succeeded_tools,
             attempted_calls=attempted_calls,
             repeat_counter=repeat_counter,
+            no_write_streak=no_write_streak,
         )
         any_tool_succeeded = any_tool_succeeded or round_success
         # Second drain (harness-6fr0). All tool-role results for the
