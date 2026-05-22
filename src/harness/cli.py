@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import cast
+from typing import Any, cast
 
 import typer
 from rich.console import Console
@@ -6457,6 +6457,140 @@ def web_serve(
     import uvicorn
 
     uvicorn.run(web_app_instance, host=host, port=port, reload=reload)
+
+
+@eval_app.command("file-ops")
+def eval_file_ops(
+    model: str = typer.Option("mlx", "--model", help="Adapter: echo | mlx | ollama"),
+    model_repo: str | None = typer.Option(
+        None,
+        "--model-repo",
+        help="HF repo (mlx) or Ollama tag for the model under test. "
+        "Default: mlx-community/Qwen2.5-7B-Instruct-4bit via the adapter factory.",
+    ),
+    workspace_root: Path = typer.Option(
+        Path("/tmp/bw27_file_ops_eval"),  # noqa: S108 — eval scratch, not security-sensitive
+        "--workspace-root",
+        help="Parent directory for per-case workspaces. Wiped + repopulated per case.",
+    ),
+    candidates: str = typer.Option(
+        "",
+        "--candidates",
+        help="Comma-separated candidate names (stream_edit, pyp_stream, python_stream). "
+        "Default: all three.",
+    ),
+    tasks: str = typer.Option(
+        "",
+        "--tasks",
+        help="Comma-separated task ids to restrict to. Default: every BENCH_TASK.",
+    ),
+    max_rounds: int = typer.Option(
+        5,
+        "--max-rounds",
+        help="Tool-loop round budget per case. Defaults to 5 — the file-ops "
+        "tasks are small enough that more is usually noise.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
+) -> None:
+    """Run the harness-bw27 model-in-loop file-ops eval.
+
+    Drives every (task x candidate x prompt) combination through a
+    single-tool registry containing only the candidate under test, then
+    scores round1_called_tool + final_correct against the oracle. The
+    scripted-adapter unit tests live in tests/test_evals_file_ops.py;
+    this subcommand is the surface for real-model runs."""
+    from harness.evals._file_ops_corpus import ALL_CANDIDATES, BENCH_TASKS, CandidateKind
+    from harness.evals.file_ops import run_file_ops_eval
+
+    selected_candidates: tuple[CandidateKind, ...]
+    if candidates:
+        raw_names = tuple(c.strip() for c in candidates.split(","))
+        for name in raw_names:
+            if name not in ALL_CANDIDATES:
+                raise typer.BadParameter(
+                    f"unknown candidate {name!r}; valid: {ALL_CANDIDATES}",
+                )
+        selected_candidates = cast("tuple[CandidateKind, ...]", raw_names)
+    else:
+        selected_candidates = ALL_CANDIDATES
+
+    selected_tasks: tuple[Any, ...]
+    if tasks:
+        ids = {t.strip() for t in tasks.split(",")}
+        selected_tasks = tuple(t for t in BENCH_TASKS if t.id in ids)
+        unknown = ids - {t.id for t in BENCH_TASKS}
+        if unknown:
+            raise typer.BadParameter(f"unknown task ids: {sorted(unknown)}")
+    else:
+        selected_tasks = BENCH_TASKS
+
+    adapter = _resolve_adapter(model, model_repo=model_repo)
+    # `_resolve_adapter` returns a `ModelAdapter` (the minimal Protocol
+    # without `complete_with_tools`). The concrete adapters (MLX,
+    # Ollama, Echo) all implement complete_with_tools — the eval's
+    # tool-loop runner will fail loudly at call time if not. Cast so
+    # mypy stops asking for proof we already have.
+    result = run_file_ops_eval(
+        adapter=cast(Any, adapter),
+        candidates=selected_candidates,
+        tasks=selected_tasks,
+        workspace_root=workspace_root,
+        max_rounds=max_rounds,
+    )
+
+    if as_json:
+        payload = {
+            "model": model,
+            "model_repo": model_repo,
+            "total": result.total,
+            "first_try_rate": result.first_try_rate,
+            "correctness_rate": result.correctness_rate,
+            "pass_rate": result.pass_rate,
+            "cases": [
+                {
+                    "task": c.task_id,
+                    "candidate": c.candidate,
+                    "prompt": c.prompt,
+                    "rounds_used": c.rounds_used,
+                    "round1_called_tool": c.round1_called_tool,
+                    "final_correct": c.final_correct,
+                    "passed": c.passed,
+                    "error": c.error,
+                }
+                for c in result.cases
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
+    console.print(
+        f"\n[bold]harness-bw27 file-ops eval[/bold] — "
+        f"{result.total} case(s), max_rounds={max_rounds}, model={model}",
+    )
+    console.print(
+        f"  first-try call rate: {result.first_try_rate:.1%}  "
+        f"correctness: {result.correctness_rate:.1%}  "
+        f"pass: {result.pass_rate:.1%}",
+    )
+    console.print("\n[bold]per candidate[/bold]")
+    for cand, sub in result.by_candidate().items():
+        console.print(
+            f"  {cand:15s}  first-try={sub.first_try_rate:.1%}  "
+            f"correct={sub.correctness_rate:.1%}  pass={sub.pass_rate:.1%}  "
+            f"(n={sub.total})",
+        )
+
+    failures = result.failures()
+    if failures:
+        console.print(f"\n[bold]{len(failures)} failure(s):[/bold]")
+        for case in failures:
+            tag = "ERR" if case.error else ("✗call" if not case.round1_called_tool else "✗score")
+            console.print(
+                f"  [{tag:7s}] {case.task_id:25s}  {case.candidate:14s}  "
+                f"rounds={case.rounds_used}  prompt={case.prompt[:60]!r}",
+            )
+            if case.error:
+                console.print(f"           error: {case.error.splitlines()[0]}")
 
 
 if __name__ == "__main__":
