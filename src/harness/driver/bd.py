@@ -137,8 +137,16 @@ class DriverBd:
 
     def ready(self) -> list[BeadsIssue]:
         """All globally-ready issues. v0 doesn't filter by epic; use
-        `ready_under_epic` for that."""
-        result = self._run(["ready", "--json"])
+        `ready_under_epic` for that.
+
+        Passes `-n 9999` to bypass `bd ready`'s default cap of 10
+        results (harness-c6yu). Without the override, `ready_under_epic`
+        silently returns empty when none of an epic's children sit in
+        the global top 10 — the loop then exits 'success' on turn 0
+        without doing any work. 9999 is a pragmatic ceiling well above
+        any realistic ready-queue depth; even a 10x project growth
+        (~1000 ready beads) fits comfortably."""
+        result = self._run(["ready", "-n", "9999", "--json"])
         return _parse_issue_list(result.stdout)
 
     def ready_under_epic(self, epic_id: str) -> list[BeadsIssue]:

@@ -155,7 +155,10 @@ def test_ready_returns_parsed_list(monkeypatch: pytest.MonkeyPatch, bd: DriverBd
     _install_run(monkeypatch, spy)
     issues = bd.ready()
     assert [i.id for i in issues] == ["harness-a", "harness-b"]
-    assert spy.calls[0][0] == ("ready", "--json")
+    # harness-c6yu: -n 9999 bypasses bd ready's default cap of 10
+    # results. Without it, ready_under_epic returned empty when an
+    # epic's children sat past the global top-10 priority slot.
+    assert spy.calls[0][0] == ("ready", "-n", "9999", "--json")
 
 
 def test_ready_empty_stdout(monkeypatch: pytest.MonkeyPatch, bd: DriverBd) -> None:
