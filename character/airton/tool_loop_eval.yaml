@@ -673,6 +673,46 @@
   expected_contains: ["Correction", "third"]
   expected_events_contain: [bail_retry]
 
+- id: edit_file_failure_disable_after_three_failures
+  label: edit_file_failure_disable
+  description: |
+    Loop run 26c39558 repro: three earlier catchers
+    (edit_file_dedup_loop, duplicate_call, repeat_detector) fired
+    during turn 2 trying to break the cycle, and the model emitted
+    yet another broken edit_file in turn 3 — existing catchers are
+    advisory and the model treated them as suggestions.
+    EditFileFailureDisableHook is the hard stop: after 3 failed
+    edit_file calls on the same path within the turn, subsequent
+    calls on that path are rejected with a structured nudge pointing
+    the model at write_file or read_file as recovery paths.
+  registry:
+    - name: edit_file
+      output: "ValueError: old_string not found in game.js"
+      success: false
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: edit_file
+          arguments: { path: "game.js", old_string: "v1", new_string: "x" }
+    - content: ""
+      tool_calls:
+        - name: edit_file
+          arguments: { path: "game.js", old_string: "v2", new_string: "y" }
+    - content: ""
+      tool_calls:
+        - name: edit_file
+          arguments: { path: "game.js", old_string: "v3", new_string: "z" }
+    - content: ""
+      tool_calls:
+        - name: edit_file
+          arguments: { path: "game.js", old_string: "v4", new_string: "w" }
+    - content: |
+        edit_file keeps failing. Switching to write_file for the
+        wholesale replacement.
+  expected_contains: ["write_file"]
+  expected_events_contain: [tool_call_deduped]
+  expected_messages_contain: ["edit_file", "disabled"]
+
 - id: load_tool_loop_caught_at_third_no_change
   label: load_tool_loop
   description: |

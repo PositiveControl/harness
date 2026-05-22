@@ -1320,6 +1320,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "scope_redirect",
         "ambiguous_context",
         "paired_meta_confirm_strip",
+        "edit_file_failure_disable",
         "edit_file_dedup_loop",
         "duplicate_call",
         "tool_search_loop",
@@ -1627,6 +1628,133 @@ def test_tool_search_loop_hook_recognizes_load_tool_from_attempted_calls() -> No
     # Even with 3 prior tool_search attempts, the deduped load_tool
     # attempt counts as 'engaging the discovery flow' → Continue.
     assert isinstance(ToolSearchLoopHook().check(ctx), Continue)
+
+
+# --- EditFileFailureDisableHook (harness-a9f6) -------------------
+
+
+def _attempts_for_edit_file_failures(
+    path: str, count: int
+) -> tuple[dict[tuple[str, str], ToolResult], dict[tuple[str, str], int]]:
+    """Build (seen_calls, attempted_calls) maps with `count` distinct
+    edit_file attempts on `path`. Each attempt is in attempted_calls;
+    those that "executed" land in seen_calls as failures (others are
+    treated as Skip'd by prior hooks, so they're absent from seen_calls
+    but still increment attempted_calls — mirrors the real dispatch
+    semantics)."""
+    import json as _json
+
+    seen: dict[tuple[str, str], ToolResult] = {}
+    attempted: dict[tuple[str, str], int] = {}
+    for i in range(count):
+        args = {"path": path, "old_string": f"variant_{i}", "new_string": f"new_{i}"}
+        key = ("edit_file", _json.dumps(args, sort_keys=True))
+        attempted[key] = 1
+        # Every other attempt also lands in seen_calls as a real
+        # failure; the others stay in attempted_calls only (Skip'd).
+        if i % 2 == 0:
+            seen[key] = ToolResult(
+                tool_name="edit_file",
+                output=f"error calling edit_file: old_string not found (variant_{i})",
+                success=False,
+                error="ValueError: old_string not found",
+            )
+    return seen, attempted
+
+
+def test_edit_file_failure_disable_skips_after_three_failures() -> None:
+    """harness-a9f6: the 4th edit_file call on a path with 3 prior
+    failures must Skip with a hard-stop nudge pointing the model at
+    write_file or read_file. The advisory dedup / loop hooks already
+    fired and were ignored — this is the wall."""
+    from harness.orchestrator.hooks import EditFileFailureDisableHook
+
+    seen, attempted = _attempts_for_edit_file_failures("game.js", 3)
+    call = ToolCall(
+        name="edit_file",
+        arguments={"path": "game.js", "old_string": "fresh", "new_string": "x"},
+    )
+    ctx = PreToolContext(call=call, seen_calls=seen, attempted_calls=attempted)
+    outcome = EditFileFailureDisableHook().check(ctx)
+    assert isinstance(outcome, Skip)
+    assert "game.js" in outcome.result.output
+    assert "write_file" in outcome.result.output
+    assert outcome.result.success is False
+
+
+def test_edit_file_failure_disable_passes_below_threshold() -> None:
+    """Two prior failures — still below threshold. The 3rd attempt
+    is allowed through; only the 4th (after 3 failures) gets Skip'd."""
+    from harness.orchestrator.hooks import EditFileFailureDisableHook
+
+    seen, attempted = _attempts_for_edit_file_failures("game.js", 2)
+    call = ToolCall(
+        name="edit_file",
+        arguments={"path": "game.js", "old_string": "x", "new_string": "y"},
+    )
+    ctx = PreToolContext(call=call, seen_calls=seen, attempted_calls=attempted)
+    assert isinstance(EditFileFailureDisableHook().check(ctx), Continue)
+
+
+def test_edit_file_failure_disable_is_per_path() -> None:
+    """Failures on game.js don't disable edit_file for index.html.
+    The counter is keyed by `path`."""
+    from harness.orchestrator.hooks import EditFileFailureDisableHook
+
+    seen, attempted = _attempts_for_edit_file_failures("game.js", 5)
+    call = ToolCall(
+        name="edit_file",
+        arguments={"path": "index.html", "old_string": "x", "new_string": "y"},
+    )
+    ctx = PreToolContext(call=call, seen_calls=seen, attempted_calls=attempted)
+    assert isinstance(EditFileFailureDisableHook().check(ctx), Continue)
+
+
+def test_edit_file_failure_disable_ignores_successful_priors() -> None:
+    """Only FAILED edit_file calls count toward the threshold. A
+    successful edit_file on the same path doesn't push the model
+    closer to the hard stop."""
+    import json as _json
+
+    from harness.orchestrator.hooks import EditFileFailureDisableHook
+
+    seen: dict[tuple[str, str], ToolResult] = {}
+    attempted: dict[tuple[str, str], int] = {}
+    # 3 successful edits — they consume attempts but don't count toward failure threshold.
+    for i in range(3):
+        args = {"path": "game.js", "old_string": f"ok_{i}", "new_string": f"new_{i}"}
+        key = ("edit_file", _json.dumps(args, sort_keys=True))
+        seen[key] = ToolResult(
+            tool_name="edit_file",
+            output=f"edited game.js: 1 replacement(s), +{i} bytes",
+            success=True,
+        )
+        attempted[key] = 1
+    call = ToolCall(
+        name="edit_file",
+        arguments={"path": "game.js", "old_string": "fresh", "new_string": "x"},
+    )
+    ctx = PreToolContext(call=call, seen_calls=seen, attempted_calls=attempted)
+    assert isinstance(EditFileFailureDisableHook().check(ctx), Continue)
+
+
+def test_edit_file_failure_disable_ignores_non_edit_file_calls() -> None:
+    """The hook only gates edit_file. Other tool calls pass through
+    regardless of how many edit_file failures preceded them."""
+    from harness.orchestrator.hooks import EditFileFailureDisableHook
+
+    seen, attempted = _attempts_for_edit_file_failures("game.js", 5)
+    call = ToolCall(name="read_file", arguments={"path": "game.js"})
+    ctx = PreToolContext(call=call, seen_calls=seen, attempted_calls=attempted)
+    assert isinstance(EditFileFailureDisableHook().check(ctx), Continue)
+
+
+def test_edit_file_failure_disable_in_default_pipeline() -> None:
+    """harness-a9f6: EditFileFailureDisableHook must ship in the
+    default hook pipeline so the hard-stop fires for every executor
+    turn. Pins the wiring against accidental removal."""
+    pipeline = default_hook_pipeline()
+    assert "edit_file_failure_disable" in pipeline.names()
 
 
 # --- LoadToolLoopHook (harness-mahf) -----------------------------

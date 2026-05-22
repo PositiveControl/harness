@@ -4017,6 +4017,111 @@ class LoadToolLoopHook:
         )
 
 
+# --- edit_file failure hard-stop (harness-a9f6) ----------------------
+
+
+_EDIT_FILE_FAILURE_DISABLE_NUDGE = (
+    "[edit_file on `{path}` disabled — you have failed {count} edit_file "
+    "calls on this path this turn. Stop calling edit_file on `{path}`. "
+    "The advisory dedup / loop nudges have been ignored; this is the "
+    "hard stop.\n\n"
+    "Recovery — pick ONE:\n"
+    "  (a) read_file `{path}` to refresh your view of the actual "
+    "contents, then write_file the complete corrected version.\n"
+    "  (b) write_file `{path}` directly with the full corrected "
+    "content — your old_strings are not matching the file, so a "
+    "wholesale replacement is the cheaper path.\n"
+    "  (c) submit_implementation_complete with a description of "
+    "what's blocking progress — let the verify phase catch the gap.]"
+)
+
+
+# Threshold: 3 failures of edit_file on the same path within the turn.
+# After 3, edit_file on that path is rejected with the hard-stop nudge.
+# Lower (2) would block legitimate retries after typos; higher (5+) lets
+# the model burn too much budget on broken edits. Mirrors the existing
+# edit_file_dedup_loop hook's reach but at a coarser granularity:
+# dedup-loop catches exact-args repeats, this catches different broken
+# args on the same target.
+_EDIT_FILE_FAILURE_DISABLE_THRESHOLD: int = 3
+
+
+@dataclass(frozen=True)
+class EditFileFailureDisableHook:
+    """Reject edit_file calls on a path that has already accumulated
+    _EDIT_FILE_FAILURE_DISABLE_THRESHOLD (3) prior failures this turn.
+    Surfaced in loop run 26c39558 turn 3 (harness-a9f6): three earlier
+    catchers (edit_file_dedup_loop, duplicate_call, repeat_detector)
+    fired during turn 2 trying to break the cycle, and the model
+    emitted YET ANOTHER broken edit_file in turn 3 — the existing
+    catchers are advisory and the model treated them as suggestions.
+
+    This is the hard stop. After 3 failed edit_file calls on the same
+    path, subsequent edit_file calls on that path are Skip'd with a
+    structured nudge pointing the model at write_file or read_file as
+    the recovery paths.
+
+    Per-path: failures on game.js don't disable edit_file for
+    index.html. Per-turn: the counter is local to seen_calls, which
+    is fresh each run_tool_loop invocation.
+
+    Position: after edit_file_dedup_loop in the pre_tool pipeline.
+    edit_file_dedup_loop catches the IMMEDIATE re-emission of an
+    identical edit; this hook catches the SLOWER pattern of three
+    distinct-but-broken edits on the same target."""
+
+    name: str = "edit_file_failure_disable"
+
+    def check(self, ctx: PreToolContext) -> PreToolOutcome:
+        if ctx.call.name != "edit_file":
+            return Continue()
+        target_path = ctx.call.arguments.get("path")
+        if not isinstance(target_path, str) or not target_path:
+            return Continue()
+        # Count prior edit_file attempts on the same path that did NOT
+        # land a successful edit. Uses attempted_calls (which includes
+        # Skip'd calls) rather than seen_calls (executed only) because
+        # the existing EditFileDedupLoopHook Skip's broken edit_file
+        # calls before they execute — so seen_calls misses those
+        # failures even though the model emitted them. Counting via
+        # attempted_calls catches the "ignored every nudge" pattern
+        # the hard-stop is designed to catch.
+        import json as _json
+
+        failure_count = 0
+        for (name, args_json), count in ctx.attempted_calls.items():
+            if name != "edit_file":
+                continue
+            try:
+                args = _json.loads(args_json)
+            except (ValueError, _json.JSONDecodeError):
+                continue
+            if args.get("path") != target_path:
+                continue
+            # If the call EXECUTED and succeeded, don't count those
+            # attempts toward the failure threshold. seen_calls keeps
+            # the most-recent result per key; if it succeeded, the
+            # model isn't stuck on THIS path even if the args repeated.
+            result = ctx.seen_calls.get((name, args_json))
+            if result is not None and result.success:
+                continue
+            failure_count += count
+        if failure_count < _EDIT_FILE_FAILURE_DISABLE_THRESHOLD:
+            return Continue()
+        nudge_text = _EDIT_FILE_FAILURE_DISABLE_NUDGE.format(
+            path=target_path,
+            count=failure_count,
+        )
+        return Skip(
+            ToolResult(
+                tool_name="edit_file",
+                output=nudge_text,
+                success=False,
+                error="edit_file failure disable (harness-a9f6)",
+            )
+        )
+
+
 # Nudge fed back as the tool-role message when the grounding hook
 # skips a call. Phrased so the next round knows exactly what failed
 # (the arg that didn't trace back to the user) and what the remedy is
@@ -5391,6 +5496,9 @@ HOOK_SHAPES: dict[str, str] = {
     "load_tool_loop": (
         "load_tool called repeatedly on already-active tools — model is spinning on discovery."
     ),
+    "edit_file_failure_disable": (
+        "edit_file failed 3+ times on same path this turn; hard-stop pointing model at write_file."
+    ),
     "argument_grounding": "Tool args name domains not in user message or prior tool output.",
     "assemble_context_once": "Model re-calls assemble_context when forced-grounding already ran.",
     "fetch_url_guard": "fetch_url called speculatively when user pasted no URL.",
@@ -5776,6 +5884,16 @@ def default_hook_pipeline(
             # mismatch loop. The specific 'old_string not found' / 'edit
             # is a no-op' signals deserve a targeted nudge that names
             # the recovery path (re-read or quote the inlined contents).
+            # edit_file_failure_disable (harness-a9f6): hard stop after 3
+            # failed edit_file calls on the same path. Position: BEFORE
+            # edit_file_dedup_loop because the dedup-loop hook Skip's
+            # broken calls (so seen_calls misses some failures) — but
+            # attempted_calls increments BEFORE the Skip branch, and
+            # we count via attempted_calls. Placing the hard-stop first
+            # also means once the threshold trips, the dedup-loop nudge
+            # stops firing for this path (the hard-stop short-circuits
+            # everything downstream).
+            EditFileFailureDisableHook(),
             EditFileDedupLoopHook(),
             DuplicateCallHook(),
             # tool_search_loop (harness-lmwm): after duplicate_call (which

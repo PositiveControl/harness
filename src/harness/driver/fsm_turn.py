@@ -231,8 +231,20 @@ def _build_phase_registry(
 
 _PHASE_INSTRUCTIONS: Mapping[TurnPhase, str] = {
     TurnPhase.ASSESS: (
-        "You are in the ASSESS phase. Read the relevant files first, then "
-        "call `submit_assessment` with three non-empty fields:\n"
+        "You are in the ASSESS phase.\n\n"
+        "AUTHORITY: The [Current issue:] block in the handoff IS the source "
+        "of truth for this turn. It already contains the spec_quote, "
+        "acceptance criteria, design notes, and any REGRESSION markers — "
+        "everything you need to plan this turn's work. The bd issue is "
+        "the curated, per-turn slice; you do NOT need the upstream "
+        "artifacts that produced it.\n\n"
+        "DO NOT re-read upstream artifacts (plan-draft YAML, .artifacts/, "
+        "spec source files). Their relevant content is already rendered "
+        "in the handoff above. Re-reading them wastes turn budget without "
+        "adding new information.\n\n"
+        "DO read the workspace files the bd issue references — these are "
+        "the actual artifacts you will modify or examine for this turn.\n\n"
+        "Then call `submit_assessment` with three non-empty fields:\n"
         "  - current_state: what the artifact looks like NOW (concrete)\n"
         "  - gap: how that differs from the acceptance criteria\n"
         "  - approach: how you plan to close the gap\n"
