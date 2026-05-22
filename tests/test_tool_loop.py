@@ -3525,6 +3525,68 @@ def test_pathological_meta_only_loop_terminates_at_hard_ceiling() -> None:
     assert len(meta_events) == 8
 
 
+def test_blocked_meta_rounds_count_as_work_budget_burn(tmp_path: Path) -> None:
+    """harness-mahf: once the tool_search loop-catcher starts rejecting
+    calls, those blocked rounds count toward the work-round budget
+    instead of riding the meta exemption indefinitely.
+
+    Loop run 26c39558 turn 4 burned ~5 minutes spamming tool_search
+    (27 calls) and load_tool (4 calls on already-active tools)
+    because each rejection was 'free' under the meta exemption.
+    With the tightened accounting, the loop exits within 2-3 phase
+    rounds of blocked meta calls."""
+    from harness.tools import LoadToolTool, ToolSearchTool
+    from harness.tools.catalog import ToolCatalog, seed_builtins_into
+
+    catalog = ToolCatalog()
+    seed_builtins_into(catalog, now_iso="2026-05-22T07:00:00")
+    registry = ToolRegistry(catalog=catalog)
+    registry.register(ToolSearchTool(catalog=catalog, registry=registry))
+    registry.register(LoadToolTool(catalog=catalog, registry=registry, builders={}))
+
+    # 6 successive tool_search replies with different queries. The
+    # first 2 pass through; from #3 onward ToolSearchLoopHook rejects
+    # them. Under the OLD meta-exemption every reject was free →
+    # loop would only stop at hard_ceiling=4 with no work landed.
+    # Under the NEW accounting, rounds 3 and 4 count as work (the
+    # catcher rejection sets the loop_detected error marker), so
+    # work_rounds catches max_rounds=2 quickly.
+    queries = ["physics", "car", "player", "collision", "drawing", "pickup"]
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="tool_search", arguments={"query": q}),),
+            )
+            for q in queries
+        ]
+        + [ModelReply(content="giving up")]
+    )
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="find a tool")],
+        registry,
+        max_rounds=2,
+    )
+
+    # First 2 tool_search rounds pass through (catcher's threshold
+    # is 2 priors); rounds 3+ get rejected by tool_search_loop. Under
+    # the new accounting, rejected rounds count as work — the loop
+    # terminates promptly instead of running until hard_ceiling.
+    blocked_count = sum(
+        1
+        for e in result.events
+        if e.kind == "tool_call_deduped"
+        and e.result is not None
+        and "loop detected" in (e.result.error or "").lower()
+    )
+    assert blocked_count >= 1, "expected at least one tool_search_loop rejection"
+    # Total rounds should be well below hard_ceiling=4 — the model
+    # didn't get to burn its entire safety budget on meta-spam.
+    assert result.rounds <= 4
+
+
 def test_mixed_meta_and_content_in_same_round_counts_as_work(tmp_path: Path) -> None:
     """A round that emits BOTH a meta tool call AND a content tool
     call counts as work — the content piece is real progress. The

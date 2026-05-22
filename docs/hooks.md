@@ -51,6 +51,7 @@ Hooks dispatch in the order shown within each phase — first-match semantics, s
 | `edit_file_dedup_loop` | Catch the model in an edit_file dedup loop on old_string mismatch / no-op. Skip + nudge to call read_file first or quote the inlined file contents — breaks the loop at the source instead of letting the generic dedup nudge fire. |
 | `duplicate_call` | Identical (name, args) call this turn; re-issues prior result. |
 | `tool_search_loop` | tool_search called repeatedly without load_tool — model is treating it as a search engine. |
+| `load_tool_loop` | load_tool called repeatedly on already-active tools — model is spinning on discovery. |
 | `argument_grounding` | Tool args name domains not in user message or prior tool output. |
 | `fetch_url_guard` | fetch_url called speculatively when user pasted no URL. |
 | `assemble_context_once` | Model re-calls assemble_context when forced-grounding already ran. |

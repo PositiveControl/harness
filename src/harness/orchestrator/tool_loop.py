@@ -1545,13 +1545,38 @@ def run_tool_loop(
         # work-round accounting decides whether to continue.
         drain_inbox(round_idx)
 
-        # Work-round accounting (harness-rlza). A round counts as "work"
-        # only if at least one of the model's tool calls named a content
-        # tool. Meta-only rounds (tool_search → load_tool sequences,
-        # introspect lookups, depth-1 subagent dispatch) don't burn the
-        # max_rounds budget — they're free passes. Emit a meta_round
-        # event for observers + evals so the exemption is auditable.
-        is_work_round = any(call.name not in _META_TOOLS for call in last_reply.tool_calls)
+        # Work-round accounting (harness-rlza, tightened in harness-mahf).
+        # A round counts as "work" if EITHER:
+        #   (a) at least one tool call named a content tool (non-meta), OR
+        #   (b) the round was all-meta AND at least one call was
+        #       rejected by a loop-detection catcher (tool_search_loop,
+        #       load_tool_loop, duplicate_call). Meta spam now burns
+        #       budget at the normal rate once the catchers start
+        #       firing — the exemption was meant for productive
+        #       discovery, not for the model to spin against the
+        #       rejection wall indefinitely.
+        #
+        # Legitimate discovery still rides the exemption: an early
+        # tool_search round (before the catcher fires) or a successful
+        # load_tool(new_name) round both produce no "loop detected" /
+        # "DUPLICATE CALL" marker, so they stay free passes.
+        from harness.orchestrator.hooks import _call_key as _call_key_for_meta_check
+
+        has_content_call = any(call.name not in _META_TOOLS for call in last_reply.tool_calls)
+        blocked_meta_call = False
+        if not has_content_call and last_reply.tool_calls:
+            for call in last_reply.tool_calls:
+                result = seen_calls.get(_call_key_for_meta_check(call))
+                if result is None:
+                    continue
+                error_text = (result.error or "").lower()
+                if "loop detected" in error_text:
+                    blocked_meta_call = True
+                    break
+                if "DUPLICATE CALL" in (result.output or ""):
+                    blocked_meta_call = True
+                    break
+        is_work_round = has_content_call or blocked_meta_call
         if is_work_round:
             work_rounds += 1
         else:

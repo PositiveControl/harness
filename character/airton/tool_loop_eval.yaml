@@ -673,6 +673,38 @@
   expected_contains: ["Correction", "third"]
   expected_events_contain: [bail_retry]
 
+- id: load_tool_loop_caught_at_third_no_change
+  label: load_tool_loop
+  description: |
+    Loop run 26c39558 turn 4 repro: after tool_search got blocked by
+    its own loop catcher, model pivoted to load_tool spam on tools
+    already in the active working set (read_file, grep, list_dir,
+    tool_search) — each returning 'no change'. LoadToolLoopHook now
+    Skips the 3rd no-op call with a directive nudge pointing the
+    model at submit_assessment / submit_implementation_complete as
+    the legitimate exit paths.
+  registry:
+    - name: load_tool
+      output: "load_tool: 'read_file' is already in your active working set; no change."
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: load_tool
+          arguments: { name: "read_file" }
+    - content: ""
+      tool_calls:
+        - name: load_tool
+          arguments: { name: "grep" }
+    - content: ""
+      tool_calls:
+        - name: load_tool
+          arguments: { name: "list_dir" }
+    - content: |
+        I can't find a new tool to load. Reporting blocker.
+  expected_contains: ["blocker"]
+  expected_events_contain: [tool_call_deduped]
+  expected_messages_contain: ["load_tool loop"]
+
 - id: tool_search_loop_caught_at_third_call
   label: tool_search_loop
   description: |

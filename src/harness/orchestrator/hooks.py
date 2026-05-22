@@ -3932,6 +3932,91 @@ class ToolSearchLoopHook:
         )
 
 
+# --- load_tool loop catcher (harness-mahf) ----------------------------
+
+
+_LOAD_TOOL_LOOP_NUDGE = (
+    "[load_tool loop — you have called load_tool {count} times this turn "
+    "for tools already in your active working set. The registry has not "
+    "changed between calls; re-emitting load_tool on the same names will "
+    "not unlock new tools.\n\n"
+    "Your active tools are listed in your tool schema. Pick one and "
+    "use it for actual work, or — if no tool fits this issue — submit "
+    "the relevant phase meta-tool (submit_assessment / "
+    "submit_implementation_complete / etc.) with a description of what's "
+    "blocking. Do NOT keep calling load_tool.]"
+)
+
+
+# Trigger on the 3rd no-op load_tool call this turn. Same shape as
+# ToolSearchLoopHook's threshold — give the model one or two
+# legitimate "is X loaded already?" probes before treating it as a
+# spam pattern.
+_LOAD_TOOL_LOOP_THRESHOLD = 2
+
+# Substring the LoadToolTool emits when the tool is already in the
+# active working set. Stable enough for a marker check; see
+# src/harness/tools/load_tool.py — "already in your active working
+# set; no change." is the canonical phrasing.
+_LOAD_TOOL_NO_CHANGE_MARKER = "already in your active working set"
+
+
+@dataclass(frozen=True)
+class LoadToolLoopHook:
+    """Reject a load_tool call when the model is spamming it on
+    already-active tools (harness-mahf). Surfaced in loop run 26c39558
+    turn 4: after ToolSearchLoopHook blocked 27 tool_search calls, the
+    model pivoted to load_tool spam on read_file / grep / list_dir /
+    tool_search — all of which were already active. Each call returned
+    'no change' but the model kept emitting more because meta-tool
+    rounds were exempt from the work-round budget.
+
+    Trigger conditions (ALL must hold):
+      1. The incoming call is load_tool.
+      2. At least `_LOAD_TOOL_LOOP_THRESHOLD` (2) prior load_tool calls
+         this turn returned the 'no change' marker (already-active).
+      3. (Implicit) The current call has not yet executed; we count
+         priors only.
+
+    Reset: a successful load_tool that adds a new tool (no 'no change'
+    marker) doesn't increment the no-op counter, so legitimate
+    discovery flow stays untouched. The counter is per-turn (resets
+    each `run_tool_loop` invocation).
+
+    Position: pre_tool pipeline, after duplicate_call (which catches
+    exact-args repeats) and tool_search_loop (which catches
+    tool_search spam). Both this hook and tool_search_loop guard the
+    discovery cycle; tool_search_loop fires first if the model is
+    spamming tool_search, this fires when the model has pivoted to
+    load_tool spam after tool_search got blocked."""
+
+    name: str = "load_tool_loop"
+
+    def check(self, ctx: PreToolContext) -> PreToolOutcome:
+        if ctx.call.name != "load_tool":
+            return Continue()
+        # Count prior load_tool calls whose result carried the
+        # already-active marker. seen_calls maps (name, args-json) →
+        # ToolResult; iterate and check the output string.
+        no_change_count = 0
+        for (name, _args), result in ctx.seen_calls.items():
+            if name != "load_tool":
+                continue
+            if _LOAD_TOOL_NO_CHANGE_MARKER in result.output:
+                no_change_count += 1
+        if no_change_count < _LOAD_TOOL_LOOP_THRESHOLD:
+            return Continue()
+        nudge_text = _LOAD_TOOL_LOOP_NUDGE.format(count=no_change_count + 1)
+        return Skip(
+            ToolResult(
+                tool_name="load_tool",
+                output=nudge_text,
+                success=False,
+                error="load_tool loop detected (harness-mahf)",
+            )
+        )
+
+
 # Nudge fed back as the tool-role message when the grounding hook
 # skips a call. Phrased so the next round knows exactly what failed
 # (the arg that didn't trace back to the user) and what the remedy is
@@ -5303,6 +5388,9 @@ HOOK_SHAPES: dict[str, str] = {
     "tool_search_loop": (
         "tool_search called repeatedly without load_tool — model is treating it as a search engine."
     ),
+    "load_tool_loop": (
+        "load_tool called repeatedly on already-active tools — model is spinning on discovery."
+    ),
     "argument_grounding": "Tool args name domains not in user message or prior tool output.",
     "assemble_context_once": "Model re-calls assemble_context when forced-grounding already ran.",
     "fetch_url_guard": "fetch_url called speculatively when user pasted no URL.",
@@ -5697,6 +5785,14 @@ def default_hook_pipeline(
             # load_tool yet' — that duplicate_call doesn't see because
             # the args differ across attempts.
             ToolSearchLoopHook(),
+            # load_tool_loop (harness-mahf): mirror of tool_search_loop
+            # for the load_tool-spam pivot. Surfaced in 26c39558 turn 4
+            # where ToolSearchLoopHook blocked 27 tool_search calls and
+            # the model pivoted to load_tool spam on already-active
+            # tools. Position: after tool_search_loop since both gate
+            # the discovery cycle; the model typically spams one then
+            # the other when it gets stuck.
+            LoadToolLoopHook(),
             ArgumentGroundingHook(),
         ]
     )

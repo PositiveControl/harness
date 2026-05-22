@@ -1323,6 +1323,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "edit_file_dedup_loop",
         "duplicate_call",
         "tool_search_loop",
+        "load_tool_loop",
         "argument_grounding",
         "low_confidence_fallback",
         "ungrounded_citation",
@@ -1626,6 +1627,106 @@ def test_tool_search_loop_hook_recognizes_load_tool_from_attempted_calls() -> No
     # Even with 3 prior tool_search attempts, the deduped load_tool
     # attempt counts as 'engaging the discovery flow' → Continue.
     assert isinstance(ToolSearchLoopHook().check(ctx), Continue)
+
+
+# --- LoadToolLoopHook (harness-mahf) -----------------------------
+
+
+def _seen_with_load_tool_no_change(count: int) -> dict[tuple[str, str], ToolResult]:
+    """Build a seen_calls map with `count` distinct load_tool entries
+    each carrying the 'already in your active working set' marker.
+    Mirrors the 26c39558 turn 4 repro: model called load_tool four
+    times for read_file, grep, list_dir, tool_search — all already
+    active."""
+    out: dict[tuple[str, str], ToolResult] = {}
+    targets = ["read_file", "grep", "list_dir", "tool_search", "edit_file", "write_file"]
+    for i in range(count):
+        name_arg = targets[i % len(targets)]
+        out[("load_tool", f'{{"name":"{name_arg}"}}')] = ToolResult(
+            tool_name="load_tool",
+            output=f"load_tool: {name_arg!r} is already in your active working set; no change.",
+            success=True,
+        )
+    return out
+
+
+def test_load_tool_loop_hook_skips_third_no_change_call() -> None:
+    """harness-mahf: the 3rd load_tool call this turn — when both prior
+    calls returned the 'already-active' marker — must Skip with a
+    directive nudge."""
+    from harness.orchestrator.hooks import LoadToolLoopHook
+
+    call = ToolCall(name="load_tool", arguments={"name": "list_dir"})
+    ctx = PreToolContext(
+        call=call,
+        seen_calls=_seen_with_load_tool_no_change(2),
+    )
+    outcome = LoadToolLoopHook().check(ctx)
+    assert isinstance(outcome, Skip)
+    err = outcome.result.error or ""
+    assert "load_tool loop" in err or "load_tool" in outcome.result.output
+    assert outcome.result.success is False
+
+
+def test_load_tool_loop_hook_passes_first_no_change_call() -> None:
+    """First load_tool call this turn — pass through, no spam signal."""
+    from harness.orchestrator.hooks import LoadToolLoopHook
+
+    call = ToolCall(name="load_tool", arguments={"name": "read_file"})
+    ctx = PreToolContext(call=call, seen_calls={})
+    assert isinstance(LoadToolLoopHook().check(ctx), Continue)
+
+
+def test_load_tool_loop_hook_passes_second_no_change_call() -> None:
+    """Second no-op load_tool — model gets one refinement. Threshold
+    fires on the 3rd, mirroring tool_search_loop's shape."""
+    from harness.orchestrator.hooks import LoadToolLoopHook
+
+    call = ToolCall(name="load_tool", arguments={"name": "grep"})
+    ctx = PreToolContext(call=call, seen_calls=_seen_with_load_tool_no_change(1))
+    assert isinstance(LoadToolLoopHook().check(ctx), Continue)
+
+
+def test_load_tool_loop_hook_resets_when_new_tool_loaded() -> None:
+    """harness-mahf: a load_tool that actually adds a new tool (no
+    'already in active set' marker) doesn't increment the no-op
+    counter. Legitimate discovery → load cycle stays untouched."""
+    from harness.orchestrator.hooks import LoadToolLoopHook
+
+    seen: dict[tuple[str, str], ToolResult] = {
+        ("load_tool", '{"name":"a"}'): ToolResult(
+            tool_name="load_tool",
+            output="load_tool: 'search_web' loaded; new tool added to working set.",
+            success=True,
+        ),
+        ("load_tool", '{"name":"b"}'): ToolResult(
+            tool_name="load_tool",
+            output="load_tool: 'b' is already in your active working set; no change.",
+            success=True,
+        ),
+    }
+    # Only 1 no-change in seen — below threshold even with this call making it 2.
+    call = ToolCall(name="load_tool", arguments={"name": "c"})
+    ctx = PreToolContext(call=call, seen_calls=seen)
+    assert isinstance(LoadToolLoopHook().check(ctx), Continue)
+
+
+def test_load_tool_loop_hook_ignores_non_load_tool_calls() -> None:
+    """The hook only gates load_tool re-invocation. Other tool calls
+    pass through even with many prior no-op load_tools."""
+    from harness.orchestrator.hooks import LoadToolLoopHook
+
+    call = ToolCall(name="tool_search", arguments={"query": "x"})
+    ctx = PreToolContext(call=call, seen_calls=_seen_with_load_tool_no_change(5))
+    assert isinstance(LoadToolLoopHook().check(ctx), Continue)
+
+
+def test_load_tool_loop_hook_in_default_pipeline() -> None:
+    """harness-mahf: LoadToolLoopHook must ship in the default hook
+    pipeline so it's active for every executor turn, same as
+    ToolSearchLoopHook. Pins the wiring against accidental removal."""
+    pipeline = default_hook_pipeline()
+    assert "load_tool_loop" in pipeline.names()
 
 
 def test_tool_search_spec_description_calls_out_load_tool_step() -> None:
