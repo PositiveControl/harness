@@ -523,6 +523,166 @@ def _print_result(result: LoopResult) -> None:
         )
 
 
+# --- harness drive logs <list|prune> (harness-830a) -----------------
+
+
+logs_app = typer.Typer(
+    help="Inspect + prune the .harness/loop_runs/ directory.",
+    no_args_is_help=True,
+)
+
+
+@logs_app.command("list")
+def logs_list_command(
+    workspace: Path = typer.Option(
+        Path.cwd(),  # noqa: B008 — typer evaluates at call time, not import time
+        "--workspace",
+        help="Workspace whose .harness/loop_runs/ to inspect.",
+    ),
+) -> None:
+    """List loop runs newest-first with size + status. Same data as
+    `harness drive loop --list-runs` (legacy flag) but as a proper
+    subcommand and ordered by recency."""
+    state_dir = LoopRunState.state_dir(workspace)
+    if not state_dir.exists():
+        typer.echo("(no loop runs yet)")
+        return
+    rows = _logs_inventory(state_dir)
+    if not rows:
+        typer.echo("(no loop runs yet)")
+        return
+    for row in rows:
+        typer.echo(row)
+
+
+@logs_app.command("prune")
+def logs_prune_command(
+    workspace: Path = typer.Option(
+        Path.cwd(),  # noqa: B008 — typer evaluates at call time, not import time
+        "--workspace",
+        help="Workspace whose .harness/loop_runs/ to prune.",
+    ),
+    keep: int = typer.Option(
+        10,
+        "--keep",
+        min=1,
+        help="Keep the N most-recent runs in the active dir; archive the rest.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show what would be archived without touching the filesystem.",
+    ),
+) -> None:
+    """Archive older loop runs into .harness/loop_runs/archive/.
+
+    Each archived run becomes: <id>.log.gz + <id>.json (kept readable
+    for inspect tools) + <id>_workspace.tar.gz (preserved as-is, it's
+    already compressed). Active dir keeps the N newest runs by
+    started_at."""
+    state_dir = LoopRunState.state_dir(workspace)
+    if not state_dir.exists():
+        typer.echo("(no loop runs yet)")
+        return
+    archived = _prune_loop_runs(state_dir, keep=keep, dry_run=dry_run)
+    if not archived:
+        typer.echo(f"(nothing to prune — {keep} or fewer runs in {state_dir})")
+        return
+    action = "would archive" if dry_run else "archived"
+    for run_id in archived:
+        typer.echo(f"{action}: {run_id}")
+    if not dry_run:
+        typer.echo(f"\nArchive directory: {state_dir / 'archive'}")
+
+
+def _logs_inventory(state_dir: Path) -> list[str]:
+    """Build the operator-facing inventory of loop runs (newest-first).
+    Each row: `<id>  started=<iso>  turns=<n>  closed=<n>  log=<size>`."""
+    files = sorted(state_dir.glob("*.json"))
+    entries: list[tuple[LoopRunState, Path]] = []
+    for path in files:
+        try:
+            state = LoopRunState.load(path)
+        except (OSError, ValueError, KeyError):
+            continue
+        entries.append((state, path))
+    # Newest first by started_at.
+    entries.sort(key=lambda item: item[0].started_at, reverse=True)
+    rows: list[str] = []
+    for state, _path in entries:
+        log_path = state_dir / f"{state.loop_run_id}.log"
+        log_size_kb = 0
+        if log_path.exists():
+            log_size_kb = log_path.stat().st_size // 1024
+        rows.append(
+            f"{state.loop_run_id}  "
+            f"started={state.started_at.isoformat(timespec='seconds')}  "
+            f"turns={state.turns_used}  "
+            f"closed={len(state.closed_this_run)}  "
+            f"log={log_size_kb}KB"
+        )
+    return rows
+
+
+def _prune_loop_runs(state_dir: Path, *, keep: int, dry_run: bool) -> list[str]:
+    """Move runs older than the most-recent `keep` into an archive/
+    subdir. Returns the list of run_ids that were (or would be) moved.
+
+    Archive shape: <id>.log → <id>.log.gz; .json + _workspace.tar.gz
+    move as-is. The .log is the only un-compressed artifact and the
+    biggest by volume, so gzipping it is the highest-leverage saving.
+
+    Concurrency: not safe if another loop is writing to the same dir.
+    Operator's job to run this when no loops are active. We don't
+    fight for it."""
+    import gzip
+    import shutil
+
+    files = sorted(state_dir.glob("*.json"))
+    entries: list[tuple[LoopRunState, Path]] = []
+    for path in files:
+        try:
+            state = LoopRunState.load(path)
+        except (OSError, ValueError, KeyError):
+            continue
+        entries.append((state, path))
+    if len(entries) <= keep:
+        return []
+    # Newest first; the trailing slice past `keep` is what gets archived.
+    entries.sort(key=lambda item: item[0].started_at, reverse=True)
+    to_archive = entries[keep:]
+    archive_dir = state_dir / "archive"
+    archived_ids: list[str] = []
+    for state, json_path in to_archive:
+        run_id = state.loop_run_id
+        archived_ids.append(run_id)
+        if dry_run:
+            continue
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        # 1. Move + gzip the .log → archive/<id>.log.gz
+        log_src = state_dir / f"{run_id}.log"
+        if log_src.exists():
+            log_dst = archive_dir / f"{run_id}.log.gz"
+            with log_src.open("rb") as src, gzip.open(log_dst, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            log_src.unlink()
+        # 2. Move the .json verbatim — small, readable in inspect tools.
+        json_dst = archive_dir / json_path.name
+        shutil.move(str(json_path), str(json_dst))
+        # 3. Move the workspace tarball (if present) — already compressed.
+        tar_src = state_dir / f"{run_id}_workspace.tar.gz"
+        if tar_src.exists():
+            tar_dst = archive_dir / tar_src.name
+            shutil.move(str(tar_src), str(tar_dst))
+    return archived_ids
+
+
+drive_app.add_typer(logs_app, name="logs")
+
+
+# --- exit-code helpers ------------------------------------------------
+
+
 def _exit_code(result: LoopResult) -> int:
     """Map exit_reason → process exit code. Success / dry_run = 0;
     halted = 2 (operator action needed); exhausted / interrupted = 1."""

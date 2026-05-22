@@ -565,3 +565,108 @@ def test_validate_model_accepts_known_names() -> None:
     assert cli_mod._validate_model("echo") == "echo"
     assert cli_mod._validate_model("mlx") == "mlx"
     assert cli_mod._validate_model("ollama") == "ollama"
+
+
+# --- harness drive logs (harness-830a) ------------------------------
+
+
+def _seed_loop_run(workspace: Path, run_id: str, started: str) -> None:
+    """Build a fake loop-run on disk: .json + .log + _workspace.tar.gz
+    so the prune machinery has all three files to relocate."""
+    from datetime import datetime
+
+    state_dir = LoopRunState.state_dir(workspace)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    state = LoopRunState(
+        loop_run_id=run_id,
+        started_at_sha="deadbeef",
+        started_at=datetime.fromisoformat(started),
+        epic_id="harness-epic",
+        max_turns=5,
+        turns_used=1,
+    )
+    state.save(state_dir / f"{run_id}.json")
+    (state_dir / f"{run_id}.log").write_text(f"turn 1 | {run_id} | round_start\n" * 5)
+    (state_dir / f"{run_id}_workspace.tar.gz").write_bytes(b"\x1f\x8b\x08fake")
+
+
+def test_logs_list_shows_runs_newest_first(tmp_path: Path) -> None:
+    """harness-830a: `harness drive logs list` enumerates runs by
+    started_at descending — newest first matches what the operator
+    cares about (most recent run + its halt reason)."""
+    _seed_loop_run(tmp_path, "oldest", "2026-05-20T00:00:00+00:00")
+    _seed_loop_run(tmp_path, "newest", "2026-05-22T00:00:00+00:00")
+    _seed_loop_run(tmp_path, "middle", "2026-05-21T00:00:00+00:00")
+
+    result = CliRunner().invoke(drive_app, ["logs", "list", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0
+    lines = [line for line in result.stdout.splitlines() if line]
+    ids = [line.split()[0] for line in lines]
+    assert ids == ["newest", "middle", "oldest"]
+
+
+def test_logs_prune_archives_older_runs(tmp_path: Path) -> None:
+    """harness-830a: prune --keep N moves the oldest len-N runs into
+    archive/ and gzips their .log. The N newest stay in the active
+    dir untouched."""
+    _seed_loop_run(tmp_path, "oldest", "2026-05-20T00:00:00+00:00")
+    _seed_loop_run(tmp_path, "middle", "2026-05-21T00:00:00+00:00")
+    _seed_loop_run(tmp_path, "newest", "2026-05-22T00:00:00+00:00")
+
+    result = CliRunner().invoke(
+        drive_app, ["logs", "prune", "--workspace", str(tmp_path), "--keep", "1"]
+    )
+    assert result.exit_code == 0
+    assert "oldest" in result.stdout
+    assert "middle" in result.stdout
+    assert "newest" not in result.stdout.split("archived")[0]  # newest not pruned
+
+    state_dir = LoopRunState.state_dir(tmp_path)
+    archive_dir = state_dir / "archive"
+    # Newest stays in the active dir.
+    assert (state_dir / "newest.json").exists()
+    assert (state_dir / "newest.log").exists()
+    # Older runs move to archive with .log gzipped.
+    assert (archive_dir / "oldest.json").exists()
+    assert (archive_dir / "oldest.log.gz").exists()
+    assert (archive_dir / "oldest_workspace.tar.gz").exists()
+    assert not (state_dir / "oldest.log").exists(), "active log should be removed after archive"
+
+
+def test_logs_prune_dry_run_makes_no_filesystem_changes(tmp_path: Path) -> None:
+    """harness-830a: --dry-run reports what would be archived but
+    leaves the filesystem untouched."""
+    _seed_loop_run(tmp_path, "a", "2026-05-20T00:00:00+00:00")
+    _seed_loop_run(tmp_path, "b", "2026-05-21T00:00:00+00:00")
+    _seed_loop_run(tmp_path, "c", "2026-05-22T00:00:00+00:00")
+
+    state_dir = LoopRunState.state_dir(tmp_path)
+    before = {p.name for p in state_dir.iterdir()}
+    result = CliRunner().invoke(
+        drive_app,
+        ["logs", "prune", "--workspace", str(tmp_path), "--keep", "1", "--dry-run"],
+    )
+    assert result.exit_code == 0
+    assert "would archive" in result.stdout
+    after = {p.name for p in state_dir.iterdir()}
+    assert before == after, "dry-run must not change the filesystem"
+
+
+def test_logs_prune_under_keep_does_nothing(tmp_path: Path) -> None:
+    """harness-830a: when there are fewer runs than --keep, the
+    command reports 'nothing to prune' and leaves the dir alone."""
+    _seed_loop_run(tmp_path, "only", "2026-05-22T00:00:00+00:00")
+
+    result = CliRunner().invoke(
+        drive_app, ["logs", "prune", "--workspace", str(tmp_path), "--keep", "5"]
+    )
+    assert result.exit_code == 0
+    assert "nothing to prune" in result.stdout
+
+
+def test_logs_list_handles_empty_dir(tmp_path: Path) -> None:
+    """harness-830a: list on a workspace with no loop runs is a clean
+    no-op, not an error."""
+    result = CliRunner().invoke(drive_app, ["logs", "list", "--workspace", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "no loop runs" in result.stdout

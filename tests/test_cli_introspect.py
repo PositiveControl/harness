@@ -22,6 +22,8 @@ _EXPECTED_COMMANDS: tuple[str, ...] = (
     "denylist clear",
     "denylist list",
     "describe",
+    "drive logs list",
+    "drive logs prune",
     "drive loop",
     "drive plan",
     "eval atc",
