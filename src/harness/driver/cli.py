@@ -287,6 +287,30 @@ def loop_command(
             "without --plan-draft) behave as before."
         ),
     ),
+    use_fsm: bool = typer.Option(
+        False,
+        "--fsm/--no-fsm",
+        help=(
+            "Route each turn through the TurnFSM (ASSESS → WRITE_TEST → "
+            "IMPLEMENT → VERIFY → CLOSE) instead of the legacy "
+            "single-shot executor (harness-kbnl). The FSM constrains "
+            "the tool roster per phase + requires explicit meta-tool "
+            "transitions (submit_assessment, submit_failing_test, etc.) "
+            "to advance. Off by default while the FSM bakes in."
+        ),
+    ),
+    tdd: bool = typer.Option(
+        True,
+        "--tdd/--no-tdd",
+        help=(
+            "When --fsm is set, require the WRITE_TEST phase (default). "
+            "--no-tdd routes ASSESS directly to IMPLEMENT, skipping the "
+            "failing-test gate. Use for runs where TDD genuinely doesn't "
+            "apply (UI/visual changes, docs). The model can also opt "
+            "out per-issue via submit_assessment(tdd_applicable=False) — "
+            "this flag is the operator's blanket override."
+        ),
+    ),
 ) -> None:
     """Drive a bd epic to closure across multiple turns."""
     if list_runs:
@@ -328,6 +352,8 @@ def loop_command(
         executor_max_rounds=executor_max_rounds,
         snapshot=snapshot,
         plan_draft_path=plan_draft,
+        use_fsm=use_fsm,
+        tdd_required=tdd,
     )
     result = run_loop(adapter, bd, config)
     _print_result(result)

@@ -1722,3 +1722,299 @@ def test_run_loop_claim_without_close_no_verify_does_not_invoke_verify_runner(
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
 
     assert result.exit_reason == "success"
+
+
+# --- FSM-driven turn (harness-kbnl) ---------------------------------
+
+
+def test_run_loop_fsm_happy_path_drives_issue_through_all_phases(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-kbnl: with use_fsm=True, one bd issue rides through
+    ASSESS → WRITE_TEST → IMPLEMENT → VERIFY → CLOSE in a single
+    turn. Stub `run_tool_loop` to invoke the appropriate meta-tool
+    per phase (detected by inspecting registry tool names) and
+    `_exec_test_cmd` to make the test/verify steps pass."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    phases_seen: list[str] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        tool_names = set(registry.active_names())
+        if "submit_assessment" in tool_names:
+            phases_seen.append("assess")
+            registry.call(
+                "submit_assessment",
+                {
+                    "current_state": "x" * 30,
+                    "gap": "x" * 30,
+                    "approach": "x" * 30,
+                },
+            )
+        elif "submit_failing_test" in tool_names:
+            phases_seen.append("write_test")
+            registry.call(
+                "submit_failing_test",
+                {
+                    "test_path": "tests/test_foo.py",
+                    "test_cmd": "pytest tests/test_foo.py",
+                    "failure_output": "x" * 30,
+                },
+            )
+        elif "submit_implementation_complete" in tool_names:
+            phases_seen.append("implement")
+            registry.call("submit_implementation_complete", {"summary": "x" * 30})
+        elif "shell" in tool_names and "edit_file" not in tool_names:
+            if "read_file" in tool_names:
+                phases_seen.append("verify")
+            else:
+                phases_seen.append("close")
+                bd.flip_closed("harness-a")
+        return ToolLoopResult(content="phase reply", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    # Test sanity check inside WRITE_TEST returns failure (so the FSM
+    # proceeds to IMPLEMENT); subsequent calls (VERIFY) return success.
+    exec_calls = {"count": 0}
+
+    def fake_exec(*_a: Any, **_k: Any) -> tuple[int, str]:
+        exec_calls["count"] += 1
+        return (1, "AssertionError: red") if exec_calls["count"] == 1 else (0, "")
+
+    monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd", fake_exec)
+
+    cfg = _config(tmp_path, use_fsm=True, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-a"]
+    assert phases_seen == ["assess", "write_test", "implement", "verify", "close"]
+
+
+def test_run_loop_fsm_no_tdd_skips_write_test(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-kbnl: with --no-tdd (config.tdd_required=False), the
+    ASSESS phase routes directly to IMPLEMENT — WRITE_TEST never
+    runs even when the model's assessment had tdd_applicable=True."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    phases_seen: list[str] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        tool_names = set(registry.active_names())
+        if "submit_assessment" in tool_names:
+            phases_seen.append("assess")
+            registry.call(
+                "submit_assessment",
+                {
+                    "current_state": "x" * 30,
+                    "gap": "x" * 30,
+                    "approach": "x" * 30,
+                    "tdd_applicable": True,
+                },
+            )
+        elif "submit_failing_test" in tool_names:
+            phases_seen.append("write_test")
+        elif "submit_implementation_complete" in tool_names:
+            phases_seen.append("implement")
+            registry.call("submit_implementation_complete", {"summary": "x" * 30})
+        elif "shell" in tool_names and "edit_file" not in tool_names:
+            if "read_file" in tool_names:
+                phases_seen.append("verify")
+            else:
+                phases_seen.append("close")
+                bd.flip_closed("harness-a")
+        return ToolLoopResult(content="ok", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    # All test invocations pass — no WRITE_TEST sanity check on this path.
+    monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd", lambda *_a, **_k: (0, ""))
+
+    cfg = _config(tmp_path, use_fsm=True, tdd_required=False, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    assert "write_test" not in phases_seen
+    assert phases_seen == ["assess", "implement", "verify", "close"]
+
+
+def test_run_loop_fsm_halts_when_assess_produces_no_assessment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-kbnl: ASSESS budget exhausted without submit_assessment
+    halts the turn with reason 'assess->halted (no assessment)'."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], [issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        return ToolLoopResult(content="idle", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd", lambda *_a, **_k: (0, ""))
+
+    cfg = _config(tmp_path, use_fsm=True, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "halted"
+    assert result.halted_on == "harness-a"
+
+
+def test_run_loop_fsm_test_already_green_short_circuits_to_close(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-kbnl: when WRITE_TEST submits a failing test but the
+    driver's sanity check reveals it actually passes (work was
+    already done), the FSM jumps to CLOSE — no IMPLEMENT phase."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    phases_seen: list[str] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        tool_names = set(registry.active_names())
+        if "submit_assessment" in tool_names:
+            phases_seen.append("assess")
+            registry.call(
+                "submit_assessment",
+                {
+                    "current_state": "x" * 30,
+                    "gap": "x" * 30,
+                    "approach": "x" * 30,
+                },
+            )
+        elif "submit_failing_test" in tool_names:
+            phases_seen.append("write_test")
+            registry.call(
+                "submit_failing_test",
+                {
+                    "test_path": "tests/test_x.py",
+                    "test_cmd": "pytest tests/test_x.py",
+                    "failure_output": "x" * 30,
+                },
+            )
+        elif "submit_implementation_complete" in tool_names:
+            phases_seen.append("implement")
+        elif "shell" in tool_names and "edit_file" not in tool_names:
+            if "read_file" not in tool_names:
+                phases_seen.append("close")
+                bd.flip_closed("harness-a")
+        return ToolLoopResult(content="ok", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd", lambda *_a, **_k: (0, ""))
+
+    cfg = _config(tmp_path, use_fsm=True, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    assert "implement" not in phases_seen
+    assert phases_seen == ["assess", "write_test", "close"]
+
+
+def test_run_loop_fsm_persists_phase_and_assessment_to_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-kbnl: after a successful FSM run the LoopRunState's
+    last_turn_phase / last_assessment / last_test_cmd carry the
+    final values. Used by next-attempt resume + audit."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        tool_names = set(registry.active_names())
+        if "submit_assessment" in tool_names:
+            registry.call(
+                "submit_assessment",
+                {
+                    "current_state": "current state value here for assertions",
+                    "gap": "gap value here for assertions",
+                    "approach": "approach value here for assertions",
+                },
+            )
+        elif "submit_failing_test" in tool_names:
+            registry.call(
+                "submit_failing_test",
+                {
+                    "test_path": "tests/test_foo.py",
+                    "test_cmd": "pytest tests/test_foo.py -v",
+                    "failure_output": "AssertionError: expected ... got ...",
+                },
+            )
+        elif "submit_implementation_complete" in tool_names:
+            registry.call("submit_implementation_complete", {"summary": "x" * 30})
+        elif (
+            "shell" in tool_names
+            and "edit_file" not in tool_names
+            and "read_file" not in tool_names
+        ):
+            bd.flip_closed("harness-a")
+        return ToolLoopResult(content="ok", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    # Same red-then-green pattern as the happy path: first exec_test_cmd
+    # call is the WRITE_TEST sanity check (must fail), subsequent calls
+    # are VERIFY (must pass).
+    exec_calls = {"count": 0}
+
+    def fake_exec(*_a: Any, **_k: Any) -> tuple[int, str]:
+        exec_calls["count"] += 1
+        return (1, "red") if exec_calls["count"] == 1 else (0, "")
+
+    monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd", fake_exec)
+
+    cfg = _config(tmp_path, use_fsm=True, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    state_path = LoopRunState.state_path(tmp_path, result.loop_run_id)
+    reloaded = LoopRunState.load(state_path)
+    assert reloaded.last_turn_phase["harness-a"] == "done"
+    assert "current state value" in reloaded.last_assessment["harness-a"]["current_state"]
+    assert reloaded.last_test_cmd["harness-a"] == "pytest tests/test_foo.py -v"

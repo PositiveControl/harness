@@ -46,19 +46,30 @@ from harness.tools.base import ToolSpec
 _MIN_FIELD_CHARS: int = 20
 
 
-def _require_nonempty(name: str, value: str) -> str:
+def _require_nonempty(name: str, value: str, *, min_chars: int = _MIN_FIELD_CHARS) -> str:
     """Trim + length-check a single string field. Raises ValueError
     on empty / whitespace-only / too-short input. Returns the trimmed
-    value so callers can store the clean form."""
+    value so callers can store the clean form.
+
+    `min_chars` defaults to the substantive-prose floor; identifier-
+    shaped fields (paths, commands) pass a lower value since they're
+    legitimately short."""
     cleaned = value.strip() if value else ""
     if not cleaned:
         raise ValueError(f"{name!r} must be a non-empty string")
-    if len(cleaned) < _MIN_FIELD_CHARS:
+    if len(cleaned) < min_chars:
         raise ValueError(
             f"{name!r} too short ({len(cleaned)} chars); supply at least "
-            f"{_MIN_FIELD_CHARS} characters of actual content"
+            f"{min_chars} characters of actual content"
         )
     return cleaned
+
+
+# Floor for identifier-shaped fields (paths, commands). Just guards
+# against empty / 1-char inputs; the substantive validation lives
+# in the prose-shaped fields (current_state, gap, approach,
+# failure_output, reason, summary).
+_MIN_IDENTIFIER_CHARS: int = 3
 
 
 @dataclass
@@ -269,8 +280,11 @@ class SubmitFailingTestTool:
         )
 
     def call(self, *, test_path: str, test_cmd: str, failure_output: str) -> str:
-        tp = _require_nonempty("test_path", test_path)
-        tc = _require_nonempty("test_cmd", test_cmd)
+        # Path + command are identifier-shaped (legitimately short);
+        # failure_output is the load-bearing evidence and uses the
+        # prose-shaped floor.
+        tp = _require_nonempty("test_path", test_path, min_chars=_MIN_IDENTIFIER_CHARS)
+        tc = _require_nonempty("test_cmd", test_cmd, min_chars=_MIN_IDENTIFIER_CHARS)
         fo = _require_nonempty("failure_output", failure_output)
         self.captured.append({"test_path": tp, "test_cmd": tc, "failure_output": fo})
         return f"failing test recorded: {tp}"

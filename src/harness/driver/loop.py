@@ -60,7 +60,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from harness.character import Character
 from harness.driver.bd import DriverBd, DriverBdError
@@ -183,6 +183,18 @@ class LoopConfig:
     # handoff. None disables the gate entirely; drafts without `verify`
     # entries behave identically to None for the items they describe.
     plan_draft_path: Path | None = None
+    # harness-kbnl: route turns through the TurnFSM (ASSESS → WRITE_TEST →
+    # IMPLEMENT → VERIFY → CLOSE) instead of the legacy single-shot
+    # _run_executor_turn. Off by default while the FSM bakes in; once
+    # stable the default flips and the legacy path moves to a
+    # --legacy-turn escape hatch. CLI wires this via --fsm / --no-fsm.
+    use_fsm: bool = False
+    # harness-kbnl: when use_fsm=True, require the WRITE_TEST phase by
+    # default. Operator can flip to False with --no-tdd for runs where
+    # TDD genuinely doesn't apply (UI/visual changes, docs). Model can
+    # also opt out per-issue via submit_assessment(tdd_applicable=False)
+    # — that's the model's judgment call, this is the operator's.
+    tdd_required: bool = True
 
 
 @dataclass
@@ -288,14 +300,28 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             turn_observer = _make_turn_observer(
                 log_path, state.turns_used + 1, config.extra_observer
             )
-            turn_success, turn_reason, turn_reply = _run_executor_turn(
-                adapter=adapter,
-                character=config.character,
-                handoff=handoff,
-                workspace=config.workspace,
-                observe=turn_observer,
-                max_rounds=config.executor_max_rounds,
-            )
+            if config.use_fsm:
+                turn_success, turn_reason, turn_reply = _run_fsm_turn_via_driver(
+                    adapter=adapter,
+                    character=config.character,
+                    bd=bd,
+                    state=state,
+                    config=config,
+                    current_issue=current,
+                    prior_failure=prior_failure,
+                    targeted_fix=targeted_fix,
+                    verify_map=verify_map,
+                    observe=turn_observer,
+                )
+            else:
+                turn_success, turn_reason, turn_reply = _run_executor_turn(
+                    adapter=adapter,
+                    character=config.character,
+                    handoff=handoff,
+                    workspace=config.workspace,
+                    observe=turn_observer,
+                    max_rounds=config.executor_max_rounds,
+                )
             state.turns_used += 1
 
             success, reason = _classify_post_turn(
@@ -424,6 +450,102 @@ def _format_executor_event(event: ToolLoopEvent) -> str:
     if event.catcher:
         parts.append(f"catcher={event.catcher}")
     return " | ".join(parts)
+
+
+def _run_fsm_turn_via_driver(
+    *,
+    adapter: ModelAdapter,
+    character: Character,
+    bd: DriverBd,
+    state: LoopRunState,
+    config: LoopConfig,
+    current_issue: Any,
+    prior_failure: str | None,
+    targeted_fix: bool,
+    verify_map: Mapping[str, Sequence[VerifyStep]],
+    observe: ExecutorObserver | None,
+) -> tuple[bool, str, str]:
+    """Adapter that wraps `run_fsm_turn` to match the legacy
+    `_run_executor_turn` return shape (succeeded, reason, reply).
+
+    Builds a phase-aware handoff_builder closure: each phase asks
+    for a fresh Handoff that reflects the FSM's current state
+    (phase, prior assessment, prior test_cmd). The verify steps for
+    the current bd issue are pulled from `verify_map` and passed
+    into `run_fsm_turn` so the VERIFY phase can execute them.
+
+    Side effects:
+      - Persists `state.last_turn_phase[issue_id]` so a halt mid-FSM
+        carries forward (next attempt resumes in IMPLEMENT if the
+        prior attempt halted there with an assessment).
+      - Persists `state.last_assessment[issue_id]` + `state.last_test_cmd[issue_id]`
+        for the same reason."""
+    from harness.driver.fsm_turn import (
+        FsmTurnResult,
+        phase_instructions,
+        run_fsm_turn,
+    )
+    from harness.driver.handoff import build_handoff
+    from harness.driver.turn_fsm import TurnPhase
+
+    issue_id = current_issue.id
+
+    def builder(
+        phase: TurnPhase,
+        prior_assessment: dict[str, Any] | None,
+        prior_test_cmd: str | None,
+    ) -> Handoff:
+        return build_handoff(
+            state,
+            issue_id,
+            bd,
+            git_root=config.workspace,
+            prior_attempt_failure=prior_failure,
+            workspace=config.workspace,
+            targeted_fix=targeted_fix,
+            phase=phase.value,
+            phase_instructions=phase_instructions(phase),
+            prior_assessment=prior_assessment if prior_assessment else None,
+            prior_test_cmd=prior_test_cmd,
+        )
+
+    initial_phase = TurnPhase.ASSESS
+    saved_phase_value = state.last_turn_phase.get(issue_id)
+    if saved_phase_value:
+        with contextlib.suppress(ValueError):
+            initial_phase = TurnPhase(saved_phase_value)
+            # Don't resume into a terminal phase — start fresh.
+            if initial_phase in {TurnPhase.DONE, TurnPhase.HALTED}:
+                initial_phase = TurnPhase.ASSESS
+
+    prior_assessment = state.last_assessment.get(issue_id)
+    prior_test_cmd = state.last_test_cmd.get(issue_id)
+    verify_steps = verify_map.get(current_issue.title, ()) if verify_map else ()
+
+    result: FsmTurnResult = run_fsm_turn(
+        adapter=adapter,
+        character=character,
+        bd=bd,
+        handoff_builder=builder,
+        workspace=config.workspace,
+        current_issue_id=issue_id,
+        initial_phase=initial_phase,
+        prior_assessment=prior_assessment,
+        prior_test_cmd=prior_test_cmd,
+        verify_steps=verify_steps,
+        tdd_required=config.tdd_required,
+        observe=observe,
+    )
+
+    # Persist FSM state for resume. Plain string values keep the
+    # .json dump operator-readable.
+    state.last_turn_phase[issue_id] = result.final_phase.value
+    if result.last_assessment is not None:
+        state.last_assessment[issue_id] = result.last_assessment
+    if result.last_test_cmd is not None:
+        state.last_test_cmd[issue_id] = result.last_test_cmd
+
+    return result.succeeded, result.reason, result.reply
 
 
 def _run_executor_turn(

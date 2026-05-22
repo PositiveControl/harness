@@ -136,6 +136,19 @@ class Handoff:
     workspace_path: Path | None = None
     workspace_contents: tuple[str, ...] = ()
     targeted_fix: bool = False
+    # harness-kbnl: FSM-driven turn phase context. `phase` is the
+    # current TurnPhase the executor is operating in (string value of
+    # the enum, e.g. "assess"); rendered as `[PHASE: <name>]` so the
+    # model knows which meta-tool is expected to advance the FSM.
+    # `prior_assessment` and `prior_test_cmd` carry forward when a
+    # turn halts mid-FSM (e.g. ASSESS completed but IMPLEMENT didn't
+    # finish) so the next attempt resumes with the work already
+    # captured. None values render to nothing — handoffs without
+    # FSM context behave identically to the pre-FSM shape.
+    phase: str | None = None
+    phase_instructions: str | None = None
+    prior_assessment: dict[str, object] | None = None
+    prior_test_cmd: str | None = None
 
     def render(self) -> str:
         """Produce the `[SESSION HANDOFF]` block. Applies the render-
@@ -163,6 +176,26 @@ class Handoff:
             f"[SESSION HANDOFF — loop_run={self.loop_run_id} epic={self.epic_id}]",
             "",
         ]
+        if self.phase is not None:
+            parts.extend([f"[PHASE: {self.phase.upper()}]", ""])
+            if self.phase_instructions:
+                parts.append(self.phase_instructions)
+                parts.append("")
+        if self.prior_assessment:
+            parts.append("[PRIOR ASSESSMENT (from earlier turn in this run)]")
+            for key in ("current_state", "gap", "approach"):
+                value = self.prior_assessment.get(key)
+                if isinstance(value, str) and value:
+                    parts.append(f"  {key}: {value}")
+            parts.append("")
+        if self.prior_test_cmd:
+            parts.extend(
+                [
+                    "[PRIOR TEST CMD (from WRITE_TEST phase)]",
+                    f"  {self.prior_test_cmd}",
+                    "",
+                ]
+            )
         if self.targeted_fix:
             parts.extend(
                 [
@@ -249,6 +282,10 @@ def build_handoff(
     prior_attempt_failure: str | None = None,
     workspace: Path | None = None,
     targeted_fix: bool = False,
+    phase: str | None = None,
+    phase_instructions: str | None = None,
+    prior_assessment: dict[str, object] | None = None,
+    prior_test_cmd: str | None = None,
 ) -> Handoff:
     """Assemble a `Handoff` for the next executor turn.
 
@@ -305,6 +342,10 @@ def build_handoff(
         workspace_path=workspace.resolve() if workspace is not None else None,
         workspace_contents=workspace_contents,
         targeted_fix=targeted_fix,
+        phase=phase,
+        phase_instructions=phase_instructions,
+        prior_assessment=prior_assessment,
+        prior_test_cmd=prior_test_cmd,
     )
 
 
