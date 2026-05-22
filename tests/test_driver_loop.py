@@ -66,6 +66,7 @@ class _BdLog:
     human_flags: list[tuple[str, str]] = field(default_factory=list)
     ready_calls: int = 0
     show_calls: list[str] = field(default_factory=list)
+    reopens: list[str] = field(default_factory=list)
 
 
 class _ScenarioBd:
@@ -142,6 +143,20 @@ class _ScenarioBd:
             existing.id,
             title=existing.title,
             status="closed",
+            priority=existing.priority,
+            labels=existing.labels,
+        )
+
+    def reopen(self, issue_id: str) -> None:
+        """harness-xfh2: matches DriverBd.reopen; flips bd status back
+        to open so the next iteration's ready_under_epic picks it up,
+        and records the call for assertions."""
+        self.log.reopens.append(issue_id)
+        existing = self._issues[issue_id]
+        self._issues[issue_id] = _issue(
+            existing.id,
+            title=existing.title,
+            status="open",
             priority=existing.priority,
             labels=existing.labels,
         )
@@ -964,6 +979,283 @@ def test_run_loop_targeted_fix_banner_renders_on_regression_marker(
 
     assert len(seen_prompts) == 1
     assert "[MODE: TARGETED-FIX]" in seen_prompts[0]
+
+
+# --- verify gate (harness-xfh2) -------------------------------------
+
+
+def _write_draft_with_verify(path: Path, title: str, verify_cmds: list[str]) -> None:
+    """Write a minimal one-item plan draft with the given verify
+    commands. `title` MUST match the bd issue title the test exposes,
+    because the loop looks up verify steps by bd-issue title.
+
+    The draft does NOT need a spec file; commit_plan isn't invoked
+    here — _load_verify_map only parses the YAML, not the spec."""
+    import yaml as _yaml
+
+    item: dict[str, Any] = {
+        "title": title,
+        "description": f"> q here yes for {title}",
+        "spec_quote": f"q here yes for {title}",
+        "type": "task",
+        "priority": 2,
+        "acceptance": "",
+        "depends_on": [],
+        "verify": [{"cmd": cmd} for cmd in verify_cmds],
+    }
+    path.write_text(
+        _yaml.safe_dump(
+            {
+                "epic_title": "test epic",
+                "epic_description": "test",
+                "items": [item],
+            },
+            sort_keys=False,
+        )
+    )
+
+
+def test_run_loop_verify_skipped_when_no_plan_draft_supplied(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-xfh2 (acceptance a): when LoopConfig.plan_draft_path is
+    None, the close sticks unchanged — verify gate is opt-in."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    _stub_run_tool_loop(monkeypatch, outcomes=["close harness-a"], bd=bd)
+    # Patch exec_verify_cmd so a stray call (which there shouldn't be)
+    # would surface as a non-zero — guards against verify silently
+    # running when it shouldn't.
+    monkeypatch.setattr(
+        "harness.driver.loop._exec_verify_cmd",
+        lambda *_a, **_k: (1, "should not have been called"),
+    )
+    result = run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-a"]
+    assert bd.log.reopens == []
+
+
+def test_run_loop_verify_pass_keeps_close(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """harness-xfh2 (acceptance c): when the verify steps all exit 0,
+    the close counts and state advances exactly like the empty-verify
+    case."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    _stub_run_tool_loop(monkeypatch, outcomes=["close harness-a"], bd=bd)
+    draft_path = tmp_path / "plan.yaml"
+    _write_draft_with_verify(draft_path, "implement foo", ["true"])
+    exec_calls: list[str] = []
+
+    def fake_exec(step: Any, _ws: Any) -> tuple[int, str]:
+        exec_calls.append(step.cmd)
+        return 0, ""
+
+    monkeypatch.setattr("harness.driver.loop._exec_verify_cmd", fake_exec)
+    cfg = _config(tmp_path, plan_draft_path=draft_path)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-a"]
+    # Verify ran exactly once with our cmd.
+    assert exec_calls == ["true"]
+    # No reopens — clean pass.
+    assert bd.log.reopens == []
+
+
+def test_run_loop_verify_failure_reopens_and_blocks_close(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-xfh2 (acceptance b): a verify step exiting non-zero
+    reopens the bd issue, records `verify_failed: ...` in
+    `state.last_failure`, and does NOT add the issue to
+    closed_this_run. The next iteration retries the same issue with
+    the failure surfaced in the handoff's prior_attempt_failure
+    block."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        # Three rounds available: attempt 1 (verify fails), attempt 2
+        # (verify passes), epic empty. ready_under_epic returns the
+        # issue again on attempt 2 because reopen flipped it back to
+        # open.
+        ready_sequence=[[issue_a], [issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    # Track which handoff each turn sees so we can verify the failure
+    # reason propagates.
+    seen_prompts: list[str] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        seen_prompts.append(messages[0].content)
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+
+    draft_path = tmp_path / "plan.yaml"
+    _write_draft_with_verify(draft_path, "implement foo", ["smoke.js"])
+
+    # First verify call fails; second passes. Tracks the calls so we
+    # can assert ordering.
+    exec_results = iter([(1, "TypeError: undefined"), (0, "")])
+
+    def fake_exec(_step: Any, _ws: Any) -> tuple[int, str]:
+        return next(exec_results)
+
+    monkeypatch.setattr("harness.driver.loop._exec_verify_cmd", fake_exec)
+    cfg = _config(tmp_path, plan_draft_path=draft_path, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    # The final iteration succeeds; both turns ran.
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-a"], (
+        "close must count only AFTER verify passes — first attempt's close was reverted"
+    )
+    # Exactly one reopen: the first attempt's failed verify.
+    assert bd.log.reopens == ["harness-a"]
+    # The second turn's handoff must surface the verify failure.
+    assert len(seen_prompts) == 2
+    assert "[PRIOR ATTEMPT FAILED]" in seen_prompts[1]
+    assert "verify_failed:" in seen_prompts[1]
+    assert "TypeError: undefined" in seen_prompts[1]
+
+
+def test_run_loop_verify_fails_twice_halts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """harness-xfh2: two consecutive verify failures on the same issue
+    halt via flag_human, same shape as a runtime double-fail. Without
+    this, a stuck verify could loop forever burning turns."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], [issue_a], [issue_a]],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+
+    draft_path = tmp_path / "plan.yaml"
+    _write_draft_with_verify(draft_path, "implement foo", ["smoke.js"])
+
+    monkeypatch.setattr("harness.driver.loop._exec_verify_cmd", lambda *_a, **_k: (1, "boom"))
+    cfg = _config(tmp_path, plan_draft_path=draft_path, max_turns=5)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "halted"
+    assert result.halted_on == "harness-a"
+    # Both attempts reopened the issue before halting on the third.
+    assert bd.log.reopens == ["harness-a", "harness-a"]
+    # The bd issue is flagged for human review.
+    assert bd.log.human_flags
+    assert "verify_failed:" in bd.log.human_flags[0][1]
+
+
+def test_run_loop_verify_missing_title_passes_silently(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-xfh2: a draft that doesn't list verify steps for the
+    current bd issue's title is a pass — opt-in by item. The other
+    item in the draft has verify, but ours doesn't, so the close
+    sticks."""
+    issue_a = _issue("harness-a", title="some unrelated title", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    _stub_run_tool_loop(monkeypatch, outcomes=["close harness-a"], bd=bd)
+
+    draft_path = tmp_path / "plan.yaml"
+    # Draft has verify on a DIFFERENT item's title.
+    _write_draft_with_verify(draft_path, "OTHER item title", ["smoke.js"])
+
+    exec_calls: list[Any] = []
+
+    def fake_exec(step: Any, _ws: Any) -> tuple[int, str]:
+        exec_calls.append(step)
+        return 0, ""
+
+    monkeypatch.setattr("harness.driver.loop._exec_verify_cmd", fake_exec)
+    cfg = _config(tmp_path, plan_draft_path=draft_path)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-a"]
+    # No verify exec because the title didn't match anything in the map.
+    assert exec_calls == []
+    assert bd.log.reopens == []
+
+
+def test_exec_verify_cmd_zero_exit_returns_empty_tail(tmp_path: Path) -> None:
+    """harness-xfh2: a passing command (exit 0) returns (0, '<tail>').
+    Uses the system `true` builtin so the test doesn't depend on any
+    project-specific runner."""
+    from harness.driver.loop import _exec_verify_cmd
+    from harness.driver.planner import VerifyStep
+
+    code, tail = _exec_verify_cmd(VerifyStep(cmd="true"), tmp_path)
+    assert code == 0
+    assert tail == ""
+
+
+def test_exec_verify_cmd_nonzero_exit_captures_stderr_tail(tmp_path: Path) -> None:
+    """harness-xfh2: a failing command (exit non-zero) returns the
+    exit code and a truncated stderr/stdout tail. Stderr wins over
+    stdout when both are present (failure reason lives in stderr by
+    convention)."""
+    from harness.driver.loop import _exec_verify_cmd
+    from harness.driver.planner import VerifyStep
+
+    code, tail = _exec_verify_cmd(VerifyStep(cmd="echo -n 'TypeError: x' >&2; exit 7"), tmp_path)
+    assert code == 7
+    assert "TypeError: x" in tail
+
+
+def test_exec_verify_cmd_stderr_tail_is_truncated_to_cap(tmp_path: Path) -> None:
+    """harness-xfh2: VERIFY_STDERR_TAIL_CHARS caps the tail length so
+    a verbose failure doesn't bloat the next handoff's
+    prior_attempt_failure block."""
+    from harness.driver.loop import VERIFY_STDERR_TAIL_CHARS, _exec_verify_cmd
+    from harness.driver.planner import VerifyStep
+
+    # Emit ~500 chars of stderr; tail must be at most VERIFY_STDERR_TAIL_CHARS.
+    code, tail = _exec_verify_cmd(
+        VerifyStep(cmd="python3 -c \"import sys; sys.stderr.write('x' * 500); sys.exit(2)\""),
+        tmp_path,
+    )
+    assert code == 2
+    assert len(tail) <= VERIFY_STDERR_TAIL_CHARS
 
 
 # --- workspace snapshot (harness-9ijr) ------------------------------

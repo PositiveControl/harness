@@ -237,6 +237,15 @@ class DriverBd:
             args.append(f"--reason={reason}")
         self._run(args)
 
+    def reopen(self, issue_id: str) -> None:
+        """`bd update <id> --status=open`. Used by the loop driver when a
+        verify gate fails after the model closed the bd issue
+        (harness-xfh2): flipping the issue back to open re-admits it to
+        `ready_under_epic` so the next iteration retries with the
+        verify failure surfaced via `prior_attempt_failure` in the
+        handoff."""
+        self._run(["update", issue_id, "--status=open"])
+
     def dep_add(self, blocked: str, blocker: str) -> None:
         """`bd dep add <blocked> <blocker>` — `blocked` depends on
         `blocker`. Argument order matches the bd CLI."""

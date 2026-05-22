@@ -275,6 +275,18 @@ def loop_command(
             "original run's tarball is the recovery point."
         ),
     ),
+    plan_draft: Path | None = typer.Option(
+        None,
+        "--plan-draft",
+        help=(
+            "YAML plan draft committed for this epic (harness-xfh2). When "
+            "set, the loop runs each item's `verify` shell commands after "
+            "the model closes its bd issue; a non-zero exit reopens the "
+            "issue and stashes the failure in the next handoff so the "
+            "model self-corrects. Items without `verify` entries (and runs "
+            "without --plan-draft) behave as before."
+        ),
+    ),
 ) -> None:
     """Drive a bd epic to closure across multiple turns."""
     if list_runs:
@@ -315,6 +327,7 @@ def loop_command(
         forbidden_patterns=() if no_verify else ("TODO", "FIXME", "XXX", "HACK"),
         executor_max_rounds=executor_max_rounds,
         snapshot=snapshot,
+        plan_draft_path=plan_draft,
     )
     result = run_loop(adapter, bd, config)
     _print_result(result)

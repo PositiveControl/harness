@@ -16,6 +16,7 @@ from harness.driver.planner import (
     PlanItem,
     PlannerConfig,
     PlannerError,
+    VerifyStep,
     _description_has_blockquote,
     _PlannerState,
     commit_plan,
@@ -100,6 +101,63 @@ def test_plan_item_roundtrip_yaml() -> None:
     raw = item.to_yaml_dict()
     rebuilt = PlanItem.from_yaml_dict(raw)
     assert rebuilt == item
+
+
+def test_plan_item_roundtrip_yaml_with_verify_steps() -> None:
+    """harness-xfh2: VerifyStep round-trips through to_yaml_dict /
+    from_yaml_dict. Compact form (`shell` omitted when default True)
+    survives the parse."""
+    item = PlanItem(
+        title="implement foo",
+        description="> quote here",
+        spec_quote="quote here",
+        verify=[
+            VerifyStep(cmd="node scripts/smoke.js loads"),
+            VerifyStep(cmd="bash -c 'exit 0'", shell=False),
+        ],
+    )
+    raw = item.to_yaml_dict()
+    # Compact form: shell=True omitted, shell=False explicit.
+    assert raw["verify"] == [
+        {"cmd": "node scripts/smoke.js loads"},
+        {"cmd": "bash -c 'exit 0'", "shell": False},
+    ]
+    rebuilt = PlanItem.from_yaml_dict(raw)
+    assert rebuilt == item
+
+
+def test_plan_item_yaml_omits_empty_verify_for_legacy_drafts() -> None:
+    """harness-xfh2: drafts authored before the verify schema bump (no
+    `verify:` key) must round-trip unchanged. The to_yaml_dict output
+    drops the field when the list is empty so existing GTA2-style
+    drafts don't grow a noisy `verify: []` on every item."""
+    item = PlanItem(title="a", description="> q", spec_quote="q here yes")
+    raw = item.to_yaml_dict()
+    assert "verify" not in raw
+    rebuilt = PlanItem.from_yaml_dict(raw)
+    assert rebuilt.verify == []
+
+
+def test_plan_item_from_yaml_rejects_non_mapping_verify_entry() -> None:
+    """harness-xfh2: a malformed verify entry (string instead of
+    mapping) raises PlannerError so the operator sees the schema
+    violation at draft-parse time, not at verify-run time."""
+    with pytest.raises(PlannerError, match="verify entry must be a mapping"):
+        PlanItem.from_yaml_dict(
+            {
+                "title": "a",
+                "description": "> q here",
+                "spec_quote": "q here yes",
+                "verify": ["not a mapping"],
+            }
+        )
+
+
+def test_verify_step_default_shell_true() -> None:
+    """harness-xfh2: shell defaults to True per the spec (operator
+    convenience — pipes / $VAR Just Work)."""
+    step = VerifyStep(cmd="echo hi")
+    assert step.shell is True
 
 
 def test_plan_draft_roundtrip_yaml() -> None:

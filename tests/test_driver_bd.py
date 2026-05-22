@@ -339,6 +339,16 @@ def test_flag_human(monkeypatch: pytest.MonkeyPatch, bd: DriverBd) -> None:
     assert spy.calls[0][0] == ("human", "harness-x", "--reason=halted after 2 attempts")
 
 
+def test_reopen_sets_status_open(monkeypatch: pytest.MonkeyPatch, bd: DriverBd) -> None:
+    """harness-xfh2: DriverBd.reopen shells `bd update <id> --status=open`
+    so the loop's verify gate can put a model-closed issue back in
+    ready_under_epic when verify fails."""
+    spy = _RunSpy([_FakeProc()])
+    _install_run(monkeypatch, spy)
+    bd.reopen("harness-x")
+    assert spy.calls[0][0] == ("update", "harness-x", "--status=open")
+
+
 # --- write_thought / write_session_state -----------------------------
 
 

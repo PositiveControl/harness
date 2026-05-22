@@ -52,10 +52,11 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import shlex
 import signal
 import subprocess
 import tarfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,6 +65,7 @@ from typing import Literal
 from harness.character import Character
 from harness.driver.bd import DriverBd, DriverBdError
 from harness.driver.handoff import Handoff, build_handoff
+from harness.driver.planner import PlanDraft, PlannerError, VerifyStep
 from harness.driver.state import LoopRunState
 from harness.model.adapter import ChatMessage, ModelAdapter
 from harness.orchestrator import ToolLoopEvent, ToolLoopResult, run_tool_loop
@@ -171,6 +173,15 @@ class LoopConfig:
     # callers who know what they're doing (large workspaces over the
     # cap, fully-tracked git trees, throwaway scratch sessions).
     snapshot: bool = True
+    # YAML plan draft this run is draining (harness-xfh2). When set, the
+    # loop loads the draft once at startup and runs each item's `verify`
+    # steps after the executor closes the corresponding bd issue. Any
+    # step exiting non-zero reopens the bd issue, stashes the failure
+    # in `last_failure`, and lets the next iteration retry — the model
+    # sees the verify failure via `prior_attempt_failure` in the
+    # handoff. None disables the gate entirely; drafts without `verify`
+    # entries behave identically to None for the items they describe.
+    plan_draft_path: Path | None = None
 
 
 @dataclass
@@ -206,6 +217,13 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
         f"loop_run={state.loop_run_id} epic={state.epic_id} max_turns={state.max_turns} "
         f"resumed={'yes' if config.resume_from else 'no'}"
     )
+    # harness-xfh2: load the per-item verify map once per run. Empty
+    # when no draft path is supplied or the draft has no `verify`
+    # entries — `_run_issue_verify` short-circuits to None in that case
+    # and the original trust-the-close path is unchanged.
+    verify_map = _load_verify_map(config.plan_draft_path)
+    if verify_map:
+        log(f"verify gate active: {len(verify_map)} item(s) with verify steps")
 
     # harness-9ijr: snapshot the workspace once per fresh run BEFORE
     # the first turn fires. Resume runs inherit the original
@@ -290,8 +308,38 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             )
 
             if success:
-                _on_success(bd, state, current.id, log)
+                # harness-xfh2: the verify gate runs only when the bd
+                # close looked clean. A non-zero verify exit reopens the
+                # issue, stashes the failure, and falls through to next
+                # turn — same retry budget as a "close failed" path. The
+                # reopen + stash combo is the contract: ready_under_epic
+                # picks up the now-open issue next iteration, and the
+                # next handoff carries `verify_failed: ...` so the model
+                # self-corrects.
+                verify_failure = _run_issue_verify(verify_map, bd, current.id, config.workspace)
+                if verify_failure is None:
+                    _on_success(bd, state, current.id, log)
+                    _save_state(state, config.workspace)
+                    continue
+                reopened = _try_reopen(bd, current.id)
+                state.last_failure[current.id] = f"verify_failed: {verify_failure}"
                 _save_state(state, config.workspace)
+                reopen_note = "reopened" if reopened else "REOPEN_FAILED"
+                log(
+                    f"turn {state.turns_used}: {current.id} VERIFY_FAIL "
+                    f"({reopen_note}; {verify_failure})"
+                )
+                # Verify failure counts as the iteration's failure for
+                # attempt accounting — second consecutive verify failure
+                # halts via the same path a runtime failure does.
+                if attempt >= 2:
+                    return _exit_halted(
+                        bd,
+                        state,
+                        current_id=current.id,
+                        reason=f"verify_failed: {verify_failure}",
+                        log=log,
+                    )
                 continue
 
             log(f"turn {state.turns_used}: {current.id} attempt={attempt} FAIL ({reason})")
@@ -504,6 +552,136 @@ def _find_violations(
             if pattern in content:
                 violations.append(f"{rel}: contains {pattern!r}")
     return violations
+
+
+# --- verify gate (harness-xfh2) -----------------------------------
+
+
+# Tail of stderr (or stdout, when stderr is empty) captured into the
+# `last_failure` slot when a verify step exits non-zero. 200 chars per
+# the xfh2 spec — enough to identify the failure mode without bloating
+# the next turn's handoff.
+VERIFY_STDERR_TAIL_CHARS: int = 200
+
+# Per-step subprocess timeout in seconds. A verify step that hangs
+# would otherwise block the whole loop; 60s is the same upper bound
+# the orchestrator uses for shell tool calls.
+VERIFY_TIMEOUT_SECONDS: int = 60
+
+
+def _load_verify_map(path: Path | None) -> dict[str, tuple[VerifyStep, ...]]:
+    """Parse the YAML plan draft into `{item.title: (verify steps,)}`.
+
+    Missing path / unreadable YAML / malformed schema all degrade to an
+    empty map — the verify gate is a safety net, not a contract gate.
+    The model still sees `prior_attempt_failure` on any failure mode the
+    rest of the loop catches; a broken draft just means verify itself
+    is skipped this run."""
+    if path is None or not path.exists():
+        return {}
+    try:
+        text = path.read_text()
+    except OSError:
+        return {}
+    try:
+        draft = PlanDraft.from_yaml(text)
+    except PlannerError:
+        return {}
+    return {item.title: tuple(item.verify) for item in draft.items if item.verify}
+
+
+def _run_issue_verify(
+    verify_map: Mapping[str, Sequence[VerifyStep]],
+    bd: DriverBd,
+    issue_id: str,
+    workspace: Path,
+) -> str | None:
+    """Run the verify steps registered for `issue_id` (looked up by bd
+    title). Returns None when all pass OR no steps are registered;
+    otherwise a short failure message (already truncated, safe to drop
+    into `last_failure`).
+
+    Title lookup, not bd-id lookup: the draft YAML carries the operator's
+    titles and `commit_plan` materialized those verbatim into bd. A
+    title mismatch (model renamed the issue post-commit, or the draft
+    drifted) silently passes — the loop's existing classification
+    handles those edges; we don't want to fail-closed on a clerical
+    drift."""
+    if not verify_map:
+        return None
+    try:
+        issue = bd.show(issue_id)
+    except DriverBdError as exc:
+        # A bd.show failure here is rare (we just classified the turn,
+        # which also called bd.show successfully). Treat as a soft pass
+        # — the next iteration's bd.ready_under_epic will surface the
+        # same issue if it's still open.
+        return f"verify lookup failed (bd.show): {exc}"
+    steps = verify_map.get(issue.title)
+    if not steps:
+        return None
+    for step in steps:
+        exit_code, tail = _exec_verify_cmd(step, workspace)
+        if exit_code != 0:
+            preview = step.cmd if len(step.cmd) <= 80 else step.cmd[:77] + "..."
+            return (
+                f"{preview} exit={exit_code}: {tail}" if tail else (f"{preview} exit={exit_code}")
+            )
+    return None
+
+
+def _exec_verify_cmd(step: VerifyStep, workspace: Path) -> tuple[int, str]:
+    """Run a single verify command. Returns (exit_code, stderr/stdout
+    tail truncated to VERIFY_STDERR_TAIL_CHARS).
+
+    Separate from `_run_issue_verify` so tests can monkeypatch the
+    subprocess seam without intercepting the lookup logic. shell=True is
+    the default for operator convenience (pipes, $VAR); shell=False
+    routes through `shlex.split` so `cmd: "node smoke.js arg"` Just
+    Works. OSError + TimeoutExpired both surface as non-zero with the
+    exception message in the tail — a hung verify is a failure."""
+    args: str | list[str]
+    use_shell = step.shell
+    if use_shell:
+        args = step.cmd
+    else:
+        try:
+            args = shlex.split(step.cmd)
+        except ValueError as exc:
+            return 1, f"unparseable cmd: {exc}"
+    try:
+        result = subprocess.run(  # noqa: S603 — cmd from trusted operator-authored draft YAML
+            args,
+            shell=use_shell,
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=VERIFY_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        return 1, f"executable not found: {exc}"
+    except subprocess.TimeoutExpired:
+        return 1, f"timeout after {VERIFY_TIMEOUT_SECONDS}s"
+    except OSError as exc:
+        return 1, f"exec failed: {exc}"
+    stderr = (result.stderr or "").strip()
+    stdout = (result.stdout or "").strip()
+    tail_src = stderr or stdout
+    tail = tail_src[-VERIFY_STDERR_TAIL_CHARS:]
+    return result.returncode, tail
+
+
+def _try_reopen(bd: DriverBd, issue_id: str) -> bool:
+    """Best-effort `bd update --status=open`. Returns True on success.
+    A transient bd hiccup here is logged via the caller's `log()` but
+    doesn't crash the loop — `last_failure` still gets stashed, and the
+    operator sees a reopened-FAILED note in the progress log."""
+    try:
+        bd.reopen(issue_id)
+    except DriverBdError:
+        return False
+    return True
 
 
 # --- targeted-fix detection ---------------------------------------
@@ -887,6 +1065,8 @@ __all__ = [
     "DEFAULT_SNAPSHOT_EXCLUDE_SUFFIXES",
     "EXECUTOR_USER_MESSAGE",
     "SNAPSHOT_SIZE_CAP_BYTES",
+    "VERIFY_STDERR_TAIL_CHARS",
+    "VERIFY_TIMEOUT_SECONDS",
     "LoopConfig",
     "LoopResult",
     "SnapshotTooBigError",

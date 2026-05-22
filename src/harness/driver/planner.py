@@ -82,6 +82,36 @@ _WHITESPACE_RE = re.compile(r"\s+")
 _MIN_QUOTE_CHARS = 12
 
 
+@dataclass(frozen=True)
+class VerifyStep:
+    """One artifact-verification command for a PlanItem (harness-xfh2).
+
+    The executor loop runs each step after the model closes a bd issue
+    and gates the close on every step exiting 0. A non-zero exit reopens
+    the bd issue and surfaces the failure in the next turn's handoff so
+    the model self-corrects without an operator backstop.
+
+    - `cmd`: command line. When `shell=True` (default), invoked through
+      `/bin/sh -c <cmd>` so pipes / glob / `$VAR` expansion work; when
+      False, the cmd is `shlex.split` into argv. Operator's choice.
+    """
+
+    cmd: str
+    shell: bool = True
+
+    def to_yaml_dict(self) -> dict[str, Any]:
+        # Emit `shell` only when non-default so YAML drafts stay compact
+        # for the common case (`- cmd: ...`).
+        out: dict[str, Any] = {"cmd": self.cmd}
+        if not self.shell:
+            out["shell"] = False
+        return out
+
+    @classmethod
+    def from_yaml_dict(cls, raw: dict[str, Any]) -> VerifyStep:
+        return cls(cmd=str(raw["cmd"]), shell=bool(raw.get("shell", True)))
+
+
 @dataclass
 class PlanItem:
     """One child issue in the workplan.
@@ -96,6 +126,9 @@ class PlanItem:
     - `acceptance`: bd acceptance_criteria field.
     - `depends_on`: other PlanItem titles in the same draft. Resolved
       to bd ids at commit time; an unknown title halts the commit.
+    - `verify`: artifact-verification commands run after the executor
+      closes the bd issue (harness-xfh2). Empty list (default) preserves
+      the prior trust-the-close behavior — opt-in by item.
     """
 
     title: str
@@ -105,9 +138,10 @@ class PlanItem:
     priority: int = 2
     acceptance: str = ""
     depends_on: list[str] = field(default_factory=list)
+    verify: list[VerifyStep] = field(default_factory=list)
 
     def to_yaml_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "title": self.title,
             "description": self.description,
             "spec_quote": self.spec_quote,
@@ -116,9 +150,23 @@ class PlanItem:
             "acceptance": self.acceptance,
             "depends_on": list(self.depends_on),
         }
+        # Emit `verify` only when non-empty so drafts authored before the
+        # harness-xfh2 schema bump round-trip unchanged. Saves a noisy
+        # `verify: []` on every item in legacy drafts.
+        if self.verify:
+            out["verify"] = [step.to_yaml_dict() for step in self.verify]
+        return out
 
     @classmethod
     def from_yaml_dict(cls, raw: dict[str, Any]) -> PlanItem:
+        verify_raw = raw.get("verify", []) or []
+        verify: list[VerifyStep] = []
+        for entry in verify_raw:
+            if not isinstance(entry, dict):
+                raise PlannerError(
+                    f"plan item verify entry must be a mapping; got {type(entry).__name__}"
+                )
+            verify.append(VerifyStep.from_yaml_dict(entry))
         return cls(
             title=str(raw["title"]),
             description=str(raw["description"]),
@@ -127,6 +175,7 @@ class PlanItem:
             priority=int(raw.get("priority", 2)),
             acceptance=str(raw.get("acceptance", "")),
             depends_on=list(raw.get("depends_on", [])),
+            verify=verify,
         )
 
 
@@ -712,6 +761,7 @@ __all__ = [
     "PlanItem",
     "PlannerConfig",
     "PlannerError",
+    "VerifyStep",
     "commit_plan",
     "run_planner",
     "write_draft",
