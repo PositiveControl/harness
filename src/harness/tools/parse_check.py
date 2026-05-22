@@ -26,6 +26,7 @@ could have made by hand."""
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -54,6 +55,56 @@ _PARSERS: dict[str, tuple[str, ...]] = {
 # hangs past that, returning ok=True lets the write proceed rather
 # than blocking on a misbehaving tool.
 _PARSE_CHECK_TIMEOUT_SECONDS: float = 5.0
+
+
+# Node's `Identifier 'X' has already been declared` is the canonical
+# pattern we want to enrich. Captures the identifier name so we can
+# grep the file for ALL of its declaration sites — the model sees only
+# the NEW offender's line by default and has to search for the prior
+# decl, costing a round. Pre-compiled at module import so the hot path
+# pays only the search cost.
+_ALREADY_DECLARED_RE = re.compile(r"Identifier '([^']+)' has already been declared")
+
+# Declaration-shape regex used by the dup-decl enrichment. Catches the
+# four JS keywords + class/function statements. Bound to the identifier
+# at format time via a precompiled-once-per-ident inline pattern below.
+_DECL_KEYWORDS = ("let", "const", "var", "function", "class")
+
+
+def _enrich_with_duplicate_locations(detail: str, path: Path) -> str:
+    """harness-0tni: when the parser flags a duplicate-declaration
+    error, append a grep of where the conflicting identifier is
+    declared elsewhere in the file. Saves the model a search round on
+    the loop run's most expensive failure mode (block-scope blindness
+    introducing redeclarations).
+
+    Returns the original `detail` untouched when:
+      - the parser output doesn't match the dup-decl shape,
+      - the file can't be read (e.g. concurrent writer),
+      - fewer than 2 declaration sites are found (single match = the
+        parser's own line is the better signal already).
+    """
+    match = _ALREADY_DECLARED_RE.search(detail)
+    if not match:
+        return detail
+    ident = match.group(1)
+    try:
+        text = path.read_text()
+    except (OSError, UnicodeDecodeError):
+        return detail
+    keyword_alt = "|".join(_DECL_KEYWORDS)
+    decl_re = re.compile(rf"^\s*({keyword_alt})\s+{re.escape(ident)}\b")
+    locations: list[str] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if decl_re.search(line):
+            locations.append(f"  line {lineno}: {line.strip()}")
+    if len(locations) <= 1:
+        return detail
+    return (
+        f"{detail}\n\nAll declarations of `{ident}` in {path.name}:\n"
+        + "\n".join(locations)
+        + f"\nRemove or rename {len(locations) - 1} of these to resolve the duplicate."
+    )
 
 
 def parse_check(path: Path) -> tuple[bool, str]:
@@ -91,6 +142,7 @@ def parse_check(path: Path) -> tuple[bool, str]:
     if result.returncode == 0:
         return (True, "")
     detail = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+    detail = _enrich_with_duplicate_locations(detail, path)
     return (False, detail)
 
 

@@ -90,8 +90,9 @@ def _format_replace_context(
     head_body = _render_range(start_line, head_end)
     tail_body = _render_range(tail_start, end_line)
     hint = (
-        f"  ... {omitted} lines omitted; lines {start_line}-{end_line} "
-        f"of {path} carry the splice — re-read the file to inspect ..."
+        f"  ... {omitted} lines omitted; "
+        f"read_file(path={path!r}, offset={start_line}, limit={splice_line_count}) "
+        f"to inspect the full splice region ..."
     )
     return (
         f"\n\ncontext (splice spans lines {start_line}-{end_line}, "

@@ -139,3 +139,66 @@ def test_invalid_json_returns_failure(tmp_path: Path) -> None:
     assert ok is False
     # Python's JSONDecodeError text includes "Expecting" or "JSON".
     assert "JSON" in detail or "Expecting" in detail
+
+
+# --- harness-0tni: duplicate-decl enrichment ----------------------
+
+
+@_requires_node
+def test_duplicate_decl_enrichment_lists_all_locations(tmp_path: Path) -> None:
+    """harness-0tni: when node flags `Identifier 'X' has already
+    been declared`, parse_check appends a grep of WHERE the
+    conflicting identifier is declared elsewhere in the file. This
+    saves the model a search round on the loop run's most expensive
+    failure mode (block-scope blindness)."""
+    # Both decls in the same (module-top) scope so node actually
+    # flags a duplicate. Function-body redeclaration would be valid JS.
+    target = tmp_path / "broken.js"
+    target.write_text("let paused = false;\n// some comment\nlet paused = true;\n")
+    ok, detail = parse_check(target)
+    assert ok is False
+    # Original parser output is still there.
+    assert "already been declared" in detail
+    # Enrichment: both declaration sites listed.
+    assert "All declarations of `paused`" in detail
+    assert "line 1:" in detail
+    assert "line 3:" in detail
+    # Helpful resolution hint.
+    assert "Remove or rename" in detail
+
+
+@_requires_node
+def test_duplicate_decl_enrichment_skipped_when_single_decl_visible(
+    tmp_path: Path,
+) -> None:
+    """When the parser's own error already points at the conflict
+    AND only one matching decl appears in the file (because the
+    other is in a different scope visible only to node's symbol
+    table), don't bother appending — the parser's message is the
+    better signal alone."""
+    # Trigger an "already been declared" error where only one decl
+    # is grep-visible: declaration inside a destructure pattern that
+    # the regex won't match.
+    target = tmp_path / "broken.js"
+    target.write_text(
+        # `const {x} = obj` declares x but our keyword-prefix regex
+        # only matches `const x` shapes, so the destructured one
+        # isn't found by grep.
+        "const x = 1;\nconst {x} = {x: 2};\n"
+    )
+    ok, detail = parse_check(target)
+    assert ok is False
+    # Either no enrichment block, or it was suppressed because only
+    # one match was found. Pin the no-enrichment branch.
+    assert "All declarations of" not in detail
+
+
+@_requires_node
+def test_duplicate_decl_enrichment_no_op_for_non_dup_errors(tmp_path: Path) -> None:
+    """A regular SyntaxError (not a redeclaration) shouldn't trigger
+    the enrichment — it would just be confusing noise."""
+    target = tmp_path / "broken.js"
+    target.write_text("function f() {\n  return\n}\n)\n")  # stray paren
+    ok, detail = parse_check(target)
+    assert ok is False
+    assert "All declarations of" not in detail

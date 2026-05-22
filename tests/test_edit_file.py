@@ -281,6 +281,10 @@ def test_context_block_truncates_long_splice_with_head_and_tail(tmp_path: Path) 
     assert "long.txt" in result
     # Splice spans 40 lines starting at line 50.
     assert "splice spans lines 50-89" in result
+    # harness-0tni: hint now references the real read_file API with
+    # offset+limit so the model can pull the full splice region in one
+    # call instead of guessing how to address the range.
+    assert "read_file(path='long.txt', offset=50, limit=40)" in result
 
 
 def test_context_block_omitted_for_replace_all(tmp_path: Path) -> None:

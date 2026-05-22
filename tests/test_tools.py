@@ -286,6 +286,116 @@ def test_read_file_raises_for_missing(tmp_path: Path) -> None:
         tool.call(path="missing.txt")
 
 
+# --- harness-0tni: offset + limit ----------------------------------
+
+
+def _multiline(tmp_path: Path, *, n: int = 100) -> Path:
+    """Helper: create a `lines.txt` file with N numbered lines."""
+    target = tmp_path / "lines.txt"
+    target.write_text("\n".join(f"line {i}" for i in range(1, n + 1)) + "\n")
+    return target
+
+
+def test_read_file_with_offset_starts_from_line(tmp_path: Path) -> None:
+    """offset=N returns the file starting at the N-th line (1-based).
+    Marker reports the actual range + total."""
+    _multiline(tmp_path, n=50)
+    tool = ReadFileTool(root=tmp_path)
+    result = tool.call(path="lines.txt", offset=10)
+    assert result.startswith("line 10\n")
+    assert "line 9" not in result
+    assert "line 50" in result
+    assert "[showing lines 10-50 of 50]" in result
+
+
+def test_read_file_with_limit_returns_first_n_lines(tmp_path: Path) -> None:
+    """limit=N (without offset) returns the first N lines."""
+    _multiline(tmp_path, n=50)
+    tool = ReadFileTool(root=tmp_path)
+    result = tool.call(path="lines.txt", limit=5)
+    assert "line 1" in result
+    assert "line 5" in result
+    assert "line 6" not in result
+    assert "[showing lines 1-5 of 50]" in result
+
+
+def test_read_file_with_offset_and_limit_returns_slice(tmp_path: Path) -> None:
+    """Combined: offset=20, limit=10 returns lines 20-29."""
+    _multiline(tmp_path, n=50)
+    tool = ReadFileTool(root=tmp_path)
+    result = tool.call(path="lines.txt", offset=20, limit=10)
+    assert "line 20" in result
+    assert "line 29" in result
+    assert "line 19" not in result
+    assert "line 30" not in result
+    assert "[showing lines 20-29 of 50]" in result
+
+
+def test_read_file_offset_past_eof_returns_note(tmp_path: Path) -> None:
+    """offset past last line returns a 'no lines in range' note
+    instead of an opaque empty string. The model needs to know it
+    asked for something out of range, not that the call failed."""
+    _multiline(tmp_path, n=10)
+    tool = ReadFileTool(root=tmp_path)
+    result = tool.call(path="lines.txt", offset=999)
+    assert "no lines in range" in result
+    assert "10 lines" in result
+    assert "offset=999" in result
+
+
+def test_read_file_offset_zero_rejected(tmp_path: Path) -> None:
+    """offset is 1-based — 0 (or negative) is the most common
+    off-by-one mistake; reject explicitly with a clear hint."""
+    _multiline(tmp_path, n=10)
+    tool = ReadFileTool(root=tmp_path)
+    with pytest.raises(ValueError, match="offset must be >= 1"):
+        tool.call(path="lines.txt", offset=0)
+
+
+def test_read_file_limit_zero_rejected(tmp_path: Path) -> None:
+    _multiline(tmp_path, n=10)
+    tool = ReadFileTool(root=tmp_path)
+    with pytest.raises(ValueError, match="limit must be >= 1"):
+        tool.call(path="lines.txt", limit=0)
+
+
+def test_read_file_without_offset_or_limit_returns_full_file(tmp_path: Path) -> None:
+    """Backward compat: no slice args = legacy full-file behavior,
+    no slicing marker appended. Existing callers see zero change."""
+    _multiline(tmp_path, n=10)
+    tool = ReadFileTool(root=tmp_path)
+    result = tool.call(path="lines.txt")
+    assert "line 1" in result
+    assert "line 10" in result
+    assert "showing lines" not in result
+
+
+def test_read_file_slice_preserves_trailing_newlines(tmp_path: Path) -> None:
+    """splitlines(keepends=True) keeps newlines so the slice round-
+    trips faithfully — edit_file's old_string matching depends on
+    this when the model is iterating on a slice it just read."""
+    target = tmp_path / "lines.txt"
+    target.write_text("a\nb\nc\n")
+    tool = ReadFileTool(root=tmp_path)
+    result = tool.call(path="lines.txt", offset=1, limit=2)
+    # Body should be "a\nb\n", marker appended after.
+    assert result.startswith("a\nb\n")
+    assert "[showing lines 1-2 of 3]" in result
+
+
+def test_read_file_spec_lists_offset_and_limit(tmp_path: Path) -> None:
+    """Schema must advertise the new params so model adapters' tool-
+    spec serialization includes them. The model's prior is that
+    read_file accepts offset/limit; if the schema doesn't list them,
+    the adapter strips them client-side."""
+    spec = ReadFileTool(root=tmp_path).spec
+    props = spec.parameters["properties"]
+    assert "offset" in props
+    assert "limit" in props
+    assert props["offset"]["type"] == "integer"
+    assert props["limit"]["type"] == "integer"
+
+
 # ---------- WriteFileTool ----------
 
 
