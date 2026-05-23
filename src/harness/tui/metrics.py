@@ -45,7 +45,11 @@ class MetricsView:
             parts.append("idle")
         if self._state.pending_prompts:
             parts.append(f"queued {len(self._state.pending_prompts)}")
-        metrics.update(Text.from_markup(" · ".join(parts)))
+        # layout=False: the #metrics strip is height:1 (fixed), so we
+        # don't need a full layout pass 4×/sec — and a 250ms layout
+        # cycle was measuring hidden height:auto siblings and letting
+        # their computed height drift upward (harness-7xz0).
+        metrics.update(Text.from_markup(" · ".join(parts)), layout=False)
 
     def recompute_ctx(self) -> None:
         count_fn = getattr(self._adapter, "count_tokens", None)

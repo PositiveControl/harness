@@ -384,7 +384,7 @@ class ChatApp(App[None]):
     }
 
     #stream_preview {
-        height: auto;
+        height: 0;
         max-height: 8;
         padding: 0 2;
         background: $background;
@@ -394,6 +394,7 @@ class ChatApp(App[None]):
 
     #stream_preview.-visible {
         display: block;
+        height: auto;
     }
 
     #prompt_row {
@@ -444,6 +445,7 @@ class ChatApp(App[None]):
     }
 
     #slash_palette {
+        display: none;
         padding: 0 2;
         background: $boost;
         color: $text;
