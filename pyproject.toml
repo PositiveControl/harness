@@ -123,6 +123,11 @@ packages = ["src/harness"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Untracked experiments / scratch directories that aren't part of the
+# harness package or test suite. Keeps pre-commit (which runs ruff
+# against the whole tree) from blocking commits over unrelated style
+# findings in sandbox code.
+extend-exclude = ["snake"]
 
 [tool.ruff.lint]
 select = [

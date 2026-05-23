@@ -88,15 +88,28 @@ def test_ambiguous_old_string_match_inlines_contents(tmp_path: Path) -> None:
 
 
 def test_format_file_contents_truncates_large_files() -> None:
-    """For pathologically large files, inline content is capped so the
-    error doesn't balloon the model's context."""
-    huge = "x" * (1024 * 1024 + 100)
+    """File content embedded in error messages is capped (harness-kpx8).
+    On large files an unbounded dump stacked across edit_file retries
+    blew the model's context window (drive-loop halt 2026-05-23 on a
+    50 KB game.js against Qwen2.5-Coder 32B). Cap at 4 KB, point the
+    model at read_file(offset, limit) for further inspection."""
+    huge = "x" * (8 * 1024)
     rendered = _format_file_contents("big.txt", huge)
     assert "truncated" in rendered
-    assert "1048576" in rendered or "1024" in rendered
-    # The truncation marker is bounded — total render shouldn't exceed
-    # cap by more than the wrapper overhead.
-    assert len(rendered) < 1024 * 1024 + 500
+    assert "4096" in rendered  # cap reported in the marker
+    # Marker steers the model toward a bounded recovery action.
+    assert "read_file" in rendered
+    # The render stays bounded — wrapper + marker overhead is small.
+    assert len(rendered) < 4 * 1024 + 500
+
+
+def test_format_file_contents_passes_short_files_through() -> None:
+    """Files at or under the 4 KB cap (harness-kpx8) embed in full,
+    with no truncation marker — the common case for edit-target files."""
+    short = "line\n" * 100  # ~500 bytes, well under cap
+    rendered = _format_file_contents("small.py", short)
+    assert "truncated" not in rendered
+    assert short in rendered
 
 
 # --- preserved behavior ---------------------------------------------

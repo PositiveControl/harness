@@ -6,11 +6,16 @@ from pathlib import Path
 from harness.tools.base import ToolSpec
 from harness.tools.parse_check import parse_check
 
-# 1 MB cap on inlined file contents in error messages. For 200-line
-# game.js (~6 KB) this is trivially under; for a million-line monolith
-# we truncate rather than blow out the model's context. Constrained-
-# model design: better than nothing, bounded against pathological size.
-_INLINE_CONTENTS_CAP_BYTES = 1024 * 1024
+# 4 KB cap on inlined file contents in error messages. Tightened from
+# 1 MB (harness-kpx8) after a Qwen2.5-Coder 32B drive run blew the 32k
+# context window on a 50k-char game.js: each old_string-mismatch retry
+# embedded the whole file (~13k tokens), and three retries plus the
+# initial read_file output stacked past the boundary. 4 KB is enough
+# for the model to see ~100 lines of context and construct a matching
+# old_string; for files larger than that, the model should call
+# read_file (with offset/limit) to inspect specific regions instead of
+# expecting the error to ship the whole file.
+_INLINE_CONTENTS_CAP_BYTES = 4 * 1024
 
 
 def _format_file_contents(path: str, contents: str) -> str:
@@ -23,7 +28,9 @@ def _format_file_contents(path: str, contents: str) -> str:
         head = contents[:_INLINE_CONTENTS_CAP_BYTES]
         suffix = (
             f"\n... [truncated; file is {len(contents)} bytes, "
-            f"capped at {_INLINE_CONTENTS_CAP_BYTES} for inline display]"
+            f"capped at {_INLINE_CONTENTS_CAP_BYTES} for inline display. "
+            f"To inspect a specific region, call "
+            f"read_file(path={path!r}, offset=N, limit=M).]"
         )
         contents = head + suffix
     return f"--- CURRENT CONTENTS OF {path} (BEGIN) ---\n{contents}\n--- END {path} ---"
