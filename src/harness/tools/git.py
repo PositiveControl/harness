@@ -5,6 +5,7 @@ model picks better when each intent has its own schema slot."""
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,13 @@ _GIT_TIMEOUT_S = 10
 
 
 def _run_git(cwd: Path, args: list[str]) -> str:
+    # Strip inherited ``GIT_*`` env vars so the explicit ``cwd=`` actually
+    # points at the workspace's repo. When the harness is invoked from a
+    # parent process that already set ``GIT_DIR`` / ``GIT_WORK_TREE``
+    # (pre-commit hooks, a driver loop's pre-flight wrapper, a wrapping
+    # editor), git ignores ``cwd=`` and silently talks to the parent
+    # repo instead. The tools target ``cwd=`` by contract.
+    clean_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     try:
         result = subprocess.run(  # noqa: S603 — args assembled from trusted tool params
             ["git", *args],  # noqa: S607 — `git` on PATH is expected
@@ -22,6 +30,7 @@ def _run_git(cwd: Path, args: list[str]) -> str:
             text=True,
             timeout=_GIT_TIMEOUT_S,
             cwd=str(cwd),
+            env=clean_env,
             check=False,
         )
     except FileNotFoundError as exc:

@@ -8,6 +8,7 @@ module boundary so tests run fast and offline.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,15 @@ from harness.driver.planner import PlanDraft, PlannerError
 from harness.driver.state import LoopRunState
 
 runner = CliRunner()
+
+
+def _clean_git_env() -> dict[str, str]:
+    """Strip ``GIT_*`` env vars before invoking git in tmp_path. The
+    pre-push hook sets ``GIT_DIR`` / ``GIT_WORK_TREE`` so its own git
+    operations talk to the outer repo; child subprocesses inherit the
+    env by default, which would silently override our ``cwd=tmp_path``.
+    Same fix as ``tests/test_git_tools.py``."""
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
 
 # --- fixtures --------------------------------------------------------
@@ -44,6 +54,7 @@ def workspace(tmp_path: Path) -> Path:
         cwd=tmp_path,
         capture_output=True,
         check=False,
+        env=_clean_git_env(),
     )
     return tmp_path
 

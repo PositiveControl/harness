@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -8,8 +9,18 @@ import pytest
 from harness.tools.git import GitDiffTool, GitLogTool, GitStatusTool
 
 
+def _clean_env() -> dict[str, str]:
+    """Strip ``GIT_*`` env vars before invoking git. The pre-push hook
+    in pre-commit sets ``GIT_DIR`` / ``GIT_WORK_TREE`` / ``GIT_INDEX_FILE``
+    so the hook process talks to the right repo, and Python subprocess
+    inherits the parent env by default — which means our ``cwd=tmp_path``
+    git invocations would silently target the OUTER repo instead of the
+    fresh tmp_path repo. Stripping the env keeps the tests isolated."""
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
 def _git(*args: str, cwd: Path) -> None:
-    subprocess.run(["git", *args], cwd=cwd, check=True)  # noqa: S603, S607
+    subprocess.run(["git", *args], cwd=cwd, check=True, env=_clean_env())  # noqa: S603, S607
 
 
 def _init_repo(path: Path) -> None:

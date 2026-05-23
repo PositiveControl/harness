@@ -32,6 +32,7 @@ Ollama runs but the CLI surface tests are model-agnostic.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import get_args
@@ -459,6 +460,12 @@ def _git_tree_is_dirty(workspace: Path) -> bool:
     Uses `git diff --name-only HEAD` (staged + unstaged tracked
     changes) instead of `git status --porcelain` so untracked files
     don't gate (harness-m0g4)."""
+    # Strip inherited ``GIT_*`` env vars so the explicit ``cwd=`` actually
+    # binds to ``workspace``'s repo. Without this, a parent process that
+    # set ``GIT_DIR`` / ``GIT_WORK_TREE`` (e.g. a wrapping pre-commit
+    # hook or a driver invoking the loop from inside another git op)
+    # would silently make this check inspect the WRONG repo.
+    clean_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     try:
         result = subprocess.run(
             ["git", "diff", "--name-only", "HEAD"],  # noqa: S607 — git on PATH is expected
@@ -466,6 +473,7 @@ def _git_tree_is_dirty(workspace: Path) -> bool:
             capture_output=True,
             text=True,
             check=False,
+            env=clean_env,
         )
     except FileNotFoundError:
         return False
