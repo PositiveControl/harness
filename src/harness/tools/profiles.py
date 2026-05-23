@@ -109,6 +109,8 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
         "glob",
         "edit_file",
         "write_file",
+        "stream_edit",
+        "python_stream",
         "shell",
         "git_status",
         "git_diff",

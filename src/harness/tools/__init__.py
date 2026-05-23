@@ -50,6 +50,7 @@ from harness.tools.profiles import (
     resolve_tool_names,
 )
 from harness.tools.python_eval import PythonEvalTool
+from harness.tools.python_stream import PythonStreamTool
 from harness.tools.read_file import ReadFileTool
 from harness.tools.remember import RememberEventTool, RememberFactTool
 from harness.tools.search_facts import SearchFactsTool
@@ -58,6 +59,7 @@ from harness.tools.search_scholar import SearchScholarTool
 from harness.tools.search_web import SearchWebTool
 from harness.tools.shell import ShellTool
 from harness.tools.stats import StatsTool
+from harness.tools.stream_edit import StreamEditTool
 from harness.tools.subagent import SpawnSubagentTool
 from harness.tools.sun import SunTool
 from harness.tools.tool_search import ToolSearchTool
@@ -90,6 +92,7 @@ __all__ = [
     "PhraseologyLintTool",
     "PhraseologyVerdict",
     "PythonEvalTool",
+    "PythonStreamTool",
     "ReadFileTool",
     "RememberEventTool",
     "RememberFactTool",
@@ -103,6 +106,7 @@ __all__ = [
     "StatsTool",
     "StreamChunk",
     "StreamComplete",
+    "StreamEditTool",
     "StreamText",
     "SunTool",
     "Tool",

@@ -56,16 +56,6 @@ tui = [
     # small. See harness-56b.
     "textual>=0.86",
 ]
-stream = [
-    # Candidate B of harness-bw27 — pyp (the Pyed Piper) is one of three
-    # file-manipulation tools we're benchmarking against awk/sed/cut/tr
-    # (Candidate A) and a sandboxed-Python control (Candidate C). Pyp
-    # lets the model pipe with Python-expression syntax instead of awk
-    # vocab. Gated behind the `stream` extra so the bench doesn't
-    # silently widen the default install footprint while a candidate
-    # is still being evaluated.
-    "pypyp>=1.2",
-]
 atc = [
     # atc (airton_c) corpus-extraction pipeline only (harness-xbk.4 /
     # harness-xbk.5). pymupdf4llm produces structured markdown from

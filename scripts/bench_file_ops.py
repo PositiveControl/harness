@@ -3,9 +3,9 @@
 Phase 1 (fixtures + oracles):
 
   Defines five concrete tasks the candidate tools (stream_edit,
-  pyp_stream, python_stream) compete on. Each task ships with a
-  deterministic fixture generator, a Python oracle, and three natural-
-  language phrasings of the request.
+  python_stream) compete on. Each task ships with a deterministic
+  fixture generator, a Python oracle, and three natural-language
+  phrasings of the request.
 
 Phase 3 (timing loop):
 
@@ -128,10 +128,10 @@ class CandidateCall:
     * ``in_place`` — destructive run; the runner resets the fixture
       between iterations and scores correctness by re-reading the
       mutated workspace after the last run, not the returned text.
-    * ``per_path_loop`` — for pyp_stream and python_stream's single-
-      path in_place limitation: the runner iterates ``paths`` itself,
-      issuing one ``call`` per path. ``kwargs`` must contain ``paths``;
-      it is split into per-element calls.
+    * ``per_path_loop`` — for python_stream's single-path in_place
+      limitation: the runner iterates ``paths`` itself, issuing one
+      ``call`` per path. ``kwargs`` must contain ``paths``; it is
+      split into per-element calls.
 
     A None entry in ``TASK_CALLS`` means the candidate cannot
     reasonably express the task — the bench records a ``skipped``
@@ -170,9 +170,6 @@ TASK_CALLS: dict[str, dict[CandidateKind, CandidateCall]] = {
         "stream_edit": CandidateCall(
             kwargs={"tool": "awk", "args": ["{print $3}"], "paths": ["logs/sample.log"]},
         ),
-        "pyp_stream": CandidateCall(
-            kwargs={"expr": "x.split()[2]", "paths": ["logs/sample.log"]},
-        ),
         "python_stream": CandidateCall(
             kwargs={
                 "expr": (
@@ -190,13 +187,8 @@ TASK_CALLS: dict[str, dict[CandidateKind, CandidateCall]] = {
             kwargs={"tool": "sed", "args": ["s/foo/bar/g"], "paths": "<ALL_PY>", "in_place": True},
             in_place=True,
         ),
-        # pyp_stream's in_place is single-path; per_path_loop tells the
-        # runner to iterate paths externally.
-        "pyp_stream": CandidateCall(
-            kwargs={"expr": "x.replace('foo', 'bar')", "paths": "<ALL_PY>", "in_place": True},
-            in_place=True,
-            per_path_loop=True,
-        ),
+        # python_stream's in_place is single-path; per_path_loop tells
+        # the runner to iterate paths externally.
         "python_stream": CandidateCall(
             kwargs={
                 "expr": "text.replace('foo', 'bar')",
@@ -209,23 +201,14 @@ TASK_CALLS: dict[str, dict[CandidateKind, CandidateCall]] = {
     },
     "filter-jsonl": {
         # awk/sed don't do JSON parsing reliably on macOS BSD awk.
-        # Recording as a structural skip — this is the kind of task
-        # pyp markets itself for.
+        # Recording as a structural skip — JSON parsing is python_stream's
+        # turf.
         "stream_edit": CandidateCall(
             kwargs={},
             skip_reason=(
                 "BSD awk on macOS lacks gawk's match()-with-array; reliable "
                 "JSONL parsing is out of scope for this candidate."
             ),
-        ),
-        "pyp_stream": CandidateCall(
-            kwargs={
-                "expr": (
-                    "[json.dumps({'id': r['id'], 'amount': r['amount']}) "
-                    "for x in lines if (r := json.loads(x))['user'] == 'alice']"
-                ),
-                "paths": ["data/events.jsonl"],
-            },
         ),
         "python_stream": CandidateCall(
             kwargs={
@@ -258,14 +241,6 @@ TASK_CALLS: dict[str, dict[CandidateKind, CandidateCall]] = {
             },
             in_place=True,
         ),
-        "pyp_stream": CandidateCall(
-            kwargs={},
-            skip_reason=(
-                "pyp's auto-iteration over lines doesn't fit multi-line block "
-                "rewrites cleanly; --before/--after gymnastics defeat the bench's "
-                "'best-case one-liner' premise."
-            ),
-        ),
         "python_stream": CandidateCall(
             kwargs={
                 "expr": (
@@ -286,12 +261,6 @@ TASK_CALLS: dict[str, dict[CandidateKind, CandidateCall]] = {
             kwargs={
                 "tool": "awk",
                 "args": ["{seen[$5]=1} END{print length(seen)}"],
-                "paths": ["logs/sample.log"],
-            },
-        ),
-        "pyp_stream": CandidateCall(
-            kwargs={
-                "expr": "len({line.split()[4] for line in lines if len(line.split()) >= 5})",
                 "paths": ["logs/sample.log"],
             },
         ),
@@ -390,8 +359,8 @@ def _score_correctness(
     # Output-style tasks. Some candidates emit a trailing newline,
     # some don't; some emit a leading repr quote (python_stream lists).
     # Normalize: compare exact bytes first, then a more forgiving
-    # "stripped + trailing-newline-added" comparison so a pyp list
-    # comprehension that produces "['a', 'b']" doesn't score as
+    # "stripped + trailing-newline-added" comparison so a python_stream
+    # list comprehension that produces "['a', 'b']" doesn't score as
     # incorrect just because the format is repr'd.
     actual = (output or "").rstrip("\n") + "\n"
     expected = gold
@@ -399,7 +368,7 @@ def _score_correctness(
         return "correct", _digest(actual)
     # Second chance: did the candidate emit a Python list repr that
     # contains the right elements in the right order? Common for
-    # python_stream / pyp_stream JSONL tasks.
+    # python_stream JSONL tasks.
     return "incorrect", _digest(actual)
 
 
@@ -710,10 +679,7 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument(
         "--candidates",
         default="",
-        help=(
-            "Comma-separated candidate kinds "
-            "(stream_edit, pyp_stream, python_stream). Default: all three."
-        ),
+        help=("Comma-separated candidate kinds (stream_edit, python_stream). Default: both."),
     )
     run.add_argument(
         "--json",

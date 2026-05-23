@@ -334,13 +334,13 @@ def test_by_candidate_buckets() -> None:
         cases=(
             _case(candidate="stream_edit", round1=True, correct=True),
             _case(candidate="stream_edit", round1=False, correct=False),
-            _case(candidate="pyp_stream", round1=True, correct=True),
+            _case(candidate="python_stream", round1=True, correct=True),
         ),
     )
     buckets = result.by_candidate()
-    assert set(buckets) == {"stream_edit", "pyp_stream"}
+    assert set(buckets) == {"stream_edit", "python_stream"}
     assert buckets["stream_edit"].pass_rate == 0.5
-    assert buckets["pyp_stream"].pass_rate == 1.0
+    assert buckets["python_stream"].pass_rate == 1.0
 
 
 def test_by_task_buckets() -> None:

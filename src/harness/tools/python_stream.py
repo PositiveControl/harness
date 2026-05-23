@@ -1,11 +1,12 @@
-"""Candidate C of harness-bw27 — python_eval-style sandboxed Python pipe.
+"""Sandboxed Python stream tool. Winner alongside stream_edit (harness-bw27).
 
-Lets the model express stream transforms in Python without taking on
-the pyp dependency. The user passes ``expr`` (Python source) and either
-``paths`` or ``stdin``; the child interpreter starts with ``text`` /
-``lines`` / ``paths`` pre-bound and a small allowlist of pre-imported
-modules. If the final statement is an expression, its repr() is the
-output; otherwise captured stdout is.
+Lets the model express stream transforms in Python — the right shape
+for JSON parsing, multi-line block rewrites, and any task whose oracle
+is easier to write in Python than awk. The user passes ``expr`` (Python
+source) and either ``paths`` or ``stdin``; the child interpreter starts
+with ``text`` / ``lines`` / ``paths`` pre-bound and a small allowlist of
+pre-imported modules. If the final statement is an expression, its
+repr() is the output; otherwise captured stdout is.
 
 Sandboxing mirrors ``python_eval``: subprocess with ``-I -B -S``, an
 import allowlist, ``sys.modules`` strip, restricted builtins, CPU +
@@ -15,9 +16,8 @@ from ``python_eval`` is the namespace setup, not the boundary: the
 model gets file content already loaded so it doesn't burn rounds on
 ``open()`` (which the sandbox blocks anyway).
 
-Phase 3 of harness-bw27 scores this against Candidates A (stream_edit)
-and B (pyp_stream). The control comparison answers: does pyp earn its
-dep, or is sandboxed Python with the right bindings enough?
+Bench fixtures live in ``scripts/bench_file_ops.py``; the model-in-loop
+eval is ``harness.evals.file_ops``.
 """
 
 from __future__ import annotations

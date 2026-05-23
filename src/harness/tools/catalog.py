@@ -346,6 +346,24 @@ BUILTIN_TOOL_METADATA: dict[str, tuple[str, tuple[str, ...], str, str]] = {
         "Run a shell command in the workspace.",
         "write",
     ),
+    "stream_edit": (
+        "filesystem",
+        ("file-ops", "awk", "sed", "cut", "tr", "transform", "in-place"),
+        (
+            "Stream-edit workspace files through awk/sed/cut/tr "
+            "(optionally in-place); ideal for find-and-replace across many files."
+        ),
+        "read",
+    ),
+    "python_stream": (
+        "filesystem",
+        ("file-ops", "python", "transform", "json", "in-place"),
+        (
+            "Run a Python expression over workspace files (optionally in-place); "
+            "use when awk/sed don't fit — JSON parsing, multi-line block rewrites."
+        ),
+        "read",
+    ),
     # git
     "git_status": (
         "git",

@@ -75,6 +75,7 @@ from harness.tools import (
     NowTool,
     PhraseologyLintTool,
     PythonEvalTool,
+    PythonStreamTool,
     ReadFileTool,
     RememberEventTool,
     RememberFactTool,
@@ -84,6 +85,7 @@ from harness.tools import (
     SearchWebTool,
     ShellTool,
     StatsTool,
+    StreamEditTool,
     SunTool,
     Tool,
     ToolCall,
@@ -1593,6 +1595,8 @@ def _build_tool_registry_for_tui(
         "read_file": lambda: ReadFileTool(root=workspace_path),
         "edit_file": lambda: EditFileTool(root=workspace_path),
         "write_file": lambda: WriteFileTool(root=workspace_path),
+        "stream_edit": lambda: StreamEditTool(root=workspace_path),
+        "python_stream": lambda: PythonStreamTool(root=workspace_path),
         "shell": lambda: ShellTool(cwd=workspace_path),
         "list_dir": lambda: ListDirTool(root=workspace_path),
         "grep": lambda: GrepTool(root=workspace_path),
@@ -6484,8 +6488,7 @@ def eval_file_ops(
     candidates: str = typer.Option(
         "",
         "--candidates",
-        help="Comma-separated candidate names (stream_edit, pyp_stream, python_stream). "
-        "Default: all three.",
+        help="Comma-separated candidate names (stream_edit, python_stream). Default: both.",
     ),
     tasks: str = typer.Option(
         "",

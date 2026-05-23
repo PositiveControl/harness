@@ -373,8 +373,6 @@ def _score_correctness(
         "[sed] timed out",
         "[python_stream] ERROR",
         "[python_stream] timed out",
-        "[pyp_stream] exit=",
-        "[pyp_stream] timed out",
     )
     if any(output.startswith(prefix) for prefix in error_prefixes):
         return False, hashlib.sha256(output.encode()).hexdigest()

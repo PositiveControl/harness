@@ -1,4 +1,4 @@
-"""Candidate A of harness-bw27 — curated awk/sed/cut/tr wrapper.
+"""Curated awk/sed/cut/tr wrapper. Winner of harness-bw27 (file-ops bench).
 
 Stream-edit gateway for the four most common Unix text-manipulation
 tools. The model picks a verb (``awk``/``sed``/``cut``/``tr``) and emits
@@ -37,10 +37,10 @@ Boundaries the tool actually enforces:
      captured the child's stdout — never via the tool itself, so the
      BSD-vs-GNU ``sed -i`` divergence stays out of the design.
 
-The companion candidates are ``pyp_stream`` (Python-expression piping
-via the pyp dep) and ``python_stream`` (python_eval-style sandboxed
-Python). Phase 3 of harness-bw27 scores the three against the bench
-fixtures in ``scripts/bench_file_ops.py``.
+Companion tool: ``python_stream`` (python_eval-style sandboxed Python)
+handles JSON parsing and multi-line block rewrites that don't fit awk/sed.
+Bench fixtures live in ``scripts/bench_file_ops.py``; the eval is in
+``harness.evals.file_ops``.
 """
 
 from __future__ import annotations

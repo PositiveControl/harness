@@ -328,8 +328,8 @@ BENCH_TASKS: tuple[FileOpsTask, ...] = (
 # --- candidate factory ------------------------------------------------------
 
 
-CandidateKind = Literal["stream_edit", "pyp_stream", "python_stream"]
-ALL_CANDIDATES: tuple[CandidateKind, ...] = ("stream_edit", "pyp_stream", "python_stream")
+CandidateKind = Literal["stream_edit", "python_stream"]
+ALL_CANDIDATES: tuple[CandidateKind, ...] = ("stream_edit", "python_stream")
 
 
 def make_tool(
@@ -338,9 +338,7 @@ def make_tool(
     *,
     max_output_bytes: int = 16 * 1024 * 1024,
 ) -> Any:
-    """Construct the candidate tool for ``root``. Lazy-imports the
-    pyp_stream module so a slim install (no `stream` extra) can still
-    use stream_edit + python_stream.
+    """Construct the candidate tool for ``root``.
 
     ``max_output_bytes`` defaults to 16 MB — appropriate for the
     wall-clock bench, which scores tool output bytes directly and
@@ -362,14 +360,6 @@ def make_tool(
         from harness.tools.python_stream import PythonStreamTool
 
         return PythonStreamTool(
-            root=root,
-            timeout_seconds=60.0,
-            max_output_bytes=max_output_bytes,
-        )
-    if kind == "pyp_stream":
-        from harness.tools.pyp_stream import PypStreamTool
-
-        return PypStreamTool(
             root=root,
             timeout_seconds=60.0,
             max_output_bytes=max_output_bytes,
