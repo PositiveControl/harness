@@ -18,6 +18,7 @@ cluster swaps the model behind a fixed URL."""
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable, Iterator
 from typing import Any
 
@@ -114,19 +115,27 @@ def _parse_bare_json_tool_call(content: str) -> tuple[str, list[ToolCall]]:
     object — observed live with vLLM 0.21 + Qwen2.5-Coder against the
     harness's tool-augmented system prompt.
 
+    Locates the JSON anywhere in content (`{"name":` signature regex,
+    then `json.raw_decode` to find the closing brace by parsing). This
+    covers two shapes:
+      - content trims to a single JSON object (clean tool-only reply)
+      - content has a tool-intent preamble ("Let me check.\\n") +
+        trailing `<|im_start|>` leak + the JSON in the middle (real
+        Qwen2.5-Coder shape under --enable-auto-tool-choice)
+
     Constrained so prose containing JSON doesn't get mis-parsed:
-      - content must trim to a single JSON object (start with `{`,
-        end with `}`)
       - the object must have a string `name` AND a dict `arguments`
         (or coerce-able to one — accept missing/null arguments as {})
 
     Returns (stripped_content, calls). On miss, returns the input
     content unchanged with an empty call list."""
-    stripped = content.strip()
-    if not stripped.startswith("{") or not stripped.endswith("}"):
+    match = _BARE_JSON_CALL_RE.search(content)
+    if match is None:
         return content, []
+    start = match.start()
+    decoder = json.JSONDecoder()
     try:
-        data = json.loads(stripped)
+        data, end_idx = decoder.raw_decode(content, start)
     except json.JSONDecodeError:
         return content, []
     if not isinstance(data, dict):
@@ -144,7 +153,21 @@ def _parse_bare_json_tool_call(content: str) -> tuple[str, list[ToolCall]]:
             arguments = {}
     if not isinstance(arguments, dict):
         return content, []
-    return "", [ToolCall(name=name, arguments=arguments)]
+    # Strip the JSON span from content; whatever prose / leaked tokens
+    # bracketed it stay so the orchestrator + renderer can still
+    # surface meaningful text (the renderer's per-sentence
+    # _is_suppressible filter will drop "Let me check…" etc).
+    stripped_content = (content[:start] + content[end_idx:]).strip()
+    return stripped_content, [ToolCall(name=name, arguments=arguments)]
+
+
+# Bare-JSON tool-call signature. Matches `{"name":` with optional
+# whitespace inside the wrapper. Used by stream_with_tools as a
+# mid-stream detector when the model emits a tool-intent preamble
+# ("Let me check…") BEFORE the actual JSON — the preamble masks the
+# start-of-content signal that the simpler `startswith("{")` check
+# relied on, but this regex picks the call out wherever it lands.
+_BARE_JSON_CALL_RE = re.compile(r'\{\s*"name"\s*:')
 
 
 class VllmAdapter:
@@ -374,16 +397,19 @@ class VllmAdapter:
         #   didn't extract tool_calls structurally.
         # - masker hides tag spans (<tool_call> / <tools> / <function=>)
         #   from the live user-visible stream.
-        # - suppressing_bare_json kicks in when the first non-whitespace
-        #   char of accumulated content is `{`, signaling a bare-JSON
-        #   tool call (no tag for the masker to anchor on). All visible
-        #   output is then withheld; final reply lands via StreamComplete
-        #   after fallback parse. shape_decided guards against re-checking
-        #   after the first non-whitespace char arrives.
+        # - suppressing_bare_json kicks in when the accumulated content
+        #   contains a bare-JSON tool-call signature anywhere (matches
+        #   `{"name":` with optional whitespace). Detects two shapes:
+        #     a) content starts with `{` immediately
+        #     b) a tool-intent preamble ("Let me check.\n") precedes
+        #        the JSON — the renderer's _is_suppressible filter eats
+        #        the preamble per-sentence, but without this regex the
+        #        trailing JSON falls through to the screen.
+        #   Once detected, all subsequent text is withheld; final reply
+        #   lands via StreamComplete after fallback parse.
         raw_parts: list[str] = []
         masker = _TagMasker()
         suppressing_bare_json = False
-        shape_decided = False
         tc_acc: dict[int, dict[str, str]] = {}
         finish_reason: str | None = None
         for chunk in self._post_stream("/chat/completions", payload):
@@ -395,11 +421,10 @@ class VllmAdapter:
             text = delta.get("content")
             if isinstance(text, str) and text:
                 raw_parts.append(text)
-                if tools and not shape_decided:
-                    head = "".join(raw_parts).lstrip()
-                    if head:
-                        shape_decided = True
-                        suppressing_bare_json = head.startswith("{")
+                if tools and not suppressing_bare_json:
+                    joined = "".join(raw_parts)
+                    if _BARE_JSON_CALL_RE.search(joined):
+                        suppressing_bare_json = True
                 if not suppressing_bare_json:
                     visible = masker.feed(text)
                     if visible:

@@ -797,6 +797,128 @@ def test_vllm_bare_json_fallback_rejects_json_without_name_field() -> None:
     assert reply.content == '{"foo": "bar"}'
 
 
+def test_vllm_extracts_bare_json_with_prose_preamble() -> None:
+    """Observed live (2026-05-22): Qwen2.5-Coder emits a tool-intent
+    sentence ("Let me check the directory.\\n") BEFORE the bare-JSON
+    call. The renderer's _is_suppressible drops the preamble per-
+    sentence, but without a permissive fallback the trailing JSON
+    falls through to the user. The fallback must find the JSON
+    anywhere in content, not just when it's the whole content."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": (
+                                'Let me check the directory.\n{"name": "list_dir", "arguments": {}}'
+                            ),
+                            "tool_calls": [],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        reply = adapter.complete_with_tools(
+            [ChatMessage(role="user", content="ls")],
+            tools=[_weather_spec()],
+        )
+
+    assert reply.tool_calls == (ToolCall(name="list_dir", arguments={}),)
+    # JSON stripped; preamble preserved so the renderer's per-sentence
+    # filter can still drop "Let me check…" (it matches _TOOL_INTENT_RE
+    # in the renderer's _is_suppressible).
+    assert "{" not in reply.content
+    assert "Let me check" in reply.content
+
+
+def test_vllm_extracts_bare_json_with_trailing_special_token_leak() -> None:
+    """Observed live: Coder-32B emits `<|im_start|>` runaway tokens AFTER
+    the JSON tool call. The stop-token default truncates this server-
+    side, but if the truncation doesn't fire the parser must still
+    find the JSON in the middle of the leak."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": (
+                                "<|im_start|>\n"
+                                '{"name": "list_dir", "arguments": {"path": "scratch"}}\n'
+                                "<|im_start|>"
+                            ),
+                            "tool_calls": [],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        reply = adapter.complete_with_tools(
+            [ChatMessage(role="user", content="ls scratch")],
+            tools=[_weather_spec()],
+        )
+
+    assert reply.tool_calls == (ToolCall(name="list_dir", arguments={"path": "scratch"}),)
+
+
+def test_vllm_stream_suppresses_bare_json_after_prose_preamble() -> None:
+    """Streamed variant of the prose-preamble case. The first text
+    delta is prose ("Let me check.\\n") — shape detection cannot
+    engage on `startswith("{")`. The new mid-content regex detects
+    `{"name":` once it arrives across chunks and starts suppressing
+    from that point."""
+    preamble = "Let me check the directory.\n"
+    json_open = '{"name": '
+    json_close = '"list_dir", "arguments": {}}'
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]},
+                {"choices": [{"index": 0, "delta": {"content": preamble}}]},
+                {"choices": [{"index": 0, "delta": {"content": json_open}}]},
+                {"choices": [{"index": 0, "delta": {"content": json_close}}]},
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                "[DONE]",
+            ]
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        chunks = list(
+            adapter.stream_with_tools(
+                [ChatMessage(role="user", content="ls")],
+                tools=[_weather_spec()],
+            )
+        )
+
+    text_chunks = [c for c in chunks if isinstance(c, StreamText)]
+    visible = "".join(c.text for c in text_chunks)
+    # The preamble may or may not be in visible depending on masker
+    # timing, but the JSON must not leak.
+    assert '"name"' not in visible
+    assert "list_dir" not in visible
+
+    final = chunks[-1]
+    assert isinstance(final, StreamComplete)
+    assert final.reply.tool_calls == (ToolCall(name="list_dir", arguments={}),)
+
+
 def test_vllm_stream_with_tools_recovers_bare_json_call() -> None:
     """Streamed variant of the bare-JSON fallback."""
     bare_json = '{"name": "list_dir", "arguments": {}}'
