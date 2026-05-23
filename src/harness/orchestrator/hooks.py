@@ -116,12 +116,18 @@ def _loop_fallback_text(tools_ran: frozenset[str]) -> str:
 # ---------- regex library (shared with cli stream filter) ----------
 
 
-# Matches "Let me check…", "I'll now read…", "Next, I'll…" etc. — the
-# model announcing more work without actually emitting tool calls. Anchored
-# to end of content so a teaser mid-paragraph (followed by real prose) doesn't
-# trigger.
+# Matches "Let me check…", "I'll now read…", "Next, I'll…", "Now let's …"
+# etc. — the model announcing more work without actually emitting tool calls.
+# Anchored to end of content so a teaser mid-paragraph (followed by real prose)
+# doesn't trigger.
+#
+# The `(?:\.\w[^.\n]*)*` clause permits within-word periods (filenames like
+# `test_snake_game.py`, version strings, abbreviations) without letting the
+# teaser span a sentence boundary — `.` followed by whitespace still blocks.
 TEASER_RE = re.compile(
-    r"\b(let me|i'?ll|now i'?ll|now let me|next,?\s+i'?ll?)\b[^.\n]*[:.]\s*$",
+    r"\b(let me|let'?s|let us|i'?ll|now i'?ll|now let me|next,?\s+i'?ll?)\b"
+    r"[^.\n]*(?:\.\w[^.\n]*)*"
+    r"[:.]\s*$",
     re.IGNORECASE,
 )
 
@@ -599,7 +605,13 @@ class BailContext:
     Nudge / Truncated (harness-jwp3). PreambleLoopHook compares the
     current reply's opening against this list to spot runaway-
     preamble loops where the budget keeps doubling but the model
-    keeps emitting the same intent-restatement sentence."""
+    keeps emitting the same intent-restatement sentence.
+
+    `prior_assistant_replies` is the tuple of assistant-role message
+    contents emitted earlier this turn (harness-zcxw). PlanProgressHook
+    inspects these to find a numbered plan emitted before any tool
+    call so the catcher can fire on a later trail-off reply that
+    doesn't itself contain the plan."""
 
     reply: ModelReply
     tools_ran_this_turn: bool
@@ -607,6 +619,7 @@ class BailContext:
     user_message: str | None = None
     prior_tool_outputs: tuple[str, ...] = ()
     discarded_openings: tuple[str, ...] = ()
+    prior_assistant_replies: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -979,6 +992,78 @@ class FalseSuccessHook:
         if FALSE_SUCCESS_RE.search(ctx.reply.content):
             return Nudge(_FALSE_SUCCESS_NUDGE)
         return Continue()
+
+
+# Plan-step detection (harness-zcxw). One match per line of the form
+# `^<ws>?<digit>[.):]?<ws><nonblank text>` — covers `1. Foo`, `1) Foo`,
+# `1: Foo`, and the indented-no-punctuation shape Qwen2.5-Coder emits
+# (` 1 Foo`). Leading whitespace is capped at 4 chars so deep-indented
+# code-block numbering doesn't get picked up as a plan.
+_PLAN_STEP_LINE_RE = re.compile(r"(?m)^[ \t]{0,4}\d+[.):]?[ \t]+\S.+$")
+
+
+def _count_plan_steps(text: str) -> int:
+    """Number of numbered plan steps in `text`. ≥2 lines required —
+    a lone numbered line is too easy to false-positive on (a date, a
+    quoted sentence, ambient numbering in prose)."""
+    matches = _PLAN_STEP_LINE_RE.findall(text)
+    return len(matches) if len(matches) >= 2 else 0
+
+
+_PLAN_PROGRESS_NUDGE = (
+    "Earlier this turn you laid out a {plan_steps}-step plan, but only "
+    "{executed} step(s) have been carried out via tool calls. The plan "
+    "isn't complete — call the next tool now to execute the remaining "
+    "step(s), or tell the user plainly which step you can't finish and "
+    "why. Do NOT end the turn mid-plan with a teaser or a code snippet "
+    "that should have been written to a file."
+)
+
+
+@dataclass(frozen=True)
+class PlanProgressHook:
+    """Bail catcher: model laid out a numbered plan earlier this turn
+    (or in the current reply) and is now finalizing with more plan
+    steps than executed tool calls (harness-zcxw).
+
+    Heuristic: plan-step count = count of numbered lines (≥2 required).
+    Execution count = `len(prior_tool_outputs)`. When plan > execution
+    AND the current reply has no tool calls, the model is finalizing
+    mid-plan — bail with a nudge.
+
+    Self-gates on `tools_ran_this_turn` so a first-round plan emission
+    (no tools have run yet — the plan IS the first action) doesn't
+    trip the catcher.
+
+    Only scans `prior_assistant_replies` for the plan, never the
+    current reply. A numbered list in the current reply is too often
+    the model's synthesis (e.g. the 4 primary purposes of ATC) rather
+    than a plan-then-execute commitment, so we require evidence that
+    the plan pre-dated the current turn-ending reply.
+
+    Placed AFTER TeaserHook / FalseSuccessHook so the more specific
+    'let me X.' / 'X has been done' shapes win first under first-match
+    semantics; this catches the residual 'wrapped up mid-plan with no
+    teaser keyword and no false-success claim' shape."""
+
+    name: str = "plan_progress"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if not ctx.tools_ran_this_turn:
+            return Continue()
+        if ctx.reply.tool_calls:
+            return Continue()
+        plan_steps = 0
+        for prior in ctx.prior_assistant_replies:
+            plan_steps = _count_plan_steps(prior)
+            if plan_steps:
+                break
+        if plan_steps == 0:
+            return Continue()
+        executed = len(ctx.prior_tool_outputs)
+        if executed >= plan_steps:
+            return Continue()
+        return Nudge(_PLAN_PROGRESS_NUDGE.format(plan_steps=plan_steps, executed=executed))
 
 
 # Force-synthesis nudge when the model silently gives up after
@@ -5707,6 +5792,14 @@ def default_hook_pipeline(
         UnparseableHook(),
         TeaserHook(),
         FalseSuccessHook(),
+        # plan_progress (harness-zcxw): catches the 'mid-plan trail-off'
+        # shape where the model laid out a numbered plan, executed
+        # some steps via tool calls, and then finalized with steps
+        # still pending. Sits AFTER Teaser + FalseSuccess so the
+        # specific-symptom catchers win first; this is the residual
+        # 'no teaser keyword and no success claim, but plan steps
+        # outnumber executed tool calls' shape.
+        PlanProgressHook(),
         # empty_reply_after_tools (harness-uk34): catches the silent-
         # give-up shape — model produced useful tool work earlier in
         # the turn, then emitted nothing on the wrap-up round. The
@@ -6150,6 +6243,7 @@ __all__ = [
     "Nudge",
     "NumericFabricationHook",
     "PairedMetaConfirmStripHook",
+    "PlanProgressHook",
     "PostDupCompletionClaimHook",
     "PostModelContext",
     "PostModelHook",

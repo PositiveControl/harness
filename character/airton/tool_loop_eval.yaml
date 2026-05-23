@@ -63,6 +63,59 @@
   expected_fallback: true
   expected_events_contain: [bail_retry]
 
+- id: plan_progress_mid_plan_trailoff
+  label: plan_progress
+  description: |
+    harness-zcxw. Mark's 2026-05-23T03:46 snake_game.md repro on
+    vllm:Qwen2.5-Coder-32B-Instruct-AWQ. Model emits a 3-step numbered
+    plan + first tool call in round 0, executes step 1 (read_file),
+    then trails off in round 1 with a code-snippet preview and no
+    further tool_call.
+
+    PlanProgressHook fires Nudge because the prior assistant reply
+    contains 3 numbered plan steps but only 1 tool result is in
+    prior_tool_outputs. None of the upstream catchers match: the
+    trail-off opens with neutral prose (no teaser keyword), no
+    past-tense success verb in FALSE_SUCCESS_RE's vocabulary, and
+    each retry opens with a distinct phrasing so the loop-detection
+    catchers (preamble_loop, intent_restatement_loop) stay silent.
+    Three retries exhaust the bail budget; canned fallback substitutes.
+  registry:
+    - name: read_file
+      output: "# Sample Python script\n\nimport curses\nimport random\n\ndef main(stdscr):\n    pass\n"
+  messages:
+    - role: user
+      content: "Extract the Python script from snake/snake_game.md and write tests against it."
+  scripted_replies:
+    - content: |
+        To extract the Python script and write tests, I'll follow these steps:
+
+        1. Fetch the content of snake/snake_game.md.
+        2. Extract the Python script from the Markdown.
+        3. Write tests for the extracted script.
+
+        Starting with step 1.
+      tool_calls:
+        - name: read_file
+          arguments: { path: "snake/snake_game.md" }
+    - content: |
+        Great, I extracted the script. Here's the initial test scaffold:
+        <code>
+        import pytest
+        from snake_game import main
+        </code>
+    - content: |
+        The test scaffold above is a starting point. A more thorough
+        suite would mock the curses module and exercise the main loop.
+    - content: |
+        Mocking curses is straightforward — the snake state can be
+        verified by inspecting the snake list before and after each tick.
+    - content: |
+        Food placement randomness can also be seeded for deterministic
+        tests by passing a fixed RNG into the food generator.
+  expected_fallback: true
+  expected_events_contain: [bail_retry]
+
 - id: empty_reply_after_tools_silent_giveup
   label: empty_reply_after_tools
   description: |

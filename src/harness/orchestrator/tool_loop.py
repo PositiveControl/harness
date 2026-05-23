@@ -586,7 +586,15 @@ _TOOL_USE_RULES_NUDGE = (
     "your pick satisfies the constraint (a named country is actually IN "
     "the named region) AND is genuinely #1 within that constraint, not "
     "#1 globally. If the source returns a broader ranking, FILTER it by "
-    "the constraint first; do not pick the global leader by default."
+    "the constraint first; do not pick the global leader by default. "
+    "(4) Plan-then-execute (harness-zcxw) — when the user asks for "
+    "multi-step work (extract X then write Y; read A, modify B, verify "
+    "C), open with a short numbered plan of the concrete tool-call "
+    "steps you intend to take, then walk it: each numbered step gets "
+    "its own tool call before you say it's done. Do NOT lay out a "
+    "plan and then stop after one step — finish every step you listed, "
+    "or amend the plan in plain prose if a step turned out to be "
+    "unnecessary. The plan is a contract with the user, not a preface."
 )
 
 
@@ -1423,6 +1431,9 @@ def run_tool_loop(
                     user_message=turn_user_message,
                     prior_tool_outputs=tuple(m.content for m in working if m.role == "tool"),
                     discarded_openings=tuple(bail.discarded_openings),
+                    prior_assistant_replies=tuple(
+                        m.content for m in working if m.role == "assistant" and m.content
+                    ),
                 ),
                 disabled=_disabled_snapshot(),
             )
@@ -1660,6 +1671,9 @@ def run_tool_loop(
                 user_message=turn_user_message,
                 prior_tool_outputs=tuple(m.content for m in working if m.role == "tool"),
                 discarded_openings=tuple(bail.discarded_openings),
+                prior_assistant_replies=tuple(
+                    m.content for m in working if m.role == "assistant" and m.content
+                ),
             ),
             disabled=_disabled_snapshot(),
         )

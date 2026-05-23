@@ -42,6 +42,7 @@ from harness.orchestrator.hooks import (
     OpinionWithoutTriggerHook,
     PairedMetaConfirmStripHook,
     PersistBodyCitationsHook,
+    PlanProgressHook,
     PostDupCompletionClaimHook,
     PostModelContext,
     PostResearchPersistHook,
@@ -126,6 +127,130 @@ def test_teaser_hook_ignores_prose_without_trailing_marker() -> None:
         tools_ran_this_turn=False,
     )
     assert isinstance(TeaserHook().check(ctx), Continue)
+
+
+def test_teaser_hook_fires_on_lets_variants() -> None:
+    # harness-3yod: Qwen2.5-Coder-32B regularly emits "Now, let's write …"
+    # as a stop-before-write teaser; the original alternation missed it.
+    samples = [
+        "Now, let's write this content to the test_snake_game.py file.",
+        "Let's check the implementation:",
+        "Now let us examine the snake's body:",
+        "Lets ship this fix.",  # apostrophe-less variant
+    ]
+    for content in samples:
+        ctx = BailContext(reply=_reply(content), tools_ran_this_turn=False)
+        assert isinstance(TeaserHook().check(ctx), Nudge), f"missed teaser: {content!r}"
+
+
+_SNAKE_PLAN_REPLY = (
+    "To extract the Python script from snake/snake_game.md and write tests "
+    "against it, I'll follow these steps:\n"
+    "\n"
+    " 1 Fetch the content of snake/snake_game.md.\n"
+    " 2 Extract the Python script from the Markdown content.\n"
+    " 3 Write tests for the extracted Python script.\n"
+    "\n"
+    "Let's start by fetching the content of snake/snake_game.md."
+)
+
+_SNAKE_TRAILOFF_REPLY = (
+    "Great, I've extracted the Python script. Here's the initial setup for "
+    "the tests: <code>\n"
+    "import pytest\n"
+    "from snake_game import main\n"
+    "</code>"
+)
+
+
+def test_plan_progress_hook_fires_on_mid_plan_trailoff() -> None:
+    # harness-zcxw: 3-step plan emitted in round-0 assistant reply, only
+    # one tool call executed, then a trail-off reply in round-1.
+    ctx = BailContext(
+        reply=_reply(_SNAKE_TRAILOFF_REPLY),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"read_file"}),
+        prior_tool_outputs=("# Terminal Snake Game ... <snake script>",),
+        prior_assistant_replies=(_SNAKE_PLAN_REPLY,),
+    )
+    outcome = PlanProgressHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "3-step plan" in outcome.text
+    assert "1 step" in outcome.text
+
+
+def test_plan_progress_hook_silent_before_any_tool_ran() -> None:
+    # The first reply lays out the plan but no tool has run yet — the
+    # plan IS the first action. Don't fire.
+    ctx = BailContext(
+        reply=_reply(_SNAKE_PLAN_REPLY),
+        tools_ran_this_turn=False,
+    )
+    assert isinstance(PlanProgressHook().check(ctx), Continue)
+
+
+def test_plan_progress_hook_silent_when_plan_complete() -> None:
+    # 3-step plan, 3 tool outputs already in working — the model has
+    # actually executed all steps and is now finalizing. Don't fire.
+    ctx = BailContext(
+        reply=_reply("All three steps done. Tests pass."),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"read_file", "write_file", "shell"}),
+        prior_tool_outputs=("<read>", "<write>", "<shell>"),
+        prior_assistant_replies=(_SNAKE_PLAN_REPLY,),
+    )
+    assert isinstance(PlanProgressHook().check(ctx), Continue)
+
+
+def test_plan_progress_hook_silent_when_model_is_calling_tool() -> None:
+    # Model has tool_calls in its reply — let the loop execute them
+    # rather than nudging.
+    from harness.tools.base import ToolCall
+
+    reply = _reply(
+        _SNAKE_TRAILOFF_REPLY,
+        tool_calls=(ToolCall(name="write_file", arguments={"path": "x", "contents": "y"}),),
+    )
+    ctx = BailContext(
+        reply=reply,
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"read_file"}),
+        prior_tool_outputs=("<read>",),
+        prior_assistant_replies=(_SNAKE_PLAN_REPLY,),
+    )
+    assert isinstance(PlanProgressHook().check(ctx), Continue)
+
+
+def test_plan_progress_hook_silent_on_non_plan_numbered_list() -> None:
+    # A single numbered item is ambient prose, not a plan.
+    ctx = BailContext(
+        reply=_reply("Top result: 1 winner of the bake-off was clearly Alice."),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_web"}),
+        prior_tool_outputs=("<search>",),
+    )
+    assert isinstance(PlanProgressHook().check(ctx), Continue)
+
+
+def test_plan_progress_hook_ignores_numbered_list_in_current_reply() -> None:
+    # A numbered list in the current reply (without a matching plan in
+    # any prior assistant reply) is too often the model's synthesis —
+    # an itemized answer, not a plan-then-execute commitment. Don't
+    # fire. Repro mirrors the JO-7110.65 §2-1-1 ATC primary-purposes
+    # answer where list_count_mismatch is the right catcher, not us.
+    content = (
+        "The four specific primary purposes of ATC are as follows:\n\n"
+        "1. Prevent a collision.\n"
+        "2. Provide safe flow.\n"
+        "3. Support national security.\n\n"
+        "Per JO 7110.65 §2-1-1."
+    )
+    ctx = BailContext(
+        reply=_reply(content),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"search_memory"}),
+    )
+    assert isinstance(PlanProgressHook().check(ctx), Continue)
 
 
 def test_false_success_hook_only_fires_when_no_tool_ran() -> None:
@@ -1300,6 +1425,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "unparseable",
         "teaser",
         "false_success",
+        "plan_progress",
         "empty_reply_after_tools",
         "post_dup_completion_claim",
         "meta_confirm",
