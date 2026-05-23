@@ -565,6 +565,30 @@ def test_validate_model_accepts_known_names() -> None:
     assert cli_mod._validate_model("echo") == "echo"
     assert cli_mod._validate_model("mlx") == "mlx"
     assert cli_mod._validate_model("ollama") == "ollama"
+    assert cli_mod._validate_model("vllm") == "vllm"
+
+
+def test_resolve_driver_adapter_passes_base_url_to_vllm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """harness-zie7: --model vllm + --model-repo should instantiate
+    VllmAdapter with base_url=<value>, mirroring cli._resolve_adapter."""
+    seen: dict[str, Any] = {}
+
+    class _FakeVllm:
+        def __init__(self, **kwargs: Any) -> None:
+            seen.update(kwargs)
+
+    import harness.model.vllm as vllm_mod
+
+    monkeypatch.setattr(vllm_mod, "VllmAdapter", _FakeVllm)
+    cli_mod._resolve_driver_adapter(
+        "vllm",
+        model_repo="http://gx10-5fb9:8000/v1",
+        lora_path=None,
+        draft_repo=None,
+    )
+    assert seen == {"base_url": "http://gx10-5fb9:8000/v1"}
 
 
 # --- harness drive logs (harness-830a) ------------------------------

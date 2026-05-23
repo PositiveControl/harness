@@ -19,6 +19,20 @@ redirect
 # These files are machine-specific and should not be shared across clones
 .sync.lock
 export-state/
+export-state.json
+
+# Issue export — derived state, rewritten on every bd op (including
+# read-only operations that touch internal caches). Treating it as
+# tracked makes every test run trigger pre-commit's "files were
+# modified by this hook" rejection. Canonical state lives in Dolt
+# (already gitignored above); cross-machine sync via `bd dolt
+# push/pull`. Follow-up: set up a Dolt remote so this works.
+issues.jsonl
+
+# Interaction log — same shape as issues.jsonl: derived state, bd
+# auto-rewrites on every operation including read-only ones, which
+# trips pre-commit's "files modified by hook" guard.
+interactions.jsonl
 
 # Ephemeral store (SQLite - wisps/molecules, intentionally not versioned)
 ephemeral.sqlite3

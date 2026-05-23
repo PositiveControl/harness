@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from harness.tools.base import ToolSpec
+from harness.tools.parse_check import parse_check
 
 
 @dataclass
@@ -96,5 +97,16 @@ class WriteFileTool:
                 )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
+        # harness-h6wa: post-write syntax gate. Failed parse → raise so
+        # the registry returns ToolResult(success=False). File stays on
+        # disk in the broken state; the model fixes or backs out next
+        # round (see edit_file._enforce_parse_check for the rationale).
+        ok, detail = parse_check(target)
+        if not ok:
+            raise ValueError(
+                f"file written but {path} no longer parses. Read the "
+                f"file and either fix the syntax error or pass a "
+                f"different content. Parser output:\n{detail}"
+            )
         action = "overwrote" if pre_existed else "wrote"
         return f"{action} {len(content)} chars to {path}"

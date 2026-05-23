@@ -85,6 +85,13 @@ def _tool_spec_to_schema(spec: ToolSpec) -> dict[str, Any]:
 
 # Qwen2.5 / Hermes: <tool_call>{...JSON...}</tool_call>
 _TOOL_CALL_JSON_PATTERN = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+# Qwen2.5-Coder variant: <tools>{...JSON...}</tools>. Observed live on
+# vLLM 0.21 / Qwen2.5-Coder-32B-Instruct-AWQ when the request carries
+# OpenAI-style tools — the model wraps the call in <tools> instead of
+# <tool_call>. Same JSON shape inside ({"name": …, "arguments": …}),
+# so we treat both wrappers the same and let vLLM's tool-parser flag
+# be advisory rather than load-bearing.
+_TOOLS_JSON_PATTERN = re.compile(r"<tools>\s*(\{.*?\})\s*</tools>", re.DOTALL)
 # Qwen3-Coder: <tool_call><function=NAME><parameter=KEY>VAL</parameter>...</function></tool_call>
 _TOOL_CALL_XML_PATTERN = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 _FUNCTION_PATTERN = re.compile(r"<function=(\w+)>(.*?)</function>", re.DOTALL)
@@ -94,8 +101,11 @@ _PARAMETER_PATTERN = re.compile(r"<parameter=(\w+)>(.*?)</parameter>", re.DOTALL
 def _parse_qwen_tool_calls(raw: str) -> tuple[str, list[ToolCall]]:
     """Extract tool-call blocks from a Qwen model's raw output.
 
-    Supports two formats:
+    Supports three formats:
       - Qwen2.5 / Hermes JSON: `<tool_call>{"name": ..., "arguments": ...}</tool_call>`
+      - Qwen2.5-Coder JSON: `<tools>{"name": ..., "arguments": ...}</tools>`
+        (observed via vLLM 0.21 against Qwen2.5-Coder-32B-Instruct-AWQ
+        — same JSON shape, plural wrapper tag)
       - Qwen3-Coder XML: a `<tool_call>` block containing
         `<function=NAME><parameter=KEY>VAL</parameter>…</function>`
 
@@ -105,23 +115,9 @@ def _parse_qwen_tool_calls(raw: str) -> tuple[str, list[ToolCall]]:
     calls: list[ToolCall] = []
 
     for match in _TOOL_CALL_JSON_PATTERN.finditer(raw):
-        try:
-            data = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            continue
-        name = data.get("name")
-        arguments = data.get("arguments", {})
-        if not isinstance(name, str):
-            continue
-        if not isinstance(arguments, dict):
-            if isinstance(arguments, str):
-                try:
-                    arguments = json.loads(arguments)
-                except json.JSONDecodeError:
-                    arguments = {}
-            else:
-                arguments = {}
-        calls.append(ToolCall(name=name, arguments=arguments))
+        _append_json_call(match.group(1), calls)
+    for match in _TOOLS_JSON_PATTERN.finditer(raw):
+        _append_json_call(match.group(1), calls)
 
     if not calls:
         for fn_match in _FUNCTION_PATTERN.finditer(raw):
@@ -133,10 +129,35 @@ def _parse_qwen_tool_calls(raw: str) -> tuple[str, list[ToolCall]]:
             calls.append(ToolCall(name=name, arguments=args))
 
     content = _TOOL_CALL_JSON_PATTERN.sub("", raw)
+    content = _TOOLS_JSON_PATTERN.sub("", content)
     content = _FUNCTION_PATTERN.sub("", content)
     content = _TOOL_CALL_XML_PATTERN.sub("", content)
-    content = re.sub(r"</?tool_call>", "", content).strip()
+    content = re.sub(r"</?tool_call>", "", content)
+    content = re.sub(r"</?tools>", "", content).strip()
     return content, calls
+
+
+def _append_json_call(body: str, calls: list[ToolCall]) -> None:
+    """Decode a `{"name": …, "arguments": …}` JSON body and append to
+    `calls`. Drops malformed/incomplete shapes silently — shared between
+    the <tool_call> and <tools> wrappers."""
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return
+    name = data.get("name")
+    arguments = data.get("arguments", {})
+    if not isinstance(name, str):
+        return
+    if not isinstance(arguments, dict):
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                arguments = {}
+        else:
+            arguments = {}
+    calls.append(ToolCall(name=name, arguments=arguments))
 
 
 def _log_tool_bail(raw: str, parsed_content: str) -> None:
@@ -186,8 +207,11 @@ class _TagMasker:
     inner `</function>` is ignored while hidden."""
 
     # Parallel-indexed tuples: opens[i] pairs with closes[i].
-    _OPEN_TAGS = ("<tool_call>", "<function=")
-    _CLOSE_TAGS = ("</tool_call>", "</function>")
+    # <tools>…</tools> is the Qwen2.5-Coder variant; same hiding rules
+    # as <tool_call>…</tool_call>. Tail must be ≥ length of the longest
+    # opening tag (`<function=` at 10 chars; 15 leaves headroom).
+    _OPEN_TAGS = ("<tool_call>", "<tools>", "<function=")
+    _CLOSE_TAGS = ("</tool_call>", "</tools>", "</function>")
     _MAX_TAIL = 15
 
     def __init__(self) -> None:

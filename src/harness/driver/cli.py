@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import get_args
 
 import typer
 
@@ -90,12 +91,15 @@ def plan_command(
     model: str = typer.Option(
         "echo",
         "--model",
-        help="Model adapter for the planner: echo | mlx | ollama.",
+        help="Model adapter for the planner: echo | mlx | ollama | vllm.",
     ),
     model_repo: str | None = typer.Option(
         None,
         "--model-repo",
-        help="Override default HF repo (mlx) or Ollama model tag (ollama).",
+        help=(
+            "Override default HF repo (mlx), Ollama model tag (ollama), "
+            "or vLLM OpenAI-compatible base URL (vllm)."
+        ),
     ),
     lora_path: str | None = typer.Option(
         None,
@@ -211,12 +215,15 @@ def loop_command(
     model: str = typer.Option(
         "echo",
         "--model",
-        help="Model adapter for executor turns: echo | mlx | ollama.",
+        help="Model adapter for executor turns: echo | mlx | ollama | vllm.",
     ),
     model_repo: str | None = typer.Option(
         None,
         "--model-repo",
-        help="Override default HF repo (mlx) or Ollama model tag (ollama).",
+        help=(
+            "Override default HF repo (mlx), Ollama model tag (ollama), "
+            "or vLLM OpenAI-compatible base URL (vllm)."
+        ),
     ),
     lora_path: str | None = typer.Option(
         None,
@@ -374,9 +381,13 @@ def _stderr_observer(event: object) -> None:
         typer.echo(_format_event(event), err=True)
 
 
+_ADAPTER_NAMES: tuple[str, ...] = get_args(AdapterName)
+
+
 def _validate_model(name: str) -> AdapterName:
-    if name not in ("echo", "mlx", "ollama"):
-        raise typer.BadParameter(f"--model must be one of: echo | mlx | ollama (got {name!r})")
+    if name not in _ADAPTER_NAMES:
+        choices = " | ".join(_ADAPTER_NAMES)
+        raise typer.BadParameter(f"--model must be one of: {choices} (got {name!r})")
     return name  # type: ignore[return-value]  # Literal narrowed by the check above
 
 
@@ -418,9 +429,13 @@ def _resolve_driver_adapter(
         from harness.model.ollama import OllamaAdapter
 
         return OllamaAdapter(model=model_repo) if model_repo else OllamaAdapter()
+    if validated == "vllm":
+        from harness.model.vllm import VllmAdapter
+
+        return VllmAdapter(base_url=model_repo) if model_repo else VllmAdapter()
     # echo: model_repo not meaningful; refuse rather than silently ignore.
     raise typer.BadParameter(
-        f"--model-repo not supported for --model {validated}; use mlx or ollama."
+        f"--model-repo not supported for --model {validated}; use mlx, ollama, or vllm."
     )
 
 

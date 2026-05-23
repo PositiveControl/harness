@@ -68,6 +68,7 @@ from harness.driver.claim_detector import detect_claim_signal
 from harness.driver.handoff import Handoff, build_handoff
 from harness.driver.planner import PlanDraft, PlannerError, VerifyStep
 from harness.driver.state import LoopRunState
+from harness.driver.workspace_verify import default_workspace_verify_steps
 from harness.model.adapter import ChatMessage, ModelAdapter
 from harness.orchestrator import ToolLoopEvent, ToolLoopResult, run_tool_loop
 from harness.orchestrator.hook_wiring import make_write_file_redirect_hook
@@ -238,6 +239,17 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
     if verify_map:
         log(f"verify gate active: {len(verify_map)} item(s) with verify steps")
 
+    # harness-oxj7: workspace-typed default verify steps. Scanned once
+    # at run start and appended to every issue's per-item list so
+    # closes are gated on the artifact still parsing — defense in
+    # depth alongside the per-write parse-gate (harness-h6wa). Empty
+    # tuple when the workspace has no recognized file types or the
+    # required parsers aren't installed; the loop's existing behavior
+    # is unchanged in that case.
+    default_verify_steps = default_workspace_verify_steps(config.workspace)
+    if default_verify_steps:
+        log(f"workspace-typed verify defaults active: {len(default_verify_steps)} step(s)")
+
     # harness-9ijr: snapshot the workspace once per fresh run BEFORE
     # the first turn fires. Resume runs inherit the original
     # snapshot — overwriting it would lose the operator's recovery
@@ -311,6 +323,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     prior_failure=prior_failure,
                     targeted_fix=targeted_fix,
                     verify_map=verify_map,
+                    default_verify_steps=default_verify_steps,
                     observe=turn_observer,
                 )
             else:
@@ -344,7 +357,11 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             # reason.
             if not success and _is_still_open_reason(reason) and detect_claim_signal(turn_reply):
                 reason = _build_claim_without_close_reason(
-                    verify_map, bd, current.id, config.workspace
+                    verify_map,
+                    bd,
+                    current.id,
+                    config.workspace,
+                    default_steps=default_verify_steps,
                 )
 
             if success:
@@ -356,7 +373,13 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 # picks up the now-open issue next iteration, and the
                 # next handoff carries `verify_failed: ...` so the model
                 # self-corrects.
-                verify_failure = _run_issue_verify(verify_map, bd, current.id, config.workspace)
+                verify_failure = _run_issue_verify(
+                    verify_map,
+                    bd,
+                    current.id,
+                    config.workspace,
+                    default_steps=default_verify_steps,
+                )
                 if verify_failure is None:
                     _on_success(bd, state, current.id, log)
                     _save_state(state, config.workspace)
@@ -463,6 +486,7 @@ def _run_fsm_turn_via_driver(
     prior_failure: str | None,
     targeted_fix: bool,
     verify_map: Mapping[str, Sequence[VerifyStep]],
+    default_verify_steps: Sequence[VerifyStep],
     observe: ExecutorObserver | None,
 ) -> tuple[bool, str, str]:
     """Adapter that wraps `run_fsm_turn` to match the legacy
@@ -520,7 +544,12 @@ def _run_fsm_turn_via_driver(
 
     prior_assessment = state.last_assessment.get(issue_id)
     prior_test_cmd = state.last_test_cmd.get(issue_id)
-    verify_steps = verify_map.get(current_issue.title, ()) if verify_map else ()
+    # harness-oxj7: workspace-typed defaults run BEFORE per-item steps
+    # so cheap parse-checks fail fast ahead of slower operator-authored
+    # gates. The FSM's `_resolve_verify_outcome` walks the sequence in
+    # order and short-circuits on first non-zero exit.
+    per_item_verify = verify_map.get(current_issue.title, ()) if verify_map else ()
+    verify_steps = tuple(default_verify_steps) + tuple(per_item_verify)
 
     result: FsmTurnResult = run_fsm_turn(
         adapter=adapter,
@@ -737,6 +766,8 @@ def _run_issue_verify(
     bd: DriverBd,
     issue_id: str,
     workspace: Path,
+    *,
+    default_steps: Sequence[VerifyStep] = (),
 ) -> str | None:
     """Run the verify steps registered for `issue_id` (looked up by bd
     title). Returns None when all pass OR no steps are registered;
@@ -748,9 +779,13 @@ def _run_issue_verify(
     title mismatch (model renamed the issue post-commit, or the draft
     drifted) silently passes — the loop's existing classification
     handles those edges; we don't want to fail-closed on a clerical
-    drift."""
-    if not verify_map:
-        return None
+    drift.
+
+    `default_steps` (harness-oxj7) is the workspace-typed baseline
+    list synthesized once per run by `default_workspace_verify_steps`.
+    Runs BEFORE per-item steps so cheap parse-checks fail fast before
+    any slower operator-authored gate. Empty list (the default) yields
+    the pre-harness-oxj7 behavior."""
     try:
         issue = bd.show(issue_id)
     except DriverBdError as exc:
@@ -759,7 +794,8 @@ def _run_issue_verify(
         # — the next iteration's bd.ready_under_epic will surface the
         # same issue if it's still open.
         return f"verify lookup failed (bd.show): {exc}"
-    steps = verify_map.get(issue.title)
+    per_item_steps = verify_map.get(issue.title, ()) if verify_map else ()
+    steps: tuple[VerifyStep, ...] = tuple(default_steps) + tuple(per_item_steps)
     if not steps:
         return None
     for step in steps:
@@ -849,6 +885,8 @@ def _build_claim_without_close_reason(
     bd: DriverBd,
     issue_id: str,
     workspace: Path,
+    *,
+    default_steps: Sequence[VerifyStep] = (),
 ) -> str:
     """Compose the `last_failure` message for a claim-without-close turn.
 
@@ -857,8 +895,15 @@ def _build_claim_without_close_reason(
     `_run_issue_verify`). When no steps are registered, falls back to a
     softer hint pointing the model at the missing `bd close` call. Both
     cases share the `claim_without_close:` prefix so downstream grep
-    can distinguish them."""
-    verify_failure = _run_issue_verify(verify_map, bd, issue_id, workspace)
+    can distinguish them.
+
+    `default_steps` (harness-oxj7) carries the workspace-typed baseline
+    so the claim-without-close path inherits the same gate as a real
+    close attempt — a model that claims done on a workspace whose JS
+    no longer parses sees the parser error in the failure message."""
+    verify_failure = _run_issue_verify(
+        verify_map, bd, issue_id, workspace, default_steps=default_steps
+    )
     if verify_failure is not None:
         return f"{_CLAIM_WITHOUT_CLOSE_PREFIX} {verify_failure}"
     return f"{_CLAIM_WITHOUT_CLOSE_PREFIX} {_CLAIM_WITHOUT_CLOSE_NO_VERIFY_HINT}"

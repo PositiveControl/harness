@@ -2080,8 +2080,9 @@ def _resolve_adapter(
     rewriter_temperature: float | None = None,
 ) -> ModelAdapter:
     # Custom configs bypass the factory and instantiate the adapter
-    # directly. --lora-path is MLX-only; --model-repo works for MLX
-    # (HF repo) and Ollama (model tag like "gemma4:latest").
+    # directly. --lora-path / --draft-repo are MLX-only; --model-repo
+    # works for MLX (HF repo), Ollama (model tag like "gemma4:latest"),
+    # and vLLM (base URL like "http://gx10-1.tailnet:8000/v1").
     if lora_path and name != "mlx":
         raise typer.BadParameter("--lora-path requires --model mlx.")
     if draft_repo and name != "mlx":
@@ -2104,9 +2105,13 @@ def _resolve_adapter(
             from harness.model.ollama import OllamaAdapter
 
             adapter = OllamaAdapter(model=model_repo) if model_repo else OllamaAdapter()
+        elif name == "vllm":
+            from harness.model.vllm import VllmAdapter
+
+            adapter = VllmAdapter(base_url=model_repo) if model_repo else VllmAdapter()
         else:
             raise typer.BadParameter(
-                f"--model-repo not supported for --model {name}; use mlx or ollama."
+                f"--model-repo not supported for --model {name}; use mlx, ollama, or vllm."
             )
     else:
         try:
@@ -2165,7 +2170,7 @@ def chat(
     ),
     channel: str = typer.Option("cli", help="Channel name"),
     speaker: str = typer.Option("mark", help="Your handle"),
-    model: str = typer.Option("echo", help="Adapter: echo | mlx | ollama"),
+    model: str = typer.Option("echo", help="Adapter: echo | mlx | ollama | vllm"),
     model_repo: str | None = typer.Option(
         None,
         "--model-repo",
@@ -2523,7 +2528,7 @@ def phraseology_lint_cmd(
         "--scenario",
         help="Optional operational class: departure | arrival | handoff | emergency.",
     ),
-    model: str = typer.Option("mlx", help="Adapter: echo | mlx | ollama"),
+    model: str = typer.Option("mlx", help="Adapter: echo | mlx | ollama | vllm"),
     model_repo: str | None = typer.Option(None, "--model-repo"),
     lora_path: str | None = typer.Option(None, "--lora-path"),
     draft_repo: str | None = typer.Option(None, "--draft-repo"),
@@ -2653,7 +2658,7 @@ def daemon(
     compaction_model: str = typer.Option(
         "echo",
         "--compaction-model",
-        help="Adapter for compaction summarization: echo | mlx | ollama. "
+        help="Adapter for compaction summarization: echo | mlx | ollama | vllm. "
         "Defaults to echo so the daemon stays cheap until you opt in to a real model.",
     ),
     consolidation_interval: float = typer.Option(
@@ -3481,7 +3486,7 @@ def describe() -> None:
 
 @eval_app.command("voice")
 def eval_voice(
-    model: str = typer.Option("mlx", help="Adapter: echo | mlx | ollama"),
+    model: str = typer.Option("mlx", help="Adapter: echo | mlx | ollama | vllm"),
     model_repo: str | None = typer.Option(
         None,
         "--model-repo",
@@ -3996,7 +4001,7 @@ def eval_atc(
         "--fixture",
         help="Path to an atc eval YAML. Defaults to `character/<name>/atc_eval.yaml`.",
     ),
-    model: str = typer.Option("mlx", help="Adapter: echo | mlx | ollama"),
+    model: str = typer.Option("mlx", help="Adapter: echo | mlx | ollama | vllm"),
     model_repo: str | None = typer.Option(None, "--model-repo"),
     lora_path: str | None = typer.Option(None, "--lora-path"),
     draft_repo: str | None = typer.Option(None, "--draft-repo"),
@@ -4699,7 +4704,7 @@ def eval_phraseology(
             "Path to a phraseology eval YAML. Defaults to `character/<name>/phraseology_eval.yaml`."
         ),
     ),
-    model: str = typer.Option("mlx", help="Adapter: echo | mlx | ollama"),
+    model: str = typer.Option("mlx", help="Adapter: echo | mlx | ollama | vllm"),
     model_repo: str | None = typer.Option(None, "--model-repo"),
     lora_path: str | None = typer.Option(None, "--lora-path"),
     draft_repo: str | None = typer.Option(None, "--draft-repo"),
@@ -5025,7 +5030,7 @@ def eval_atc_audio(
             "both passes — only use this for inner-loop iteration."
         ),
     ),
-    model: str = typer.Option("mlx", help="Adapter: echo | mlx | ollama"),
+    model: str = typer.Option("mlx", help="Adapter: echo | mlx | ollama | vllm"),
     model_repo: str | None = typer.Option(None, "--model-repo"),
     lora_path: str | None = typer.Option(None, "--lora-path"),
     draft_repo: str | None = typer.Option(None, "--draft-repo"),
@@ -5680,9 +5685,11 @@ def memory_scribe(
         help="Write scribed memories as shared (user_id = NULL) rather "
         "than scoped to --user. Intended for character-level extractions.",
     ),
-    model: str = typer.Option("mlx", help="Adapter for extraction: echo | mlx | ollama"),
+    model: str = typer.Option("mlx", help="Adapter for extraction: echo | mlx | ollama | vllm"),
     model_repo: str | None = typer.Option(
-        None, "--model-repo", help="Override the model id. MLX: HF repo. Ollama: model tag."
+        None,
+        "--model-repo",
+        help="Override the model id. MLX: HF repo. Ollama: model tag. vLLM: base URL.",
     ),
     lora_path: str | None = typer.Option(
         None,
@@ -6409,7 +6416,7 @@ def web_serve(
     model: str = typer.Option(
         "mlx",
         "--model",
-        help="Adapter: echo | mlx | ollama. Echo is the fastest smoke test.",
+        help="Adapter: echo | mlx | ollama | vllm. Echo is the fastest smoke test.",
     ),
     model_repo: str | None = typer.Option(
         None, "--model-repo", help="HF repo override for the chosen adapter."
