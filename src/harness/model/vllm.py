@@ -108,6 +108,73 @@ def _parse_openai_tool_calls(raw_calls: list[dict[str, Any]]) -> list[ToolCall]:
     return parsed
 
 
+# Maximum number of `}` chars the lenient fallback will append when
+# trying to reconstruct an unclosed JSON envelope. Qwen2.5-Coder's
+# observed failure mode is dropping one outer `}` on heavily-nested
+# replies; allow up to 3 to cover the "model forgot 2 of 3 nested
+# closes" tail of the distribution without trying every conceivable
+# pad. harness-bwmd.
+_LENIENT_MAX_BRACE_PAD: int = 3
+
+
+def _scan_json_envelope(content: str, start: int) -> tuple[int, int]:
+    """Walk `content` from `content[start]` (must be `{`) tracking
+    brace depth and JSON-string state. Used by the lenient bare-JSON
+    fallback to find a truncation point when strict raw_decode fails.
+
+    Returns `(end_idx, missing_closes)`:
+      - On a natural close (depth hits 0): `(i + 1, 0)` where `i` is
+        the matching `}`.
+      - On an unclosed envelope: `(last_close_at_depth_gt_0, depth)`
+        — the position just past the last `}` we saw while depth was
+        still > 0, paired with the remaining open depth. The caller
+        can slice `content[start:last_close]` and pad with `}` * depth
+        to recover the model's intended JSON.
+
+    Stops early at `\\n```` (markdown fence end) when depth > 0 — that's
+    the strongest signal the JSON region has ended and the trailing
+    prose isn't part of it. Without this guard, stray `{` / `}` in the
+    trailing English (e.g. `{name}` template syntax in a hint) could
+    fool the depth counter.
+
+    String-aware: braces inside JSON strings (between `"`s, respecting
+    `\\` escapes) don't change depth. That's load-bearing — the failing
+    Qwen2.5-Coder shape on harness-3jo1 had multi-line code in
+    `old_string` / `new_string` full of `{` and `}` chars."""
+    depth = 0
+    in_string = False
+    last_close_at_depth_gt_0: int | None = None
+    i = start
+    while i < len(content):
+        ch = content[i]
+        if in_string:
+            if ch == "\\" and i + 1 < len(content):
+                i += 2  # skip escape sequence as one unit
+                continue
+            if ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return (i + 1, 0)
+                if depth > 0:
+                    last_close_at_depth_gt_0 = i + 1
+            elif ch == "\n" and depth > 0 and content[i + 1 : i + 4] == "```":
+                # Markdown fence ending the JSON region; trailing
+                # text is prose, not JSON.
+                break
+        i += 1
+
+    if last_close_at_depth_gt_0 is not None and depth > 0:
+        return (last_close_at_depth_gt_0, depth)
+    return (len(content), depth)
+
+
 def _parse_bare_json_tool_call(content: str) -> tuple[str, list[ToolCall]]:
     """Last-ditch fallback: when vLLM's parser didn't extract anything
     AND the model didn't wrap its call in any Qwen-family tag, the
@@ -127,6 +194,15 @@ def _parse_bare_json_tool_call(content: str) -> tuple[str, list[ToolCall]]:
       - the object must have a string `name` AND a dict `arguments`
         (or coerce-able to one — accept missing/null arguments as {})
 
+    Lenient pad-and-retry path (harness-bwmd): when strict raw_decode
+    fails, walk the candidate with `_scan_json_envelope` to detect an
+    unclosed envelope and pad up to `_LENIENT_MAX_BRACE_PAD` missing
+    `}` chars. Catches the Qwen2.5-Coder 32B failure shape where the
+    model loses count of nested braces inside multi-line code strings
+    and drops the outer envelope's close (drive halt 2026-05-23 on
+    harness-3jo1: a 2.2 KB JSON missing one final `}` bailed via
+    teaser, model retried with the same shape, context exhausted).
+
     Returns (stripped_content, calls). On miss, returns the input
     content unchanged with an empty call list."""
     match = _BARE_JSON_CALL_RE.search(content)
@@ -134,10 +210,15 @@ def _parse_bare_json_tool_call(content: str) -> tuple[str, list[ToolCall]]:
         return content, []
     start = match.start()
     decoder = json.JSONDecoder()
+    end_idx: int
+    data: Any
     try:
         data, end_idx = decoder.raw_decode(content, start)
     except json.JSONDecodeError:
-        return content, []
+        lenient = _lenient_parse_unclosed_envelope(content, start)
+        if lenient is None:
+            return content, []
+        data, end_idx = lenient
     if not isinstance(data, dict):
         return content, []
     name = data.get("name")
@@ -159,6 +240,31 @@ def _parse_bare_json_tool_call(content: str) -> tuple[str, list[ToolCall]]:
     # _is_suppressible filter will drop "Let me check…" etc).
     stripped_content = (content[:start] + content[end_idx:]).strip()
     return stripped_content, [ToolCall(name=name, arguments=arguments)]
+
+
+def _lenient_parse_unclosed_envelope(content: str, start: int) -> tuple[Any, int] | None:
+    """Run after strict raw_decode failed. Use `_scan_json_envelope`
+    to find a truncation point and pad with up to
+    `_LENIENT_MAX_BRACE_PAD` closing braces. Returns `(data, end_idx)`
+    on the first pad that parses + carries a `name` key; None on
+    miss. harness-bwmd."""
+    candidate_end, missing = _scan_json_envelope(content, start)
+    if missing <= 0:
+        # Envelope closed naturally — strict parse must have failed
+        # on a different shape (bad escape, control char in string).
+        # Don't try to fix; let the caller fall through.
+        return None
+    if missing > _LENIENT_MAX_BRACE_PAD:
+        return None
+    candidate = content[start:candidate_end].rstrip()
+    for pad in range(1, missing + 1):
+        try:
+            data = json.loads(candidate + "}" * pad)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and data.get("name"):
+            return data, candidate_end
+    return None
 
 
 # Bare-JSON tool-call signature. Matches `{"name":` with optional

@@ -917,6 +917,109 @@ def test_vllm_extracts_bare_json_with_trailing_special_token_leak() -> None:
     assert reply.tool_calls == (ToolCall(name="list_dir", arguments={"path": "scratch"}),)
 
 
+def test_vllm_bare_json_lenient_recovers_unclosed_envelope() -> None:
+    """harness-bwmd: on the harness-3jo1 drive halt (2026-05-23, loop
+    3823cd0b, bail records 05:21:12 + 05:22:21), Qwen2.5-Coder 32B
+    emitted a 2.2 KB edit_file call with multi-line code in
+    `old_string`/`new_string`. The nested `{` and `}` inside those
+    strings confused the model — it dropped the envelope's outer `}`
+    before the trailing ``` fence. Strict json.raw_decode rejected;
+    the lenient pad-and-retry path must extract the call.
+
+    Repro shape: prose preamble, ```json fence, payload missing one
+    closing `}`, ``` fence end, trailing narrative + teaser.
+    """
+    truncated_call = (
+        '{"name": "edit_file", "arguments": '
+        '{"path": "game.js", '
+        '"old_string": "const x = 1;\\n}", '
+        '"new_string": "const y = 2;\\n}"'
+        "}"  # closes arguments dict — but envelope's outer } is MISSING
+    )
+    content = (
+        "Here's the updated edit with more context:\n\n"
+        "```json\n"
+        f"{truncated_call}\n"
+        "```\n\n"
+        "This should correctly rename the variable.\n\n"
+        "Let's apply this edit."
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": content,
+                            "tool_calls": [],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        reply = adapter.complete_with_tools(
+            [ChatMessage(role="user", content="fix the conflict")],
+            tools=[_weather_spec()],
+        )
+
+    assert reply.tool_calls == (
+        ToolCall(
+            name="edit_file",
+            arguments={
+                "path": "game.js",
+                "old_string": "const x = 1;\n}",
+                "new_string": "const y = 2;\n}",
+            },
+        ),
+    )
+
+
+def test_vllm_bare_json_lenient_skips_when_real_json_error() -> None:
+    """harness-bwmd: the lenient pad-and-retry path only kicks in when
+    the envelope was unclosed. A JSON whose braces are balanced but
+    fails to parse for OTHER reasons (bad escape, control char in
+    string) must NOT trigger pad-and-retry — that path is reserved for
+    the specific 'model lost count of nested braces' shape."""
+
+    # Balanced braces but invalid escape inside string.
+    content = '{"name": "edit_file", "arguments": {"path": "x", "old_string": "bad\\zescape"}}'
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": content,
+                            "tool_calls": [],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        reply = adapter.complete_with_tools(
+            [ChatMessage(role="user", content="x")],
+            tools=[_weather_spec()],
+        )
+
+    # No tool extracted — lenient path correctly held back on a
+    # balanced-but-malformed envelope. Reply content stays unchanged.
+    assert reply.tool_calls == ()
+
+
 def test_vllm_stream_suppresses_bare_json_after_prose_preamble() -> None:
     """Streamed variant of the prose-preamble case. The first text
     delta is prose ("Let me check.\\n") — shape detection cannot
