@@ -64,17 +64,51 @@ def test_old_string_not_found_inlines_current_contents(tmp_path: Path) -> None:
     assert "--- END f.txt ---" in msg
 
 
-def test_no_op_edit_inlines_current_contents(tmp_path: Path) -> None:
-    """When old_string == new_string the edit is a no-op. Inline file
-    contents so the model can see what's actually there and pick a real
-    diff to make."""
+def test_no_op_edit_when_old_string_is_in_file(tmp_path: Path) -> None:
+    """When old_string == new_string AND old_string IS in the file, the
+    'edit is a no-op' error fires and the fix is 'pick a different
+    new_string'. The error does NOT inline file contents (harness-6la9)
+    — showing the file again is noise when the model needs to change
+    new_string, not find a matching old_string."""
     (tmp_path / "f.txt").write_text("// some real content\nlet x = 1;\n")
     with pytest.raises(ValueError, match=r"(not found|no-op|matches)") as exc_info:
         _tool(tmp_path).call(path="f.txt", old_string="let x = 1;", new_string="let x = 1;")
     msg = str(exc_info.value)
     assert "edit is a no-op" in msg
+    # Inlined contents are NOT present — the no-op error is a model-
+    # output bug, not a 'help me find content' bug.
+    assert "--- CURRENT CONTENTS OF f.txt (BEGIN) ---" not in msg
+
+
+def test_no_op_check_does_not_mask_not_found_for_hallucinated_string(
+    tmp_path: Path,
+) -> None:
+    """harness-6la9 regression: when old_string == new_string AND
+    old_string is NOT in the file, the 'not found' error must fire
+    (not the 'no-op' error). The previous ordering told the model
+    'your edit is a no-op' when the real problem was 'X isn't in the
+    file' — driving a loop of (X, X) → 'no-op' → try (X', X') → 'no-op'
+    forever because the model never learned its strings were
+    hallucinated."""
+    (tmp_path / "f.txt").write_text(
+        "// actual file contents the model never sees because hallucinated\n"
+    )
+    hallucinated = "if (keys.KeyR && !prevKeys.KeyR && !player.alive) {"
+    with pytest.raises(ValueError, match=r"(not found|no-op|matches)") as exc_info:
+        _tool(tmp_path).call(
+            path="f.txt",
+            old_string=hallucinated,
+            new_string=hallucinated,
+        )
+    msg = str(exc_info.value)
+    # The 'not found' diagnosis wins so the model gets the file ground
+    # truth, not the misleading 'no-op' message.
+    assert "old_string not found in f.txt" in msg
+    assert "edit is a no-op" not in msg
+    # And the inlined contents are present — that's the whole point of
+    # the not-found path (give the model the file so it can construct a
+    # matching old_string).
     assert "--- CURRENT CONTENTS OF f.txt (BEGIN) ---" in msg
-    assert "let x = 1;" in msg
 
 
 def test_ambiguous_old_string_match_inlines_contents(tmp_path: Path) -> None:

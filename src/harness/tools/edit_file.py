@@ -237,14 +237,6 @@ class EditFileTool:
         except UnicodeDecodeError as exc:
             raise ValueError(f"{path} is not a UTF-8 text file") from exc
 
-        if old_string and old_string == new_string:
-            raise ValueError(
-                "old_string and new_string are identical — edit is a no-op. "
-                "Your edit doesn't change anything. Pick a different "
-                "new_string, or revise old_string to point at code you "
-                "actually intend to change.\n" + _format_file_contents(path, original)
-            )
-
         # Append mode: empty old_string → new_string goes at the end.
         if not old_string:
             updated = original + new_string
@@ -252,6 +244,17 @@ class EditFileTool:
             _enforce_parse_check(target, path)
             return f"appended to {path}: +{len(new_string)} bytes"
 
+        # harness-6la9: check that old_string is actually in the file
+        # BEFORE the no-op check. The model routinely emits
+        # (old=X, new=X) where X is a hallucinated snippet not in the
+        # file. With the old ordering, the no-op check fired first and
+        # the model was told 'your edit changes nothing' — diagnostically
+        # wrong; the real fix is 'X isn't in the file'. The model then
+        # retried with different hallucinated X values, all (X', X'),
+        # all 'no-op', forever. None of the dedup hooks caught this
+        # because args differed across calls. Checking 'not found' first
+        # gives the model the file contents it needs to construct a
+        # matching old_string.
         count = original.count(old_string)
         if count == 0:
             raise ValueError(
@@ -260,6 +263,18 @@ class EditFileTool:
                 f"(including indentation and trailing whitespace). Do NOT "
                 f"re-emit the same edit — that won't help.\n"
                 + _format_file_contents(path, original)
+            )
+
+        if old_string == new_string:
+            # No inlined file contents here — when old_string is in the
+            # file AND equals new_string, the fix is 'change new_string';
+            # showing the file again is noise that consumed ~4 KB of
+            # context per error.
+            raise ValueError(
+                "old_string and new_string are identical — edit is a no-op. "
+                "Your edit doesn't change anything. Pick a different "
+                "new_string, or revise old_string to point at code you "
+                "actually intend to change."
             )
         if count > 1 and not replace_all:
             raise ValueError(
