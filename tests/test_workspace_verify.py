@@ -9,6 +9,7 @@ flag real syntax errors)."""
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import patch
@@ -17,18 +18,24 @@ import pytest
 
 from harness.driver.fsm_turn import _exec_test_cmd
 from harness.driver.workspace_verify import (
+    _browser_app_index,
     _workspace_has_file,
     default_workspace_verify_steps,
 )
 
 _HAS_NODE = shutil.which("node") is not None
 _HAS_PYTHON = shutil.which("python") is not None
+_HAS_PLAYWRIGHT = importlib.util.find_spec("playwright") is not None
 
 _requires_node = pytest.mark.skipif(
     not _HAS_NODE, reason="workspace JS verify step requires `node` on PATH"
 )
 _requires_python = pytest.mark.skipif(
     not _HAS_PYTHON, reason="workspace Python verify step requires `python` on PATH"
+)
+_requires_playwright = pytest.mark.skipif(
+    not _HAS_PLAYWRIGHT,
+    reason="smoke-execute step requires `playwright` + chromium installed",
 )
 
 
@@ -200,4 +207,178 @@ def test_python_step_excludes_pycache_paths(tmp_path: Path) -> None:
     steps = default_workspace_verify_steps(tmp_path)
     py_step = next(s for s in steps if "ast.parse" in s.cmd)
     exit_code, _tail = _exec_test_cmd(py_step.cmd, tmp_path, shell_mode=py_step.shell)
+    assert exit_code == 0
+
+
+# --- harness-4b8v: browser-app smoke-execute detection ------------
+
+
+def test_browser_app_index_finds_index_html_with_local_script(tmp_path: Path) -> None:
+    """Root-level index.html with a local script tag → that's a
+    browser app the smoke gate can verify."""
+    (tmp_path / "index.html").write_text(
+        '<!DOCTYPE html><html><body><script src="game.js"></script></body></html>',
+    )
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    assert _browser_app_index(tmp_path) == tmp_path / "index.html"
+
+
+def test_browser_app_index_accepts_index_htm(tmp_path: Path) -> None:
+    """index.htm (legacy 8.3 extension) is treated the same as
+    index.html — some scaffold tools still emit it."""
+    (tmp_path / "index.htm").write_text(
+        '<html><body><script src="app.js"></script></body></html>',
+    )
+    assert _browser_app_index(tmp_path) == tmp_path / "index.htm"
+
+
+def test_browser_app_index_accepts_module_mjs(tmp_path: Path) -> None:
+    """ES module entry: `<script type="module" src="game.mjs">`.
+    Other attributes between `<script` and `src=` must not break
+    detection."""
+    (tmp_path / "index.html").write_text(
+        '<html><body><script type="module" src="./game.mjs"></script></body></html>',
+    )
+    assert _browser_app_index(tmp_path) == tmp_path / "index.html"
+
+
+def test_browser_app_index_skips_when_no_index(tmp_path: Path) -> None:
+    """JS in the workspace but no index.html → not a browser app
+    we know how to load; smoke gate stays silent (per the spec's
+    skip-on-non-browser-workspace policy)."""
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    assert _browser_app_index(tmp_path) is None
+
+
+def test_browser_app_index_skips_cdn_only_scripts(tmp_path: Path) -> None:
+    """index.html whose only script tags reference CDN-hosted libs
+    isn't an artifact the workspace authors — the smoke step is for
+    code the model is editing, not jQuery."""
+    (tmp_path / "index.html").write_text(
+        "<html><body>"
+        '<script src="https://cdn.example.com/lib.js"></script>'
+        '<script src="http://other.example/foo.js"></script>'
+        "</body></html>",
+    )
+    assert _browser_app_index(tmp_path) is None
+
+
+def test_browser_app_index_treats_protocol_relative_as_remote(tmp_path: Path) -> None:
+    """`//cdn.example/lib.js` resolves to the page's protocol; for
+    HTTPS pages that's a CDN. Match the heuristic the operator
+    intuitively expects — gate stays silent."""
+    (tmp_path / "index.html").write_text(
+        '<html><body><script src="//cdn.example/lib.js"></script></body></html>',
+    )
+    assert _browser_app_index(tmp_path) is None
+
+
+def test_browser_app_index_skips_html_without_scripts(tmp_path: Path) -> None:
+    """A static HTML page with no <script> tags has no JS we can
+    smoke-test — skip silently."""
+    (tmp_path / "index.html").write_text("<html><body><h1>Hi</h1></body></html>")
+    assert _browser_app_index(tmp_path) is None
+
+
+def test_browser_app_index_mixed_remote_and_local_triggers(tmp_path: Path) -> None:
+    """When some scripts are CDN and some are local, the presence of
+    even one local script means the workspace authors JS that should
+    be smoke-tested."""
+    (tmp_path / "index.html").write_text(
+        "<html><body>"
+        '<script src="https://cdn.example.com/lib.js"></script>'
+        '<script src="game.js"></script>'
+        "</body></html>",
+    )
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    assert _browser_app_index(tmp_path) == tmp_path / "index.html"
+
+
+def test_smoke_step_added_for_browser_app_when_playwright_present(tmp_path: Path) -> None:
+    """Integration: browser-app workspace + Playwright importable →
+    default_workspace_verify_steps includes the smoke-execute step."""
+    (tmp_path / "index.html").write_text(
+        '<html><body><script src="game.js"></script></body></html>',
+    )
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    with patch("harness.driver.workspace_verify._playwright_available", return_value=True):
+        steps = default_workspace_verify_steps(tmp_path)
+    smoke_steps = [s for s in steps if "smoke_runner" in s.cmd]
+    assert len(smoke_steps) == 1
+    # The step must reference the absolute index path so subprocess
+    # cwd doesn't change the resolution surface.
+    assert str(tmp_path / "index.html") in smoke_steps[0].cmd
+
+
+def test_smoke_step_skipped_when_playwright_unavailable(tmp_path: Path) -> None:
+    """Skip-on-missing-deps acceptance criterion (c): Playwright
+    not importable → no smoke step even though the workspace looks
+    like a browser app."""
+    (tmp_path / "index.html").write_text(
+        '<html><body><script src="game.js"></script></body></html>',
+    )
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    with patch("harness.driver.workspace_verify._playwright_available", return_value=False):
+        steps = default_workspace_verify_steps(tmp_path)
+    smoke_steps = [s for s in steps if "smoke_runner" in s.cmd]
+    assert smoke_steps == []
+
+
+def test_smoke_step_skipped_when_not_a_browser_app(tmp_path: Path) -> None:
+    """Skip-on-no-index acceptance: Playwright available but the
+    workspace has no index.html → smoke step is not added."""
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    with patch("harness.driver.workspace_verify._playwright_available", return_value=True):
+        steps = default_workspace_verify_steps(tmp_path)
+    smoke_steps = [s for s in steps if "smoke_runner" in s.cmd]
+    assert smoke_steps == []
+
+
+# --- end-to-end: smoke-execute against real Playwright -----------
+
+
+@_requires_playwright
+def test_smoke_step_fails_on_runtime_canvas_error(tmp_path: Path) -> None:
+    """harness-4b8v canonical failure: getContext('d') returns null
+    → TypeError on first frame. Parse-gate passes; smoke step must
+    fail. This is the bug the gate exists to catch."""
+    (tmp_path / "index.html").write_text(
+        "<!DOCTYPE html><html><body>"
+        '<canvas id="game" width="100" height="100"></canvas>'
+        '<script src="game.js"></script>'
+        "</body></html>",
+    )
+    (tmp_path / "game.js").write_text(
+        "const canvas = document.getElementById('game');\n"
+        "const ctx = canvas.getContext('d');\n"
+        "ctx.clearRect(0, 0, 100, 100);\n",
+    )
+    steps = default_workspace_verify_steps(tmp_path)
+    smoke_step = next(s for s in steps if "smoke_runner" in s.cmd)
+    exit_code, tail = _exec_test_cmd(smoke_step.cmd, tmp_path, shell_mode=smoke_step.shell)
+    assert exit_code != 0
+    # The runner emits either a console.error or a pageerror line —
+    # either way the tail must mention runtime/error context so the
+    # handoff back to the model is actionable.
+    assert "error" in tail.lower() or "TypeError" in tail
+
+
+@_requires_playwright
+def test_smoke_step_passes_on_clean_canvas_workspace(tmp_path: Path) -> None:
+    """A clean canvas init (getContext('2d')) loads without console
+    errors — smoke step exits 0."""
+    (tmp_path / "index.html").write_text(
+        "<!DOCTYPE html><html><body>"
+        '<canvas id="game" width="100" height="100"></canvas>'
+        '<script src="game.js"></script>'
+        "</body></html>",
+    )
+    (tmp_path / "game.js").write_text(
+        "const canvas = document.getElementById('game');\n"
+        "const ctx = canvas.getContext('2d');\n"
+        "ctx.clearRect(0, 0, 100, 100);\n",
+    )
+    steps = default_workspace_verify_steps(tmp_path)
+    smoke_step = next(s for s in steps if "smoke_runner" in s.cmd)
+    exit_code, _tail = _exec_test_cmd(smoke_step.cmd, tmp_path, shell_mode=smoke_step.shell)
     assert exit_code == 0

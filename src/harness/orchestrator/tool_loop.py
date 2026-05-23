@@ -196,6 +196,25 @@ _TRUNCATED_RETRY_CAP_NUDGE = (
 _PREAMBLE_OPENING_CHARS = 200
 
 
+# Synthetic user-role nudge appended when Truncated fires WITH a
+# non-empty partial reply (harness-sx0l). The previous round's text
+# is injected as an assistant message so the model sees its own cut
+# tail in context; this nudge then asks it to continue from there
+# rather than re-roll from scratch. Without this pairing, doubling
+# the per-round budget alone often loses model intent — observed on
+# vLLM / Qwen 2.5 Coder 32B (2026-05-23): a near-complete
+# `bd close harness-3jo1` was overwritten by a "Now that I've read
+# game.js, I'll proceed..." preamble on the budget-widened retry.
+_TRUNCATED_CONTINUATION_NUDGE = (
+    "[CONTINUATION — your previous reply was truncated by the token "
+    "cap before you finished. Pick up from where you stopped. If you "
+    "were about to make a tool call (bd close, edit_file, write_file, "
+    "etc.), make that call NOW. Do not restate your plan, do not "
+    "summarize what came before — just complete the action you were "
+    "starting. The token budget for this round has been doubled.]"
+)
+
+
 def _has_lexicon_hit(user_message: str, lexicon: tuple[str, ...]) -> bool:
     """Word-boundary, case-insensitive presence check for any token in
     `lexicon`. Multi-word entries match with internal whitespace
@@ -771,6 +790,14 @@ class _BailController:
         # wider budget' loops where doubling the budget buys longer
         # preamble, not progress.
         self.discarded_openings: list[str] = []
+        # Per-turn count of every bail catcher that has fired
+        # (harness-h5h1). TeaserLoopHook self-gates on this so it
+        # only fires once TeaserHook has already bailed at least
+        # _TEASER_LOOP_FLOOR times this turn. Truncated outcomes
+        # are NOT counted — they don't have a catcher name and
+        # represent a "the model needs more space" signal, not a
+        # "the model is looping" signal.
+        self.bail_catcher_counts: dict[str, int] = {}
 
     def round_max_tokens(self, tools_already_ran: bool) -> int:
         """Post-tool rounds are wrap-up rounds — tighter cap."""
@@ -1434,6 +1461,7 @@ def run_tool_loop(
                     prior_assistant_replies=tuple(
                         m.content for m in working if m.role == "assistant" and m.content
                     ),
+                    bail_catcher_counts=dict(bail.bail_catcher_counts),
                 ),
                 disabled=_disabled_snapshot(),
             )
@@ -1486,6 +1514,20 @@ def run_tool_loop(
                             budget_after=budget_after,
                         )
                     )
+                    # harness-sx0l: preserve the partial reply across
+                    # the budget-widening retry. Append it as an
+                    # assistant message + a user continuation nudge
+                    # so the model sees its own cut tail and picks up
+                    # from there instead of re-rolling with a fresh
+                    # planning preamble. Empty content (model generated
+                    # nothing before hitting the cap) skips both
+                    # injections — the bare budget widening covers
+                    # that case.
+                    if last_reply.content:
+                        working.append(ChatMessage(role="assistant", content=last_reply.content))
+                        working.append(
+                            ChatMessage(role="user", content=_TRUNCATED_CONTINUATION_NUDGE)
+                        )
                 else:
                     # Must fire BEFORE the nudge is queued so the CLI /
                     # TUI can drop the in-flight stream buffer — each
@@ -1497,6 +1539,17 @@ def run_tool_loop(
                             catcher=bail_outcome.catcher,
                         )
                     )
+                    # Track per-catcher firing count so self-gating
+                    # catchers (TeaserLoopHook etc.) can convert a
+                    # repeated bail into a loop-shape outcome on the
+                    # next round (harness-h5h1). Empty catcher string
+                    # is defensive — pipeline always fills it, but a
+                    # hand-rolled Nudge with no name shouldn't poison
+                    # the counts.
+                    if bail_outcome.catcher:
+                        bail.bail_catcher_counts[bail_outcome.catcher] = (
+                            bail.bail_catcher_counts.get(bail_outcome.catcher, 0) + 1
+                        )
                     working.append(ChatMessage(role="user", content=bail_outcome.text))
                 continue
             # Retries exhausted (or none needed). Let finalize hooks
@@ -1674,6 +1727,7 @@ def run_tool_loop(
                 prior_assistant_replies=tuple(
                     m.content for m in working if m.role == "assistant" and m.content
                 ),
+                bail_catcher_counts=dict(bail.bail_catcher_counts),
             ),
             disabled=_disabled_snapshot(),
         )

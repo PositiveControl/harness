@@ -24,7 +24,11 @@ parse failure isn't actionable for the model.
 
 from __future__ import annotations
 
+import importlib.util
+import re
+import shlex
 import shutil
+import sys
 from pathlib import Path
 
 from harness.driver.planner import VerifyStep
@@ -122,6 +126,106 @@ def _py_verify_step() -> VerifyStep:
     return VerifyStep(cmd=cmd, shell=True)  # noqa: S604
 
 
+# --- harness-4b8v: browser-app smoke-execute --------------------
+
+# Matches ``<script ... src="..."...>``. Captures the src attribute so
+# we can classify it (local .js/.mjs → workspace-authored runtime,
+# CDN → third-party we don't gate). Case-insensitive because HTML is.
+# ``[^>]*`` covers any other attributes between ``<script`` and
+# ``src=``; newlines inside the tag are matched (the class excludes
+# only ``>``).
+_SCRIPT_SRC_RE = re.compile(
+    r'<script\b[^>]*\bsrc\s*=\s*[\'"]([^\'"]+)[\'"]',
+    re.IGNORECASE,
+)
+
+# Prefixes that classify a script src as remote. The protocol-relative
+# ``//`` form resolves to the page's scheme — for ``file://`` pages it
+# resolves to ``file://`` too, which would fail to load anyway, but the
+# common case is operators copy-pasting CDN snippets from HTTPS docs.
+# Treating ``//`` as remote keeps the gate from chasing CDN scripts on
+# every drive turn.
+_REMOTE_SRC_PREFIXES = ("http://", "https://", "//")
+
+# Suffixes the smoke gate considers "workspace JS." `.cjs` is omitted
+# because browsers can't load CommonJS via ``<script>`` directly; a
+# workspace using .cjs is a Node app, not a browser app, and the
+# node-parse-check above already covers it.
+_LOCAL_JS_SUFFIXES = (".js", ".mjs")
+
+# Entry HTML filenames the gate looks for at the workspace root.
+# Nested entry HTML (e.g. ``docs/index.html``) is intentionally not
+# scanned — the driver tells the model to load the root artifact, so
+# that's what we smoke-test.
+_INDEX_FILENAMES = ("index.html", "index.htm")
+
+
+def _browser_app_index(workspace: Path) -> Path | None:
+    """Return the entry HTML iff ``workspace`` looks like a browser app,
+    else None.
+
+    A "browser app" here means: workspace root contains
+    ``index.html`` (or ``index.htm``) that references at least one
+    local ``.js`` / ``.mjs`` file via a ``<script src="...">`` tag.
+    CDN-hosted scripts (``http://``, ``https://``, ``//``) don't
+    count — the smoke step is for code the workspace authors, not
+    third-party libs.
+
+    Returns the first matching index path so the caller can pass it
+    verbatim to the runner; None when no candidate qualifies.
+    """
+    for name in _INDEX_FILENAMES:
+        index = workspace / name
+        if not index.is_file():
+            continue
+        try:
+            html = index.read_text(encoding="utf-8", errors="replace")
+        except (OSError, PermissionError):
+            continue
+        for match in _SCRIPT_SRC_RE.finditer(html):
+            src = match.group(1).strip()
+            if not src or src.startswith(_REMOTE_SRC_PREFIXES):
+                continue
+            if src.lower().endswith(_LOCAL_JS_SUFFIXES):
+                return index
+    return None
+
+
+def _playwright_available() -> bool:
+    """True iff the ``playwright`` Python package is importable in the
+    current interpreter. A missing Chromium binary still surfaces at
+    smoke-runner exec time (the runner treats "Executable doesn't
+    exist" as a skip, not a failure); the gate doesn't try to
+    second-guess Playwright's installation state beyond the import."""
+    try:
+        return importlib.util.find_spec("playwright") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _smoke_execute_step(index: Path) -> VerifyStep:
+    """Smoke-execute verify step (harness-4b8v).
+
+    Invokes ``harness.driver.smoke_runner`` under the same interpreter
+    the driver is running (``sys.executable``), passing the absolute
+    path to the entry HTML. The runner launches headless Chromium,
+    loads ``file://<index>``, waits for ``load`` plus a settle window,
+    and exits non-zero on any console.error / unhandled page error.
+
+    Catches the class of runtime-on-load JS bugs that ``node --check``
+    cannot see: ``canvas.getContext('d')`` returning null,
+    ``Math.flor`` silently returning undefined, ``addEventListner``
+    typos, etc. The parse-gate accepts these as valid JS; only running
+    the artifact surfaces the throw.
+    """
+    cmd = f"{shlex.quote(sys.executable)} -m harness.driver.smoke_runner {shlex.quote(str(index))}"
+    # S604: ``shell=True`` here is a VerifyStep dataclass field, NOT a
+    # subprocess kwarg (mirrors _js_verify_step / _py_verify_step
+    # above). The cmd is built from sys.executable + a workspace-
+    # resolved path; no untrusted interpolation.
+    return VerifyStep(cmd=cmd, shell=True)  # noqa: S604
+
+
 def default_workspace_verify_steps(workspace: Path) -> tuple[VerifyStep, ...]:
     """Synthesize the baseline VerifyStep tuple for a workspace.
 
@@ -132,12 +236,22 @@ def default_workspace_verify_steps(workspace: Path) -> tuple[VerifyStep, ...]:
 
     Empty tuple when no recognized file types are present or all
     required parsers are missing — the loop's existing trust-the-close
-    path is preserved when the gate has nothing to say."""
+    path is preserved when the gate has nothing to say.
+
+    harness-4b8v: when the workspace looks like a browser app AND
+    Playwright is importable, also appends a smoke-execute step that
+    runtime-loads ``index.html`` to catch runtime-on-load JS bugs that
+    parse gates can't see. Skips silently when either condition fails.
+    """
     steps: list[VerifyStep] = []
     if _workspace_has_file(workspace, (".js", ".mjs", ".cjs")) and shutil.which("node"):
         steps.append(_js_verify_step())
     if _workspace_has_file(workspace, (".py",)) and shutil.which("python"):
         steps.append(_py_verify_step())
+    if _playwright_available():
+        index = _browser_app_index(workspace)
+        if index is not None:
+            steps.append(_smoke_execute_step(index))
     return tuple(steps)
 
 

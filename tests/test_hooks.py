@@ -59,6 +59,7 @@ from harness.orchestrator.hooks import (
     SourceCountInflationHook,
     TableFabricationHook,
     TeaserHook,
+    TeaserLoopHook,
     ThinSourceFabricationHook,
     ToolIntentHook,
     ToolSearchLoopHook,
@@ -141,6 +142,76 @@ def test_teaser_hook_fires_on_lets_variants() -> None:
     for content in samples:
         ctx = BailContext(reply=_reply(content), tools_ran_this_turn=False)
         assert isinstance(TeaserHook().check(ctx), Nudge), f"missed teaser: {content!r}"
+
+
+# --- TeaserLoopHook (harness-h5h1) --------------------------------
+
+
+def test_teaser_loop_hook_holds_fire_on_first_teaser() -> None:
+    """Single teaser bail still triggers normal TeaserHook + Nudge
+    retry (existing behavior). TeaserLoopHook holds fire because the
+    teaser count hasn't crossed the floor yet."""
+    ctx = BailContext(
+        reply=_reply("Let's manually inspect the file:"),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"stream_edit"}),
+        bail_catcher_counts={},
+    )
+    assert isinstance(TeaserLoopHook().check(ctx), Continue)
+
+
+def test_teaser_loop_hook_fires_on_second_teaser_with_tools_ran() -> None:
+    """harness-h5h1 canonical case: stream_edit ran cleanly earlier
+    this turn, the model emits a second teaser-shaped wrap-up reply
+    (`Let's verify…`). TeaserLoopHook fires with Nudge whose catcher
+    routes through LOOP_FALLBACK_CATCHERS at exhaust time."""
+    ctx = BailContext(
+        reply=_reply("Let's verify by searching for `event.key` usages:"),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"stream_edit"}),
+        bail_catcher_counts={"teaser": 1},
+    )
+    outcome = TeaserLoopHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    # Confirm the nudge text names the actual pathology (signoff
+    # after tools succeeded) so the model knows what to do next.
+    assert "tool" in outcome.text.lower()
+
+
+def test_teaser_loop_hook_skips_when_no_tools_ran_this_turn() -> None:
+    """Without tools_ran_this_turn=True the catcher MUST stay silent
+    — a teaser repeat with zero successful tool calls is still
+    fabrication shape (handled by TeaserHook + EXHAUSTED_FABRICATION_
+    FALLBACK), not a wrap-up sign-off."""
+    ctx = BailContext(
+        reply=_reply("Let's verify the spec:"),
+        tools_ran_this_turn=False,
+        tools_ran=frozenset(),
+        bail_catcher_counts={"teaser": 2},
+    )
+    assert isinstance(TeaserLoopHook().check(ctx), Continue)
+
+
+def test_teaser_loop_hook_skips_when_reply_is_not_a_teaser() -> None:
+    """Even with high teaser-bail counts + tools_ran=True, a final
+    reply that is no longer a teaser shape (the model self-corrected)
+    must NOT route through the loop fallback."""
+    ctx = BailContext(
+        reply=_reply("Done. event.key audit is clean — 0 occurrences."),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"stream_edit"}),
+        bail_catcher_counts={"teaser": 2},
+    )
+    assert isinstance(TeaserLoopHook().check(ctx), Continue)
+
+
+def test_teaser_loop_catcher_listed_in_loop_fallback() -> None:
+    """The fabrication-fallback finalize hook only substitutes the
+    SOFT fallback for catchers in LOOP_FALLBACK_CATCHERS — teaser_loop
+    must be in that set or its purpose is defeated."""
+    from harness.orchestrator.hooks import LOOP_FALLBACK_CATCHERS
+
+    assert "teaser_loop" in LOOP_FALLBACK_CATCHERS
 
 
 _SNAKE_PLAN_REPLY = (
@@ -1451,6 +1522,7 @@ def test_pipeline_names_match_expected_surface() -> None:
         "intent_restatement_loop",
         "truncated",
         "unparseable",
+        "teaser_loop",
         "teaser",
         "false_success",
         "plan_progress",

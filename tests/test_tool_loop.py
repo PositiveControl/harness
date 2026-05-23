@@ -897,6 +897,155 @@ def test_loop_recovers_from_truncated_reply(tmp_path: Path) -> None:
     assert any(m.role == "tool" for m in result.messages)
 
 
+def test_truncated_retry_preserves_partial_via_continuation_nudge() -> None:
+    """harness-sx0l: when Truncated fires on a non-empty partial reply,
+    the loop must inject the partial as an assistant message + a user
+    continuation nudge so the model sees its own cut tail and picks up
+    from there on the retry.
+
+    Without this pairing, doubling the budget alone often loses model
+    intent — the 2026-05-23 vLLM drive where a near-complete `bd close
+    harness-3jo1` was overwritten by a "Now that I've read game.js,
+    I'll proceed..." preamble on the budget-widened retry."""
+    partial_tail = (
+        "Now that all the necessary changes have been made, let's close the issue via `bd"
+    )
+    adapter = _ScriptedAdapter(
+        replies=[
+            # Round 1: model emits text that ends mid-token in a tool-
+            # call intent (mirrors the 2026-05-23 vLLM session).
+            ModelReply(content=partial_tail, was_truncated=True),
+            # Round 2: with the continuation context in working, the
+            # model can now finish the action.
+            ModelReply(content="bd close harness-3jo1 — done."),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="finish up")],
+        ToolRegistry(),
+    )
+    # The retry must have seen BOTH (a) the partial as an assistant
+    # message and (b) the continuation user nudge. Check the second
+    # call's message list (adapter.calls_seen[1]).
+    assert len(adapter.calls_seen) >= 2, "loop must have retried after Truncated"
+    retry_messages = adapter.calls_seen[1]
+    # Last two appended messages should be assistant(partial) + user(nudge).
+    assistant_partials = [
+        m for m in retry_messages if m.role == "assistant" and m.content == partial_tail
+    ]
+    assert len(assistant_partials) == 1, (
+        "Truncated retry must preserve the partial reply as an assistant "
+        f"message; got {[(m.role, m.content[:50]) for m in retry_messages]}"
+    )
+    continuation_nudges = [
+        m for m in retry_messages if m.role == "user" and "CONTINUATION" in m.content
+    ]
+    assert len(continuation_nudges) == 1, (
+        "Truncated retry must append a CONTINUATION user nudge; got "
+        f"{[(m.role, m.content[:50]) for m in retry_messages]}"
+    )
+    # And the result is the model's finished output, not the partial.
+    assert result.content == "bd close harness-3jo1 — done."
+
+
+def test_truncated_retry_skips_continuation_on_empty_partial() -> None:
+    """harness-sx0l: when Truncated fires with empty content (model
+    generated nothing before the cap), the loop must NOT inject empty
+    assistant/user messages — those would just bloat the prompt and
+    confuse alternation. Bare budget-widening is the right behavior
+    for this edge case."""
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(content="", was_truncated=True),
+            ModelReply(content="recovered"),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="hi")],
+        ToolRegistry(),
+    )
+    assert len(adapter.calls_seen) >= 2, "loop must have retried"
+    retry_messages = adapter.calls_seen[1]
+    # No empty assistant messages should have been injected.
+    empty_assistants = [m for m in retry_messages if m.role == "assistant" and not m.content]
+    assert empty_assistants == [], "empty partial must not produce an injected assistant message"
+    # No continuation nudge either.
+    continuation_nudges = [
+        m for m in retry_messages if m.role == "user" and "CONTINUATION" in m.content
+    ]
+    assert continuation_nudges == []
+    assert result.content == "recovered"
+
+
+def test_teaser_loop_routes_to_soft_fallback_after_tools_succeeded(tmp_path: Path) -> None:
+    """harness-h5h1 end-to-end: after a successful tool call, repeated
+    teaser-shaped wrap-ups bail through TeaserHook (first) then
+    TeaserLoopHook (second). When retries exhaust, FabricationFallback
+    must substitute the SOFT loop-fallback text (which names the tools
+    that succeeded) rather than the generic 'didn't land cleanly'.
+
+    Mirrors the 2026-05-23 harness-3jo1 drive halt shape — stream_edit
+    landed cleanly, then the model spun on `Let's verify…` until the
+    budget exhausted."""
+    (tmp_path / "f.txt").write_text("hi\n")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            # Round 0: model calls a tool (a real read) — this counts as
+            # tools_ran_this_turn=True from round 1 onward. _BAIL_RETRIES_
+            # PER_TURN = 3 means rounds 1-3 each consume a retry; round 4
+            # finds can_retry=False and falls through to finalize, where
+            # FabricationFallbackHook substitutes the soft loop fallback
+            # because last_outcome.catcher='teaser_loop' is in
+            # LOOP_FALLBACK_CATCHERS.
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "f.txt"}),),
+            ),
+            # Round 1: teaser shape — TeaserHook bails, count[teaser]=1.
+            ModelReply(content="Let's manually inspect the file:"),
+            # Round 2: teaser shape — TeaserLoopHook fires (count>=1
+            # and tools_ran), Nudge with catcher="teaser_loop".
+            ModelReply(content="Let's verify by searching for usages:"),
+            # Round 3: teaser shape — TeaserLoopHook fires again,
+            # retries consumed down to 0.
+            ModelReply(content="Let's just confirm once more:"),
+            # Round 4: teaser shape — bail_outcome is still teaser_loop
+            # Nudge, but retries are exhausted. Finalize sees the Nudge
+            # and substitutes the soft loop fallback.
+            ModelReply(content="Let's double-check one last time:"),
+        ]
+    )
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="audit")],
+        registry,
+    )
+    # The terminal output must be the SOFT loop fallback, which names
+    # the tools that succeeded. Generic-refusal text indicates the bug
+    # (fabrication_fallback fired with the wrong fallback shape).
+    assert "read_file" in result.content, (
+        f"soft fallback must list executed tools; got: {result.content!r}"
+    )
+    assert "stuck restating" in result.content or "Try narrowing" in result.content, (
+        f"expected loop-shape fallback text; got: {result.content!r}"
+    )
+    # The terminal bail-retry event must have catcher='teaser_loop'
+    # (the catcher that routes to the soft fallback). Walk the events
+    # list for any teaser_loop bail to confirm the routing fired.
+    teaser_loop_bails = [
+        e for e in result.events if e.kind == "bail_retry" and e.catcher == "teaser_loop"
+    ]
+    assert len(teaser_loop_bails) >= 1, (
+        f"teaser_loop catcher should have fired at least once; got events: "
+        f"{[(e.kind, e.catcher) for e in result.events if e.kind == 'bail_retry']}"
+    )
+
+
 def test_loop_recovers_from_unparseable_tool_call() -> None:
     """When the adapter signals a malformed tool-call block, inject a
     repair-instruction nudge and retry."""

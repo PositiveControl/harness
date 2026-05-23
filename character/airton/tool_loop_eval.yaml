@@ -53,6 +53,45 @@
   expected_events_contain: [bail_retry]
   expected_not_contains: ["Let me think about that"]
 
+- id: teaser_loop_after_tool_success
+  label: teaser_loop
+  description: |
+    harness-h5h1. Mark's 2026-05-23 harness-3jo1 drive halt repro on
+    vllm:Qwen2.5-Coder-32B-Instruct-AWQ. Model called a tool that
+    landed cleanly (read_file in round 0), then emitted analytical
+    wrap-up replies ending with classic teaser shapes ("Let's
+    manually inspect…", "Let's verify by searching…"). The first
+    teaser falls through to plain TeaserHook; from the second teaser
+    onward, TeaserLoopHook fires (count[teaser] >= 1 AND
+    tools_ran_this_turn=True AND current reply still matches
+    TEASER_RE). Retries exhaust on the teaser_loop nudge; because
+    teaser_loop is in LOOP_FALLBACK_CATCHERS, FabricationFallbackHook
+    substitutes the SOFT loop fallback (which names the tools that
+    succeeded) rather than the generic 'didn't land cleanly' refusal.
+
+    With teaser_loop disabled, every retry falls through to plain
+    TeaserHook and the generic fabrication_fallback fires —
+    `expected_contains: ['stuck restating']` distinguishes the two.
+  registry:
+    - name: read_file
+      output: "// game.js — clean audit, no event.key occurrences\n"
+  messages:
+    - role: user
+      content: "Audit game.js for event.key usages."
+  scripted_replies:
+    - content: ""
+      tool_calls:
+        - name: read_file
+          arguments: { path: "game.js" }
+    - content: "Let's manually inspect the file:"
+    - content: "Let's verify by searching for any remaining usages:"
+    - content: "Let's just confirm once more by looking at the diff:"
+    - content: "Let's double-check one last time before signing off:"
+  expected_fallback: true
+  expected_events_contain: [bail_retry]
+  expected_contains: ["stuck restating"]
+  expected_not_contains: ["didn't land cleanly"]
+
 - id: false_success_no_tool
   label: false_success
   description: Model claims 'has been added' without calling any write tool.

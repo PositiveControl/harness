@@ -101,7 +101,9 @@ _LOOP_FALLBACK_TEMPLATE = (
 # Catchers that should produce the loop-specific fallback rather than
 # the generic fabrication one. Public so eval / observability tools can
 # pin the set without poking internals.
-LOOP_FALLBACK_CATCHERS: frozenset[str] = frozenset({"preamble_loop", "intent_restatement_loop"})
+LOOP_FALLBACK_CATCHERS: frozenset[str] = frozenset(
+    {"preamble_loop", "intent_restatement_loop", "teaser_loop"}
+)
 
 
 def _loop_fallback_text(tools_ran: frozenset[str]) -> str:
@@ -611,7 +613,14 @@ class BailContext:
     contents emitted earlier this turn (harness-zcxw). PlanProgressHook
     inspects these to find a numbered plan emitted before any tool
     call so the catcher can fire on a later trail-off reply that
-    doesn't itself contain the plan."""
+    doesn't itself contain the plan.
+
+    `bail_catcher_counts` maps the name of every bail catcher that has
+    fired earlier this turn to the count of firings (harness-h5h1).
+    Catchers that self-gate on prior firings (e.g. TeaserLoopHook
+    converts a repeated teaser bail into a loop-shape catcher after
+    a threshold) read this without growing the context shape per
+    catcher. Empty mapping when no bail has fired yet."""
 
     reply: ModelReply
     tools_ran_this_turn: bool
@@ -620,6 +629,7 @@ class BailContext:
     prior_tool_outputs: tuple[str, ...] = ()
     discarded_openings: tuple[str, ...] = ()
     prior_assistant_replies: tuple[str, ...] = ()
+    bail_catcher_counts: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -961,6 +971,64 @@ _TEASER_NUDGE = (
     "Your reply announced more work but didn't include any tool calls. "
     "Either call the tool now, or give the user your final answer."
 )
+
+
+# Floor for TeaserLoopHook (harness-h5h1). Set to 1 so that the SECOND
+# consecutive teaser bail in a turn (i.e. count[teaser] >= 1 going into
+# this round) routes through the soft loop fallback when tools have
+# already succeeded. The earlier we route, the less wasted compute on
+# retries that won't help — the model is signing off, not fabricating.
+_TEASER_LOOP_FLOOR = 1
+
+
+_TEASER_LOOP_NUDGE = (
+    "You've ended replies with the same 'let me check / let's verify' "
+    "shape after at least one tool call already succeeded this turn. "
+    "The tool work landed; treat it as done. Either call the next "
+    "tool now or emit a brief final answer summarizing what was "
+    "accomplished — do NOT propose more inspection or verification "
+    "as a sign-off."
+)
+
+
+@dataclass(frozen=True)
+class TeaserLoopHook:
+    """Bail catcher: model has repeated teaser shapes ('Let me check…',
+    'Let's verify…') after tool calls already succeeded this turn
+    (harness-h5h1).
+
+    Mark's 2026-05-23 drive halt on harness-3jo1: stream_edit ran
+    cleanly (+0 bytes confirming the §15.4 audit was clean), the model
+    emitted analytical wrap-up replies that ended with classic teaser
+    shapes, TeaserHook bailed each one, retries exhausted,
+    fabrication_fallback fired with the generic 'didn't land cleanly'
+    message — but the tool work HAD succeeded. The fallback was a lie.
+
+    Gate: `bail_catcher_counts['teaser'] >= _TEASER_LOOP_FLOOR` AND
+    `tools_ran_this_turn` AND current reply still matches TEASER_RE.
+    A turn with zero successful tool calls keeps the original
+    TeaserHook + generic-fabrication-fallback path — that's still
+    fabrication shape, not a wrap-up.
+
+    Placement: BEFORE TeaserHook in the bail list under first-match
+    semantics, so a repeated-teaser-with-tools-ran reply routes through
+    the loop fallback path instead of the generic one.
+
+    Routes via LOOP_FALLBACK_CATCHERS so when retries exhaust,
+    FabricationFallbackHook substitutes the soft loop fallback (which
+    names the tools that succeeded) rather than the generic refusal.
+    """
+
+    name: str = "teaser_loop"
+
+    def check(self, ctx: BailContext) -> BailOutcome:
+        if not ctx.tools_ran_this_turn:
+            return Continue()
+        if ctx.bail_catcher_counts.get("teaser", 0) < _TEASER_LOOP_FLOOR:
+            return Continue()
+        if not TEASER_RE.search(ctx.reply.content.strip()):
+            return Continue()
+        return Nudge(_TEASER_LOOP_NUDGE)
 
 
 @dataclass(frozen=True)
@@ -5643,6 +5711,12 @@ HOOK_SHAPES: dict[str, str] = {
         "<verb>') and share ≥30 chars of that statement. Catches the "
         "structural loop shape PreambleLoopHook's 100-char floor misses."
     ),
+    "teaser_loop": (
+        "Model has repeated teaser shapes ('Let me check…', 'Let's "
+        "verify…') after tools already succeeded this turn. Routes "
+        "via the soft loop fallback so the user sees the tools that "
+        "landed instead of the generic 'didn't land cleanly' message."
+    ),
     "preamble_loop": (
         "Current reply shares a long opening prefix with the last "
         "discarded draft this turn; widening the token budget would "
@@ -5871,6 +5945,13 @@ def default_hook_pipeline(
         IntentRestatementLoopHook(),
         TruncatedHook(),
         UnparseableHook(),
+        # teaser_loop (harness-h5h1): runs BEFORE TeaserHook so a
+        # repeated-teaser-after-tools shape routes through the soft
+        # loop fallback path on exhaust. First-match semantics mean a
+        # first-occurrence teaser still falls through to TeaserHook;
+        # only the 2nd+ teaser with tools_ran_this_turn=True gets
+        # rerouted.
+        TeaserLoopHook(),
         TeaserHook(),
         FalseSuccessHook(),
         # plan_progress (harness-zcxw): catches the 'mid-plan trail-off'
@@ -6344,6 +6425,7 @@ __all__ = [
     "SourceCountInflationHook",
     "TableFabricationHook",
     "TeaserHook",
+    "TeaserLoopHook",
     "ToolIntentHook",
     "ToolResultSummarizerHook",
     "Truncated",
