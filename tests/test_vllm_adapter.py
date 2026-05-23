@@ -1146,6 +1146,186 @@ def test_qwen_parse_recognizes_tools_wrapper_form() -> None:
 # ---------- guard against accidental re-imports --------------------------
 
 
+# ---------- tool-bail diagnostic logging ---------------------------------
+
+
+def test_vllm_logs_tool_bail_when_prose_only_reply_with_tools_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """harness-p4ht: when the model emits prose-only content after a tool
+    result (no JSON, no tag wrapper), the orchestrator silently ends the
+    turn — there's no signal to debug from. Wire `_log_tool_bail` so the
+    adapter writes a JSONL row with raw_tail + tag flags whenever tools
+    were sent but no call was parsed."""
+    captured: list[tuple[str, str]] = []
+
+    def fake_log(raw: str, parsed_content: str) -> None:
+        captured.append((raw, parsed_content))
+
+    monkeypatch.setattr("harness.model.vllm._log_tool_bail", fake_log)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "It seems we should pass the path as arguments.",
+                            "tool_calls": [],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        reply = adapter.complete_with_tools(
+            [ChatMessage(role="user", content="grep keydown")],
+            tools=[_weather_spec()],
+        )
+
+    assert reply.tool_calls == ()
+    assert len(captured) == 1
+    raw, parsed = captured[0]
+    assert "as arguments" in raw
+    assert parsed == "It seems we should pass the path as arguments."
+
+
+def test_vllm_does_not_log_tool_bail_when_no_tools_in_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plain chat reply that contains no tool call must NOT trip the
+    bail diagnostic — `tool_bail.jsonl` is specifically for the
+    'tools-offered-but-not-called' failure mode."""
+    captured: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "harness.model.vllm._log_tool_bail",
+        lambda r, p: captured.append((r, p)),
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "Hello world.",
+                            "tool_calls": [],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        adapter.complete_with_tools(
+            [ChatMessage(role="user", content="hi")],
+            tools=None,
+        )
+
+    assert captured == []
+
+
+def test_vllm_does_not_log_tool_bail_when_call_was_parsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the fallback ladder DOES recover a tool call from bare JSON,
+    the bail diagnostic must stay silent — this isn't a bail."""
+    captured: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "harness.model.vllm._log_tool_bail",
+        lambda r, p: captured.append((r, p)),
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"name": "list_dir", "arguments": {}}',
+                            "tool_calls": [],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        reply = adapter.complete_with_tools(
+            [ChatMessage(role="user", content="ls")],
+            tools=[_weather_spec()],
+        )
+
+    assert reply.tool_calls == (ToolCall(name="list_dir", arguments={}),)
+    assert captured == []
+
+
+def test_vllm_stream_logs_tool_bail_when_prose_only_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Streamed variant of the bail diagnostic — the drive loop uses
+    stream_with_tools, so the bail path must fire there too."""
+    captured: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "harness.model.vllm._log_tool_bail",
+        lambda r, p: captured.append((r, p)),
+    )
+
+    frames: list[dict[str, Any] | str] = [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "Let's grep"},
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": " the game.js file."},
+                    "finish_reason": "stop",
+                }
+            ]
+        },
+        "[DONE]",
+    ]
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(frames)
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        chunks = list(
+            adapter.stream_with_tools(
+                [ChatMessage(role="user", content="find keydown listeners")],
+                tools=[_weather_spec()],
+            )
+        )
+
+    complete = chunks[-1]
+    assert isinstance(complete, StreamComplete)
+    assert complete.reply.tool_calls == ()
+    assert len(captured) == 1
+    raw, _ = captured[0]
+    assert "game.js" in raw
+
+
 def test_vllm_adapter_does_not_import_vllm_sdk() -> None:
     """Adapter-boundary check: this module must talk to vLLM over HTTP
     only. Importing the `vllm` Python SDK would pull CUDA wheels onto

@@ -25,7 +25,7 @@ from typing import Any
 import httpx
 
 from harness.model.adapter import ChatMessage, approx_token_count
-from harness.model.qwen_parse import _parse_qwen_tool_calls, _TagMasker
+from harness.model.qwen_parse import _log_tool_bail, _parse_qwen_tool_calls, _TagMasker
 from harness.tools.base import (
     ModelReply,
     StreamChunk,
@@ -347,6 +347,7 @@ class VllmAdapter:
         # `{"name":…,"arguments":…}`. Order matters — tagged form is
         # the strict signal, bare form is permissive and only kicks
         # in when the strict path returned nothing.
+        raw_for_bail = content
         if tools and not parsed and content:
             stripped, fallback_calls = _parse_qwen_tool_calls(content)
             if fallback_calls:
@@ -357,6 +358,8 @@ class VllmAdapter:
                 if fallback_calls:
                     content = stripped
                     parsed = fallback_calls
+        if tools and not parsed and raw_for_bail.strip():
+            _log_tool_bail(raw_for_bail, content)
         return ModelReply(
             content=content,
             tool_calls=tuple(parsed),
@@ -466,6 +469,7 @@ class VllmAdapter:
                 parsed.append(ToolCall(name=name, arguments=args))
 
         full_content = "".join(raw_parts)
+        raw_for_bail = full_content
         # Same fallback ladder as complete_with_tools: tagged form
         # first (strict), then bare-JSON (permissive, only when tools
         # were sent). Keeps the orchestrator's tool path working
@@ -482,6 +486,8 @@ class VllmAdapter:
                 if fallback_calls:
                     full_content = stripped
                     parsed = fallback_calls
+        if tools and not parsed and raw_for_bail.strip():
+            _log_tool_bail(raw_for_bail, full_content)
 
         # If we suppressed StreamText because content started with `{`
         # but the bare-JSON didn't actually parse as a tool call (e.g.
