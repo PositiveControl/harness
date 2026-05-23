@@ -29,6 +29,11 @@ export-state.json
 # push/pull`. Follow-up: set up a Dolt remote so this works.
 issues.jsonl
 
+# Interaction log — same shape as issues.jsonl: derived state, bd
+# auto-rewrites on every operation including read-only ones, which
+# trips pre-commit's "files modified by hook" guard.
+interactions.jsonl
+
 # Ephemeral store (SQLite - wisps/molecules, intentionally not versioned)
 ephemeral.sqlite3
 ephemeral.sqlite3-journal
