@@ -68,7 +68,6 @@ from harness.driver.claim_detector import detect_claim_signal
 from harness.driver.handoff import Handoff, build_handoff
 from harness.driver.planner import PlanDraft, PlannerError, VerifyStep
 from harness.driver.state import LoopRunState
-from harness.driver.system_prompt import EXECUTOR_SYSTEM_PROMPT
 from harness.driver.workspace_verify import default_workspace_verify_steps
 from harness.model.adapter import ChatMessage, ModelAdapter
 from harness.orchestrator import ToolLoopEvent, ToolLoopResult, run_tool_loop
@@ -683,14 +682,12 @@ def _run_executor_turn(
     (harness-9bpt). The caller is responsible for writing to a log
     file / stderr; this function is just the seam."""
     registry = _build_executor_registry(workspace)
-    # harness-d6ak: drive turns use the tool-engineer system prompt,
-    # not the character persona. The persona's style rules ("prose
-    # by default", "1-4 sentences", "say 'Don't know' plainly")
-    # primed the model to narrate rather than call tools on drive
-    # runs ed58231d / 8eedfd02 / bbd29017. `character` is kept in
-    # this function's signature for callers that still pass it.
-    _ = character  # intentionally not consumed for the system prompt
-    system_prompt = f"{EXECUTOR_SYSTEM_PROMPT}\n\n{handoff.render()}"
+    # `include_samples=()` strips the voice few-shot block. Identity +
+    # values + style rules from `core.yaml` survive — the executor still
+    # benefits from "say 'Don't know' plainly" and friends, but isn't
+    # padded with examples it doesn't need.
+    base_prompt = character.system_prompt(include_samples=())
+    system_prompt = f"{base_prompt}\n\n{handoff.render()}"
     messages = [
         ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content=EXECUTOR_USER_MESSAGE),

@@ -41,7 +41,6 @@ from harness.character import Character
 from harness.driver.bd import DriverBd, DriverBdError
 from harness.driver.handoff import Handoff
 from harness.driver.planner import VerifyStep
-from harness.driver.system_prompt import EXECUTOR_SYSTEM_PROMPT
 from harness.driver.turn_fsm import (
     DEFAULT_PHASE_BUDGETS,
     PhaseOutcome,
@@ -347,15 +346,8 @@ def _run_one_phase(
     Returns the bare result; caller maps it to a PhaseOutcome."""
     from harness.driver.loop import _build_driver_hook_pipeline
 
-    # harness-d6ak: drive turns use a tool-engineer prompt, not the
-    # character persona. `character.system_prompt()` is for chat /
-    # voice eval — its style rules ("prose by default", "1-4
-    # sentences", "say 'Don't know' plainly") primed the model to
-    # narrate rather than call tools on drive runs (ed58231d /
-    # 8eedfd02 / bbd29017). The `character` parameter is preserved
-    # in this function's signature for memory scoping + future use.
-    _ = character  # intentionally not consumed for the system prompt
-    system_prompt = f"{EXECUTOR_SYSTEM_PROMPT}\n\n{handoff.render()}\n\n{phase_instructions(phase)}"
+    base_prompt = character.system_prompt(include_samples=())
+    system_prompt = f"{base_prompt}\n\n{handoff.render()}\n\n{phase_instructions(phase)}"
     messages = [
         ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content=user_prompt),
