@@ -7,9 +7,9 @@
 #   ./harness_chat_gx10.sh --tui          # TUI mode
 #
 # Config (env vars):
-#   GX10_HOST        hostname or IP of the GX10 (default: gx10)
-#                    typically a Tailscale MagicDNS name like "gx10.tail-xxxx.ts.net"
+#   GX10_HOST        hostname or IP of the GX10 (default: gx10-5fb9)
 #   GX10_PORT        vLLM port on the GX10 (default: 8000)
+#   GX10_USER        SSH user for the help-text suggestions (default: ucollect)
 #   GX10_HEALTH_TIMEOUT  seconds to wait for /v1/models (default: 5)
 #
 # The script:
@@ -21,8 +21,9 @@
 #      conflicting flags — they take precedence.
 set -euo pipefail
 
-HOST="${GX10_HOST:-gx10}"
+HOST="${GX10_HOST:-gx10-5fb9}"
 PORT="${GX10_PORT:-8000}"
+USER_NAME="${GX10_USER:-ucollect}"
 HEALTH_TIMEOUT="${GX10_HEALTH_TIMEOUT:-5}"
 BASE_URL="http://${HOST}:${PORT}/v1"
 
@@ -33,9 +34,9 @@ if ! resp=$(curl -sf --max-time "$HEALTH_TIMEOUT" "${BASE_URL}/models" 2>&1); th
 ==> vLLM not reachable at ${BASE_URL}
 
 possible fixes:
-  - is the GX10 up + on Tailscale?    ping ${HOST}
-  - is vLLM running on the GX10?      ssh ${HOST} '~/vllm-scripts/vllm_swap.sh status'
-  - want to start it?                 ssh ${HOST} '~/vllm-scripts/vllm_swap.sh 30b'
+  - is the GX10 up?                   ping ${HOST}
+  - is vLLM running on the GX10?      ssh ${USER_NAME}@${HOST} '~/vllm-scripts/vllm_swap.sh status'
+  - want to start it?                 ssh ${USER_NAME}@${HOST} '~/vllm-scripts/vllm_swap.sh 30b'
   - or point elsewhere:               GX10_HOST=otherhost $0
 
 curl error:
