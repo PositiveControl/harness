@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -49,9 +50,11 @@ class GrepTool:
                 "Search file contents in the workspace for a regex "
                 "pattern. Returns matching lines formatted as "
                 "`PATH:LINE:TEXT`, capped at 100 hits by default. "
-                "Restrict which files are searched with `glob` (e.g. "
-                "'src/**/*.py'). Noise dirs are skipped. Pattern is a "
-                "Python regex; escape literals as needed."
+                "`path` may be a directory (walked recursively, noise "
+                "dirs skipped) OR a single file. Restrict which files "
+                "are searched with `glob` (e.g. 'src/**/*.py') when "
+                "walking a directory. Pattern is a Python regex; "
+                "escape literals as needed."
             ),
             parameters={
                 "type": "object",
@@ -63,8 +66,8 @@ class GrepTool:
                     "path": {
                         "type": "string",
                         "description": (
-                            "Directory (relative to workspace root) to search "
-                            "in. Default is the workspace root."
+                            "Directory OR single file (relative to workspace "
+                            "root) to search. Default is the workspace root."
                         ),
                     },
                     "glob": {
@@ -114,20 +117,32 @@ class GrepTool:
             raise ValueError(f"path {path!r} escapes workspace root") from exc
         if not target.exists():
             raise FileNotFoundError(f"{path} not found")
-        if not target.is_dir():
-            raise NotADirectoryError(f"{path} is not a directory")
 
         cap = max_results if max_results is not None else self.default_max_results
         hits: list[str] = []
         truncated = False
 
-        iterator = target.rglob(glob) if glob else target.rglob("*")
+        # harness-373e: when `path` resolves to a single file, grep just
+        # that file. Matches the Unix `grep` and `ripgrep` convention
+        # the model naturally reaches for. Previously raised
+        # NotADirectoryError, which dropped the model into a dedup loop
+        # because the same call kept failing the same way.
+        single_file_mode = target.is_file()
+        if single_file_mode:
+            iterator: Iterable[Path] = (target,)
+        else:
+            iterator = target.rglob(glob) if glob else target.rglob("*")
         for p in iterator:
             if not p.is_file():
                 continue
-            rel_parts = p.relative_to(root).parts
-            if any(part in self.skip_dirs for part in rel_parts):
-                continue
+            # skip_dirs filters the recursive walk; an explicit
+            # single-file pick from the model is honored even if it
+            # lives under a normally-skipped path (the model intent is
+            # clear).
+            if not single_file_mode:
+                rel_parts = p.relative_to(root).parts
+                if any(part in self.skip_dirs for part in rel_parts):
+                    continue
             try:
                 size = p.stat().st_size
             except OSError:

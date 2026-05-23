@@ -82,3 +82,46 @@ def test_skips_binary_large_files(tmp_path: Path) -> None:
 
 def test_spec_is_read_tier(tmp_path: Path) -> None:
     assert GrepTool(root=tmp_path).spec.tier == "read"
+
+
+def test_grep_accepts_single_file_path(tmp_path: Path) -> None:
+    """harness-373e: when `path` resolves to a file, grep that single
+    file instead of raising NotADirectoryError. Models routinely reach
+    for the Unix-grep / ripgrep pattern of `grep PATTERN file.js` —
+    the prior behavior dropped them into a DuplicateCallHook dedup
+    loop on every drive run."""
+    _populate(tmp_path)
+    out = GrepTool(root=tmp_path).call(pattern="hello", path="src/a.py")
+    # Hit only inside the target file.
+    assert "src/a.py:2:print('hello')" in out
+    # Files outside the target aren't searched.
+    assert "README.md" not in out
+    assert "src/b.py" not in out
+
+
+def test_grep_single_file_path_respects_skip_dirs(tmp_path: Path) -> None:
+    """A model that explicitly names a file inside a skip-dir is being
+    intentional — the skip list is for recursive walks, not explicit
+    targets. Confirm we honor the explicit pick over the skip filter."""
+    _populate(tmp_path)
+    # `.git/hooks.py` exists in _populate; it's normally skipped by
+    # the recursive walk, but explicit targeting should still work.
+    out = GrepTool(root=tmp_path).call(pattern="hello", path=".git/hooks.py")
+    assert ".git/hooks.py:1:hello from git" in out
+
+
+def test_grep_file_path_with_no_matches(tmp_path: Path) -> None:
+    """A single-file grep with no hits returns the same '(no matches…)'
+    sentinel as a directory walk."""
+    _populate(tmp_path)
+    out = GrepTool(root=tmp_path).call(pattern="nonexistent", path="src/a.py")
+    assert "no matches" in out
+
+
+def test_grep_missing_path_still_raises(tmp_path: Path) -> None:
+    """The single-file-path support doesn't loosen the missing-path
+    check — the old contract holds for typoed targets so the model
+    sees a clear error instead of an empty-result silent-pass."""
+    _populate(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        GrepTool(root=tmp_path).call(pattern="x", path="src/missing.py")
