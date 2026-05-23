@@ -20,6 +20,7 @@ Hooks dispatch in the order shown within each phase — first-match semantics, s
 | `unparseable` | Reply had a malformed <tool_call> block. |
 | `teaser` | Reply announced more work but emitted no tool call. |
 | `false_success` | Reply claims a file edit without a write-tier tool call. |
+| `plan_progress` | Earlier this turn the model laid out a numbered plan ≥2 steps; the current reply has no tool_calls and prior tool results cover fewer steps than the plan. Nudges the model to call the next tool instead of trailing off mid-plan. |
 | `empty_reply_after_tools` | Reply is empty AND tools succeeded earlier this turn — regex-shape catchers can't see empty content. Forces the model to either continue tooling or synthesize instead of exiting silently with the '[tool loop exhausted]' sentinel. |
 | `post_dup_completion_claim` | Last tool result was a duplicate_call dedup AND the reply claims task completion with an itemized list — the model is paraphrasing 'no progress' as 'done'. Forces read_file verification before completion summaries. |
 | `meta_confirm` | Reply asks user to confirm in chat instead of calling the tool. |

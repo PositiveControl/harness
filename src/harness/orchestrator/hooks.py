@@ -5491,6 +5491,12 @@ HOOK_SHAPES: dict[str, str] = {
     "unparseable": "Reply had a malformed <tool_call> block.",
     "teaser": "Reply announced more work but emitted no tool call.",
     "false_success": "Reply claims a file edit without a write-tier tool call.",
+    "plan_progress": (
+        "Earlier this turn the model laid out a numbered plan ≥2 "
+        "steps; the current reply has no tool_calls and prior tool "
+        "results cover fewer steps than the plan. Nudges the model "
+        "to call the next tool instead of trailing off mid-plan."
+    ),
     "meta_confirm": "Reply asks user to confirm in chat instead of calling the tool.",
     "raw_results_dump": (
         "Reply repeats tool output verbatim instead of synthesizing as the prompt asked."
