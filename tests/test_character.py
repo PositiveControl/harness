@@ -182,6 +182,47 @@ def test_system_prompt_omits_date_when_not_supplied() -> None:
     assert "Today:" not in prompt
 
 
+def test_system_prompt_include_style_rules_default_true() -> None:
+    """Default behavior: style rules + voice examples are present. The
+    chat / voice eval paths rely on this — they want the persona to
+    sound consistent across turns."""
+    character = load_character(AIRTON)
+    prompt = character.system_prompt()
+    # Style rules
+    assert "Prose by default" in prompt
+    assert "1-4 sentences" in prompt
+    assert "Don't know" in prompt
+    # Voice examples header
+    assert "Voice examples" in prompt
+
+
+def test_system_prompt_include_style_rules_false_strips_chat_register() -> None:
+    """harness-d6ak: drive executor passes include_style_rules=False
+    so the chat-shaped style rules + voice examples don't bias the
+    model toward narration in an agent context. Identity, values,
+    taboos, directives, constitution — all preserved as the model's
+    generative anchor; only the chat register is gone."""
+    character = load_character(AIRTON)
+    prompt = character.system_prompt(include_style_rules=False)
+    # Style rules gone
+    assert "Prose by default" not in prompt
+    assert "1-4 sentences" not in prompt
+    assert '"Don\'t know"' not in prompt
+    assert "How you speak" not in prompt
+    # Voice examples gone too (they prime the same register the style
+    # rules described — keeping them without the rules would leak the
+    # same chat-shaped bias into drive turns).
+    assert "Voice examples" not in prompt
+    # Identity preserved — the model still has an anchor.
+    assert f"You are {character.name}" in prompt
+    assert character.premise in prompt
+    # Values / taboos / directives preserved — agent still needs to
+    # respect the character's hard constraints.
+    assert "Values (always defended):" in prompt
+    assert "Taboos (always refused):" in prompt
+    assert "Directives:" in prompt
+
+
 def test_require_search_memory_defaults_to_false() -> None:
     """harness-3uh: the forced-search-memory flag is opt-in. Every
     character without it set in core.yaml should report False so

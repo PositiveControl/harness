@@ -91,7 +91,19 @@ echo "    gpu_util: $GPU_UTIL"
 #    a sensible default that leaves KV-cache headroom)
 #  - added --enable-prefix-caching (big win for the harness's repeated
 #    system prompt + retrieval blocks across turns)
-#  - kept --enable-auto-tool-choice + --tool-call-parser hermes
+#  - SWAPPED --tool-call-parser hermes -> qwen3_xml (harness-yez7).
+#    Diagnostic scripts/vllm_diagnose_tools.py against this endpoint
+#    showed Qwen3-Coder emits tool calls in the XML format:
+#      <tool_call>
+#      <function=NAME>
+#      <parameter=KEY>VAL</parameter>
+#      </function>
+#      </tool_call>
+#    The hermes parser only understands Hermes JSON shape and returned
+#    tool_calls=[] with the XML in `content`. qwen3_xml is the parser
+#    vLLM 0.21 added for the Qwen3-Coder release; matches this format
+#    natively. tool_choice='required' guided-decoding still worked with
+#    hermes but auto-mode (the harness's actual code path) was broken.
 docker run -d \
   --name "$CONTAINER" \
   --restart unless-stopped \
@@ -105,7 +117,7 @@ docker run -d \
   --max-model-len "$MAX_LEN" \
   --gpu-memory-utilization "$GPU_UTIL" \
   --enable-auto-tool-choice \
-  --tool-call-parser hermes \
+  --tool-call-parser qwen3_xml \
   --enable-prefix-caching \
   >/dev/null
 

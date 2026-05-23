@@ -311,6 +311,7 @@ class Character:
         exclude_example_ids: frozenset[str] | None = None,
         include_samples: Sequence[VoiceSample] | None = None,
         now: date | None = None,
+        include_style_rules: bool = True,
     ) -> str:
         """Fallback system prompt for single-model ReAct and voice evals.
         Richer pipelines (multi-agent roles + critic) compose their own.
@@ -323,7 +324,14 @@ class Character:
         - `exclude_example_ids`: use all voice samples except those with
           matching ids. The voice eval uses this for leave-one-out.
 
-        If neither is given, all voice samples are shown."""
+        If neither is given, all voice samples are shown.
+
+        `include_style_rules` (harness-d6ak): when False, drops the "How
+        you speak" block — "Prose by default", "1-4 sentences", "say
+        'Don't know' plainly", etc. — that's tuned for chat and biases
+        agent contexts toward narration rather than tool calls. The
+        drive executor sets False; chat / voice eval leave it True.
+        """
         excluded = exclude_example_ids or frozenset()
         values = "\n".join(f"  - {v.rule}" for v in self.values)
         taboos = "\n".join(f"  - {t}" for t in self.taboos)
@@ -331,24 +339,28 @@ class Character:
         deep = ", ".join(self.deep_domains)
         shallow = ", ".join(self.shallow_domains)
 
-        style_rules = textwrap.dedent(
-            """\
-            How you speak:
-              - Prose by default, not bullets. Use a short list only for
-                two or three concrete alternatives.
-              - 1-4 sentences is the usual length. A single paragraph
-                is often enough.
-              - When you see multiple correct paths, offer them as
-                (a)/(b) or two dashes - never numbered steps.
-              - When you don't know, say "Don't know" plainly, then
-                list the paths you'd try.
-              - No generic filler: do not open with "That's a solid
-                approach", "Here are a few tips", "Would you like to
-                discuss", or "I cannot comply". State the point.
-              - If you refuse, give the concrete reason and the right
-                alternative in the same breath.
-              - First person, "I". Never hide that you are software;
-                when asked, say so directly."""
+        style_rules = (
+            textwrap.dedent(
+                """\
+                How you speak:
+                  - Prose by default, not bullets. Use a short list only for
+                    two or three concrete alternatives.
+                  - 1-4 sentences is the usual length. A single paragraph
+                    is often enough.
+                  - When you see multiple correct paths, offer them as
+                    (a)/(b) or two dashes - never numbered steps.
+                  - When you don't know, say "Don't know" plainly, then
+                    list the paths you'd try.
+                  - No generic filler: do not open with "That's a solid
+                    approach", "Here are a few tips", "Would you like to
+                    discuss", or "I cannot comply". State the point.
+                  - If you refuse, give the concrete reason and the right
+                    alternative in the same breath.
+                  - First person, "I". Never hide that you are software;
+                    when asked, say so directly."""
+            )
+            if include_style_rules
+            else ""
         )
 
         if include_samples is not None:
@@ -375,6 +387,22 @@ class Character:
         if now is not None:
             date_block = f"Today: {now.isoformat()} ({now.strftime('%A')}).\n\n"
 
+        # When style rules are stripped, also drop the trailing voice
+        # examples — they prime the same chat-shaped register the style
+        # rules described. The drive executor doesn't need to match a
+        # voice; it needs to make tool calls.
+        examples_section = (
+            (
+                "Voice examples - this is how you talk. "
+                "Match this register, not a generic assistant's:\n\n"
+                f"{examples_block}"
+            )
+            if include_style_rules
+            else ""
+        )
+
+        style_block = f"{style_rules}\n\n" if include_style_rules else ""
+
         return (
             f"{date_block}"
             f"You are {self.name}. Pronoun: {self.pronouns}. "
@@ -389,10 +417,8 @@ class Character:
             f"On being wrong:\n{self.on_being_wrong}\n\n"
             f"Constitution:\n{self.constitution}\n\n"
             f"{thought_block}"
-            f"{style_rules}\n\n"
-            "Voice examples - this is how you talk. "
-            "Match this register, not a generic assistant's:\n\n"
-            f"{examples_block}"
+            f"{style_block}"
+            f"{examples_section}"
         )
 
 

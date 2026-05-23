@@ -346,7 +346,16 @@ def _run_one_phase(
     Returns the bare result; caller maps it to a PhaseOutcome."""
     from harness.driver.loop import _build_driver_hook_pipeline
 
-    base_prompt = character.system_prompt(include_samples=())
+    # harness-d6ak (smaller surgery): keep the character's identity +
+    # values + directives so the model still has a generative anchor,
+    # but drop the chat-shaped "How you speak" style rules ("prose by
+    # default", "1-4 sentences", "say 'Don't know' plainly") and the
+    # voice examples. Those bias the model toward narration; the
+    # drive needs tool calls. Full d6ak revert (cdd2fd9) kept the
+    # style rules because removing the entire prompt made the model
+    # go silent — this narrower carve-out targets only the rules
+    # that conflict with the agent role.
+    base_prompt = character.system_prompt(include_samples=(), include_style_rules=False)
     system_prompt = f"{base_prompt}\n\n{handoff.render()}\n\n{phase_instructions(phase)}"
     messages = [
         ChatMessage(role="system", content=system_prompt),

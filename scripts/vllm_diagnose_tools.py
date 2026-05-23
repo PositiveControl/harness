@@ -258,6 +258,96 @@ def probe_tools_auto(url: str, model: str) -> None:
     print(f"  VERDICT: {_verdict_for(response)}")
 
 
+def probe_tools_with_heavy_prompt(url: str, model: str) -> None:
+    """Probe 5 (harness-d6ak followup): chat completion + tools +
+    a HEAVY system prompt stack mirroring the drive loop's actual
+    prompt shape.
+
+    Drives ed58231d / 8eedfd02 / bbd29017 showed the model emitting
+    prose preamble with NO tool-call shape, but a minimal-prompt
+    probe (probe 3 above) showed the same model emitting valid XML
+    tool calls. This probe layers in the kind of bulky system
+    content the drive sends — a persona-shaped block + a tool-use
+    rules block — to confirm prompt overload tips the model toward
+    narration. If THIS probe also returns ⚠ tool-call-shape, the
+    parser-only fix (harness-yez7) is enough; if it falls back to
+    prose, the system-prompt overload is the secondary bug
+    (harness-d6ak)."""
+    _print_section("PROBE 5: chat completion + tools + heavy system stack")
+    body = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Tool-use rules. (1) When the user's request contains a "
+                    "synthesis verb (rank, prioritize, compare, summarize, "
+                    "group, score, categorize, order, sort, filter), do not "
+                    "terminate after the data-gathering tool call. The tool "
+                    "result is input, not output — continue the turn and "
+                    "produce the requested synthesis. (2) When the user's "
+                    "request contains multiple distinct asks, each sub-ask "
+                    "gets its own tool budget. (3) Plan-then-execute: when "
+                    "asked for multi-step work, open with a short numbered "
+                    "plan of the concrete tool-call steps, then walk it."
+                ),
+            },
+            {
+                "role": "system",
+                "content": (
+                    "You are airton. Pronoun: he/him. Era: present day.\n\n"
+                    "Premise: you are a software engineer doing real work for "
+                    "Mark.\n\n"
+                    "Self-awareness: you are software. Never hide that.\n\n"
+                    "Values: be specific. Cite sources. Refuse to pad.\n\n"
+                    "Directives: produce concrete output. Use tools when "
+                    "available. Do not invent acceptance criteria.\n\n"
+                    "Constitution: a one-page document the user wrote about "
+                    "who you are and what you do not do.\n\n"
+                    "How you speak:\n"
+                    "  - Prose by default, not bullets.\n"
+                    "  - 1-4 sentences is the usual length.\n"
+                    "  - When you don't know, say \"Don't know\" plainly.\n\n"
+                    "Session handoff:\n"
+                    "  bd-id: harness-90j0\n"
+                    "  title: §1 Project shape — index.html + game.js skeleton\n"
+                    "  description: Create index.html that references game.js. "
+                    "Skeleton only. Defer real game logic to §2-§15.\n"
+                    "  acceptance: index.html exists with a <canvas> tag and "
+                    "loads game.js via <script>. game.js exists with a "
+                    "requestAnimationFrame loop stub.\n\n"
+                    "Phase instructions (ASSESS):\n"
+                    "Read the file(s) referenced in the session handoff, "
+                    "then call submit_assessment with current_state, gap, "
+                    "and approach."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Drive the bd issue described in the session handoff to "
+                    "closure. Run `bd close <issue-id>` via shell when the "
+                    "acceptance criteria are met. Do not invent acceptance "
+                    "criteria the issue doesn't list."
+                ),
+            },
+        ],
+        "tools": [_LIST_DIR_TOOL],
+        "tool_choice": "auto",
+        "temperature": 0.5,
+        "max_tokens": 256,
+    }
+    _print_body("request", body)
+    try:
+        response = _post_json(f"{url}/chat/completions", body)
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace")
+        print(f"  ✗ HTTP {exc.code}: {body_text[:400]}")
+        return
+    _print_body("response", response)
+    print(f"  VERDICT: {_verdict_for(response)}")
+
+
 def probe_tools_required(url: str, model: str) -> None:
     """Probe 4: chat completion WITH tools, tool_choice='required'.
 
@@ -327,6 +417,7 @@ def main(argv: list[str]) -> int:
     probe_no_tools(url, model)
     probe_tools_auto(url, model)
     probe_tools_required(url, model)
+    probe_tools_with_heavy_prompt(url, model)
 
     print()
     print("=" * 72)

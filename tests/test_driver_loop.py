@@ -165,7 +165,12 @@ class _ScenarioBd:
 class _FakeCharacter:
     """Minimum surface build_loop needs from a Character: system_prompt."""
 
-    def system_prompt(self, *, include_samples: Sequence[Any] = ()) -> str:
+    def system_prompt(
+        self,
+        *,
+        include_samples: Sequence[Any] = (),
+        include_style_rules: bool = True,
+    ) -> str:
         return "you are an executor."
 
 

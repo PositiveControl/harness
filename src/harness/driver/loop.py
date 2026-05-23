@@ -682,11 +682,16 @@ def _run_executor_turn(
     (harness-9bpt). The caller is responsible for writing to a log
     file / stderr; this function is just the seam."""
     registry = _build_executor_registry(workspace)
-    # `include_samples=()` strips the voice few-shot block. Identity +
-    # values + style rules from `core.yaml` survive — the executor still
-    # benefits from "say 'Don't know' plainly" and friends, but isn't
-    # padded with examples it doesn't need.
-    base_prompt = character.system_prompt(include_samples=())
+    # harness-d6ak (smaller surgery): include_style_rules=False strips
+    # the chat-shaped "How you speak" block AND the voice few-shot.
+    # Identity + values + directives + thought-graph survive — the
+    # model still has a generative anchor and knows its taboos, but
+    # the prose-by-default / 1-4-sentences / 'Don't know plainly'
+    # rules that bias toward narration are gone. Full d6ak revert
+    # (cdd2fd9) kept these; turned out the persona-prompt removal
+    # was too aggressive — model went silent. This carve-out keeps
+    # the anchor and drops only the conflicting style guidance.
+    base_prompt = character.system_prompt(include_samples=(), include_style_rules=False)
     system_prompt = f"{base_prompt}\n\n{handoff.render()}"
     messages = [
         ChatMessage(role="system", content=system_prompt),
