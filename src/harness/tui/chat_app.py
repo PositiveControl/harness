@@ -512,6 +512,8 @@ class ChatApp(App[None]):
         startup_warnings: tuple[str, ...] = (),
         retrieval_health: _RetrievalHealth | None = None,
         compaction_store: CompactionStore | None = None,
+        compact_at: float = 0.0,
+        compact_keep_recent: int = 10,
         scribe_lock_dir: Path | None = None,
         scribe_user_id: str | None = None,
         auto_scribe: bool = True,
@@ -549,6 +551,14 @@ class ChatApp(App[None]):
         # memory + semantic stores already held above; /edit uses the
         # transcript alone.
         self._compaction_store = compaction_store
+        # Auto-compaction (harness-jq99). Mirrors the classic REPL's
+        # ctx_meter.maybe_compact hook in cli_classic.py:1106. The TUI
+        # historically only fired compaction via the /compact slash
+        # command, so a long session would grow past the model's
+        # context window and crash. Now `_maybe_auto_compact` runs at
+        # the top of every worker turn when compact_at > 0.
+        self._compact_at = compact_at
+        self._compact_keep_recent = compact_keep_recent
         self._scribe_lock_dir = scribe_lock_dir
         self._scribe_user_id = scribe_user_id
         # When True, /compact first scribes unprocessed turns into
@@ -1042,6 +1052,141 @@ class ChatApp(App[None]):
 
     # ---------- worker (thread; no UI access except call_from_thread) ----------
 
+    def _maybe_auto_compact(self) -> None:
+        """Worker-thread. harness-jq99: pre-turn compaction trigger.
+        Mirrors `cli_repl.CtxMeter.maybe_compact` (called from
+        `cli_classic.py:1106`) so the TUI shares the classic REPL's
+        budget-guard behavior.
+
+        No-op when:
+          - compaction is unconfigured (`_compaction_store is None`),
+          - the threshold is disabled (`compact_at <= 0`),
+          - the running history doesn't push us over the threshold.
+
+        When the threshold trips: optional auto-scribe runs first
+        (best-effort; failure is non-fatal), then `run_compaction`
+        folds everything between the prior pointer and the last
+        `compact_keep_recent` turns into a session summary. On
+        success the in-memory `_state.history` is rebuilt from the
+        new compaction pointer so the next turn's prompt stays under
+        budget — without this the next adapter call would still send
+        the un-compacted history that's already in memory."""
+        from harness.compaction import run_compaction, should_compact
+        from harness.model.adapter import count_tokens
+        from harness.scribe import run_scribe
+
+        if self._compaction_store is None or self._compact_at <= 0.0:
+            return
+
+        # Probe against the message list the next turn would send —
+        # system prompt baseline (without retrieval blocks, which add
+        # per-turn variance) plus the current running history. This
+        # tracks transcript growth the way the REPL's measure() does.
+        baseline_system = ChatMessage(
+            role="system",
+            content=self._character.system_prompt(now=date.today()),
+        )
+        probe = [baseline_system, *self._state.history]
+        used = count_tokens(self._adapter, probe)
+        if not should_compact(
+            used_tokens=used,
+            context_window=self._adapter.context_window,
+            threshold_pct=self._compact_at,
+        ):
+            return
+
+        def render_notice(text: str, *, warn: bool = False) -> None:
+            log = self.query_one("#output", RichLog)
+            log.write(Text(text, style="yellow" if warn else "dim"))
+
+        threshold_pct = int(self._compact_at * 100)
+        self.call_from_thread(
+            render_notice,
+            f"compacting history (ctx {used / 1000:.1f}k, threshold {threshold_pct}%)…",
+        )
+
+        # Best-effort auto-scribe so salient facts land in memory
+        # before the summarizer folds them. Mirrors cli_repl:214-241.
+        if (
+            self._auto_scribe
+            and self._memory_store is not None
+            and self._semantic_store is not None
+        ):
+            try:
+                scribe_summary = run_scribe(
+                    self._adapter,
+                    self._character,
+                    self._transcript,
+                    self._memory_store,
+                    self._semantic_store,
+                    session_id=self._session,
+                    user_id=self._scribe_user_id or self._speaker,
+                    lock_dir=self._scribe_lock_dir,
+                )
+            except Exception as exc:
+                self.call_from_thread(
+                    render_notice,
+                    f"auto-scribe failed ({type(exc).__name__}: {exc}) — compacting anyway",
+                    warn=True,
+                )
+            else:
+                if scribe_summary.turns_processed > 0:
+                    self.call_from_thread(
+                        render_notice,
+                        f"auto-scribed {scribe_summary.turns_processed} turn(s) → "
+                        f"{scribe_summary.episodic_written} episodic, "
+                        f"{scribe_summary.semantic_written} semantic",
+                    )
+
+        try:
+            outcome = run_compaction(
+                self._adapter,
+                self._transcript,
+                self._compaction_store,
+                session_id=self._session,
+                keep_recent=self._compact_keep_recent,
+            )
+        except Exception as exc:
+            # Non-fatal: the turn will proceed with the un-compacted
+            # history and almost certainly crash on context length,
+            # but at least the error surfaces in the log instead of
+            # nuking the worker silently.
+            self.call_from_thread(
+                render_notice,
+                f"compaction failed: {type(exc).__name__}: {exc}",
+                warn=True,
+            )
+            return
+
+        if not outcome.wrote:
+            return
+
+        # Rebuild the in-memory history from the new compaction
+        # pointer, prepending the summary as a system message — the
+        # REPL gets this for free because `chat_session.run_turn`
+        # rebuilds history from transcript every iteration, but the
+        # TUI carries it in `_state.history` across turns. Without
+        # this refresh the next turn would still send the old
+        # uncompacted history. harness-jq99.
+        from harness.cli import _decode_transcript_message
+
+        record = self._compaction_store.latest_for_session(self._session)
+        if record is None:
+            return
+        summary_msg = ChatMessage(
+            role="system",
+            content=(
+                "Earlier conversation in this session (summarized; "
+                f"{record.covered_turns} turns folded in):\n\n{record.summary}"
+            ),
+        )
+        rows = self._transcript.fetch_after(self._session, after_id=record.up_to_turn_id)
+        self._state.history = [summary_msg, *(_decode_transcript_message(m) for m in rows)]
+        self.call_from_thread(
+            render_notice,
+            f"compacted {outcome.covered_turns} turns (pointer → #{outcome.new_up_to_turn_id})",
+        )
+
     def _run_turn_sync(self, user_input: str, seq: int) -> None:
         """Executed on the worker thread. All UI updates go through
         call_from_thread so Textual's reactive tree stays single-
@@ -1066,6 +1211,11 @@ class ChatApp(App[None]):
             self.call_from_thread(guarded)
 
         try:
+            # Pre-turn budget guard (harness-jq99). Worker-thread so a
+            # full summarizer pass can run without freezing the UI.
+            # The slash command /compact is unconditional; this is
+            # threshold-gated and no-op when compact_at == 0.
+            self._maybe_auto_compact()
             # Retrieval + system prompt + messages. Any single source
             # raising disables it on _state.retrieval_health; the
             # warn callback is invoked inline and routed to the log.

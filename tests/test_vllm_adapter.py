@@ -339,6 +339,47 @@ def test_vllm_stream_yields_content_deltas() -> None:
     assert text == "Hello!"
 
 
+def test_vllm_stream_surfaces_http_error_body_not_response_not_read() -> None:
+    """harness-gtd0: when vLLM rejects a streaming request (e.g. the
+    context-length validator returns 400), the adapter must surface the
+    server's error body in the RuntimeError — not the misleading
+    httpx.ResponseNotRead that you get from touching .text on an
+    un-consumed streaming response.
+
+    The historical failure was vLLM's context-length validator:
+        VLLMValidationError: maximum context length is 32768 tokens.
+        However, you requested 2048 output tokens and your prompt
+        contains at least 30721 input tokens ...
+    surfacing on the client as `ResponseNotRead` instead.
+    """
+    detail = (
+        '{"error": {"message": "This model\'s maximum context length is '
+        "32768 tokens. However, you requested 2048 output tokens and your "
+        "prompt contains at least 30721 input tokens, for a total of at "
+        'least 32769 tokens.", "type": "validation_error", "code": 400}}'
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            content=detail.encode("utf-8"),
+            headers={"content-type": "application/json"},
+        )
+
+    adapter = VllmAdapter(model="m")
+    with (
+        patch("httpx.Client", _make_factory(handler)),
+        pytest.raises(RuntimeError) as excinfo,
+    ):
+        # Streaming endpoint — consume the iterator to drive the request.
+        list(adapter.stream([ChatMessage(role="user", content="x" * 10_000)]))
+    msg = str(excinfo.value)
+    assert "HTTP 400" in msg
+    assert "maximum context length is 32768" in msg
+    # The original symptom — make sure the new path doesn't regress to it.
+    assert "ResponseNotRead" not in msg
+
+
 def test_vllm_stream_with_tools_accumulates_tool_call_deltas() -> None:
     """Tool calls arrive across multiple SSE frames in streaming mode:
     name lands on the first frame for an index; arguments build up

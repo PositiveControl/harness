@@ -2463,6 +2463,7 @@ def chat(
             tools_drop=tools_drop,
             workspace=workspace,
             compact_at=compact_at,
+            compact_keep_recent=compact_keep_recent,
             auto_scribe=auto_scribe,
             router_enabled=router_enabled,
             router_repo=router_repo,

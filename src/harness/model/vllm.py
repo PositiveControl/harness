@@ -543,7 +543,14 @@ class VllmAdapter:
                     json=payload,
                 ) as r,
             ):
-                r.raise_for_status()
+                # raise_for_status on a streaming response leaves the body
+                # un-read; touching .text outside the `with` then raises
+                # httpx.ResponseNotRead instead of surfacing the server's
+                # actual error message (harness-gtd0). Materialize the body
+                # inline so the outer except clause can format it cleanly.
+                if r.status_code >= 400:
+                    r.read()
+                    r.raise_for_status()
                 for line in r.iter_lines():
                     if not line:
                         continue

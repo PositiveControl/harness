@@ -59,12 +59,7 @@ from harness.driver.turn_fsm import (
 )
 from harness.model.adapter import ChatMessage, ModelAdapter
 from harness.orchestrator import ToolLoopEvent, ToolLoopResult, run_tool_loop
-from harness.orchestrator.hook_wiring import make_write_file_redirect_hook
-from harness.orchestrator.hooks import (
-    EXHAUSTED_FABRICATION_FALLBACK,
-    HookPipeline,
-    default_hook_pipeline,
-)
+from harness.orchestrator.hooks import EXHAUSTED_FABRICATION_FALLBACK
 from harness.orchestrator.no_write_streak import NoWriteStreakDetector
 from harness.tools import (
     CalcTool,
@@ -343,23 +338,25 @@ def _run_one_phase(
     user_prompt: str,
     max_rounds: int,
     observe: ExecutorObserver | None,
+    summarize_tool_results: bool = True,
 ) -> _PhaseExecutionResult:
     """Drive one phase: assemble the system+user messages, install
-    the default hook pipeline + WriteFileRedirectHook, call
-    run_tool_loop. Returns the bare result; caller maps it to a
-    PhaseOutcome."""
+    the default hook pipeline + WriteFileRedirectHook (+ the optional
+    ToolResultSummarizerHook from harness-tu4o), call run_tool_loop.
+    Returns the bare result; caller maps it to a PhaseOutcome."""
+    from harness.driver.loop import _build_driver_hook_pipeline
+
     base_prompt = character.system_prompt(include_samples=())
     system_prompt = f"{base_prompt}\n\n{handoff.render()}\n\n{phase_instructions(phase)}"
     messages = [
         ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content=user_prompt),
     ]
-    write_file_redirect_hook = make_write_file_redirect_hook(
+    hooks = _build_driver_hook_pipeline(
+        adapter=adapter,
         registry=registry,
-        workspace_path=workspace,
-    )
-    hooks: HookPipeline = default_hook_pipeline(
-        write_file_redirect_hook=write_file_redirect_hook,
+        workspace=workspace,
+        summarize_tool_results=summarize_tool_results,
     )
     succeeded_tools: set[str] = set()
     # Wrap observe to also sniff succeeded tool names — needed for
@@ -575,6 +572,7 @@ def run_fsm_turn(
     phase_budgets: Mapping[TurnPhase, int] | None = None,
     tdd_required: bool = True,
     observe: ExecutorObserver | None = None,
+    summarize_tool_results: bool = True,
 ) -> FsmTurnResult:
     """Drive `current_issue_id` through the TurnPhase FSM.
 
@@ -631,6 +629,7 @@ def run_fsm_turn(
             user_prompt=user_prompt,
             max_rounds=max_rounds,
             observe=observe,
+            summarize_tool_results=summarize_tool_results,
         )
         if execution.tool_loop_result.content:
             last_reply = execution.tool_loop_result.content

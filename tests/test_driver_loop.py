@@ -360,6 +360,169 @@ def test_run_loop_records_last_failure_reason(
     assert "fabrication_fallback" in state_snapshot["last_failure"]["harness-a"]
 
 
+# --- harness-tu4o: summarize_tool_results + context-overflow guard ---
+
+
+def test_loop_config_defaults_summarize_tool_results_to_true(tmp_path: Path) -> None:
+    """harness-tu4o: drive loop is unattended; ToolResultSummarizerHook
+    is on by default so a single executor turn doesn't pile up tool
+    results until the model rejects the prompt."""
+    config = _config(tmp_path)
+    assert config.summarize_tool_results is True
+
+
+def test_run_loop_wires_tool_result_summarizer_hook(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-tu4o: when summarize_tool_results=True the inner
+    run_tool_loop receives a HookPipeline whose post_tool list
+    contains a ToolResultSummarizerHook."""
+    from harness.orchestrator.hooks import ToolResultSummarizerHook
+
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    captured_hooks: list[Any] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **kwargs: Any
+    ) -> ToolLoopResult:
+        captured_hooks.append(kwargs.get("hooks"))
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+
+    assert captured_hooks, "run_tool_loop was never invoked"
+    pipeline = captured_hooks[0]
+    assert pipeline is not None, "drive loop must pass a non-None HookPipeline"
+    summarizers = [h for h in pipeline.post_tool if isinstance(h, ToolResultSummarizerHook)]
+    assert summarizers, (
+        "post_tool must include ToolResultSummarizerHook when summarize_tool_results=True"
+    )
+
+
+def test_run_loop_no_summarize_flag_omits_hook(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-tu4o: --no-summarize-tool-results disables the hook."""
+    from harness.orchestrator.hooks import ToolResultSummarizerHook
+
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    captured: list[Any] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **kwargs: Any
+    ) -> ToolLoopResult:
+        captured.append(kwargs.get("hooks"))
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    config = _config(tmp_path, summarize_tool_results=False)
+    run_loop(_FakeAdapter(), bd, config)  # type: ignore[arg-type]
+
+    pipeline = captured[0]
+    summarizers = [h for h in pipeline.post_tool if isinstance(h, ToolResultSummarizerHook)]
+    assert not summarizers
+
+
+def test_run_loop_catches_context_overflow_as_turn_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-tu4o: a vLLM context-length rejection raised from
+    run_tool_loop must surface as a turn failure (so the loop's retry
+    budget runs) rather than crashing the run. The next iteration
+    rebuilds the prompt from scratch and gets a clean retry."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], [issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    call_count = [0]
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            raise RuntimeError(
+                "vLLM returned HTTP 400 for 'qwen': This model's maximum "
+                "context length is 32768 tokens. However, you requested "
+                "2048 output tokens and your prompt contains at least "
+                "30721 input tokens, for a total of at least 32769 tokens."
+            )
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="closed.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    result = run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-a"]
+    assert call_count[0] == 2
+
+    # state file should carry the context-overflow reason from the
+    # first attempt.
+    state_files = list(LoopRunState.state_dir(tmp_path).glob("*.json"))
+    assert state_files
+    state_blob = json.loads(state_files[0].read_text())
+    # last_failure entry cleared after the successful retry. To pin
+    # the path we capture it mid-flight via the bd log instead — the
+    # first attempt's failure went through _on_failure and there's no
+    # bd-side mark, so the surviving evidence is the second iteration
+    # completing the issue. The control-flow assertion (call_count==2
+    # + exit_reason==success) is the load-bearing part.
+    assert state_blob["turns_used"] == 2
+
+
+def test_run_loop_context_overflow_only_caught_for_matching_messages(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-tu4o: arbitrary RuntimeErrors propagate (we don't
+    swallow every exception, only ones that look like context-length
+    rejections)."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a]],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        raise RuntimeError("something unrelated exploded")
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    with pytest.raises(RuntimeError, match="something unrelated exploded"):
+        run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+
+
 # --- halt on second failure -----------------------------------------
 
 

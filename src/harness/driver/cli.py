@@ -319,6 +319,18 @@ def loop_command(
             "this flag is the operator's blanket override."
         ),
     ),
+    summarize_tool_results: bool = typer.Option(
+        True,
+        "--summarize-tool-results/--no-summarize-tool-results",
+        help=(
+            "Compress high-noise tool outputs (grep / list_dir / "
+            "search_web / fetch_url …) before they reach the model's "
+            "context (harness-tu4o). Default ON for drive runs because "
+            "they're unattended and a single long executor turn can "
+            "otherwise pile up tool results until the model rejects "
+            "the prompt. Uses --model as the summarizer adapter."
+        ),
+    ),
 ) -> None:
     """Drive a bd epic to closure across multiple turns."""
     if list_runs:
@@ -362,6 +374,7 @@ def loop_command(
         plan_draft_path=plan_draft,
         use_fsm=use_fsm,
         tdd_required=tdd,
+        summarize_tool_results=summarize_tool_results,
     )
     result = run_loop(adapter, bd, config)
     _print_result(result)

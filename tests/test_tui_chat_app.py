@@ -1394,6 +1394,120 @@ class _RaisingAdapter:
         raise RuntimeError("adapter exploded on purpose")
 
 
+@pytest.mark.asyncio
+async def test_chat_app_auto_compacts_when_threshold_crossed(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-jq99: when the in-memory history would push the next
+    adapter call past compact_at × context_window, the worker fires
+    auto-compaction before sending. Without this fix a long TUI
+    session grew unchecked until the model rejected the prompt."""
+    from harness.compaction import CompactionStore
+
+    db = tmp_path / "t.sqlite"
+    transcript = Transcript(db)
+    compaction = CompactionStore(db)
+
+    for i in range(20):
+        transcript.append(
+            session="long",
+            channel="cli",
+            speaker="mark",
+            role="user",
+            content="user turn " + ("x" * 80) + f" #{i}",
+        )
+        transcript.append(
+            session="long",
+            channel="cli",
+            speaker="airton",
+            role="assistant",
+            content="airton reply " + ("y" * 80) + f" #{i}",
+        )
+
+    character = load_character(settings.character_path)
+    # Tiny context_window so a modest history trips threshold=0.5.
+    adapter = EchoAdapter(context_window=400)
+    app = ChatApp(
+        character=character,
+        speaker="mark",
+        session="long",
+        channel="cli",
+        adapter=adapter,
+        transcript=transcript,
+        retriever=None,
+        top_k=0,
+        memory_store=None,
+        memories=0,
+        semantic_store=None,
+        facts=0,
+        registry=None,
+        workspace_path=None,
+        compaction_store=compaction,
+        compact_at=0.5,
+        compact_keep_recent=2,
+    )
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        from harness.cli import _decode_transcript_message
+
+        tui_app._state.history = [
+            _decode_transcript_message(row) for row in transcript.fetch_after("long", after_id=0)
+        ]
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "still chatting"
+        await pilot.press("enter")
+        await _wait_for_workers(pilot)
+
+        record = compaction.latest_for_session("long")
+        assert record is not None, "compaction store should have a summary row"
+        assert record.covered_turns > 0
+        # History rebuilt — summary first, then the kept-recent tail + new turn.
+        assert tui_app._state.history[0].role == "system"
+        assert "summarized" in tui_app._state.history[0].content
+        log = pilot.app.query_one("#output", RichLog)
+        rendered = "\n".join(str(line) for line in log.lines)
+        assert "compacting history" in rendered
+
+
+@pytest.mark.asyncio
+async def test_chat_app_skips_auto_compact_when_threshold_disabled(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-jq99: compact_at=0 leaves auto-compaction off even when
+    a compaction_store is wired. Mirrors the should_compact contract."""
+    from harness.compaction import CompactionStore
+
+    db = tmp_path / "t.sqlite"
+    transcript = Transcript(db)
+    compaction = CompactionStore(db)
+
+    character = load_character(settings.character_path)
+    app = ChatApp(
+        character=character,
+        speaker="mark",
+        session="quiet",
+        channel="cli",
+        adapter=EchoAdapter(context_window=200),
+        transcript=transcript,
+        retriever=None,
+        top_k=0,
+        memory_store=None,
+        memories=0,
+        semantic_store=None,
+        facts=0,
+        registry=None,
+        workspace_path=None,
+        compaction_store=compaction,
+        compact_at=0.0,
+        compact_keep_recent=10,
+    )
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        tui_app._state.history = [ChatMessage(role="user", content="x" * 5000) for _ in range(5)]
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "hi"
+        await pilot.press("enter")
+        await _wait_for_workers(pilot)
+
+    assert compaction.latest_for_session("quiet") is None
+
+
 def _build_app(  # type: ignore[no-untyped-def]
     tmp_path,
     adapter: object | None = None,

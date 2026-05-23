@@ -196,6 +196,17 @@ class LoopConfig:
     # also opt out per-issue via submit_assessment(tdd_applicable=False)
     # — that's the model's judgment call, this is the operator's.
     tdd_required: bool = True
+    # harness-tu4o: drive-loop analog of chat's compaction guard. The
+    # drive loop rebuilds messages fresh each iteration (no cross-turn
+    # history), so the budget blow-up that bites long-running runs
+    # happens INSIDE a single run_tool_loop call — tool results pile
+    # up across rounds until vLLM / MLX rejects the prompt. The right
+    # analog for "compaction" here is the ToolResultSummarizerHook,
+    # which compresses high-noise tool outputs (grep / list_dir /
+    # search_web / fetch_url etc.) before they reach the model's
+    # context. Default ON for drive runs because they're unattended;
+    # the chat CLI keeps it opt-in.
+    summarize_tool_results: bool = True
 
 
 @dataclass
@@ -334,6 +345,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     workspace=config.workspace,
                     observe=turn_observer,
                     max_rounds=config.executor_max_rounds,
+                    summarize_tool_results=config.summarize_tool_results,
                 )
             state.turns_used += 1
 
@@ -551,20 +563,30 @@ def _run_fsm_turn_via_driver(
     per_item_verify = verify_map.get(current_issue.title, ()) if verify_map else ()
     verify_steps = tuple(default_verify_steps) + tuple(per_item_verify)
 
-    result: FsmTurnResult = run_fsm_turn(
-        adapter=adapter,
-        character=character,
-        bd=bd,
-        handoff_builder=builder,
-        workspace=config.workspace,
-        current_issue_id=issue_id,
-        initial_phase=initial_phase,
-        prior_assessment=prior_assessment,
-        prior_test_cmd=prior_test_cmd,
-        verify_steps=verify_steps,
-        tdd_required=config.tdd_required,
-        observe=observe,
-    )
+    try:
+        result: FsmTurnResult = run_fsm_turn(
+            adapter=adapter,
+            character=character,
+            bd=bd,
+            handoff_builder=builder,
+            workspace=config.workspace,
+            current_issue_id=issue_id,
+            initial_phase=initial_phase,
+            prior_assessment=prior_assessment,
+            prior_test_cmd=prior_test_cmd,
+            verify_steps=verify_steps,
+            tdd_required=config.tdd_required,
+            observe=observe,
+            summarize_tool_results=config.summarize_tool_results,
+        )
+    except Exception as exc:
+        # harness-tu4o: see _run_executor_turn for the same rationale.
+        # A context-overflow rejection inside the FSM's inner tool
+        # loop becomes a turn failure so the loop's retry budget runs;
+        # next iteration rebuilds the prompt fresh.
+        if _is_context_overflow(exc):
+            return False, f"context_exhausted: {exc}", ""
+        raise
 
     # Persist FSM state for resume. Plain string values keep the
     # .json dump operator-readable.
@@ -577,6 +599,57 @@ def _run_fsm_turn_via_driver(
     return result.succeeded, result.reason, result.reply
 
 
+def _build_driver_hook_pipeline(
+    *,
+    adapter: ModelAdapter,
+    registry: Any,
+    workspace: Path,
+    summarize_tool_results: bool,
+) -> HookPipeline:
+    """Drive-loop hook pipeline (harness-tu4o). Mirrors
+    `cli_classic._build_hook_pipeline` but trimmed to what the executor
+    actually needs: WriteFileRedirectHook (the safety-shrink guard) and
+    the optional ToolResultSummarizerHook (the high-noise output
+    compressor — the drive-loop analog of chat's compaction).
+
+    `summarize_tool_results=True` reuses `adapter` as the summarizer.
+    That's the same compromise the chat CLI makes when no router model
+    is loaded: cheap (one extra adapter call per high-noise tool
+    result), and correct (the summarizer prompt is short and
+    deterministic). Failure to summarize is non-fatal — the hook
+    falls through with `Continue` and the raw output reaches the
+    model untouched."""
+    from harness.orchestrator.hooks import ToolResultSummarizerHook
+
+    write_file_redirect_hook = make_write_file_redirect_hook(
+        registry=registry,
+        workspace_path=workspace,
+    )
+    pipeline = default_hook_pipeline(write_file_redirect_hook=write_file_redirect_hook)
+    if summarize_tool_results:
+        pipeline.post_tool.append(ToolResultSummarizerHook(summarizer=adapter))
+    return pipeline
+
+
+def _is_context_overflow(exc: BaseException) -> bool:
+    """Heuristic: does this exception look like the model server
+    rejected the prompt for exceeding context window?
+
+    Covers the shapes we've actually seen in the wild:
+      - vLLM: RuntimeError('vLLM returned HTTP 400 ... maximum context
+        length is 32768 tokens')
+      - MLX / Ollama: tokenizer / adapter errors that mention 'context'
+        or 'maximum'.
+
+    Used by `_run_executor_turn` so a single turn's context blow-up
+    becomes a turn failure (which the loop's retry budget handles)
+    instead of an unhandled exception that tears down the run."""
+    msg = str(exc).lower()
+    return "maximum context length" in msg or (
+        "context" in msg and ("exceed" in msg or "too long" in msg)
+    )
+
+
 def _run_executor_turn(
     *,
     adapter: ModelAdapter,
@@ -585,6 +658,7 @@ def _run_executor_turn(
     workspace: Path,
     observe: ExecutorObserver | None = None,
     max_rounds: int = 12,
+    summarize_tool_results: bool = True,
 ) -> tuple[bool, str, str]:
     """Run one executor turn. Returns (succeeded, reason, reply).
 
@@ -616,26 +690,34 @@ def _run_executor_turn(
         ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content=EXECUTOR_USER_MESSAGE),
     ]
-    # harness-lefw: wire WriteFileRedirectHook so the safety-shrink guard
-    # catches "rewrite-from-scratch" wipes on reopened issues (the driver
-    # previously ran with module-default hooks, which left this nullable
-    # parameter at None — chat sessions in cli_classic.py have always had
-    # it wired). Closures bind to the executor's workspace + registry.
-    write_file_redirect_hook = make_write_file_redirect_hook(
+    # harness-lefw: WriteFileRedirectHook safety-shrink guard.
+    # harness-tu4o: optional ToolResultSummarizerHook so high-noise tool
+    # outputs (grep / list_dir / fetch_url …) get compressed before they
+    # land in the model's context.
+    hooks = _build_driver_hook_pipeline(
+        adapter=adapter,
         registry=registry,
-        workspace_path=workspace,
+        workspace=workspace,
+        summarize_tool_results=summarize_tool_results,
     )
-    hooks: HookPipeline = default_hook_pipeline(
-        write_file_redirect_hook=write_file_redirect_hook,
-    )
-    result: ToolLoopResult = run_tool_loop(
-        adapter,  # type: ignore[arg-type]  # narrower _ToolCapableAdapter, checked at runtime
-        messages,
-        registry,
-        hooks=hooks,
-        observe=observe,
-        max_rounds=max_rounds,
-    )
+    try:
+        result: ToolLoopResult = run_tool_loop(
+            adapter,  # type: ignore[arg-type]  # narrower _ToolCapableAdapter, checked at runtime
+            messages,
+            registry,
+            hooks=hooks,
+            observe=observe,
+            max_rounds=max_rounds,
+        )
+    except Exception as exc:
+        # harness-tu4o: a context-window rejection inside the inner
+        # tool loop is a turn failure, not a run-killing crash. The
+        # loop's retry budget (2 attempts before halt + bd_human) will
+        # take over — and because each iteration rebuilds the prompt
+        # from scratch, the next attempt starts with a clean slate.
+        if _is_context_overflow(exc):
+            return False, f"context_exhausted: {exc}", ""
+        raise
     if result.content.strip() == EXHAUSTED_FABRICATION_FALLBACK.strip():
         return False, "fabrication_fallback fired", result.content
     return True, "", result.content
