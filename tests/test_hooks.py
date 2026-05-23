@@ -6798,17 +6798,27 @@ def test_empty_reply_after_tools_treats_whitespace_as_empty() -> None:
     assert isinstance(outcome, Nudge)
 
 
-def test_empty_reply_after_tools_passes_when_no_tools_ran() -> None:
-    """No tools ran this turn → different pathology (FalseSuccess /
-    ConfidentFactualClaim / etc. own the no-tools-no-content case).
-    Continue so this catcher doesn't double-cover."""
+def test_empty_reply_fires_even_when_no_tools_ran() -> None:
+    """harness-5zjj: the original gate (tools_ran_this_turn=True) was
+    based on the wrong premise that other catchers covered the no-
+    tools-no-content case. In practice every regex-shape catcher
+    needs text — empty replies escaped the whole pipeline when no
+    tools had run, and drive halt 8eedfd02 caught the model going
+    silent after an intent_restatement_loop nudge. The gate is dropped:
+    empty content is fabrication shape regardless of tools_ran."""
     ctx = BailContext(
         reply=ModelReply(content="", tool_calls=()),
         tools_ran_this_turn=False,
         tools_ran=frozenset(),
     )
     outcome = EmptyReplyAfterToolsHook().check(ctx)
-    assert isinstance(outcome, Continue)
+    assert isinstance(outcome, Nudge)
+    assert "EMPTY REPLY" in outcome.text
+    # Nudge text covers the no-tools-ran case: "call a tool" + "speak
+    # plainly" alternatives sit alongside the original "synthesize"
+    # branch from the tools-ran case.
+    assert "call a tool" in outcome.text.lower()
+    assert "plainly" in outcome.text.lower()
 
 
 def test_empty_reply_after_tools_passes_when_reply_has_content() -> None:

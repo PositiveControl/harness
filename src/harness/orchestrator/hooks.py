@@ -1246,64 +1246,76 @@ class PlanProgressHook:
         return Nudge(_PLAN_PROGRESS_NUDGE.format(plan_steps=plan_steps, executed=executed))
 
 
-# Force-synthesis nudge when the model silently gives up after
-# productive tool work (harness-uk34). Empty content is invisible
-# to the regex-shape catchers (FalseSuccess / Teaser / Fabrication
-# all need text to match), so the orchestrator was treating the
-# silent reply as the final answer and exiting with the sentinel
-# "[tool loop exhausted without final reply]". Mark's 2026-05-20
-# GTA session repro on Qwen3-Coder-30B: model read three docs
-# successfully, then emitted nothing.
-_EMPTY_REPLY_AFTER_TOOLS_NUDGE = (
+# Force-action nudge when the model silently gives up (harness-uk34,
+# harness-5zjj). Empty content is invisible to the regex-shape
+# catchers (FalseSuccess / Teaser / Fabrication / MetaConfirm /
+# IntentRestatement all need text to match), so the orchestrator was
+# treating the silent reply as the final answer and exiting with the
+# sentinel "[tool loop exhausted without final reply]" — or, when
+# preceded by Nudge bails, returning empty content to the driver as
+# the turn's final answer. Two repros, two pathologies:
+#   harness-uk34 (Mark's 2026-05-20 GTA session, Qwen3-Coder-30B):
+#       model read three docs successfully, then emitted nothing.
+#       Tools ran, model went silent.
+#   harness-5zjj (drive halt 8eedfd02, vLLM Qwen2.5-Coder 32B):
+#       model emitted preamble for several rounds, got nudged by
+#       intent_restatement_loop, then emitted empty content. Tools
+#       did NOT run; the empty reply still escaped every catcher.
+# The unified nudge below covers both — synthesize prior tools OR
+# call a tool now OR speak plainly. The catcher no longer gates on
+# tools_ran (harness-5zjj).
+_EMPTY_REPLY_NUDGE = (
     "[EMPTY REPLY — your last reply produced NO content and NO "
-    "tool calls, but earlier tool calls in this turn returned "
-    "useful data. An empty reply is not acceptable. You MUST "
-    "either: (a) call another tool to gather more, or (b) "
-    "synthesize what the prior tool calls returned into a final "
-    "answer for the user. If the task is too large for one "
-    "session, say so plainly and name the next concrete step. "
-    "Do not stay silent.]"
+    "tool calls. An empty reply is not acceptable. You MUST "
+    "either: (a) call a tool now to do the actual work, (b) "
+    "synthesize any prior tool results this turn into a final "
+    "answer for the user, or (c) tell the user plainly what you "
+    "cannot do and why. Do not stay silent."
+    "]"
 )
 
 
 @dataclass(frozen=True)
 class EmptyReplyAfterToolsHook:
-    """Bail catcher: the reply is empty AND tools succeeded earlier
-    this turn (harness-uk34).
+    """Bail catcher: the reply is empty (harness-uk34, harness-5zjj).
 
     The regex-shape catchers (Teaser, FalseSuccess, MetaConfirm,
-    FabricatedSearch, …) all gate on text patterns; they're
-    invisible to a zero-content reply. Without this catcher, an
-    empty reply paired with a successful tool history sails through
-    the bail pipeline as Continue, the orchestrator exits, and the
-    user sees the '[tool loop exhausted without final reply]'
-    sentinel instead of a synthesis of the work that just ran.
+    FabricatedSearch, IntentRestatement, …) all gate on text patterns;
+    they're invisible to a zero-content reply. Without this catcher,
+    an empty reply sails through the bail pipeline as Continue, the
+    finalize phase sees Continue as last_outcome so fabrication_fallback
+    doesn't fire, and the orchestrator returns empty content as the
+    turn's final answer — driver concludes the turn failed.
 
-    Placement: AFTER FalseSuccessHook so the no-tools-ran path (a
-    different pathology that FalseSuccess owns) keeps priority,
-    BEFORE the regex-shape catchers downstream because the empty
-    signal is more mechanical than they are and deserves the
-    empty-specific nudge.
+    Originally gated on `tools_ran_this_turn=True` (harness-uk34), but
+    drive halt 8eedfd02 (harness-5zjj) showed the no-tools-ran path
+    also leaks empty replies: the model emitted preamble for several
+    rounds, intent_restatement_loop nudged it, and the model responded
+    by going silent. Tools never ran in that turn; the empty content
+    still escaped every catcher. Catcher name preserved for fixture +
+    attribution-eval continuity; the class name is now an artifact of
+    history rather than a precise description.
 
-    Gate:
-      - `ctx.reply.content.strip() == ""` — narrative is empty.
-      - `ctx.tools_ran_this_turn is True` — some tool succeeded.
-        (The call site only invokes bail when reply.tool_calls is
-        already empty, so we don't re-check that here.)
+    Placement: where it was — AFTER FalseSuccessHook + PlanProgressHook
+    so text-based fabrication catchers keep priority, BEFORE the
+    downstream regex-shape catchers because the empty signal is
+    mechanical and deserves the empty-specific nudge.
 
-    Response: Nudge with _EMPTY_REPLY_AFTER_TOOLS_NUDGE — forces
-    the model to either continue tooling or synthesize. Repeated
+    Gate: `ctx.reply.content.strip() == ""`. The call site only
+    invokes bail when reply.tool_calls is already empty, so we don't
+    re-check that here.
+
+    Response: Nudge with _EMPTY_REPLY_NUDGE — three escape paths
+    (call a tool, synthesize prior results, speak plainly). Repeated
     empty replies exhaust the bail budget and fabrication_fallback
     substitutes the canned refusal."""
 
     name: str = "empty_reply_after_tools"
 
     def check(self, ctx: BailContext) -> BailOutcome:
-        if not ctx.tools_ran_this_turn:
-            return Continue()
         if ctx.reply.content.strip():
             return Continue()
-        return Nudge(_EMPTY_REPLY_AFTER_TOOLS_NUDGE)
+        return Nudge(_EMPTY_REPLY_NUDGE)
 
 
 # Honest fallback nudge when the model emits a "look at everything I did"
