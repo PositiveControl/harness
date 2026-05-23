@@ -492,6 +492,535 @@ def test_vllm_load_pings_v1_models() -> None:
     assert seen == ["http://localhost:8000/v1/models"]
 
 
+# ---------- qwen-tag fallback (vLLM parser-config independence) ----------
+
+
+def test_vllm_falls_back_to_qwen_tools_tag_when_tool_calls_empty() -> None:
+    """vLLM 0.21 + Qwen2.5-Coder-32B-Instruct-AWQ + --tool-call-parser hermes
+    leaks `<tools>{...}</tools>` through as content with tool_calls=[].
+    The adapter must reparse content as a fallback so the orchestrator
+    still sees a structured call (live-smoke diagnostic 2026-05-22)."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": (
+                                "<tools>\n"
+                                '{"name": "list_dir", "arguments": {"path": "."}}'
+                                "\n</tools>"
+                            ),
+                            "tool_calls": [],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        reply = adapter.complete_with_tools(
+            [ChatMessage(role="user", content="ls")],
+            tools=[_weather_spec()],
+        )
+
+    assert reply.tool_calls == (ToolCall(name="list_dir", arguments={"path": "."}),)
+    assert "<tools>" not in reply.content
+    assert "list_dir" not in reply.content  # the JSON body should be gone too
+
+
+def test_vllm_falls_back_to_qwen_tool_call_tag_when_tool_calls_empty() -> None:
+    """Same fallback, but the Qwen2.5 standard wrapper this time."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": (
+                                "<tool_call>"
+                                '{"name":"weather","arguments":{"city":"SF"}}'
+                                "</tool_call>"
+                            ),
+                            "tool_calls": [],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        reply = adapter.complete_with_tools(
+            [ChatMessage(role="user", content="weather?")],
+            tools=[_weather_spec()],
+        )
+
+    assert reply.tool_calls == (ToolCall(name="weather", arguments={"city": "SF"}),)
+
+
+def test_vllm_does_not_double_parse_when_tool_calls_populated() -> None:
+    """When vLLM extracts tool_calls structurally, trust them — don't
+    also fallback-parse the content, even if it happens to contain
+    JSON-shaped text. Prevents double-emission when both paths land."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": 'The result is: {"some": "json"}',
+                            "tool_calls": [
+                                {
+                                    "id": "call_0",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "weather",
+                                        "arguments": json.dumps({"city": "SF"}),
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        reply = adapter.complete_with_tools(
+            [ChatMessage(role="user", content="weather in SF?")],
+            tools=[_weather_spec()],
+        )
+
+    assert len(reply.tool_calls) == 1
+    assert reply.tool_calls[0].name == "weather"
+    # Content is preserved verbatim — we didn't run the fallback parser.
+    assert "The result is" in reply.content
+
+
+def test_vllm_stream_with_tools_masks_tools_tag_and_recovers_call() -> None:
+    """Live-stream variant: tag spans must not leak to visible
+    StreamText deltas, and the terminal StreamComplete must carry the
+    parsed call even though vLLM sent tool_calls=[]."""
+
+    # Build the SSE deltas in pieces so the JSON body inside a single
+    # quoted Python string doesn't confuse the parser. Each fragment
+    # gets its own delta frame — simulates how vLLM streams a tool
+    # call across multiple SSE messages.
+    tools_open = "<tools>\n"
+    json_name = '{"name": "list_dir", '
+    json_args = '"arguments": {"path": "."}}'
+    tools_close = "\n</tools>"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]},
+                {"choices": [{"index": 0, "delta": {"content": tools_open}}]},
+                {"choices": [{"index": 0, "delta": {"content": json_name}}]},
+                {"choices": [{"index": 0, "delta": {"content": json_args}}]},
+                {"choices": [{"index": 0, "delta": {"content": tools_close}}]},
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                "[DONE]",
+            ]
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        chunks = list(
+            adapter.stream_with_tools(
+                [ChatMessage(role="user", content="ls")],
+                tools=[_weather_spec()],
+            )
+        )
+
+    text_chunks = [c for c in chunks if isinstance(c, StreamText)]
+    visible = "".join(c.text for c in text_chunks)
+    # The masker hides everything from `<tools>` through `</tools>`,
+    # so the user never sees raw tool-call JSON mid-stream.
+    assert "<tools>" not in visible
+    assert "list_dir" not in visible
+    assert "</tools>" not in visible
+
+    final = chunks[-1]
+    assert isinstance(final, StreamComplete)
+    assert final.reply.tool_calls == (ToolCall(name="list_dir", arguments={"path": "."}),)
+
+
+def test_vllm_falls_back_to_bare_json_when_no_wrapper_and_no_tool_calls() -> None:
+    """Observed live (2026-05-22): vLLM 0.21 + Qwen2.5-Coder against
+    the harness's persona+tools prompt sometimes drops the `<tools>`
+    wrapper entirely and emits bare `{"name":…,"arguments":…}` in
+    content. With tool_calls=[], the orchestrator sees raw JSON as
+    prose and the tool never runs. The bare-JSON fallback handles
+    this case, conditioned on `tools` being present in the request."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"name": "list_dir", "arguments": {}}',
+                            "tool_calls": [],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        reply = adapter.complete_with_tools(
+            [ChatMessage(role="user", content="ls")],
+            tools=[_weather_spec()],
+        )
+
+    assert reply.tool_calls == (ToolCall(name="list_dir", arguments={}),)
+    # Content emptied — the bare JSON WAS the tool call, nothing else
+    # to surface as prose.
+    assert reply.content == ""
+
+
+def test_vllm_bare_json_fallback_does_not_fire_without_tools_in_request() -> None:
+    """Safety guard: a plain chat reply that happens to contain only a
+    JSON object should NOT be reinterpreted as a tool call. Only fire
+    the bare-JSON fallback when tools were actually requested."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"name": "Alice", "arguments": {}}',
+                            "tool_calls": [],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        # tools=None → fallback must not fire.
+        reply = adapter.complete_with_tools(
+            [ChatMessage(role="user", content="give me a JSON object")],
+            tools=None,
+        )
+
+    assert reply.tool_calls == ()
+    assert reply.content == '{"name": "Alice", "arguments": {}}'
+
+
+def test_vllm_bare_json_fallback_rejects_prose_with_json_inside() -> None:
+    """A response like `Here's an example: {"foo": 1}` must not be
+    reinterpreted — content doesn't trim to a bare JSON object."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": 'Here is the result: {"foo": 1}',
+                            "tool_calls": [],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        reply = adapter.complete_with_tools(
+            [ChatMessage(role="user", content="what's the result?")],
+            tools=[_weather_spec()],
+        )
+
+    assert reply.tool_calls == ()
+    assert "Here is the result" in reply.content
+
+
+def test_vllm_bare_json_fallback_rejects_json_without_name_field() -> None:
+    """A bare JSON object missing the `name` key isn't a tool call,
+    even structurally — pass through as content."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"foo": "bar"}',
+                            "tool_calls": [],
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        reply = adapter.complete_with_tools(
+            [ChatMessage(role="user", content="say something")],
+            tools=[_weather_spec()],
+        )
+
+    assert reply.tool_calls == ()
+    assert reply.content == '{"foo": "bar"}'
+
+
+def test_vllm_stream_with_tools_recovers_bare_json_call() -> None:
+    """Streamed variant of the bare-JSON fallback."""
+    bare_json = '{"name": "list_dir", "arguments": {}}'
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]},
+                {"choices": [{"index": 0, "delta": {"content": bare_json}}]},
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                "[DONE]",
+            ]
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        chunks = list(
+            adapter.stream_with_tools(
+                [ChatMessage(role="user", content="ls")],
+                tools=[_weather_spec()],
+            )
+        )
+
+    final = chunks[-1]
+    assert isinstance(final, StreamComplete)
+    assert final.reply.tool_calls == (ToolCall(name="list_dir", arguments={}),)
+    assert final.reply.content == ""
+
+
+def test_vllm_includes_stop_tokens_in_payload_by_default() -> None:
+    """`<|im_start|>` should be in the stop list — Qwen models hallucinate
+    multi-turn conversations in a single completion under tool-use mode,
+    and stopping at the role boundary truncates that cleanly. Observed
+    live (2026-05-22): Coder-32B emitting `<|im_start|>` in content."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        adapter.complete([ChatMessage(role="user", content="hi")])
+
+    assert "stop" in captured["body"]
+    assert "<|im_start|>" in captured["body"]["stop"]
+
+
+def test_vllm_stop_tokens_overridable() -> None:
+    """A caller that knows better — e.g. a non-Qwen model — can pass
+    an explicit stop tuple to override the default."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return _json_response(
+            {"choices": [{"index": 0, "message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+
+    adapter = VllmAdapter(model="m", stop=("[END]",))
+    with patch("httpx.Client", _make_factory(handler)):
+        adapter.complete([ChatMessage(role="user", content="hi")])
+
+    assert captured["body"]["stop"] == ["[END]"]
+
+
+def test_vllm_stop_empty_tuple_omits_field() -> None:
+    """Passing an empty tuple is the way to disable stop sequences
+    entirely — the field shouldn't land in the payload at all."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return _json_response(
+            {"choices": [{"index": 0, "message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+
+    adapter = VllmAdapter(model="m", stop=())
+    with patch("httpx.Client", _make_factory(handler)):
+        adapter.complete([ChatMessage(role="user", content="hi")])
+
+    assert "stop" not in captured["body"]
+
+
+def test_vllm_stream_with_tools_suppresses_bare_json_visible_output() -> None:
+    """When the model's first non-whitespace char is `{`, the adapter
+    treats subsequent content as a candidate tool call and withholds
+    visible StreamText emissions. The user shouldn't see raw JSON
+    flicker across the chat while the orchestrator routes the call."""
+    bare_json = '{"name": "list_dir", "arguments": {}}'
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        # Split the JSON across multiple chunks to exercise the
+        # cross-frame suppression — once the first `{` lands, all
+        # subsequent deltas should be withheld too.
+        return _sse_response(
+            [
+                {"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]},
+                {"choices": [{"index": 0, "delta": {"content": '{"name": '}}]},
+                {"choices": [{"index": 0, "delta": {"content": '"list_dir", '}}]},
+                {"choices": [{"index": 0, "delta": {"content": '"arguments": {}}'}}]},
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                "[DONE]",
+            ]
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        chunks = list(
+            adapter.stream_with_tools(
+                [ChatMessage(role="user", content="ls")],
+                tools=[_weather_spec()],
+            )
+        )
+
+    text_chunks = [c for c in chunks if isinstance(c, StreamText)]
+    visible = "".join(c.text for c in text_chunks)
+    # No raw JSON should leak to the visible stream.
+    assert "{" not in visible
+    assert "list_dir" not in visible
+    # Tool call still recovered via the fallback parser on stream end.
+    final = chunks[-1]
+    assert isinstance(final, StreamComplete)
+    assert final.reply.tool_calls == (ToolCall(name="list_dir", arguments={}),)
+    # bare_json was the entire content, so final reply text is empty.
+    assert final.reply.content == ""
+    _ = bare_json  # documentation aid; same as what handler builds
+
+
+def test_vllm_stream_with_tools_releases_buffer_when_not_a_tool_call() -> None:
+    """If content STARTS with `{` (triggering suppression) but turns
+    out NOT to be a parseable tool call, the buffered text must be
+    released as a StreamText before StreamComplete — otherwise the
+    user sees an empty turn while the transcript records the text."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        # Bare JSON without `name`+`arguments` shape — fallback rejects.
+        return _sse_response(
+            [
+                {"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]},
+                {"choices": [{"index": 0, "delta": {"content": '{"foo": '}}]},
+                {"choices": [{"index": 0, "delta": {"content": '"bar"}'}}]},
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                "[DONE]",
+            ]
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        chunks = list(
+            adapter.stream_with_tools(
+                [ChatMessage(role="user", content="give me json")],
+                tools=[_weather_spec()],
+            )
+        )
+
+    text_chunks = [c for c in chunks if isinstance(c, StreamText)]
+    visible = "".join(c.text for c in text_chunks)
+    # The full buffered content surfaces in a single StreamText (after
+    # the loop, before StreamComplete) so the UI shows what was hidden.
+    assert '{"foo": "bar"}' in visible
+    final = chunks[-1]
+    assert isinstance(final, StreamComplete)
+    assert final.reply.tool_calls == ()
+
+
+def test_vllm_stream_with_tools_streams_normally_when_content_starts_with_prose() -> None:
+    """Negative control: if the first non-whitespace char isn't `{`,
+    the suppression logic stays disengaged and live streaming works
+    as before. Prose replies under --tools should not pay any latency
+    cost from the bare-JSON guard."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]},
+                {"choices": [{"index": 0, "delta": {"content": "The answer "}}]},
+                {"choices": [{"index": 0, "delta": {"content": "is 42."}}]},
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                "[DONE]",
+            ]
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        chunks = list(
+            adapter.stream_with_tools(
+                [ChatMessage(role="user", content="what's the answer?")],
+                tools=[_weather_spec()],
+            )
+        )
+
+    # Two visible StreamText deltas (one per non-empty content chunk),
+    # not buffered into a single emission at the end.
+    text_chunks = [c for c in chunks if isinstance(c, StreamText)]
+    assert len(text_chunks) >= 2
+    assert "".join(c.text for c in text_chunks) == "The answer is 42."
+
+
+def test_qwen_parse_recognizes_tools_wrapper_form() -> None:
+    """Unit-test the qwen_parse extension directly. The MLX path
+    consumes this same helper, so a regression in the <tools> form
+    would also affect MLX adapters running against Coder-family
+    fine-tunes that emit the plural wrapper."""
+    from harness.model.qwen_parse import _parse_qwen_tool_calls
+
+    raw = 'before <tools>{"name": "x", "arguments": {"a": 1}}</tools> after'
+    content, calls = _parse_qwen_tool_calls(raw)
+    assert calls == [ToolCall(name="x", arguments={"a": 1})]
+    assert "<tools>" not in content
+    assert "before" in content
+    assert "after" in content
+
+
 # ---------- guard against accidental re-imports --------------------------
 
 

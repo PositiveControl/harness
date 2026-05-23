@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 
 from harness.model.adapter import ChatMessage, approx_token_count
+from harness.model.qwen_parse import _parse_qwen_tool_calls, _TagMasker
 from harness.tools.base import (
     ModelReply,
     StreamChunk,
@@ -106,6 +107,46 @@ def _parse_openai_tool_calls(raw_calls: list[dict[str, Any]]) -> list[ToolCall]:
     return parsed
 
 
+def _parse_bare_json_tool_call(content: str) -> tuple[str, list[ToolCall]]:
+    """Last-ditch fallback: when vLLM's parser didn't extract anything
+    AND the model didn't wrap its call in any Qwen-family tag, the
+    response can still be a bare `{"name": …, "arguments": …}` JSON
+    object — observed live with vLLM 0.21 + Qwen2.5-Coder against the
+    harness's tool-augmented system prompt.
+
+    Constrained so prose containing JSON doesn't get mis-parsed:
+      - content must trim to a single JSON object (start with `{`,
+        end with `}`)
+      - the object must have a string `name` AND a dict `arguments`
+        (or coerce-able to one — accept missing/null arguments as {})
+
+    Returns (stripped_content, calls). On miss, returns the input
+    content unchanged with an empty call list."""
+    stripped = content.strip()
+    if not stripped.startswith("{") or not stripped.endswith("}"):
+        return content, []
+    try:
+        data = json.loads(stripped)
+    except json.JSONDecodeError:
+        return content, []
+    if not isinstance(data, dict):
+        return content, []
+    name = data.get("name")
+    arguments = data.get("arguments")
+    if not isinstance(name, str) or not name:
+        return content, []
+    if arguments is None:
+        arguments = {}
+    elif isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments) if arguments else {}
+        except json.JSONDecodeError:
+            arguments = {}
+    if not isinstance(arguments, dict):
+        return content, []
+    return "", [ToolCall(name=name, arguments=arguments)]
+
+
 class VllmAdapter:
     """Adapter that talks to a vLLM server via its OpenAI-compatible
     HTTP API.
@@ -120,6 +161,14 @@ class VllmAdapter:
     chat client needing to know.
     """
 
+    # `<|im_start|>` is Qwen's role-boundary token. It should never
+    # appear in user-visible content; when it does, the model is
+    # hallucinating a multi-turn conversation in a single completion
+    # (observed live with Qwen2.5-Coder + --enable-auto-tool-choice).
+    # Passing it as an explicit stop sequence makes vLLM truncate at
+    # the first occurrence — cleaner than masking after the fact.
+    _DEFAULT_STOP: tuple[str, ...] = ("<|im_start|>",)
+
     def __init__(
         self,
         model: str | None = None,
@@ -128,12 +177,14 @@ class VllmAdapter:
         context_window: int = 32_768,
         timeout: float = 300.0,
         api_key: str | None = None,
+        stop: tuple[str, ...] | None = None,
     ) -> None:
         self._model: str | None = model
         self.base_url = base_url.rstrip("/")
         self.context_window = context_window
         self.timeout = timeout
         self._api_key = api_key
+        self.stop: tuple[str, ...] = self._DEFAULT_STOP if stop is None else stop
         self.id = f"vllm:{model}" if model else f"vllm:{self.base_url}"
 
     @property
@@ -195,6 +246,8 @@ class VllmAdapter:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if self.stop:
+            payload["stop"] = list(self.stop)
         data = self._post("/chat/completions", payload)
         choices = data.get("choices") or []
         if not choices:
@@ -219,6 +272,8 @@ class VllmAdapter:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if self.stop:
+            payload["stop"] = list(self.stop)
         for chunk in self._post_stream("/chat/completions", payload):
             choices = chunk.get("choices") or []
             if not choices:
@@ -247,6 +302,8 @@ class VllmAdapter:
         }
         if tools:
             payload["tools"] = [_tool_spec_for_openai(t) for t in tools]
+        if self.stop:
+            payload["stop"] = list(self.stop)
         data = self._post("/chat/completions", payload)
         choices = data.get("choices") or []
         if not choices:
@@ -259,6 +316,24 @@ class VllmAdapter:
         if not isinstance(raw_calls, list):
             raw_calls = []
         parsed = _parse_openai_tool_calls(raw_calls)
+        # Fallback ladder: vLLM's --tool-call-parser is advisory and
+        # sometimes the model bypasses the wrapping format entirely.
+        # When `tools` was sent in the request and the response carries
+        # no structured tool_calls, try (1) Qwen-family tag wrappers
+        # (<tool_call>/<tools>/<function=>), then (2) bare-JSON
+        # `{"name":…,"arguments":…}`. Order matters — tagged form is
+        # the strict signal, bare form is permissive and only kicks
+        # in when the strict path returned nothing.
+        if tools and not parsed and content:
+            stripped, fallback_calls = _parse_qwen_tool_calls(content)
+            if fallback_calls:
+                content = stripped
+                parsed = fallback_calls
+            else:
+                stripped, fallback_calls = _parse_bare_json_tool_call(content)
+                if fallback_calls:
+                    content = stripped
+                    parsed = fallback_calls
         return ModelReply(
             content=content,
             tool_calls=tuple(parsed),
@@ -290,8 +365,25 @@ class VllmAdapter:
         }
         if tools:
             payload["tools"] = [_tool_spec_for_openai(t) for t in tools]
+        if self.stop:
+            payload["stop"] = list(self.stop)
 
-        content_parts: list[str] = []
+        # Three collectors:
+        # - raw_parts keeps every delta (tags + bare JSON included) so
+        #   the post-stream fallback ladder can reparse content if vLLM
+        #   didn't extract tool_calls structurally.
+        # - masker hides tag spans (<tool_call> / <tools> / <function=>)
+        #   from the live user-visible stream.
+        # - suppressing_bare_json kicks in when the first non-whitespace
+        #   char of accumulated content is `{`, signaling a bare-JSON
+        #   tool call (no tag for the masker to anchor on). All visible
+        #   output is then withheld; final reply lands via StreamComplete
+        #   after fallback parse. shape_decided guards against re-checking
+        #   after the first non-whitespace char arrives.
+        raw_parts: list[str] = []
+        masker = _TagMasker()
+        suppressing_bare_json = False
+        shape_decided = False
         tc_acc: dict[int, dict[str, str]] = {}
         finish_reason: str | None = None
         for chunk in self._post_stream("/chat/completions", payload):
@@ -302,8 +394,16 @@ class VllmAdapter:
             delta = choice.get("delta") or {}
             text = delta.get("content")
             if isinstance(text, str) and text:
-                content_parts.append(text)
-                yield StreamText(text=text)
+                raw_parts.append(text)
+                if tools and not shape_decided:
+                    head = "".join(raw_parts).lstrip()
+                    if head:
+                        shape_decided = True
+                        suppressing_bare_json = head.startswith("{")
+                if not suppressing_bare_json:
+                    visible = masker.feed(text)
+                    if visible:
+                        yield StreamText(text=visible)
             tc_delta = delta.get("tool_calls") or []
             if isinstance(tc_delta, list):
                 for tcd in tc_delta:
@@ -323,6 +423,12 @@ class VllmAdapter:
             if isinstance(fr, str):
                 finish_reason = fr
 
+        # Drain anything the masker was holding (visible mode only —
+        # mid-tag truncation drops the buffer, matching MLX behavior).
+        tail = masker.flush()
+        if tail:
+            yield StreamText(text=tail)
+
         parsed: list[ToolCall] = []
         for _, slot in sorted(tc_acc.items()):
             name = slot["name"]
@@ -334,9 +440,36 @@ class VllmAdapter:
             if name and isinstance(args, dict):
                 parsed.append(ToolCall(name=name, arguments=args))
 
+        full_content = "".join(raw_parts)
+        # Same fallback ladder as complete_with_tools: tagged form
+        # first (strict), then bare-JSON (permissive, only when tools
+        # were sent). Keeps the orchestrator's tool path working
+        # regardless of which --tool-call-parser the server was
+        # launched with and regardless of whether the model wrapped
+        # its call.
+        if tools and not parsed and full_content:
+            stripped, fallback_calls = _parse_qwen_tool_calls(full_content)
+            if fallback_calls:
+                full_content = stripped
+                parsed = fallback_calls
+            else:
+                stripped, fallback_calls = _parse_bare_json_tool_call(full_content)
+                if fallback_calls:
+                    full_content = stripped
+                    parsed = fallback_calls
+
+        # If we suppressed StreamText because content started with `{`
+        # but the bare-JSON didn't actually parse as a tool call (e.g.
+        # the model emitted a JSON object as legitimate prose), release
+        # the buffered content as a single StreamText so the UI shows
+        # it. Without this the user sees an empty turn while the
+        # transcript records the text — confusing.
+        if suppressing_bare_json and not parsed and full_content:
+            yield StreamText(text=full_content)
+
         yield StreamComplete(
             reply=ModelReply(
-                content="".join(content_parts),
+                content=full_content,
                 tool_calls=tuple(parsed),
                 was_truncated=finish_reason == "length",
                 had_unparseable_call=False,
