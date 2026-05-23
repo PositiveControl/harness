@@ -266,15 +266,17 @@ class ToolLoopEvalResult:
         return frozenset(c.id for c in self.cases if c.passed)
 
 
-# Two sentinels — `FabricationFallbackHook` branches on the terminal
-# catcher (harness-dset): non-loop catchers keep the generic "didn't
-# land cleanly" text; loop catchers (preamble_loop /
-# intent_restatement_loop) get the "stuck restating my plan" text
-# instead. The eval framework treats EITHER substituted text as a
+# Three sentinels — `FabricationFallbackHook` branches on the terminal
+# catcher: non-loop catchers keep the generic "didn't land cleanly"
+# text (harness-dset); loop catchers (preamble_loop /
+# intent_restatement_loop / teaser_loop) get the "stuck restating my
+# plan" text; empty_reply_after_tools gets the "went silent" text
+# (harness-mqgg). The eval framework treats ANY of the three as a
 # fallback firing.
 _FALLBACK_SENTINELS: tuple[str, ...] = (
     "my attempts to call one didn't land cleanly",
     "stuck restating my plan instead of producing output",
+    "went silent after my tool calls instead of synthesizing",
 )
 
 

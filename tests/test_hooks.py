@@ -2535,6 +2535,51 @@ def test_fabrication_fallback_loop_text_handles_zero_tools_ran() -> None:
     assert "(none)" in outcome.reply.content
 
 
+def test_fabrication_fallback_swaps_to_empty_reply_text_when_tools_ran() -> None:
+    """harness-mqgg: when the terminal Nudge came from
+    `empty_reply_after_tools` AND at least one tool actually succeeded
+    this turn, the generic "didn't land cleanly" copy is a lie — the
+    tools DID land. Substitute the empty-reply fallback that names the
+    succeeded tools and admits the silent-giveup. Mark's 2026-05-23
+    snake session repro: glob returned a file path cleanly, then the
+    model went silent three rounds in a row; the user saw the wrong
+    canned text blaming the tool call."""
+    reply = _reply("")
+    outcome = FabricationFallbackHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Nudge("empty reply nudge", catcher="empty_reply_after_tools"),
+            tools_ran=frozenset({"glob", "read_file"}),
+        )
+    )
+    assert isinstance(outcome, Halt)
+    assert "went silent" in outcome.reply.content
+    # Tools succeeded list flattens deterministically (sorted).
+    assert "glob, read_file" in outcome.reply.content
+    # Neither the generic text NOR the loop-specific text appears.
+    assert "didn't land cleanly" not in outcome.reply.content
+    assert "stuck restating my plan" not in outcome.reply.content
+
+
+def test_fabrication_fallback_empty_reply_falls_through_when_no_tools_ran() -> None:
+    """Defensive: if `empty_reply_after_tools` is somehow the terminal
+    catcher with an empty `tools_ran` (shouldn't happen — the hook
+    gates on `tools_ran_this_turn`), fall back to the generic text
+    rather than emitting "Tool calls that did succeed this turn:
+    (none)" which contradicts the catcher's name."""
+    reply = _reply("")
+    outcome = FabricationFallbackHook().check(
+        FinalizeContext(
+            reply=reply,
+            last_outcome=Nudge("empty reply nudge", catcher="empty_reply_after_tools"),
+            tools_ran=frozenset(),
+        )
+    )
+    assert isinstance(outcome, Halt)
+    assert "didn't land cleanly" in outcome.reply.content
+    assert "went silent" not in outcome.reply.content
+
+
 # ---------- auto_load_on_unknown hook ----------
 
 

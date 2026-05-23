@@ -400,6 +400,55 @@ async def test_chat_app_renders_tool_events_inline(tmp_path) -> None:  # type: i
 
 
 @pytest.mark.asyncio
+async def test_chat_app_tool_path_persists_final_reply(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-mqgg: when tools are active and run_tool_loop produces
+    a final synthesized reply, the TUI must persist that reply to the
+    transcript AND append it to the in-memory history. Pre-fix only
+    `_persist_tool_exchange` ran on the tool path, which captures the
+    assistant(tool_calls=…) + tool(...) rows but NOT
+    `loop_result.content` — so `harness session show` ended each
+    turn at the tool-role row and the next intra-session turn lost
+    the assistant reply from context. Parity with the non-tool branch
+    (already covered by test_chat_app_runs_model_turn_and_persists)
+    and with cli_classic.py:855."""
+    (tmp_path / "hello.txt").write_text("world")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    scripted = _ToolScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "hello.txt"}),),
+            ),
+            ModelReply(content="the file says 'world'"),
+        ]
+    )
+    app = _build_app(tmp_path, adapter=scripted, registry=registry, workspace=tmp_path)
+    async with app.run_test() as pilot:
+        tui_app: ChatApp = pilot.app  # type: ignore[assignment]
+        prompt = pilot.app.query_one("#prompt", Input)
+        prompt.value = "what's in hello.txt?"
+        await pilot.press("enter")
+        await _wait_for_workers(pilot)
+
+        # Transcript: user + assistant(tool_calls) + tool(result) +
+        # assistant(final reply). The final assistant row is the
+        # one this test pins.
+        transcript = Transcript(tmp_path / "t.sqlite")
+        rows = transcript.fetch_after("test", after_id=0)
+        roles = [row.role for row in rows]
+        assert roles == ["user", "assistant", "tool", "assistant"]
+        assert rows[-1].content == "the file says 'world'"
+        # And in-memory history: subsequent turns must see the
+        # synthesized reply, not just the tool exchange. The last
+        # entry should be the final assistant content.
+        history = tui_app._state.history
+        assert history[-1].role == "assistant"
+        assert history[-1].content == "the file says 'world'"
+
+
+@pytest.mark.asyncio
 async def test_chat_app_confirm_strip_declined_via_escape(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """harness-drd: write-tier tool shows the inline confirm strip.
     Pressing escape resolves the pending future with DECLINE →

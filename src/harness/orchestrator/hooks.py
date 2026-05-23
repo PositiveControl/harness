@@ -115,6 +115,35 @@ def _loop_fallback_text(tools_ran: frozenset[str]) -> str:
     return _LOOP_FALLBACK_TEMPLATE.format(tools=tools_fragment)
 
 
+# Fallback when the terminal catcher was `empty_reply_after_tools`
+# (harness-mqgg). The generic "didn't land cleanly" text is wrong
+# here — the tools DID land. The model produced empty output across
+# every retry instead of synthesizing. Mark's 2026-05-23 snake
+# session: glob returned `snake/test_snake_game.py` cleanly, then
+# the model emitted zero tokens three rounds in a row and the user
+# saw the lying "my attempts to call one didn't land cleanly" text.
+#
+# Callers (`_empty_reply_fallback_text`) splice the tools that
+# actually succeeded into `{tools}` so the operator sees what
+# landed before the silent-giveup.
+_EMPTY_REPLY_FALLBACK_TEMPLATE = (
+    "I went silent after my tool calls instead of synthesizing a reply, "
+    "and ran out of retries. Tool calls that did succeed this turn: "
+    "{tools}. Try narrowing the next step, or rephrase so the next "
+    "move is concrete."
+)
+
+
+def _empty_reply_fallback_text(tools_ran: frozenset[str]) -> str:
+    """Render `_EMPTY_REPLY_FALLBACK_TEMPLATE` with the executed-tools
+    list flattened into a comma-separated string. Sorted for
+    deterministic output. Defensive `(none)` branch for parity with
+    `_loop_fallback_text` — in practice `empty_reply_after_tools` only
+    fires when at least one tool ran."""
+    tools_fragment = ", ".join(sorted(tools_ran)) if tools_ran else "(none)"
+    return _EMPTY_REPLY_FALLBACK_TEMPLATE.format(tools=tools_fragment)
+
+
 # ---------- regex library (shared with cli stream filter) ----------
 
 
@@ -5585,13 +5614,22 @@ class FabricationFallbackHook:
     this, the user would see the model's final hallucinated paragraph
     as the turn's answer (harness-24xj).
 
-    Catcher-aware fallback (harness-dset): when the terminal Nudge
-    came from a loop-shape catcher (preamble_loop /
-    intent_restatement_loop), substitute the loop-specific fallback
-    that names the actual pathology and lists the tools that DID
-    succeed this turn — telling the user "didn't land cleanly" is a
-    lie when the model wrote real files and just got stuck repeating
-    its plan."""
+    Catcher-aware fallback. Three branches:
+      - `LOOP_FALLBACK_CATCHERS` (preamble_loop, intent_restatement_loop,
+        teaser_loop, harness-dset): "stuck restating my plan" copy that
+        names the tools that DID succeed. Telling the user "didn't land
+        cleanly" would be a lie when the model wrote real files and
+        just got stuck repeating its plan.
+      - `empty_reply_after_tools` (harness-mqgg): "went silent" copy
+        that names the tools that DID succeed. The generic refusal was
+        wrong here too — Mark's 2026-05-23 snake session saw glob
+        return a file path cleanly, then three empty replies, then the
+        lying "didn't land cleanly" text. The new copy admits the
+        silent-giveup and lists the tools that worked.
+      - everything else: the generic `EXHAUSTED_FABRICATION_FALLBACK`
+        ("my attempts to call one didn't land cleanly") — accurate for
+        false_success / fabricated_search / etc. where the model
+        invented output without grounding."""
 
     name: str = "fabrication_fallback"
 
@@ -5605,6 +5643,8 @@ class FabricationFallbackHook:
         reply = ctx.reply
         if last.catcher in LOOP_FALLBACK_CATCHERS:
             content = _loop_fallback_text(ctx.tools_ran)
+        elif last.catcher == "empty_reply_after_tools" and ctx.tools_ran:
+            content = _empty_reply_fallback_text(ctx.tools_ran)
         else:
             content = EXHAUSTED_FABRICATION_FALLBACK
         return Halt(

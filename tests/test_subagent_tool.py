@@ -206,7 +206,14 @@ def test_subagent_budget_exhaustion_reports_cleanly(tmp_path: Path) -> None:
     refusal (via EmptyReplyAfterToolsHook, harness-uk34) rather than
     the debug "[tool loop exhausted...]" sentinel. The subagent
     passes that through to the parent without re-wrapping — the
-    canned refusal is already user-facing."""
+    canned refusal is already user-facing.
+
+    Catcher-aware fallback (harness-mqgg): the terminal catcher is
+    `empty_reply_after_tools`, so the "went silent" template fires.
+    The legacy "didn't land cleanly" + "budget exhausted" + "loop
+    returned empty content" clauses stay as defensive accepts in
+    case a different terminal catcher fires through a different
+    pathology."""
     (tmp_path / "a.txt").write_text("A\n")
     parent = _registry_with(ReadFileTool(root=tmp_path))
     looping_reply = ModelReply(
@@ -216,11 +223,9 @@ def test_subagent_budget_exhaustion_reports_cleanly(tmp_path: Path) -> None:
     adapter = _ScriptedAdapter(replies=[looping_reply] * 3)
     tool = SpawnSubagentTool(adapter=adapter, registry=parent, hooks=default_hook_pipeline())
     out = tool.call(task="read endlessly", tools=["read_file"], max_rounds=2)
-    # Either the fabrication-fallback refusal landed (preferred new
-    # path) OR the old "budget exhausted" wrapper (if anything else
-    # in the stack still triggers the sentinel — defensive).
     assert (
-        "didn't land cleanly" in out
+        "went silent" in out
+        or "didn't land cleanly" in out
         or "budget exhausted" in out
         or "loop returned empty content" in out
     )

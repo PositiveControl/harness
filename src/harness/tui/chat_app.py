@@ -1335,10 +1335,33 @@ class ChatApp(App[None]):
                     initial_count=len(initial_messages),
                     loop_messages=loop_result.messages,
                 )
+                # Persist the final synthesized reply too (harness-mqgg).
+                # `_persist_tool_exchange` only captures the
+                # assistant(tool_calls=…) + tool(...) rows from the
+                # loop's working list — `loop_result.content` is the
+                # final reply produced after the last round (or the
+                # fabrication-fallback substitution) and lives outside
+                # `loop_result.messages`. Without this append,
+                # `harness session show` ends each tool turn at the
+                # tool-role row and the next session restart replays
+                # as an unanswered user turn. Mirrors
+                # cli_classic.py:855 and the non-tool branch below.
+                self._transcript.append(
+                    session=self._session,
+                    channel=self._channel,
+                    speaker=self._character.name,
+                    role="assistant",
+                    content=reply,
+                )
                 # initial_messages[0] is system; drop it from the
                 # history carry-over since we rebuild the system
-                # prompt fresh each turn.
-                self._state.history = list(loop_result.messages[1:])
+                # prompt fresh each turn. Append the final reply so
+                # subsequent turns in this session see Airton's
+                # answer in context.
+                self._state.history = [
+                    *loop_result.messages[1:],
+                    ChatMessage(role="assistant", content=reply),
+                ]
             else:
                 # Stream when the adapter exposes stream(); fall back
                 # to blocking complete() for adapters that don't.
