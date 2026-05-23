@@ -232,6 +232,34 @@ def test_plan_progress_hook_silent_on_non_plan_numbered_list() -> None:
     assert isinstance(PlanProgressHook().check(ctx), Continue)
 
 
+def test_plan_progress_hook_silent_on_abstract_plan() -> None:
+    # harness-l27k: a numbered plan whose first verbs are abstract
+    # (Audit / Implement / Verify-shape) doesn't map 1:1 to tool calls
+    # — the model can satisfy an "audit" step by reading and analyzing.
+    # Repro is the harness-3jo1 GTA2 §15 drive halt (2026-05-23): a
+    # 4-step Audit/Implement plan caused plan_progress to fire on every
+    # substantive analysis reply, looping to fabrication_fallback.
+    abstract_plan = (
+        "Here's the plan:\n"
+        "1. Audit and finalize the keydown/keyup listeners to use event.code.\n"
+        "2. Implement the edge-trigger pattern by declaring prevKeys.\n"
+        "3. Audit and finalize the key map.\n"
+        "4. Implement the pause toggle functionality.\n"
+    )
+    ctx = BailContext(
+        reply=_reply(
+            "Now that we have the file contents, the listeners already use event.code "
+            "and call event.preventDefault(), so no changes are needed for step 1. "
+            "Next, let's implement the edge-trigger pattern."
+        ),
+        tools_ran_this_turn=True,
+        tools_ran=frozenset({"read_file"}),
+        prior_tool_outputs=("<grep_fail>", "<grep_dedup>", "<read_file>"),
+        prior_assistant_replies=(abstract_plan,),
+    )
+    assert isinstance(PlanProgressHook().check(ctx), Continue)
+
+
 def test_plan_progress_hook_ignores_numbered_list_in_current_reply() -> None:
     # A numbered list in the current reply (without a matching plan in
     # any prior assistant reply) is too often the model's synthesis —

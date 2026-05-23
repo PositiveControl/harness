@@ -1001,6 +1001,50 @@ class FalseSuccessHook:
 # code-block numbering doesn't get picked up as a plan.
 _PLAN_STEP_LINE_RE = re.compile(r"(?m)^[ \t]{0,4}\d+[.):]?[ \t]+\S.+$")
 
+# Same shape but captures the first word after the number — used to
+# gate plan_progress on whether the plan's first verbs are tool-shaped
+# (harness-l27k).
+_PLAN_STEP_FIRST_VERB_RE = re.compile(r"(?m)^[ \t]{0,4}\d+[.):]?[ \t]+(\w+)")
+
+# First-verb keywords that signal a plan step maps to a concrete tool
+# call. The drive-loop halt 2026-05-23 on harness-3jo1 surfaced the
+# false-positive shape: Qwen2.5-Coder-32B routinely lays out abstract
+# coding plans ("1. Audit X. 2. Implement Y. 3. Verify Z.") where each
+# step is satisfied by analysis + at most one tool call, not by one
+# tool call per step. plan_progress kept firing on substantive analysis
+# replies that completed step 1 (an "audit") without a separate tool
+# call. Requiring two tool-shaped first verbs in the plan filters those
+# out: the canonical snake-style plan (Fetch / Extract / Write) still
+# has ≥2 (Fetch + Write); abstract plans drop to 0.
+_PLAN_STEP_TOOL_VERBS: frozenset[str] = frozenset(
+    {
+        "read",
+        "write",
+        "edit",
+        "update",
+        "modify",
+        "add",
+        "remove",
+        "delete",
+        "append",
+        "prepend",
+        "insert",
+        "replace",
+        "fetch",
+        "search",
+        "grep",
+        "glob",
+        "list",
+        "shell",
+        "run",
+        "execute",
+        "save",
+        "load",
+        "open",
+        "query",
+    }
+)
+
 
 def _count_plan_steps(text: str) -> int:
     """Number of numbered plan steps in `text`. ≥2 lines required —
@@ -1008,6 +1052,18 @@ def _count_plan_steps(text: str) -> int:
     quoted sentence, ambient numbering in prose)."""
     matches = _PLAN_STEP_LINE_RE.findall(text)
     return len(matches) if len(matches) >= 2 else 0
+
+
+def _count_concrete_plan_steps(text: str) -> int:
+    """Number of numbered plan steps whose first verb is in
+    `_PLAN_STEP_TOOL_VERBS` (harness-l27k). Used by PlanProgressHook to
+    skip abstract coding plans whose steps don't map 1:1 to tool calls
+    — see `_PLAN_STEP_TOOL_VERBS`."""
+    return sum(
+        1
+        for m in _PLAN_STEP_FIRST_VERB_RE.finditer(text)
+        if m.group(1).lower() in _PLAN_STEP_TOOL_VERBS
+    )
 
 
 _PLAN_PROGRESS_NUDGE = (
@@ -1041,6 +1097,14 @@ class PlanProgressHook:
     than a plan-then-execute commitment, so we require evidence that
     the plan pre-dated the current turn-ending reply.
 
+    Additionally requires the plan to be ACTIONABLE — at least two of
+    its numbered steps must start with a tool-shaped verb (harness-l27k).
+    Abstract coding plans (Audit / Implement / Verify-shape) get
+    completed through analysis, not one-tool-call-per-step; firing on
+    them caused the harness-3jo1 drive loop halt (2026-05-23): the
+    model's substantive step-1 analysis got bailed three rounds in a
+    row over `executed < plan_steps`, ending in fabrication_fallback.
+
     Placed AFTER TeaserHook / FalseSuccessHook so the more specific
     'let me X.' / 'X has been done' shapes win first under first-match
     semantics; this catches the residual 'wrapped up mid-plan with no
@@ -1054,11 +1118,22 @@ class PlanProgressHook:
         if ctx.reply.tool_calls:
             return Continue()
         plan_steps = 0
+        concrete_steps = 0
         for prior in ctx.prior_assistant_replies:
             plan_steps = _count_plan_steps(prior)
             if plan_steps:
+                concrete_steps = _count_concrete_plan_steps(prior)
                 break
         if plan_steps == 0:
+            return Continue()
+        # harness-l27k: skip plans whose first verbs are abstract.
+        # "Audit / Implement / Verify"-shape plans complete through
+        # analysis; the hook can't tell those apart from plans
+        # genuinely abandoned mid-stride, and the cost of a false
+        # positive (drive loop halts after retry-budget exhaustion) is
+        # much higher than the cost of a false negative (turn just
+        # fails naturally on the abandoned plan).
+        if concrete_steps < 2:
             return Continue()
         executed = len(ctx.prior_tool_outputs)
         if executed >= plan_steps:
