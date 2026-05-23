@@ -6609,6 +6609,58 @@ def test_intent_restatement_loop_passes_when_intents_diverge() -> None:
     assert isinstance(outcome, Continue)
 
 
+def test_intent_restatement_loop_fires_on_i_need_to_create_loop() -> None:
+    """harness-elpz: drive halt 8c4d9ee2 on harness-90j0 had four
+    'I need to create the X' replies in a row sharing exactly 21
+    chars ('I need to create the '). The pre-fix floor of 30 missed
+    by 9 chars; with floor=20 the loop is caught and routed through
+    the more aggressive intent-loop nudge instead of plain teaser
+    + eventual fabrication_fallback halt."""
+    opening_a = (
+        "I need to create the initial project structure with `index.html` "
+        "and `game.js` files according to the spec."
+    )
+    opening_b = (
+        "I need to create the `index.html` and `game.js` files as "
+        "specified in the issue description."
+    )
+    # Sanity-check the LCP is in the band the fix expects to cover —
+    # if this constant drifts (e.g. someone reformats the literals),
+    # the test should fail loudly rather than silently.
+    from harness.orchestrator.hooks import _longest_common_prefix_len
+
+    lcp = _longest_common_prefix_len(opening_a, opening_b)
+    assert 20 <= lcp < 30, f"expected LCP in [20, 30) to exercise the floor change; got {lcp}"
+    ctx = BailContext(
+        reply=ModelReply(content=opening_b, tool_calls=()),
+        tools_ran_this_turn=False,
+        discarded_openings=(opening_a,),
+    )
+    outcome = IntentRestatementLoopHook().check(ctx)
+    assert isinstance(outcome, Nudge)
+    assert "INTENT RESTATEMENT LOOP" in outcome.text
+
+
+def test_intent_restatement_loop_holds_fire_on_short_intent_overlap() -> None:
+    """Non-loop intent prefixes ('I need to read X' vs 'I need to
+    read Y') sit at ~15 char LCP — under the 20 floor. The catcher
+    MUST stay silent so non-loop intent-statements don't get caught
+    on a single shared verb."""
+    opening_a = "I need to read the spec file before writing tests."
+    opening_b = "I need to read the issue description before claiming work."
+    from harness.orchestrator.hooks import _longest_common_prefix_len
+
+    lcp = _longest_common_prefix_len(opening_a, opening_b)
+    assert lcp < 20, f"expected LCP < 20 (non-loop shape); got {lcp}"
+    ctx = BailContext(
+        reply=ModelReply(content=opening_b, tool_calls=()),
+        tools_ran_this_turn=False,
+        discarded_openings=(opening_a,),
+    )
+    outcome = IntentRestatementLoopHook().check(ctx)
+    assert isinstance(outcome, Continue)
+
+
 def test_intent_restatement_loop_passes_neither_opens_with_intent() -> None:
     """Both replies share a 30+ char prefix but neither opens with
     an intent-phrase. The catcher must NOT fire — different signal

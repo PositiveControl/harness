@@ -888,15 +888,23 @@ _INTENT_PHRASE_RE = re.compile(
 
 
 # Minimum shared-prefix length for IntentRestatementLoopHook
-# (harness-a4q4). Lower than PreambleLoopHook's 100-char floor
-# because the intent-phrase gate already filters out generic
-# conversational openers — a 30-char LCP between two replies that
-# BOTH open with an intent-statement is a strong loop signal even
-# when the textual LCP is too short for PreambleLoopHook. Mark's
-# 2026-05-21 GTA2 session: replies 1-3 shared "Now I'll create the
-# game.js file with the implementation" (~56 chars) under intent-
-# phrase openers; PreambleLoop's 100-char floor missed it.
-_INTENT_RESTATEMENT_MIN_LCP = 30
+# (harness-a4q4 + harness-elpz). Lower than PreambleLoopHook's
+# 100-char floor because the intent-phrase gate already filters out
+# generic conversational openers — a short LCP between two replies
+# that BOTH open with an intent-statement is a strong loop signal
+# even when the textual LCP is too short for PreambleLoopHook.
+#
+# Tuning history:
+#   30 (harness-a4q4): GTA2 session shared "Now I'll create the
+#       game.js file with the implementation" (~56 chars). 30
+#       caught with margin.
+#   20 (harness-elpz): drive halt 8c4d9ee2 on harness-90j0 had
+#       four "I need to create the X" replies in a row sharing
+#       exactly 21 chars ("I need to create the "). The 30 floor
+#       missed by 9 chars. 20 catches without over-firing — non-
+#       loop intent prefixes ("I need to read", "I'll create") sit
+#       at 12-15 chars and stay under the floor.
+_INTENT_RESTATEMENT_MIN_LCP = 20
 
 
 _INTENT_RESTATEMENT_LOOP_NUDGE = (
