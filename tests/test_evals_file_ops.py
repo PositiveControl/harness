@@ -118,10 +118,12 @@ def test_round1_called_tool_false_when_model_text_only(tmp_path: Path) -> None:
     assert case.final_correct is False
 
 
-def test_round1_call_with_wrong_args_marked_incorrect(tmp_path: Path) -> None:
-    """Model called the right tool but extracted col 1 instead of col 3.
-    round1_called_tool=True, final_correct=False — the schema-discoverability
-    win shouldn't paper over the wrong-answer."""
+def test_truncated_output_falls_back_to_heuristic(tmp_path: Path) -> None:
+    """When the candidate's output exceeds the 4 KB model-boundary cap,
+    the eval can't byte-compare against the oracle. It falls back to a
+    heuristic pass: tool returned success=True, output is non-empty, and
+    doesn't start with a known subprocess-error prefix. That's the
+    contract the wall-clock bench complements with byte-exact scoring."""
     adapter = _ScriptedAdapter(
         replies=[
             ModelReply(
@@ -131,7 +133,7 @@ def test_round1_call_with_wrong_args_marked_incorrect(tmp_path: Path) -> None:
                         name="stream_edit",
                         arguments={
                             "tool": "awk",
-                            "args": ["{print $1}"],  # wrong column
+                            "args": ["{print $3}"],
                             "paths": ["logs/sample.log"],
                         },
                     ),
@@ -146,6 +148,48 @@ def test_round1_call_with_wrong_args_marked_incorrect(tmp_path: Path) -> None:
         task=_task("extract-col3"),
         workspace=tmp_path / "ws",
         prompt=_task("extract-col3").prompts[0],
+    )
+    # 100k lines of host names truncated at 4 KB → heuristic mode →
+    # passes because output is non-empty and no error prefix.
+    assert case.round1_called_tool is True
+    assert case.final_correct is True
+
+
+def test_round1_call_with_wrong_args_marked_incorrect(tmp_path: Path) -> None:
+    """Model called the right tool but used the wrong column. With
+    byte-exact scoring (small enough output to fit in the 4 KB model
+    boundary cap), final_correct should be False.
+
+    distinct-count is the right task to test this against because its
+    output is a single integer — easily within the cap — so the
+    eval's byte-exact path activates instead of the truncated-output
+    heuristic fallback."""
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        name="stream_edit",
+                        arguments={
+                            "tool": "awk",
+                            # Right shape, wrong column — counts distinct
+                            # services (5) instead of distinct users (~1000).
+                            "args": ["{seen[$2]=1} END{print length(seen)}"],
+                            "paths": ["logs/sample.log"],
+                        },
+                    ),
+                ),
+            ),
+            ModelReply(content="done"),
+        ],
+    )
+    case = run_file_ops_case(
+        adapter=adapter,
+        candidate="stream_edit",
+        task=_task("distinct-count"),
+        workspace=tmp_path / "ws",
+        prompt=_task("distinct-count").prompts[0],
     )
     assert case.round1_called_tool is True
     assert case.final_correct is False

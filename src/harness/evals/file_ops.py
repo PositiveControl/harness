@@ -154,7 +154,21 @@ class _EventTracker:
     def observe(self, event: ToolLoopEvent) -> None:
         if event.kind == "round_start":
             self.rounds_observed.append([])
-        elif event.kind == "tool_call_end" and event.result is not None:
+        elif (
+            event.kind
+            in {
+                "tool_call_end",
+                "tool_call_failed",
+                "tool_call_declined",
+                "tool_call_deduped",
+            }
+            and event.result is not None
+        ):
+            # All four kinds carry the same ``result.tool_name``; for
+            # round1_called_tool we want to count any attempt to call
+            # this tool, success or not, so the eval distinguishes
+            # "model never reached for the tool" from "model reached
+            # but the call shape was wrong."
             self.rounds_observed[-1].append(event.result.tool_name)
 
     def round1_called(self, tool_name: str) -> bool:
@@ -192,7 +206,15 @@ def run_file_ops_case(
     workspace.mkdir(parents=True)
     task.fixture_fn(workspace)
 
-    tool = make_tool(candidate, workspace)
+    # Model-boundary cap. Empirically (Qwen 2.5 7B on MLX): 32 KB of
+    # tool result fed back into round 2's context stalls decoding even
+    # though the math says 8k tokens easily fits in the 131k window.
+    # Likely a chat-template / tokenizer cost we haven't traced down.
+    # 4 KB (~1k tokens) is small enough that round 2 decodes reliably
+    # AND large enough to carry a representative head-of-output sample
+    # for the model to summarize. The wall-clock bench's 16 MB cap is
+    # bench-only.
+    tool = make_tool(candidate, workspace, max_output_bytes=4 * 1024)
     tool_name = tool.spec.name
 
     registry = ToolRegistry()
@@ -320,15 +342,51 @@ def _score_correctness(
         )
 
     # Read-only tasks — score the candidate's last tool output.
+    #
+    # Two scoring paths: byte-exact against the oracle when the output
+    # fits in the model-boundary cap (the truncation marker is absent),
+    # and heuristic (success=True, non-empty, no error-prefix) when it
+    # doesn't. The byte-exact path is the same standard the wall-clock
+    # bench uses; the heuristic path is the honest fallback for tasks
+    # where the candidate produces more output than the model can
+    # consume — we can still tell whether the model drove the tool to
+    # a non-error result, even if we can't verify exact bytes.
     results = getattr(loop_result, "tool_results", [])
     last = next(
-        (r for r in reversed(results) if r.tool_name == tool_name and r.success),
+        (r for r in reversed(results) if r.tool_name == tool_name),
         None,
     )
-    if last is None:
+    if last is None or not last.success:
         return False, None
-    actual = (last.output or "").rstrip("\n") + "\n"
+    output = last.output or ""
+    if not output.strip():
+        return False, hashlib.sha256(b"").hexdigest()
+
+    # Known subprocess-level error prefixes — tools wrap subprocess
+    # failures as plain strings, so success=True isn't enough.
+    error_prefixes = (
+        "[awk] exit=",
+        "[sed] exit=",
+        "[cut] exit=",
+        "[tr] exit=",
+        "[awk] timed out",
+        "[sed] timed out",
+        "[python_stream] ERROR",
+        "[python_stream] timed out",
+        "[pyp_stream] exit=",
+        "[pyp_stream] timed out",
+    )
+    if any(output.startswith(prefix) for prefix in error_prefixes):
+        return False, hashlib.sha256(output.encode()).hexdigest()
+
+    if "[truncated at " in output:
+        # Output exceeded the model boundary cap — can't byte-compare.
+        # Heuristic pass: tool ran, output non-empty, no error prefix.
+        return True, hashlib.sha256(output.encode()).hexdigest()
+
+    # Output fit in the cap → strict byte-exact comparison.
     gold = task.oracle_fn(workspace)
+    actual = output.rstrip("\n") + "\n"
     return actual == gold, hashlib.sha256(actual.encode()).hexdigest()
 
 

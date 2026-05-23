@@ -332,23 +332,31 @@ CandidateKind = Literal["stream_edit", "pyp_stream", "python_stream"]
 ALL_CANDIDATES: tuple[CandidateKind, ...] = ("stream_edit", "pyp_stream", "python_stream")
 
 
-def make_tool(kind: CandidateKind, root: Path) -> Any:
+def make_tool(
+    kind: CandidateKind,
+    root: Path,
+    *,
+    max_output_bytes: int = 16 * 1024 * 1024,
+) -> Any:
     """Construct the candidate tool for ``root``. Lazy-imports the
     pyp_stream module so a slim install (no `stream` extra) can still
     use stream_edit + python_stream.
 
-    The output cap is bumped to 16 MB — the bench and model-in-loop
-    eval bypass the live model boundary, so the production 512 KB cap
-    (which protects the model from huge tool results) would distort
-    digest checks on tasks like extract-col3 that produce 1.6 MB."""
-    bench_output_cap = 16 * 1024 * 1024
+    ``max_output_bytes`` defaults to 16 MB — appropriate for the
+    wall-clock bench, which scores tool output bytes directly and
+    needs to see the full transform on tasks like extract-col3 (1.6 MB
+    of host names). The model-in-loop eval MUST override this to the
+    production-boundary value (~512 KB); a 1.6 MB tool result stuffed
+    back into a 131k-token context window stalls MLX silently. See
+    harness-bw27 Phase 4 — the original eval defaulted to 16 MB and
+    hung on case 1."""
     if kind == "stream_edit":
         from harness.tools.stream_edit import StreamEditTool
 
         return StreamEditTool(
             root=root,
             timeout_seconds=60.0,
-            max_output_bytes=bench_output_cap,
+            max_output_bytes=max_output_bytes,
         )
     if kind == "python_stream":
         from harness.tools.python_stream import PythonStreamTool
@@ -356,7 +364,7 @@ def make_tool(kind: CandidateKind, root: Path) -> Any:
         return PythonStreamTool(
             root=root,
             timeout_seconds=60.0,
-            max_output_bytes=bench_output_cap,
+            max_output_bytes=max_output_bytes,
         )
     if kind == "pyp_stream":
         from harness.tools.pyp_stream import PypStreamTool
@@ -364,7 +372,7 @@ def make_tool(kind: CandidateKind, root: Path) -> Any:
         return PypStreamTool(
             root=root,
             timeout_seconds=60.0,
-            max_output_bytes=bench_output_cap,
+            max_output_bytes=max_output_bytes,
         )
     raise ValueError(f"unknown candidate {kind!r}")
 
