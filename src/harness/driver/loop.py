@@ -390,6 +390,21 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     default_steps=default_verify_steps,
                 )
 
+            # harness-2u0t: forbidden_patterns failures need the same
+            # reopen treatment as verify failures — without this, the
+            # bd issue stays CLOSED in bd, ready_under_epic skips it
+            # next iteration, and max_attempts_per_issue is irrelevant.
+            # Drive halt 368b753e showed harness-90j0 + harness-ntat
+            # both closing with TODO violations and the loop moving on
+            # to different issues without retry.
+            if not success and reason.startswith("closed but forbidden-pattern"):
+                reopened_after_forbidden = _try_reopen(bd, current.id)
+                if not reopened_after_forbidden:
+                    log(
+                        f"REOPEN_FAILED on {current.id} after forbidden-pattern "
+                        "failure; next attempt won't have the issue in ready queue"
+                    )
+
             if success:
                 # harness-xfh2: the verify gate runs only when the bd
                 # close looked clean. A non-zero verify exit reopens the

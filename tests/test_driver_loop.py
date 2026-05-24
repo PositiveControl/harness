@@ -977,6 +977,57 @@ def test_run_loop_forbidden_pattern_fails_closed_turn(
     assert result.closed == []
 
 
+def test_run_loop_forbidden_pattern_reopens_bd_issue_for_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-2u0t: when forbidden_patterns catches a violation after
+    the model closed the bd issue, the issue must be REOPENED so the
+    next attempt's ready_under_epic picks it up again. Without this,
+    max_attempts_per_issue does nothing — the bd issue is already
+    closed and won't appear in the ready queue for the retry."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        # Same issue ready on iteration 1; the retry comes from the
+        # reopen + the second ready_under_epic returning the now-open
+        # issue again. Iteration 3 returns empty -> exit_success.
+        ready_sequence=[[issue_a], [issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    call_count = [0]
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            # First attempt: model closes with TODO present.
+            (tmp_path / "game.js").write_text("// TODO: stub\nfunction f(){}\n")
+            bd.flip_closed("harness-a")
+            return ToolLoopResult(content="done", messages=[], rounds=1, events=[])
+        # Second attempt (the retry the reopen enabled): model
+        # rewrites the file without TODO and closes cleanly.
+        (tmp_path / "game.js").write_text("function f(){}\n")
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="cleaned up", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    result = run_loop(
+        _FakeAdapter(),  # type: ignore[arg-type]
+        bd,  # type: ignore[arg-type]
+        _config(tmp_path, max_turns=5),
+    )
+    # Retry path landed the close cleanly.
+    assert result.exit_reason == "success", f"got {result.exit_reason}: {result.closed}"
+    assert result.closed == ["harness-a"]
+    # The first close-then-TODO failure triggered a reopen on bd.
+    assert "harness-a" in bd.log.reopens, f"expected reopen, got {bd.log.reopens}"
+
+
 def test_run_loop_no_verify_disables_forbidden_pattern_check(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
