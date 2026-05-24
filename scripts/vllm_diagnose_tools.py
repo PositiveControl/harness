@@ -22,7 +22,7 @@ Usage:
     uv run python scripts/vllm_diagnose_tools.py --url http://gx10-5fb9:8000/v1
     uv run python scripts/vllm_diagnose_tools.py --model Qwen2.5-Coder-32B-Instruct-AWQ
 
-Runs four probes against the endpoint:
+Runs six probes against the endpoint:
 
   1. /v1/models — confirms the server is up + shows what model is loaded.
   2. No tools, simple prompt — proves baseline generation works.
@@ -30,6 +30,17 @@ Runs four probes against the endpoint:
   4. With tools, tool_choice="required" — forces tool-call output;
      if the model CAN emit a tool call but the prompt isn't asking
      strongly enough, this will surface it.
+  5. With tools + heavy persona/system stack — checks whether system
+     prompt overload tips the model toward narration.
+  6. write_file + multi-line content (harness-9jt2) — reproduces the
+     loop-run 86699d81 turn 6 failure where tool calls came back with
+     `arguments={}`. Dissects every parsed tool_call and reports which
+     keys were extracted, which were dropped, and how long each value
+     is. The diagnostic answer for whether qwen3_xml is dropping
+     multi-line <parameter=content> values.
+  7. Same as 6, but streaming. The harness uses streaming in production;
+     vLLM's qwen3_xml parser may behave differently when accumulating
+     `arguments` from chunk deltas vs the non-streaming path.
 
 Each probe prints the request body (so you can see what was sent) and
 the response body (so you can see what came back). A verdict line at
@@ -88,6 +99,82 @@ _LIST_DIR_TOOL = {
         },
     },
 }
+
+
+# write_file shape — mirrors src/harness/tools/write_file.py exactly.
+# Two required params, the second of which carries multi-line content.
+# This is the call shape that came back with args={} during loop run
+# 86699d81 turn 6 (vjb6 attempt 2). If vLLM extracts both `path` and
+# `content` here, the parser isn't the culprit; if `content` is empty
+# or `arguments` is `{}`, the qwen3_xml parser is dropping multi-line
+# parameter values.
+_WRITE_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "write_file",
+        "description": (
+            "Write the entire file at `path` with the given `content`. "
+            "Overwrites any existing file. Both arguments are required."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path relative to the workspace root.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Full file contents to write (may be multi-line).",
+                },
+            },
+            "required": ["path", "content"],
+        },
+    },
+}
+
+
+# The actual payload from loop run 86699d81 (vjb6 §2 World map). A 30-row
+# by 40-char tile grid string with the §2.2 alphabet. This is the kind
+# of content the model needs to embed in a write_file call. If the
+# qwen3_xml parser drops multi-line param values, this is what gets
+# eaten. Format: each row is one string entry in a JS array literal.
+_TILE_GRID_JS = """// game.js — tile grid (§2 World map)
+const MAP_WIDTH = 40;
+const MAP_HEIGHT = 30;
+const tileGrid = [
+  "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+  "B......................................B",
+  "B.====================.================B",
+  "B.=B................=.=B..............=B",
+  "B.=B.BBBB.BBBB.BBBB.=.=B.BBBB.BBBB.BBB=B",
+  "B.=B.B..B.B..B.B..B.=.=B.B..B.B..B.B..=B",
+  "B.=B.BBBB.BBBB.BBBB.=.=B.BBBB.BBBB.BBB=B",
+  "B.=B................=.=B..............=B",
+  "B.====================.================B",
+  "B......................................B",
+  "B.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|B",
+  "B.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|B",
+  "B......................................B",
+  "B.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-B",
+  "B......................................B",
+  "B.====================.================B",
+  "B.=B................=.=B..............=B",
+  "B.=B.BBBB.BBBB.BBBB.=.=B.BBBB.BBBB.BBB=B",
+  "B.=B.B..B.B..B.B..B.=.=B.B..B.B..B.B..=B",
+  "B.=B.BBBB.BBBB.BBBB.=.=B.BBBB.BBBB.BBB=B",
+  "B.=B................=.=B..............=B",
+  "B.====================.================B",
+  "B......................................B",
+  "B.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|B",
+  "B.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|.|B",
+  "B......................................B",
+  "B.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-B",
+  "B......................................B",
+  "B......................................B",
+  "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+];
+"""
 
 
 # Same shape (Qwen-style) we'd look for in the raw content as the
@@ -162,6 +249,74 @@ def _verdict_for(response: dict[str, Any]) -> str:
             f"(finish={finish_reason}) — fallback parsers would catch this"
         )
     return f"✗ no tool_calls anywhere; prose only (finish={finish_reason})"
+
+
+def _dissect_tool_calls(response: dict[str, Any], expected_keys: tuple[str, ...]) -> None:
+    """Walk every parsed tool_call in the response and report on its
+    arguments shape. Used by the heavy-content probe to surface the
+    empty-args case: vLLM returns a tool_calls entry whose arguments
+    parses to {} or is missing required keys.
+
+    For each tool_call:
+      - raw arguments string (head + tail, capped at 300 chars each)
+      - parsed arguments dict (success/failure of json.loads)
+      - keys present vs `expected_keys`
+      - per-key value lengths (so we can see if `content` came back
+        as empty string vs absent vs truncated)
+    """
+    choices = response.get("choices") or []
+    if not choices:
+        print("  (no choices to dissect)")
+        return
+    msg = choices[0].get("message") or {}
+    tool_calls = msg.get("tool_calls") or []
+    if not tool_calls:
+        print("  (no tool_calls in message — verdict line covers this case)")
+        return
+    print(f"  --- tool_calls dissection ({len(tool_calls)} call(s)) ---")
+    for i, tc in enumerate(tool_calls):
+        fn = tc.get("function") or {}
+        name = fn.get("name")
+        args_raw = fn.get("arguments")
+        print(f"  [{i}] name={name!r}")
+        print(f"      arguments type: {type(args_raw).__name__}")
+        if isinstance(args_raw, str):
+            print(f"      arguments len: {len(args_raw)}")
+            head = args_raw[:300].replace("\n", "\\n")
+            tail = args_raw[-300:].replace("\n", "\\n") if len(args_raw) > 300 else ""
+            print(f"      arguments head: {head!r}")
+            if tail:
+                print(f"      arguments tail: {tail!r}")
+            try:
+                parsed = json.loads(args_raw) if args_raw else {}
+            except json.JSONDecodeError as exc:
+                print(f"      ✗ json.loads FAILED: {exc}")
+                continue
+        elif isinstance(args_raw, dict):
+            parsed = args_raw
+        else:
+            print(f"      ✗ arguments has unexpected type ({type(args_raw).__name__})")
+            continue
+        if not isinstance(parsed, dict):
+            print(f"      ✗ parsed arguments is not a dict (got {type(parsed).__name__})")
+            continue
+        keys_present = sorted(parsed.keys())
+        keys_missing = [k for k in expected_keys if k not in parsed]
+        print(f"      keys present: {keys_present}")
+        if keys_missing:
+            print(f"      ✗ keys MISSING: {keys_missing}")
+        for k in expected_keys:
+            if k not in parsed:
+                continue
+            v = parsed[k]
+            if isinstance(v, str):
+                print(f"      {k!r}: str(len={len(v)}) head={v[:120]!r}")
+            else:
+                print(f"      {k!r}: {type(v).__name__} = {v!r}")
+        if not keys_missing and all(
+            isinstance(parsed.get(k), str) and parsed[k] for k in expected_keys
+        ):
+            print("      ✓ all required keys present and non-empty")
 
 
 def probe_models(url: str) -> str | None:
@@ -348,6 +503,285 @@ def probe_tools_with_heavy_prompt(url: str, model: str) -> None:
     print(f"  VERDICT: {_verdict_for(response)}")
 
 
+def probe_tools_heavy_content(url: str, model: str) -> None:
+    """Probe 6 (harness-9jt2): write_file tool call with multi-line
+    content. Reproduces the loop-run 86699d81 failure mode.
+
+    Loop run 86699d81 turn 6 (vjb6 §2 World map) showed write_file
+    and edit_file tool calls coming back with `arguments={}` despite
+    the issue requiring a 30-row x 40-char tile grid string in the
+    file content. Hypothesis: vLLM's --tool-call-parser qwen3_xml
+    drops multi-line <parameter=content>...</parameter> values when
+    the value contains newlines, JS punctuation, or characters that
+    look like XML delimiters.
+
+    This probe sends a request that should produce a single
+    write_file tool call carrying a path AND a multi-line content
+    string. We then dissect the returned tool_calls to see whether
+    `arguments` is empty (parser-dropping multi-line content),
+    has only `path` (parser dropping the second param), or carries
+    both keys with full content (parser working — bug is elsewhere).
+    """
+    _print_section("PROBE 6: write_file + multi-line content (qwen3_xml repro)")
+    body = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You write files via the write_file tool. Always pass both "
+                    "`path` and `content` as parameters. `content` may contain "
+                    "newlines, quotes, and JS code — emit it verbatim."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Write the following JavaScript file at path 'game.js'. "
+                    "Use the write_file tool. Pass the path and the FULL "
+                    "content verbatim — do not summarize or truncate.\n\n"
+                    "```javascript\n"
+                    f"{_TILE_GRID_JS}"
+                    "```"
+                ),
+            },
+        ],
+        "tools": [_WRITE_FILE_TOOL],
+        "tool_choice": "auto",
+        "temperature": 0.2,
+        "max_tokens": 2048,
+    }
+    _print_body("request", body)
+    try:
+        response = _post_json(f"{url}/chat/completions", body)
+    except urllib.error.HTTPError as exc:
+        print(f"  ✗ HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')[:400]}")
+        return
+    _print_body("response", response)
+    print(f"  VERDICT: {_verdict_for(response)}")
+    _dissect_tool_calls(response, expected_keys=("path", "content"))
+
+
+def probe_tools_heavy_content_multitool(url: str, model: str) -> None:
+    """Probe 8 (harness-9jt2): write_file + multi-line content, but
+    with the driver's full 13-tool roster in the request — not just
+    write_file. If having many sibling tools in the schema changes
+    how vLLM parses the model's output, this probe will surface it.
+
+    Drives ship the executor with read_file, list_dir, grep, glob,
+    edit_file, write_file, stream_edit, python_stream, shell,
+    git_status, git_diff, git_log, fetch_url (and a few more). 13+
+    tools = ~5-7k tokens of schema overhead. The probe 6 baseline
+    runs with one tool to isolate the multi-line-content question;
+    probe 8 layers tool-count on top to confirm or rule out
+    schema-size interference."""
+    _print_section("PROBE 8: write_file + multi-line content + 13-tool roster")
+
+    def _stub_tool(name: str, params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": f"Driver-roster stub: {name}.",
+                "parameters": {
+                    "type": "object",
+                    "properties": params,
+                    "required": list(params.keys()),
+                },
+            },
+        }
+
+    roster = [
+        _WRITE_FILE_TOOL,
+        _stub_tool("read_file", {"path": {"type": "string"}}),
+        _stub_tool("list_dir", {"path": {"type": "string"}}),
+        _stub_tool(
+            "grep",
+            {"pattern": {"type": "string"}, "path": {"type": "string"}},
+        ),
+        _stub_tool("glob", {"pattern": {"type": "string"}}),
+        _stub_tool(
+            "edit_file",
+            {
+                "path": {"type": "string"},
+                "old_string": {"type": "string"},
+                "new_string": {"type": "string"},
+            },
+        ),
+        _stub_tool(
+            "stream_edit",
+            {"path": {"type": "string"}, "expr": {"type": "string"}},
+        ),
+        _stub_tool(
+            "python_stream",
+            {"expr": {"type": "string"}, "paths": {"type": "array"}},
+        ),
+        _stub_tool("shell", {"cmd": {"type": "string"}}),
+        _stub_tool("git_status", {}),
+        _stub_tool("git_diff", {}),
+        _stub_tool("git_log", {"n": {"type": "integer"}}),
+        _stub_tool("fetch_url", {"url": {"type": "string"}}),
+    ]
+    body = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You have a coding tool roster. Use write_file when you "
+                    "need to overwrite a file with new contents. Pass both "
+                    "`path` and `content` parameters. `content` may span many "
+                    "lines and contain code."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Write 'game.js' with this content verbatim — use the "
+                    "write_file tool, do not summarize:\n\n"
+                    "```javascript\n"
+                    f"{_TILE_GRID_JS}"
+                    "```"
+                ),
+            },
+        ],
+        "tools": roster,
+        "tool_choice": "auto",
+        "temperature": 0.2,
+        "max_tokens": 2048,
+    }
+    # Skip the request body dump — 13 tools is too much to print usefully.
+    print(f"  request: model={model}, tools={len(roster)}, multi-line content payload")
+    try:
+        response = _post_json(f"{url}/chat/completions", body)
+    except urllib.error.HTTPError as exc:
+        print(f"  ✗ HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')[:400]}")
+        return
+    _print_body("response", response)
+    print(f"  VERDICT: {_verdict_for(response)}")
+    _dissect_tool_calls(response, expected_keys=("path", "content"))
+
+
+def probe_tools_heavy_content_streaming(url: str, model: str) -> None:
+    """Probe 7 (harness-9jt2): same as probe 6 but with stream=true.
+
+    The harness uses streaming in production. vLLM accumulates
+    `arguments` as a sequence of delta chunks during streaming;
+    if the qwen3_xml parser's incremental state machine drops
+    chunks differently than the non-streaming path, this probe
+    will surface the divergence.
+
+    We reassemble the full message ourselves from SSE chunks and
+    feed it through the same dissector probe 6 uses."""
+    _print_section("PROBE 7: write_file + multi-line content, STREAMING")
+    body = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You write files via the write_file tool. Always pass "
+                    "both `path` and `content`. Multi-line content is fine."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Write 'game.js' with this content verbatim — use the "
+                    "write_file tool, do not summarize:\n\n"
+                    "```javascript\n"
+                    f"{_TILE_GRID_JS}"
+                    "```"
+                ),
+            },
+        ],
+        "tools": [_WRITE_FILE_TOOL],
+        "tool_choice": "auto",
+        "temperature": 0.2,
+        "max_tokens": 2048,
+        "stream": True,
+    }
+    _print_body("request", body)
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(  # noqa: S310 — operator-supplied http(s) URL
+        f"{url}/chat/completions",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    # Accumulate streaming deltas into a single message dict so the
+    # dissector can read it the same way it reads a non-streaming
+    # response.
+    acc_content_parts: list[str] = []
+    tc_acc: dict[int, dict[str, Any]] = {}
+    finish_reason: str | None = None
+    chunk_count = 0
+    try:
+        with urllib.request.urlopen(req, timeout=_DEFAULT_TIMEOUT_S) as resp:  # noqa: S310
+            for line_bytes in resp:
+                line = line_bytes.decode("utf-8", errors="replace").strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                payload = line[len("data:") :].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                chunk_count += 1
+                for choice in chunk.get("choices", []) or []:
+                    delta = choice.get("delta") or {}
+                    if isinstance(delta.get("content"), str):
+                        acc_content_parts.append(delta["content"])
+                    tc_deltas = delta.get("tool_calls") or []
+                    for tcd in tc_deltas:
+                        if not isinstance(tcd, dict):
+                            continue
+                        idx = int(tcd.get("index", 0) or 0)
+                        slot = tc_acc.setdefault(
+                            idx,
+                            {
+                                "id": "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            },
+                        )
+                        if isinstance(tcd.get("id"), str) and tcd["id"]:
+                            slot["id"] = tcd["id"]
+                        fn = tcd.get("function") or {}
+                        if isinstance(fn.get("name"), str) and fn["name"]:
+                            slot["function"]["name"] = fn["name"]
+                        if isinstance(fn.get("arguments"), str):
+                            slot["function"]["arguments"] += fn["arguments"]
+                    fr = choice.get("finish_reason")
+                    if isinstance(fr, str):
+                        finish_reason = fr
+    except urllib.error.HTTPError as exc:
+        print(f"  ✗ HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')[:400]}")
+        return
+    full_content = "".join(acc_content_parts)
+    parsed_calls = [tc_acc[k] for k in sorted(tc_acc.keys())]
+    reassembled = {
+        "choices": [
+            {
+                "message": {
+                    "content": full_content,
+                    "tool_calls": parsed_calls,
+                },
+                "finish_reason": finish_reason,
+            }
+        ],
+    }
+    print(f"  chunks received: {chunk_count}")
+    print(f"  finish_reason:   {finish_reason}")
+    print(f"  content length:  {len(full_content)}")
+    print(f"  tool_calls:      {len(parsed_calls)}")
+    _print_body("reassembled message", reassembled["choices"][0]["message"])
+    print(f"  VERDICT: {_verdict_for(reassembled)}")
+    _dissect_tool_calls(reassembled, expected_keys=("path", "content"))
+
+
 def probe_tools_required(url: str, model: str) -> None:
     """Probe 4: chat completion WITH tools, tool_choice='required'.
 
@@ -418,6 +852,9 @@ def main(argv: list[str]) -> int:
     probe_tools_auto(url, model)
     probe_tools_required(url, model)
     probe_tools_with_heavy_prompt(url, model)
+    probe_tools_heavy_content(url, model)
+    probe_tools_heavy_content_streaming(url, model)
+    probe_tools_heavy_content_multitool(url, model)
 
     print()
     print("=" * 72)
@@ -447,6 +884,21 @@ def main(argv: list[str]) -> int:
         "  - All probes 2-4 are ✓ structured → the harness's drive\n"
         "    halts are NOT a vLLM issue. Re-examine the harness's\n"
         "    system prompt stack and message-construction path.\n"
+        "\n"
+        "  - Probes 6/7 dissection shows `path` present but `content`\n"
+        "    missing or empty → qwen3_xml parser is dropping the\n"
+        "    multi-line parameter value. Swap to a different\n"
+        "    --tool-call-parser (try `hermes`) or upgrade vLLM.\n"
+        "\n"
+        "  - Probes 6/7 dissection shows BOTH keys present and `content`\n"
+        "    matches the asked-for length → parser handles multi-line\n"
+        "    content fine; the drive-halt was something model-side\n"
+        "    (model abridged the content, model emitted no tool call\n"
+        "    on that turn, etc.).\n"
+        "\n"
+        "  - Probe 6 succeeds but probe 7 returns empty `arguments` →\n"
+        "    the streaming-delta accumulation path is the failure mode.\n"
+        "    Bypass streaming for write-tool calls, or upgrade vLLM.\n"
     )
 
     return 0
