@@ -149,6 +149,15 @@ class Handoff:
     phase_instructions: str | None = None
     prior_assessment: dict[str, object] | None = None
     prior_test_cmd: str | None = None
+    # harness-d8e3: forbidden_patterns surfaced into the handoff so the
+    # model knows up-front which placeholder strings the harness will
+    # reject at close time. Without this, the model writes "// TODO"
+    # comments, calls `bd close`, the close succeeds, then the
+    # forbidden-pattern audit fails the turn — and the model never
+    # learned in time to fix it. Empty tuple means the operator
+    # disabled the check (or no forbidden_patterns set in LoopConfig);
+    # the block doesn't render.
+    forbidden_patterns: tuple[str, ...] = ()
 
     def render(self) -> str:
         """Produce the `[SESSION HANDOFF]` block. Applies the render-
@@ -214,6 +223,18 @@ class Handoff:
                 [
                     "[PRIOR ATTEMPT FAILED]",
                     self.prior_attempt_failure,
+                    "",
+                ]
+            )
+        if self.forbidden_patterns:
+            pattern_list = ", ".join(repr(p) for p in self.forbidden_patterns)
+            parts.extend(
+                [
+                    "[FORBIDDEN PATTERNS]",
+                    f"The harness rejects any close that introduces {pattern_list}",
+                    "into any workspace file (post-close audit, harness-k52f).",
+                    "Do NOT leave placeholder comments with these strings — write",
+                    "the actual implementation or leave the file alone.",
                     "",
                 ]
             )
@@ -286,6 +307,7 @@ def build_handoff(
     phase_instructions: str | None = None,
     prior_assessment: dict[str, object] | None = None,
     prior_test_cmd: str | None = None,
+    forbidden_patterns: tuple[str, ...] = (),
 ) -> Handoff:
     """Assemble a `Handoff` for the next executor turn.
 
@@ -346,6 +368,7 @@ def build_handoff(
         phase_instructions=phase_instructions,
         prior_assessment=prior_assessment,
         prior_test_cmd=prior_test_cmd,
+        forbidden_patterns=forbidden_patterns,
     )
 
 

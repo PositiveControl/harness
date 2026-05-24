@@ -177,6 +177,34 @@ def test_render_prior_attempt_block_absent_on_first_attempt() -> None:
     assert "[PRIOR ATTEMPT FAILED]" not in out
 
 
+def test_render_inserts_forbidden_patterns_block_when_set() -> None:
+    """harness-d8e3: when the operator sets forbidden_patterns on
+    LoopConfig (default 'TODO', 'FIXME', 'XXX', 'HACK'), every
+    handoff carries a [FORBIDDEN PATTERNS] block so the model
+    knows up-front the harness will reject any close that
+    introduces these strings into workspace files. Preventive
+    layer for the post-close audit."""
+    out = _base_handoff(
+        forbidden_patterns=("TODO", "FIXME", "XXX", "HACK"),
+    ).render()
+    assert "[FORBIDDEN PATTERNS]" in out
+    assert "'TODO'" in out
+    assert "'FIXME'" in out
+    assert "'XXX'" in out
+    assert "'HACK'" in out
+    # And the block appears BEFORE the current-issue block so the
+    # model reads the constraint before deciding what to write.
+    assert out.index("[FORBIDDEN PATTERNS]") < out.index("Current issue:")
+
+
+def test_render_forbidden_patterns_block_absent_when_empty() -> None:
+    """Empty forbidden_patterns tuple means the operator disabled
+    the check (or no patterns configured) — no block renders, no
+    noise in the handoff."""
+    out = _base_handoff(forbidden_patterns=()).render()
+    assert "[FORBIDDEN PATTERNS]" not in out
+
+
 def test_render_uses_placeholders_when_lists_are_empty() -> None:
     out = _base_handoff(
         files_touched=(),

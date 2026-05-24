@@ -166,6 +166,17 @@ class LoopConfig:
     # ~50% more headroom while keeping each turn bounded (12 rounds *
     # ~10s/round ≈ 2 min upper bound on M4 Pro).
     executor_max_rounds: int = 12
+    # harness-d8e3: max attempts per bd issue before the driver halts +
+    # flags for human review. Was hard-coded at 2 (halt on the second
+    # consecutive failure); bumped to 3 because the forbidden-pattern
+    # audit fires AFTER a successful close, so the model only learns
+    # about the failure in the handoff for the NEXT attempt. With cap=2,
+    # a turn-1 failure that didn't close + a turn-2 close that fails
+    # the audit halted the run with the model never having seen the
+    # audit-failure feedback. cap=3 gives one more retry slot where
+    # the model sees [PRIOR ATTEMPT FAILED: ... forbidden-pattern ...]
+    # and can fix it.
+    max_attempts_per_issue: int = 3
     # Tar+gzip the workspace into
     # .harness/loop_runs/<id>_workspace.tar.gz before the first turn
     # fires (harness-9ijr). Default on — gitignored workspaces are
@@ -307,6 +318,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 prior_attempt_failure=prior_failure,
                 workspace=config.workspace,
                 targeted_fix=targeted_fix,
+                forbidden_patterns=config.forbidden_patterns,
             )
 
             if config.dry_run:
@@ -407,9 +419,12 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     f"({reopen_note}; {verify_failure})"
                 )
                 # Verify failure counts as the iteration's failure for
-                # attempt accounting — second consecutive verify failure
-                # halts via the same path a runtime failure does.
-                if attempt >= 2:
+                # attempt accounting — halt at config.max_attempts_per_issue
+                # (was hard-coded 2; harness-d8e3 made it configurable).
+                # last_failure was already stored above (line 414); the
+                # next iteration picks up `verify_failed: ...` via the
+                # handoff's prior_attempt_failure block.
+                if attempt >= config.max_attempts_per_issue:
                     return _exit_halted(
                         bd,
                         state,
@@ -421,12 +436,12 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
 
             log(f"turn {state.turns_used}: {current.id} attempt={attempt} FAIL ({reason})")
 
-            if attempt == 1:
+            if attempt < config.max_attempts_per_issue:
                 state.last_failure[current.id] = reason
                 _save_state(state, config.workspace)
                 continue
 
-            # Second consecutive failure — halt.
+            # Final consecutive failure — halt (harness-d8e3).
             return _exit_halted(bd, state, current_id=current.id, reason=reason, log=log)
 
 

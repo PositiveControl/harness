@@ -534,6 +534,11 @@ def test_run_loop_context_overflow_only_caught_for_matching_messages(
 def test_run_loop_halts_after_two_failures_on_same_issue(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Halt semantics at config.max_attempts_per_issue (harness-d8e3
+    raised the default from 2 to 3). This test pins the attempt-cap
+    behavior by setting cap=2 explicitly; the higher-default test is
+    covered by test_run_loop_halts_after_max_attempts_default_is_three
+    below."""
     issue_a = _issue("harness-a", title="A", status="open")
     bd = _ScenarioBd(
         ready_sequence=[[issue_a]],
@@ -545,7 +550,11 @@ def test_run_loop_halts_after_two_failures_on_same_issue(
     _stub_git_head(monkeypatch)
     _stub_run_tool_loop(monkeypatch, outcomes=["fail", "fail"], bd=bd)
 
-    result = run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+    result = run_loop(
+        _FakeAdapter(),  # type: ignore[arg-type]
+        bd,  # type: ignore[arg-type]
+        _config(tmp_path, max_attempts_per_issue=2),
+    )
     assert result.exit_reason == "halted"
     assert result.halted_on == "harness-a"
     assert result.turns_used == 2
@@ -554,15 +563,45 @@ def test_run_loop_halts_after_two_failures_on_same_issue(
     assert ("harness-a", "halted") in bd.log.closed_via_session_state
 
 
+def test_run_loop_halts_after_max_attempts_default_is_three(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-d8e3: default max_attempts_per_issue is 3. The model gets
+    a 3rd retry slot so the post-close forbidden-pattern audit feedback
+    (which only lands in the handoff for the NEXT attempt) has a chance
+    to be acted on before halt + bd_human."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a]],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    _stub_run_tool_loop(monkeypatch, outcomes=["fail", "fail", "fail"], bd=bd)
+
+    result = run_loop(
+        _FakeAdapter(),  # type: ignore[arg-type]
+        bd,  # type: ignore[arg-type]
+        _config(tmp_path, max_turns=5),
+    )
+    assert result.exit_reason == "halted"
+    assert result.halted_on == "harness-a"
+    assert result.turns_used == 3, "default cap should have allowed 3 attempts"
+
+
 # --- exhaustion -----------------------------------------------------
 
 
 def test_run_loop_exits_exhausted_at_max_turns(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # max_turns=2; two failing turns on different issues exhaust the budget.
-    # First failure on issue_a, then because it's only the FIRST failure, the
-    # loop retries — but max_turns hits before retry can run.
+    # max_turns=2 + max_attempts_per_issue=2: two failing turns on the
+    # same issue exhaust the attempt cap. Halt fires at attempt 2 BEFORE
+    # exhaustion check on iteration 3. (harness-d8e3 raised the default
+    # cap to 3 — this test pins the cap=2 behavior explicitly to keep
+    # the assertion stable.)
     issue_a = _issue("harness-a", title="A", status="open")
     bd = _ScenarioBd(
         ready_sequence=[[issue_a]],
@@ -573,12 +612,9 @@ def test_run_loop_exits_exhausted_at_max_turns(
     )
     _stub_git_head(monkeypatch)
     _stub_run_tool_loop(monkeypatch, outcomes=["open harness-a", "open harness-a"], bd=bd)
-    cfg = _config(tmp_path, max_turns=2)
+    cfg = _config(tmp_path, max_turns=2, max_attempts_per_issue=2)
 
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
-    # After two failed attempts on the same issue, halt fires (attempt==2
-    # is the halt rule, which happens BEFORE exhaustion check on iteration 3).
-    # So this test actually exercises the halt path. Confirm.
     assert result.exit_reason == "halted"
 
 
@@ -1334,7 +1370,7 @@ def test_run_loop_verify_fails_twice_halts(monkeypatch: pytest.MonkeyPatch, tmp_
     _write_draft_with_verify(draft_path, "implement foo", ["smoke.js"])
 
     monkeypatch.setattr("harness.driver.loop._exec_verify_cmd", lambda *_a, **_k: (1, "boom"))
-    cfg = _config(tmp_path, plan_draft_path=draft_path, max_turns=5)
+    cfg = _config(tmp_path, plan_draft_path=draft_path, max_turns=5, max_attempts_per_issue=2)
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
 
     assert result.exit_reason == "halted"
@@ -2050,7 +2086,7 @@ def test_run_loop_fsm_halts_when_assess_produces_no_assessment(
     monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
     monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd", lambda *_a, **_k: (0, ""))
 
-    cfg = _config(tmp_path, use_fsm=True, max_turns=3)
+    cfg = _config(tmp_path, use_fsm=True, max_turns=3, max_attempts_per_issue=2)
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
 
     assert result.exit_reason == "halted"
