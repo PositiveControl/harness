@@ -18,8 +18,11 @@ cluster swaps the model behind a fixed URL."""
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Iterable, Iterator
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -34,6 +37,37 @@ from harness.tools.base import (
     ToolCall,
     ToolSpec,
 )
+
+# Trace-log env var (harness-97mq). When set to a writable path, every
+# complete_with_tools / stream_with_tools call appends one JSONL record
+# containing the request payload (sans api key) and either the raw
+# response body (non-streaming) or the reassembled message + per-index
+# tool_call slots (streaming). Used to capture failing drive turns
+# where the tool-call args parse as empty — gives ground truth on what
+# the model emitted vs what we parsed.
+#
+# Opt-in: unset env = no-op. Failures are silent (diagnostic, not a
+# contract — same policy as data/tool_bail.jsonl).
+_TRACE_ENV: str = "HARNESS_VLLM_TRACE"
+
+
+def _vllm_trace(record: dict[str, Any]) -> None:
+    """Append one JSONL record to ``$HARNESS_VLLM_TRACE`` if set.
+
+    Adds an ISO-8601 ``ts`` field automatically. Errors swallowed —
+    a misconfigured trace path must never break a live turn.
+    """
+    path_str = os.environ.get(_TRACE_ENV)
+    if not path_str:
+        return
+    try:
+        record = {"ts": datetime.now(UTC).isoformat(), **record}
+        path = Path(path_str)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: S110 — diagnostic only; must not break a turn
+        pass
 
 
 def _synth_tool_call_id(idx: int, name: str) -> str:
@@ -466,6 +500,15 @@ class VllmAdapter:
                     parsed = fallback_calls
         if tools and not parsed and raw_for_bail.strip():
             _log_tool_bail(raw_for_bail, content)
+        _vllm_trace(
+            {
+                "mode": "complete_with_tools",
+                "model": self.model,
+                "request": payload,
+                "response": data,
+                "parsed_calls": [{"name": c.name, "arguments": c.arguments} for c in parsed],
+            }
+        )
         return ModelReply(
             content=content,
             tool_calls=tuple(parsed),
@@ -603,6 +646,29 @@ class VllmAdapter:
         # transcript records the text — confusing.
         if suppressing_bare_json and not parsed and full_content:
             yield StreamText(text=full_content)
+
+        _vllm_trace(
+            {
+                "mode": "stream_with_tools",
+                "model": self.model,
+                "request": payload,
+                "reassembled_message": {
+                    "content": full_content,
+                    "tool_calls": [
+                        {
+                            "index": idx,
+                            "function": {
+                                "name": tc_acc[idx]["name"],
+                                "arguments": tc_acc[idx]["arguments"],
+                            },
+                        }
+                        for idx in sorted(tc_acc.keys())
+                    ],
+                },
+                "finish_reason": finish_reason,
+                "parsed_calls": [{"name": c.name, "arguments": c.arguments} for c in parsed],
+            }
+        )
 
         yield StreamComplete(
             reply=ModelReply(

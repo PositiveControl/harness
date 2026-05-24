@@ -475,6 +475,195 @@ def test_vllm_stream_with_tools_yields_text_for_normal_reply() -> None:
     assert chunks[-1].reply.content == "no tool needed"
 
 
+# ---------- trace logger (harness-97mq) ----------------------------------
+
+
+def test_vllm_trace_no_env_no_writes(tmp_path: Any) -> None:
+    """When HARNESS_VLLM_TRACE is unset, no file is written. The trace
+    logger must be opt-in — a misconfigured developer machine should
+    never accumulate trace records by default."""
+    trace_target = tmp_path / "trace.jsonl"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)), patch.dict("os.environ", {}, clear=False):
+        # Ensure the env var really is unset for this branch.
+        import os
+
+        os.environ.pop("HARNESS_VLLM_TRACE", None)
+        adapter.complete_with_tools([ChatMessage(role="user", content="hi")])
+
+    assert not trace_target.exists()
+
+
+def test_vllm_trace_complete_with_tools_writes_jsonl(tmp_path: Any) -> None:
+    """complete_with_tools must append a JSONL record with the request,
+    raw response, and parsed_calls when HARNESS_VLLM_TRACE is set."""
+    trace_target = tmp_path / "trace.jsonl"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_0",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "weather",
+                                        "arguments": json.dumps({"city": "SF"}),
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with (
+        patch("httpx.Client", _make_factory(handler)),
+        patch.dict("os.environ", {"HARNESS_VLLM_TRACE": str(trace_target)}),
+    ):
+        adapter.complete_with_tools(
+            [ChatMessage(role="user", content="weather in SF?")],
+            tools=[_weather_spec()],
+        )
+
+    assert trace_target.exists()
+    lines = trace_target.read_text().splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["mode"] == "complete_with_tools"
+    assert record["model"] == "m"
+    assert record["request"]["tools"][0]["function"]["name"] == "weather"
+    assert (
+        record["response"]["choices"][0]["message"]["tool_calls"][0]["function"]["name"]
+        == "weather"
+    )
+    assert record["parsed_calls"] == [{"name": "weather", "arguments": {"city": "SF"}}]
+    assert "ts" in record
+
+
+def test_vllm_trace_stream_with_tools_writes_jsonl(tmp_path: Any) -> None:
+    """Streaming path must also write a trace record — using
+    reassembled_message + per-index tool_call slots, which is what the
+    operator needs to inspect when a drive turn returns empty args."""
+    trace_target = tmp_path / "trace.jsonl"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "function": {"name": "weather", "arguments": ""},
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "function": {"arguments": '{"city": "SF"}'},
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                },
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+                "[DONE]",
+            ]
+        )
+
+    adapter = VllmAdapter(model="m")
+    with (
+        patch("httpx.Client", _make_factory(handler)),
+        patch.dict("os.environ", {"HARNESS_VLLM_TRACE": str(trace_target)}),
+    ):
+        list(
+            adapter.stream_with_tools(
+                [ChatMessage(role="user", content="hi")],
+                tools=[_weather_spec()],
+            )
+        )
+
+    lines = trace_target.read_text().splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["mode"] == "stream_with_tools"
+    assert record["finish_reason"] == "tool_calls"
+    assembled = record["reassembled_message"]["tool_calls"][0]
+    assert assembled["function"]["name"] == "weather"
+    assert assembled["function"]["arguments"] == '{"city": "SF"}'
+    assert record["parsed_calls"] == [{"name": "weather", "arguments": {"city": "SF"}}]
+
+
+def test_vllm_trace_bad_path_does_not_crash(tmp_path: Any) -> None:
+    """If HARNESS_VLLM_TRACE points to an unwritable path, the trace
+    logger must silently no-op rather than break the live turn. This
+    is the contract — diagnostic, not load-bearing."""
+    # Point trace at a path whose parent is a file (mkdir will fail).
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    bad_path = blocker / "trace.jsonl"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "fine"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with (
+        patch("httpx.Client", _make_factory(handler)),
+        patch.dict("os.environ", {"HARNESS_VLLM_TRACE": str(bad_path)}),
+    ):
+        reply = adapter.complete_with_tools([ChatMessage(role="user", content="hi")])
+
+    # Turn succeeded despite trace failure.
+    assert reply.content == "fine"
+
+
 # ---------- factory + cli plumbing ---------------------------------------
 
 
