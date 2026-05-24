@@ -948,14 +948,17 @@ def test_run_loop_extra_observer_receives_events(
     assert any(e.kind == "round_start" for e in captured)
 
 
-def test_run_loop_forbidden_pattern_fails_closed_turn(
+def test_run_loop_forbidden_pattern_warns_but_does_not_fail_close(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """harness-k52f: a bd-closed issue with a TODO in a modified file
-    fails the turn — closed-with-bad-code is worse than not-closed."""
+    """harness-oh8e: forbidden_patterns is now warn-only. A bd-closed
+    issue with a TODO in a modified file used to fail the turn
+    (harness-k52f); that consumed retry budget on over-verification
+    rounds (drive halt 715f3edb). The new behavior: log a WARN line
+    to the progress log, let the close stand, drive proceeds."""
     issue_a = _issue("harness-a", title="A", status="open")
     bd = _ScenarioBd(
-        ready_sequence=[[issue_a]],
+        ready_sequence=[[issue_a], []],
         issues={
             "harness-a": issue_a,
             "harness-e9oq": _issue("harness-e9oq", title="epic"),
@@ -971,61 +974,23 @@ def test_run_loop_forbidden_pattern_fails_closed_turn(
         return ToolLoopResult(content="done", messages=[], rounds=1, events=[])
 
     monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
-    result = run_loop(_FakeAdapter(), bd, _config(tmp_path, max_turns=1))  # type: ignore[arg-type]
-    # 1 turn, 1 failure, max_turns exhausted before retry.
-    assert result.exit_reason == "exhausted"
-    assert result.closed == []
-
-
-def test_run_loop_forbidden_pattern_reopens_bd_issue_for_retry(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """harness-2u0t: when forbidden_patterns catches a violation after
-    the model closed the bd issue, the issue must be REOPENED so the
-    next attempt's ready_under_epic picks it up again. Without this,
-    max_attempts_per_issue does nothing — the bd issue is already
-    closed and won't appear in the ready queue for the retry."""
-    issue_a = _issue("harness-a", title="A", status="open")
-    bd = _ScenarioBd(
-        # Same issue ready on iteration 1; the retry comes from the
-        # reopen + the second ready_under_epic returning the now-open
-        # issue again. Iteration 3 returns empty -> exit_success.
-        ready_sequence=[[issue_a], [issue_a], []],
-        issues={
-            "harness-a": issue_a,
-            "harness-e9oq": _issue("harness-e9oq", title="epic"),
-        },
-    )
-    _stub_git_head(monkeypatch)
-
-    call_count = [0]
-
-    def fake_run_tool_loop(
-        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
-    ) -> ToolLoopResult:
-        call_count[0] += 1
-        if call_count[0] == 1:
-            # First attempt: model closes with TODO present.
-            (tmp_path / "game.js").write_text("// TODO: stub\nfunction f(){}\n")
-            bd.flip_closed("harness-a")
-            return ToolLoopResult(content="done", messages=[], rounds=1, events=[])
-        # Second attempt (the retry the reopen enabled): model
-        # rewrites the file without TODO and closes cleanly.
-        (tmp_path / "game.js").write_text("function f(){}\n")
-        bd.flip_closed("harness-a")
-        return ToolLoopResult(content="cleaned up", messages=[], rounds=1, events=[])
-
-    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    log_path = tmp_path / "progress.log"
     result = run_loop(
         _FakeAdapter(),  # type: ignore[arg-type]
         bd,  # type: ignore[arg-type]
-        _config(tmp_path, max_turns=5),
+        _config(tmp_path, max_turns=2, log_path=log_path),
     )
-    # Retry path landed the close cleanly.
-    assert result.exit_reason == "success", f"got {result.exit_reason}: {result.closed}"
+    # Close succeeded — model's substantive work isn't rejected over
+    # a leftover TODO comment.
+    assert result.exit_reason == "success", f"got {result.exit_reason}"
     assert result.closed == ["harness-a"]
-    # The first close-then-TODO failure triggered a reopen on bd.
-    assert "harness-a" in bd.log.reopens, f"expected reopen, got {bd.log.reopens}"
+    # But the operator gets visibility: warning line in the progress log.
+    log_contents = log_path.read_text()
+    assert "[WARN]" in log_contents
+    assert "harness-a" in log_contents
+    assert "TODO" in log_contents
+    # And bd was NOT reopened — close stands.
+    assert "harness-a" not in bd.log.reopens
 
 
 def test_run_loop_no_verify_disables_forbidden_pattern_check(

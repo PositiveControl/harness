@@ -363,7 +363,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 )
             state.turns_used += 1
 
-            success, reason = _classify_post_turn(
+            success, reason, forbidden_warnings = _classify_post_turn(
                 bd,
                 current.id,
                 turn_success,
@@ -372,6 +372,22 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 started_at=state.started_at,
                 forbidden_patterns=config.forbidden_patterns,
             )
+
+            # harness-oh8e: forbidden_patterns is warn-only. Surface the
+            # violations to the progress log so the operator sees them
+            # at audit time, but DON'T fail the close — drives that
+            # actually finish substantive work shouldn't halt over a
+            # leftover TODO comment. The previous behavior (fail +
+            # reopen + retry, harness-2u0t) burned the retry budget on
+            # over-verification rounds that never reached `bd close`.
+            if forbidden_warnings:
+                warning_tail = "; ".join(forbidden_warnings[:5])
+                extra = (
+                    f" (+{len(forbidden_warnings) - 5} more)" if len(forbidden_warnings) > 5 else ""
+                )
+                log(
+                    f"[WARN] {current.id} closed with forbidden-pattern hits: {warning_tail}{extra}"
+                )
 
             # harness-pfvj: claim-without-close detection. When the bd
             # issue stayed open after the turn but the model's reply
@@ -389,21 +405,6 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     config.workspace,
                     default_steps=default_verify_steps,
                 )
-
-            # harness-2u0t: forbidden_patterns failures need the same
-            # reopen treatment as verify failures — without this, the
-            # bd issue stays CLOSED in bd, ready_under_epic skips it
-            # next iteration, and max_attempts_per_issue is irrelevant.
-            # Drive halt 368b753e showed harness-90j0 + harness-ntat
-            # both closing with TODO violations and the loop moving on
-            # to different issues without retry.
-            if not success and reason.startswith("closed but forbidden-pattern"):
-                reopened_after_forbidden = _try_reopen(bd, current.id)
-                if not reopened_after_forbidden:
-                    log(
-                        f"REOPEN_FAILED on {current.id} after forbidden-pattern "
-                        "failure; next attempt won't have the issue in ready queue"
-                    )
 
             if success:
                 # harness-xfh2: the verify gate runs only when the bd
@@ -769,35 +770,38 @@ def _classify_post_turn(
     workspace: Path | None = None,
     started_at: datetime | None = None,
     forbidden_patterns: tuple[str, ...] = (),
-) -> tuple[bool, str]:
+) -> tuple[bool, str, tuple[str, ...]]:
     """Combine the turn outcome with the post-turn bd state.
 
     Issue must actually be closed for the turn to count as a real win —
     a clean reply with the issue still open means the model didn't
     finish the work, regardless of how confidently it claimed to.
 
-    Forbidden-pattern verification (harness-k52f): when
+    Forbidden-pattern verification (harness-k52f, harness-oh8e): when
     `forbidden_patterns` is non-empty and `workspace` + `started_at`
     are supplied, the function scans workspace files modified since
-    `started_at` for any of the patterns. Any hit fails the turn
-    even if the bd issue closed — small models will happily close
-    after writing 'TODO' comments that violate spec-opening rules."""
+    `started_at` for any of the patterns. Hits no longer fail the turn
+    (warn-only); they're returned in the third tuple element so the
+    caller can log them and the operator can audit post-hoc. The bd
+    issue stays closed because the model did the substantive work even
+    if it left a TODO comment behind. The previous fail-the-turn
+    behavior consumed retry budget on over-verification rounds that
+    never reached `bd close` (drive halt 715f3edb)."""
     if not turn_success:
-        return False, turn_reason
+        return False, turn_reason, ()
     try:
         issue = bd.show(current_id)
     except DriverBdError as exc:
-        return False, f"post-turn bd.show failed: {exc}"
+        return False, f"post-turn bd.show failed: {exc}", ()
     if issue.status != "closed":
-        return False, f"issue still {issue.status} after turn"
-    # bd issue closed; now check forbidden patterns in the workspace.
+        return False, f"issue still {issue.status} after turn", ()
+    # bd issue closed; warn-only forbidden-pattern check.
+    warnings: tuple[str, ...] = ()
     if forbidden_patterns and workspace is not None and started_at is not None:
         violations = _find_violations(workspace, started_at, forbidden_patterns)
         if violations:
-            joined = "; ".join(violations[:5])
-            extra = f" (+{len(violations) - 5} more)" if len(violations) > 5 else ""
-            return False, f"closed but forbidden-pattern hits: {joined}{extra}"
-    return True, ""
+            warnings = tuple(violations)
+    return True, "", warnings
 
 
 def _find_violations(
