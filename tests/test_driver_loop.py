@@ -2021,6 +2021,76 @@ def test_run_loop_auto_close_on_claim_with_verify_pass(
     ]
 
 
+def test_run_loop_default_verify_steps_recomputed_per_turn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-e74o: workspaces that start empty (the §1 project-skeleton
+    case) have no .js/.py files when the run boots, so the startup
+    snapshot of default_workspace_verify_steps is empty. The loop must
+    recompute the defaults AFTER each turn — once the model writes
+    game.js, the next verify call must see the new file and the
+    auto-close gate's `steps_ran > 0` precondition must trip."""
+    from harness.driver.planner import VerifyStep
+
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    call_count = [0]
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        call_count[0] += 1
+        return ToolLoopResult(
+            content="The issue has been resolved and all acceptance criteria are met.",
+            messages=[],
+            rounds=1,
+            events=[],
+        )
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+
+    # Startup snapshot: empty. Recompute after turn 1: one step. The
+    # gate's auto-close must use the recomputed value.
+    compute_calls = [0]
+
+    def fake_default_steps(_workspace: Any) -> tuple[VerifyStep, ...]:
+        compute_calls[0] += 1
+        if compute_calls[0] == 1:
+            return ()  # startup snapshot
+        return (VerifyStep(cmd="node --check game.js"),)  # post-turn recompute
+
+    monkeypatch.setattr(
+        "harness.driver.loop.default_workspace_verify_steps",
+        fake_default_steps,
+    )
+    monkeypatch.setattr("harness.driver.loop._exec_verify_cmd", lambda _s, _w: (0, ""))
+
+    cfg = _config(tmp_path, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-a"]
+    # Single turn — recomputed defaults gave the auto-close gate the
+    # step it needed to fire.
+    assert call_count[0] == 1
+    assert bd.log.closes == [
+        (
+            "harness-a",
+            "auto-closed by drive: model claimed success + verify gate passed (harness-b7m1)",
+        )
+    ]
+    # Recomputed at least twice: once at startup, once per turn.
+    assert compute_calls[0] >= 2
+
+
 def test_run_loop_auto_close_skipped_when_no_verify_steps(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
