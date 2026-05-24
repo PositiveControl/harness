@@ -39,6 +39,7 @@ from typing import Any
 
 from harness.character import Character
 from harness.driver.bd import DriverBd, DriverBdError
+from harness.driver.claim_detector import last_shell_cmd_in_messages
 from harness.driver.handoff import Handoff
 from harness.driver.planner import VerifyStep
 from harness.driver.turn_fsm import (
@@ -113,7 +114,11 @@ class FsmTurnResult:
     - `last_test_cmd`: the test command from WRITE_TEST phase, or
       None when not on the TDD path. Carried forward similarly.
     - `phase_trace`: list of (from, to, name) tuples mirroring the
-      FSM's own trace — used by audit + progress log."""
+      FSM's own trace — used by audit + progress log.
+    - `last_shell_cmd`: the `cmd` argument from the most recent
+      shell tool call across all FSM phases, or None. Used by the
+      legacy claim-without-close gate to detect celebratory `echo`
+      finalization gestures (harness-24pn)."""
 
     final_phase: TurnPhase
     succeeded: bool
@@ -122,6 +127,7 @@ class FsmTurnResult:
     last_assessment: dict[str, Any] | None
     last_test_cmd: str | None
     phase_trace: list[tuple[TurnPhase, TurnPhase, str]]
+    last_shell_cmd: str | None = None
 
 
 # --- per-phase tool rosters ---------------------------------------
@@ -607,6 +613,11 @@ def run_fsm_turn(
 
     fsm = build_turn_fsm(initial=initial_phase)
     last_reply = ""
+    # harness-24pn: track the most recent shell cmd across all phases so
+    # FsmTurnResult can expose it to the legacy claim-without-close gate.
+    # Updated after each phase by scanning that phase's tool_loop_result
+    # messages in reverse.
+    last_shell_cmd: str | None = None
     captured_assessment: dict[str, Any] | None = prior_assessment
     captured_test_cmd: str | None = prior_test_cmd
 
@@ -642,6 +653,14 @@ def run_fsm_turn(
         )
         if execution.tool_loop_result.content:
             last_reply = execution.tool_loop_result.content
+        # harness-24pn: scan this phase's messages for the most recent
+        # shell call's cmd. Phases run in temporal order, so a later
+        # phase's shell call overrides an earlier one. The driver's
+        # claim-without-close gate inspects the final value to catch
+        # celebratory `echo` finalization gestures.
+        phase_shell = last_shell_cmd_in_messages(execution.tool_loop_result.messages)
+        if phase_shell is not None:
+            last_shell_cmd = phase_shell
 
         # Map per-phase results to PhaseOutcome.
         outcome = _resolve_phase_outcome(
@@ -703,6 +722,7 @@ def run_fsm_turn(
             last_assessment=captured_assessment,
             last_test_cmd=captured_test_cmd,
             phase_trace=list(fsm.trace),
+            last_shell_cmd=last_shell_cmd,
         )
 
     # HALTED — derive reason from the last trace step or the last
@@ -719,6 +739,7 @@ def run_fsm_turn(
         last_assessment=captured_assessment,
         last_test_cmd=captured_test_cmd,
         phase_trace=list(fsm.trace),
+        last_shell_cmd=last_shell_cmd,
     )
 
 

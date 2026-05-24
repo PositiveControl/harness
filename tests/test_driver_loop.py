@@ -1721,6 +1721,102 @@ def test_detect_claim_signal_no_signal_returns_false() -> None:
     assert not detect_claim_signal("Issue not yet complete; still iterating.")
 
 
+def test_detect_claim_signal_active_voice_present_tense_variants() -> None:
+    """harness-24pn: loop run 94534703 turns 1+2 had the model say
+    "the implementation now MEETS all acceptance criteria" and
+    "validation confirms... satisfying all the requirements". The
+    original past-tense regex set missed both — these variants must
+    now match."""
+    from harness.driver.claim_detector import detect_claim_signal
+
+    # The exact 94534703 turn 1 phrasing.
+    assert detect_claim_signal(
+        "The implementation now meets all acceptance criteria and resolves "
+        "the regression issue where tileGrid[28] didn't exist."
+    )
+    # The exact 94534703 turn 2 phrasing.
+    assert detect_claim_signal(
+        "The validation confirms that the grid now has exactly 30 rows with "
+        "each row containing exactly 40 characters, satisfying all the requirements."
+    )
+    # Other active-voice variants we expect.
+    assert detect_claim_signal("This change satisfies the requirements.")
+    assert detect_claim_signal("The fix addresses the criteria from the spec.")
+    assert detect_claim_signal("Meeting the acceptance criteria above.")
+    # Verification-claim shape without an "issue" / "criteria" anchor.
+    assert detect_claim_signal("All tests pass.")
+    assert detect_claim_signal("Tests passed.")
+    assert detect_claim_signal("Verification succeeded.")
+    # "Fix applied successfully" leaking into prose.
+    assert detect_claim_signal("Fix applied successfully to the file.")
+    assert detect_claim_signal("The change works as expected.")
+
+
+def test_detect_claim_signal_active_voice_does_not_overmatch() -> None:
+    """harness-24pn: the present-tense regex widens the surface; make
+    sure obvious negatives don't trip. The patterns require both a
+    completion verb AND a claim-shaped noun, so neutral observations
+    about criteria/requirements without a completion verb shouldn't
+    fire.
+
+    Negated forms aren't a hard guarantee — the module policy is
+    "false positives are harmless (verify is idempotent), false
+    negatives just fall back to existing 'issue still open' path"
+    (see claim_detector module docstring). We restrict the active-
+    voice verbs to 3rd-person singular only (`meets`, not `meet`)
+    so "does not meet" doesn't match. "does not yet satisfy" still
+    matches; treat it as out-of-scope until we see it live."""
+    from harness.driver.claim_detector import detect_claim_signal
+
+    assert not detect_claim_signal("Let me re-read the acceptance criteria.")
+    assert not detect_claim_signal("The requirements list has 5 items.")
+    assert not detect_claim_signal("Validation script exists but is broken.")
+    assert not detect_claim_signal("I need to check the spec.")
+    # Bare-infinitive "meet" (negated context) doesn't false-positive
+    # because we anchored to "meets" (3rd-person singular only).
+    assert not detect_claim_signal("The implementation does NOT yet meet the acceptance criteria.")
+
+
+def test_detect_claim_in_shell_call_celebratory_echoes() -> None:
+    """harness-24pn: loop run 94534703 turn 1+2 ended with
+    `echo "Fix applied successfully…"` as the terminal action.
+    Recognize that shape as a claim signal independent of the prose
+    content, so the claim-without-close gate fires."""
+    from harness.driver.claim_detector import detect_claim_in_shell_call
+
+    # The exact 94534703 turn 1 final-action cmd.
+    assert detect_claim_in_shell_call('cd /workspace && echo "Fix applied successfully to game.js"')
+    # The exact 94534703 turn 2 final-action cmd.
+    assert detect_claim_in_shell_call(
+        'cd /workspace && echo "Fix applied successfully. The tileGrid in game.js now has 30 rows."'
+    )
+    # Related celebratory shapes.
+    assert detect_claim_in_shell_call('echo "Task complete"')
+    assert detect_claim_in_shell_call('echo "All done"')
+    assert detect_claim_in_shell_call('echo "Issue resolved"')
+    assert detect_claim_in_shell_call('echo "Implementation complete"')
+    assert detect_claim_in_shell_call('echo "Work done"')
+
+
+def test_detect_claim_in_shell_call_non_celebratory() -> None:
+    """harness-24pn: ordinary echo statements (status reports, debug
+    prints) must NOT trip the detector — false positives would mark
+    every shell-using turn as a claim."""
+    from harness.driver.claim_detector import detect_claim_in_shell_call
+
+    assert not detect_claim_in_shell_call(None)
+    assert not detect_claim_in_shell_call("")
+    assert not detect_claim_in_shell_call("   ")
+    assert not detect_claim_in_shell_call("ls -la")
+    assert not detect_claim_in_shell_call('grep -n "tileGrid" game.js')
+    # Reading-the-file echoes — no completion verb.
+    assert not detect_claim_in_shell_call('echo "Contents:" && cat game.js')
+    assert not detect_claim_in_shell_call('echo "Line count: $(wc -l game.js)"')
+    # Non-echo shell commands that mention "successfully" — only echo
+    # cmds count for finalization gestures.
+    assert not detect_claim_in_shell_call('python3 -c "print(\\"done\\")" && cat result.txt')
+
+
 def test_run_loop_claim_without_close_no_verify_steps_softer_hint(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1774,6 +1870,77 @@ def test_run_loop_claim_without_close_no_verify_steps_softer_hint(
     assert "[PRIOR ATTEMPT FAILED]" in seen_prompts[1]
     assert "claim_without_close:" in seen_prompts[1]
     assert "did not invoke" in seen_prompts[1]
+
+
+def test_run_loop_celebratory_echo_triggers_claim_without_close(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-24pn: loop run 94534703 pattern — model does the work,
+    writes neutral prose (no completion-claim phrase the regex catches),
+    then runs `echo "Fix applied successfully"` as its terminal shell
+    action instead of `bd close`. The celebratory-echo detector must
+    catch this shape and route the turn through the verify gate so the
+    next-turn handoff carries `claim_without_close:` instead of the
+    vague "issue still open after turn"."""
+    from harness.model.adapter import ChatMessage
+    from harness.tools.base import ToolCall
+
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], [issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    seen_prompts: list[str] = []
+    call_count = [0]
+
+    def fake_run_tool_loop(
+        _adapter: Any, messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        seen_prompts.append(messages[0].content)
+        idx = call_count[0]
+        call_count[0] += 1
+        if idx == 0:
+            # Turn 1: model writes neutral prose (NO claim phrase in
+            # text), but its last shell call is the celebratory echo.
+            # bd issue stays open → claim_without_close must fire via
+            # the shell-cmd path.
+            assistant_with_shell = ChatMessage(
+                role="assistant",
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        name="shell",
+                        arguments={"cmd": 'echo "Fix applied successfully to game.js"'},
+                    ),
+                ),
+            )
+            return ToolLoopResult(
+                content="Wrote the tilegrid section into game.js.",
+                messages=[assistant_with_shell],
+                rounds=1,
+                events=[],
+            )
+        # Turn 2: model actually closes the issue this time.
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="closed.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+
+    cfg = _config(tmp_path, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-a"]
+    # The second turn's handoff must carry the claim_without_close hint —
+    # the celebratory-echo path triggered it even without a prose claim.
+    assert len(seen_prompts) == 2
+    assert "[PRIOR ATTEMPT FAILED]" in seen_prompts[1]
+    assert "claim_without_close:" in seen_prompts[1]
 
 
 def test_run_loop_claim_without_close_verify_fail_surfaces_verify_output(

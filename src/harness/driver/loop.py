@@ -64,7 +64,11 @@ from typing import Any, Literal
 
 from harness.character import Character
 from harness.driver.bd import DriverBd, DriverBdError
-from harness.driver.claim_detector import detect_claim_signal
+from harness.driver.claim_detector import (
+    detect_claim_in_shell_call,
+    detect_claim_signal,
+    last_shell_cmd_in_messages,
+)
 from harness.driver.handoff import Handoff, build_handoff
 from harness.driver.planner import PlanDraft, PlannerError, VerifyStep
 from harness.driver.state import LoopRunState
@@ -338,7 +342,12 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 log_path, state.turns_used + 1, config.extra_observer
             )
             if config.use_fsm:
-                turn_success, turn_reason, turn_reply = _run_fsm_turn_via_driver(
+                (
+                    turn_success,
+                    turn_reason,
+                    turn_reply,
+                    turn_last_shell,
+                ) = _run_fsm_turn_via_driver(
                     adapter=adapter,
                     character=config.character,
                     bd=bd,
@@ -352,7 +361,12 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     observe=turn_observer,
                 )
             else:
-                turn_success, turn_reason, turn_reply = _run_executor_turn(
+                (
+                    turn_success,
+                    turn_reason,
+                    turn_reply,
+                    turn_last_shell,
+                ) = _run_executor_turn(
                     adapter=adapter,
                     character=config.character,
                     handoff=handoff,
@@ -389,15 +403,31 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     f"[WARN] {current.id} closed with forbidden-pattern hits: {warning_tail}{extra}"
                 )
 
-            # harness-pfvj: claim-without-close detection. When the bd
-            # issue stayed open after the turn but the model's reply
-            # contains a success claim, route through the verify gate
-            # as a pseudo-close. The next-turn handoff then carries
-            # concrete verify-failure feedback (or a softer "you said
-            # done but didn't run bd close" hint when no verify steps
-            # are registered) instead of the vague "issue still open"
-            # reason.
-            if not success and _is_still_open_reason(reason) and detect_claim_signal(turn_reply):
+            # harness-pfvj + harness-24pn: claim-without-close detection.
+            # Two signals compose into a single gate — either is enough
+            # to route the turn through the verify gate as a pseudo-close:
+            #
+            #   (a) detect_claim_signal(turn_reply) — completion phrases
+            #       in the model's prose ("issue resolved", "meets
+            #       acceptance criteria", "tests pass", etc.). Catches
+            #       the d4e01d68 + 94534703 turn 1+2 reply shapes.
+            #
+            #   (b) detect_claim_in_shell_call(turn_last_shell) —
+            #       celebratory `echo` as the model's terminal shell
+            #       action ("echo \"Fix applied successfully\""). Catches
+            #       the 94534703 finalization-gesture pattern that the
+            #       prose detector alone missed (the strongest signal
+            #       was in the shell cmd, not the reply text).
+            #
+            # The next-turn handoff carries concrete verify-failure
+            # feedback (or a softer "you said done but didn't run bd
+            # close" hint when no verify steps are registered) instead
+            # of the vague "issue still open" reason.
+            if (
+                not success
+                and _is_still_open_reason(reason)
+                and (detect_claim_signal(turn_reply) or detect_claim_in_shell_call(turn_last_shell))
+            ):
                 reason = _build_claim_without_close_reason(
                     verify_map,
                     bd,
@@ -533,9 +563,10 @@ def _run_fsm_turn_via_driver(
     verify_map: Mapping[str, Sequence[VerifyStep]],
     default_verify_steps: Sequence[VerifyStep],
     observe: ExecutorObserver | None,
-) -> tuple[bool, str, str]:
+) -> tuple[bool, str, str, str | None]:
     """Adapter that wraps `run_fsm_turn` to match the legacy
-    `_run_executor_turn` return shape (succeeded, reason, reply).
+    `_run_executor_turn` return shape (succeeded, reason, reply,
+    last_shell_cmd).
 
     Builds a phase-aware handoff_builder closure: each phase asks
     for a fresh Handoff that reflects the FSM's current state
@@ -618,7 +649,7 @@ def _run_fsm_turn_via_driver(
         # loop becomes a turn failure so the loop's retry budget runs;
         # next iteration rebuilds the prompt fresh.
         if _is_context_overflow(exc):
-            return False, f"context_exhausted: {exc}", ""
+            return False, f"context_exhausted: {exc}", "", None
         raise
 
     # Persist FSM state for resume. Plain string values keep the
@@ -629,7 +660,7 @@ def _run_fsm_turn_via_driver(
     if result.last_test_cmd is not None:
         state.last_test_cmd[issue_id] = result.last_test_cmd
 
-    return result.succeeded, result.reason, result.reply
+    return result.succeeded, result.reason, result.reply, result.last_shell_cmd
 
 
 def _build_driver_hook_pipeline(
@@ -692,8 +723,8 @@ def _run_executor_turn(
     observe: ExecutorObserver | None = None,
     max_rounds: int = 12,
     summarize_tool_results: bool = True,
-) -> tuple[bool, str, str]:
-    """Run one executor turn. Returns (succeeded, reason, reply).
+) -> tuple[bool, str, str, str | None]:
+    """Run one executor turn. Returns (succeeded, reason, reply, last_shell_cmd).
 
     `succeeded` is computed against the post-turn ToolLoopResult only —
     the caller is responsible for the post-turn `bd.show` outcome check
@@ -707,6 +738,13 @@ def _run_executor_turn(
     can run claim-detection (harness-pfvj) when the bd issue stays open
     after the turn: a confident-but-not-closed reply gets routed through
     the verify gate as a pseudo-close.
+
+    `last_shell_cmd` is the `cmd` argument from the LAST shell tool call
+    this turn (or None if no shell call happened). Used by the
+    claim-without-close gate (harness-24pn) so a turn whose final shell
+    action is `echo "Fix applied successfully"` — the model's
+    celebratory finalization gesture instead of `bd close` — gets
+    classified as a claim and routed through the verify path.
 
     `observe`, when set, receives every `ToolLoopEvent` from the inner
     `run_tool_loop` — same shape as the planner's observer
@@ -754,11 +792,12 @@ def _run_executor_turn(
         # take over — and because each iteration rebuilds the prompt
         # from scratch, the next attempt starts with a clean slate.
         if _is_context_overflow(exc):
-            return False, f"context_exhausted: {exc}", ""
+            return False, f"context_exhausted: {exc}", "", None
         raise
+    last_shell_cmd = last_shell_cmd_in_messages(result.messages)
     if result.content.strip() == EXHAUSTED_FABRICATION_FALLBACK.strip():
-        return False, "fabrication_fallback fired", result.content
-    return True, "", result.content
+        return False, "fabrication_fallback fired", result.content, last_shell_cmd
+    return True, "", result.content, last_shell_cmd
 
 
 def _classify_post_turn(
