@@ -67,6 +67,9 @@ class _BdLog:
     ready_calls: int = 0
     show_calls: list[str] = field(default_factory=list)
     reopens: list[str] = field(default_factory=list)
+    # harness-b7m1: (issue_id, close_reason) tuples for every `bd close`
+    # the loop drove directly — auto-close + future close paths.
+    closes: list[tuple[str, str | None]] = field(default_factory=list)
 
 
 class _ScenarioBd:
@@ -157,6 +160,19 @@ class _ScenarioBd:
             existing.id,
             title=existing.title,
             status="open",
+            priority=existing.priority,
+            labels=existing.labels,
+        )
+
+    def close(self, issue_id: str, *, reason: str | None = None) -> None:
+        """harness-b7m1: matches DriverBd.close; flips bd status to
+        closed and records the call+reason for auto-close assertions."""
+        self.log.closes.append((issue_id, reason))
+        existing = self._issues[issue_id]
+        self._issues[issue_id] = _issue(
+            existing.id,
+            title=existing.title,
+            status="closed",
             priority=existing.priority,
             labels=existing.labels,
         )
@@ -1940,6 +1956,240 @@ def test_run_loop_celebratory_echo_triggers_claim_without_close(
     # the celebratory-echo path triggered it even without a prose claim.
     assert len(seen_prompts) == 2
     assert "[PRIOR ATTEMPT FAILED]" in seen_prompts[1]
+    assert "claim_without_close:" in seen_prompts[1]
+
+
+def test_run_loop_auto_close_on_claim_with_verify_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-b7m1: when claim_without_close fires AND verify ran a
+    step that passed, the harness closes the bd issue on the model's
+    behalf instead of falling back to the soft-hint retry path.
+
+    Loop f36cf2e4 pattern — model wrote good code, claimed done in
+    prose, but never ran `bd close`. The verify gate is the contract;
+    when verify passes, the close is safe to drive."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    seen_prompts: list[str] = []
+    call_count = [0]
+
+    def fake_run_tool_loop(
+        _adapter: Any, messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        seen_prompts.append(messages[0].content)
+        call_count[0] += 1
+        # Model claims done but never closes the bd issue.
+        return ToolLoopResult(
+            content="The issue has been resolved and all acceptance criteria are met.",
+            messages=[],
+            rounds=1,
+            events=[],
+        )
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+
+    # Register one verify step that passes — without this the auto-close
+    # gate falls back to the soft-hint path. harness-b7m1's safety
+    # invariant: verify-step count > 0 required.
+    draft_path = tmp_path / "plan.yaml"
+    _write_draft_with_verify(draft_path, "implement foo", ["smoke.js"])
+    monkeypatch.setattr("harness.driver.loop._exec_verify_cmd", lambda _s, _w: (0, ""))
+
+    cfg = _config(tmp_path, plan_draft_path=draft_path, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-a"]
+    # Exactly ONE executor turn ran — auto-close ended the loop without
+    # burning a second attempt on a model that was stuck verifying.
+    assert call_count[0] == 1
+    # And the loop drove `bd close` itself with the auto-close reason.
+    assert bd.log.closes == [
+        (
+            "harness-a",
+            "auto-closed by drive: model claimed success + verify gate passed (harness-b7m1)",
+        )
+    ]
+
+
+def test_run_loop_auto_close_skipped_when_no_verify_steps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-b7m1: when claim_without_close fires but ZERO verify
+    steps are registered, the harness does NOT auto-close — verify
+    had nothing to corroborate the model's claim. Falls back to the
+    soft-hint retry, preserving the harness-pfvj behavior."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], [issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    seen_prompts: list[str] = []
+    call_count = [0]
+
+    def fake_run_tool_loop(
+        _adapter: Any, messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        seen_prompts.append(messages[0].content)
+        idx = call_count[0]
+        call_count[0] += 1
+        if idx == 0:
+            return ToolLoopResult(
+                content="The issue has been resolved and all acceptance criteria are met.",
+                messages=[],
+                rounds=1,
+                events=[],
+            )
+        # Turn 2: model closes properly.
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="closed.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+
+    cfg = _config(tmp_path, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-a"]
+    # Two turns ran; auto-close DID NOT fire (no steps to verify with).
+    assert call_count[0] == 2
+    # The loop did not drive any bd close — the model closed turn 2.
+    assert bd.log.closes == []
+    # The second turn's handoff carries the soft hint.
+    assert "claim_without_close:" in seen_prompts[1]
+    assert "did not invoke" in seen_prompts[1]
+
+
+def test_run_loop_auto_close_skipped_when_flag_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-b7m1: `--no-auto-close-on-claim` restores the pre-b7m1
+    behavior — even with verify passing, the harness leaves the close
+    to the model and retries with the soft hint."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], [issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    call_count = [0]
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        idx = call_count[0]
+        call_count[0] += 1
+        if idx == 0:
+            return ToolLoopResult(
+                content="The issue has been resolved and all acceptance criteria are met.",
+                messages=[],
+                rounds=1,
+                events=[],
+            )
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="closed.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+
+    draft_path = tmp_path / "plan.yaml"
+    _write_draft_with_verify(draft_path, "implement foo", ["smoke.js"])
+    monkeypatch.setattr("harness.driver.loop._exec_verify_cmd", lambda _s, _w: (0, ""))
+
+    cfg = _config(
+        tmp_path,
+        plan_draft_path=draft_path,
+        max_turns=3,
+        auto_close_on_claim=False,
+    )
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    # Took two turns — auto-close opt-out prevented the early close.
+    assert call_count[0] == 2
+    assert bd.log.closes == []
+
+
+def test_run_loop_auto_close_falls_back_when_close_subprocess_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-b7m1: if `bd close` itself errors (transient bd hiccup,
+    permissions, etc.), the auto-close path falls through to the
+    soft-hint retry so the model can try to recover. No silent halt."""
+    from harness.driver.bd import DriverBdError
+
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], [issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+
+    real_close = bd.close
+    raised_once = [False]
+
+    def flaky_close(issue_id: str, *, reason: str | None = None) -> None:
+        if not raised_once[0]:
+            raised_once[0] = True
+            raise DriverBdError("simulated bd close failure")
+        real_close(issue_id, reason=reason)
+
+    bd.close = flaky_close  # type: ignore[method-assign]
+    _stub_git_head(monkeypatch)
+
+    seen_prompts: list[str] = []
+    call_count = [0]
+
+    def fake_run_tool_loop(
+        _adapter: Any, messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        seen_prompts.append(messages[0].content)
+        idx = call_count[0]
+        call_count[0] += 1
+        if idx == 0:
+            return ToolLoopResult(
+                content="The issue has been resolved and all acceptance criteria are met.",
+                messages=[],
+                rounds=1,
+                events=[],
+            )
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="closed.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+
+    draft_path = tmp_path / "plan.yaml"
+    _write_draft_with_verify(draft_path, "implement foo", ["smoke.js"])
+    monkeypatch.setattr("harness.driver.loop._exec_verify_cmd", lambda _s, _w: (0, ""))
+
+    cfg = _config(tmp_path, plan_draft_path=draft_path, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    # Recovered: bd close failure on turn 1 surfaced as soft-hint;
+    # turn 2 closed normally.
+    assert result.exit_reason == "success"
+    assert call_count[0] == 2
+    # Second-turn handoff carries the soft hint (no verify failure
+    # because verify did pass — the bd close itself failed).
     assert "claim_without_close:" in seen_prompts[1]
 
 

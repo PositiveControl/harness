@@ -224,6 +224,17 @@ class LoopConfig:
     # context. Default ON for drive runs because they're unattended;
     # the chat CLI keeps it opt-in.
     summarize_tool_results: bool = True
+    # harness-b7m1: when the claim-without-close gate fires AND verify
+    # ran at least one step that passed, close the bd issue on the
+    # model's behalf instead of returning a soft hint and burning another
+    # retry. Loop f36cf2e4 confirmed that small models can spend 3 turns
+    # x 12 rounds re-verifying instead of running `bd close` even with
+    # explicit feedback in the handoff. When verify is the contract and
+    # verify passed, the harness should be willing to drive the close.
+    # Falls back to the soft hint when verify failed, no steps ran, or
+    # the bd close subprocess itself failed. Set False via
+    # `--no-auto-close-on-claim` to restore the pre-b7m1 behavior.
+    auto_close_on_claim: bool = True
 
 
 @dataclass
@@ -403,9 +414,10 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     f"[WARN] {current.id} closed with forbidden-pattern hits: {warning_tail}{extra}"
                 )
 
-            # harness-pfvj + harness-24pn: claim-without-close detection.
-            # Two signals compose into a single gate — either is enough
-            # to route the turn through the verify gate as a pseudo-close:
+            # harness-pfvj + harness-24pn + harness-b7m1:
+            # claim-without-close detection. Two signals compose into a
+            # single gate — either is enough to route the turn through
+            # the verify gate as a pseudo-close:
             #
             #   (a) detect_claim_signal(turn_reply) — completion phrases
             #       in the model's prose ("issue resolved", "meets
@@ -419,22 +431,50 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             #       prose detector alone missed (the strongest signal
             #       was in the shell cmd, not the reply text).
             #
-            # The next-turn handoff carries concrete verify-failure
-            # feedback (or a softer "you said done but didn't run bd
-            # close" hint when no verify steps are registered) instead
-            # of the vague "issue still open" reason.
+            # Outcomes (post-verify):
+            #   - verify failed → reason gets the verify failure tail.
+            #     Next handoff tells the model exactly what's broken.
+            #   - verify passed AND auto-close enabled AND at least one
+            #     step ran → harness-b7m1 auto-close: bd close on the
+            #     model's behalf, _on_success, continue. The verify gate
+            #     IS the contract; the model just forgot the final step.
+            #   - verify passed but no steps ran (no defaults applicable
+            #     + no per-issue steps) → soft hint pointing the model
+            #     at the missing bd close. Auto-close is unsafe here
+            #     because verify had nothing to corroborate the claim.
+            #   - auto-close subprocess itself failed → fall back to
+            #     soft hint so the model can try again.
             if (
                 not success
                 and _is_still_open_reason(reason)
                 and (detect_claim_signal(turn_reply) or detect_claim_in_shell_call(turn_last_shell))
             ):
-                reason = _build_claim_without_close_reason(
+                verify_failure, steps_ran = _run_issue_verify(
                     verify_map,
                     bd,
                     current.id,
                     config.workspace,
                     default_steps=default_verify_steps,
                 )
+                if verify_failure is not None:
+                    reason = f"{_CLAIM_WITHOUT_CLOSE_PREFIX} {verify_failure}"
+                elif (
+                    config.auto_close_on_claim
+                    and steps_ran > 0
+                    and _try_auto_close(bd, current.id, log)
+                ):
+                    # Drive the close on the model's behalf; bypass the
+                    # success branch's redundant verify by handling the
+                    # close-and-continue here.
+                    log(
+                        f"turn {state.turns_used}: {current.id} AUTO_CLOSED "
+                        f"(claim + verify passed, {steps_ran} step{'s' if steps_ran != 1 else ''})"
+                    )
+                    _on_success(bd, state, current.id, log)
+                    _save_state(state, config.workspace)
+                    continue
+                else:
+                    reason = f"{_CLAIM_WITHOUT_CLOSE_PREFIX} {_CLAIM_WITHOUT_CLOSE_NO_VERIFY_HINT}"
 
             if success:
                 # harness-xfh2: the verify gate runs only when the bd
@@ -445,7 +485,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 # picks up the now-open issue next iteration, and the
                 # next handoff carries `verify_failed: ...` so the model
                 # self-corrects.
-                verify_failure = _run_issue_verify(
+                verify_failure, _ = _run_issue_verify(
                     verify_map,
                     bd,
                     current.id,
@@ -930,11 +970,19 @@ def _run_issue_verify(
     workspace: Path,
     *,
     default_steps: Sequence[VerifyStep] = (),
-) -> str | None:
+) -> tuple[str | None, int]:
     """Run the verify steps registered for `issue_id` (looked up by bd
-    title). Returns None when all pass OR no steps are registered;
-    otherwise a short failure message (already truncated, safe to drop
-    into `last_failure`).
+    title). Returns ``(failure_msg_or_None, steps_run_count)``:
+
+    - ``(None, 0)`` — no steps registered; nothing to gate on.
+    - ``(None, N>0)`` — all N steps ran and passed; verified clean.
+    - ``("…", N)`` — N-th step failed; message is the truncated tail.
+
+    The count is the post-condition signal the auto-close gate
+    (harness-b7m1) needs: "claim + verify passed" is only a trustworthy
+    close signal when at least one step actually verified something.
+    Without that distinction, an issue with zero registered steps would
+    auto-close purely on the model's word — too aggressive.
 
     Title lookup, not bd-id lookup: the draft YAML carries the operator's
     titles and `commit_plan` materialized those verbatim into bd. A
@@ -954,20 +1002,20 @@ def _run_issue_verify(
         # A bd.show failure here is rare (we just classified the turn,
         # which also called bd.show successfully). Treat as a soft pass
         # — the next iteration's bd.ready_under_epic will surface the
-        # same issue if it's still open.
-        return f"verify lookup failed (bd.show): {exc}"
+        # same issue if it's still open. Count 0 keeps auto-close from
+        # firing on a lookup miss.
+        return f"verify lookup failed (bd.show): {exc}", 0
     per_item_steps = verify_map.get(issue.title, ()) if verify_map else ()
     steps: tuple[VerifyStep, ...] = tuple(default_steps) + tuple(per_item_steps)
     if not steps:
-        return None
-    for step in steps:
+        return None, 0
+    for i, step in enumerate(steps, start=1):
         exit_code, tail = _exec_verify_cmd(step, workspace)
         if exit_code != 0:
             preview = step.cmd if len(step.cmd) <= 80 else step.cmd[:77] + "..."
-            return (
-                f"{preview} exit={exit_code}: {tail}" if tail else (f"{preview} exit={exit_code}")
-            )
-    return None
+            msg = f"{preview} exit={exit_code}: {tail}" if tail else f"{preview} exit={exit_code}"
+            return msg, i
+    return None, len(steps)
 
 
 def _exec_verify_cmd(step: VerifyStep, workspace: Path) -> tuple[int, str]:
@@ -1042,33 +1090,23 @@ def _is_still_open_reason(reason: str) -> bool:
     return reason.startswith("issue still ") and reason.endswith(" after turn")
 
 
-def _build_claim_without_close_reason(
-    verify_map: Mapping[str, Sequence[VerifyStep]],
-    bd: DriverBd,
-    issue_id: str,
-    workspace: Path,
-    *,
-    default_steps: Sequence[VerifyStep] = (),
-) -> str:
-    """Compose the `last_failure` message for a claim-without-close turn.
+def _try_auto_close(bd: DriverBd, issue_id: str, log: _LogWriter) -> bool:
+    """Best-effort `bd close <id>` on the model's behalf (harness-b7m1).
 
-    Runs the verify gate when the PlanItem has steps registered — the
-    failure message carries the verify output verbatim (truncated by
-    `_run_issue_verify`). When no steps are registered, falls back to a
-    softer hint pointing the model at the missing `bd close` call. Both
-    cases share the `claim_without_close:` prefix so downstream grep
-    can distinguish them.
+    Used by the claim-without-close gate when the model claimed success
+    AND verify ran at least one step that passed — the harness drives
+    the close so the drive doesn't burn another retry on a verification
+    loop the model can't exit (loop f36cf2e4 pattern).
 
-    `default_steps` (harness-oxj7) carries the workspace-typed baseline
-    so the claim-without-close path inherits the same gate as a real
-    close attempt — a model that claims done on a workspace whose JS
-    no longer parses sees the parser error in the failure message."""
-    verify_failure = _run_issue_verify(
-        verify_map, bd, issue_id, workspace, default_steps=default_steps
-    )
-    if verify_failure is not None:
-        return f"{_CLAIM_WITHOUT_CLOSE_PREFIX} {verify_failure}"
-    return f"{_CLAIM_WITHOUT_CLOSE_PREFIX} {_CLAIM_WITHOUT_CLOSE_NO_VERIFY_HINT}"
+    Returns True on success; False (with a log line) on bd failure so
+    the caller can fall back to the soft-hint retry path."""
+    close_reason = "auto-closed by drive: model claimed success + verify gate passed (harness-b7m1)"
+    try:
+        bd.close(issue_id, reason=close_reason)
+    except DriverBdError as exc:
+        log(f"auto-close failed for {issue_id}: {exc}")
+        return False
+    return True
 
 
 def _try_reopen(bd: DriverBd, issue_id: str) -> bool:

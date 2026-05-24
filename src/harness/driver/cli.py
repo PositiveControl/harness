@@ -331,6 +331,21 @@ def loop_command(
             "the prompt. Uses --model as the summarizer adapter."
         ),
     ),
+    auto_close_on_claim: bool = typer.Option(
+        True,
+        "--auto-close-on-claim/--no-auto-close-on-claim",
+        help=(
+            "When the claim-without-close gate fires AND verify ran at "
+            "least one step that passed, close the bd issue on the "
+            "model's behalf (harness-b7m1). Default ON because small "
+            "models routinely spend their entire retry budget "
+            "re-verifying instead of running `bd close` even with "
+            "explicit feedback. Falls back to the soft-hint retry when "
+            "verify failed, no steps ran, or the bd close subprocess "
+            "itself errored. Set --no-auto-close-on-claim to require "
+            "the model to drive the close itself."
+        ),
+    ),
 ) -> None:
     """Drive a bd epic to closure across multiple turns."""
     if list_runs:
@@ -375,6 +390,7 @@ def loop_command(
         use_fsm=use_fsm,
         tdd_required=tdd,
         summarize_tool_results=summarize_tool_results,
+        auto_close_on_claim=auto_close_on_claim,
     )
     result = run_loop(adapter, bd, config)
     _print_result(result)
