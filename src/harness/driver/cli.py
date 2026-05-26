@@ -346,6 +346,19 @@ def loop_command(
             "the model to drive the close itself."
         ),
     ),
+    skip_on_max_attempts: bool = typer.Option(
+        True,
+        "--skip-on-max-attempts/--no-skip-on-max-attempts",
+        help=(
+            "On max-attempts exhaustion for a bd issue, park it via "
+            "`bd flag_human` and continue the drive against the next "
+            "ready issue (harness-zcrd). Default ON because one hard "
+            "issue shouldn't kill the whole drive — operators pick up "
+            "parked issues via `bd human list` after the run. Set "
+            "--no-skip-on-max-attempts for the pre-zcrd behavior where "
+            "max-attempts halts the entire run."
+        ),
+    ),
 ) -> None:
     """Drive a bd epic to closure across multiple turns."""
     if list_runs:
@@ -391,6 +404,7 @@ def loop_command(
         tdd_required=tdd,
         summarize_tool_results=summarize_tool_results,
         auto_close_on_claim=auto_close_on_claim,
+        skip_on_max_attempts=skip_on_max_attempts,
     )
     result = run_loop(adapter, bd, config)
     _print_result(result)

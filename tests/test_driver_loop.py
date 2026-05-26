@@ -569,7 +569,7 @@ def test_run_loop_halts_after_two_failures_on_same_issue(
     result = run_loop(
         _FakeAdapter(),  # type: ignore[arg-type]
         bd,  # type: ignore[arg-type]
-        _config(tmp_path, max_attempts_per_issue=2),
+        _config(tmp_path, max_attempts_per_issue=2, skip_on_max_attempts=False),
     )
     assert result.exit_reason == "halted"
     assert result.halted_on == "harness-a"
@@ -577,6 +577,133 @@ def test_run_loop_halts_after_two_failures_on_same_issue(
     assert bd.log.human_flags == [("harness-a", "loop halted: fabrication_fallback fired")]
     # session-state bead for the halt event written.
     assert ("harness-a", "halted") in bd.log.closed_via_session_state
+
+
+def test_run_loop_parks_on_max_attempts_and_continues_to_next(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-zcrd: default `skip_on_max_attempts=True` parks the
+    failing issue (bd flag_human + state.parked_issues) and continues
+    the drive against the next ready issue. Pre-zcrd this halted the
+    whole run; loop 1a6e4437 had this exact shape — 6 closes, then a
+    hard issue stopped everything. With skip-on, the drive completes
+    the other work and the operator picks up the parked issue."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    issue_b = _issue("harness-b", title="B", status="open")
+    bd = _ScenarioBd(
+        # Iter 1-3: A keeps failing; iter 4: A parked → B picked up
+        # (in-memory filter drops A from ready); iter 5: epic empty.
+        # Explicit empty terminator — the fake repeats the LAST entry,
+        # so a non-empty tail would loop forever.
+        ready_sequence=[
+            [issue_a, issue_b],
+            [issue_a, issue_b],
+            [issue_a, issue_b],
+            [issue_a, issue_b],
+            [],
+        ],
+        issues={
+            "harness-a": issue_a,
+            "harness-b": issue_b,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    # A fails 3 times; B closes once. After the 3rd A failure the loop
+    # parks A and rotates to B.
+    _stub_run_tool_loop(
+        monkeypatch,
+        outcomes=["fail", "fail", "fail", "close harness-b"],
+        bd=bd,
+    )
+
+    cfg = _config(tmp_path, max_turns=10)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-b"]
+    assert result.parked_issues == ["harness-a"]
+    # The bd flag carries the park reason so operators can see it via
+    # `bd human list`.
+    assert (
+        "harness-a",
+        "drive parked after max attempts: fabrication_fallback fired",
+    ) in bd.log.human_flags
+
+
+def test_run_loop_park_filters_from_subsequent_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-zcrd: once parked, the in-memory filter MUST exclude
+    the issue from `ready_under_epic` results even when bd's own
+    ready endpoint still returns it. The bd flag is best-effort
+    operator signal; the in-memory set is the load-bearing
+    enforcement."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    issue_b = _issue("harness-b", title="B", status="open")
+    bd = _ScenarioBd(
+        # bd keeps returning A even AFTER it's parked (simulating a bd
+        # variant that doesn't drop flagged issues from `ready`). The
+        # in-memory filter must rescue us. Empty terminator stops the
+        # repeating-last-entry behavior of the fake.
+        ready_sequence=[
+            [issue_a, issue_b],
+            [issue_a, issue_b],
+            [issue_a, issue_b],
+            [issue_a, issue_b],
+            [],
+        ],
+        issues={
+            "harness-a": issue_a,
+            "harness-b": issue_b,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    _stub_run_tool_loop(
+        monkeypatch,
+        outcomes=["fail", "fail", "fail", "close harness-b"],
+        bd=bd,
+    )
+
+    cfg = _config(tmp_path, max_turns=10)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    # B closed; A stayed parked despite still showing up in
+    # ready_under_epic — the filter held.
+    assert result.closed == ["harness-b"]
+    assert result.parked_issues == ["harness-a"]
+
+
+def test_run_loop_park_persists_to_state_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-zcrd: parked_issues survives a state save/load cycle
+    so resume runs can pick up where the previous run left off
+    (parked issues stay parked across resume; operator clears them
+    explicitly to retry)."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], [issue_a], [issue_a]],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    _stub_run_tool_loop(monkeypatch, outcomes=["fail", "fail", "fail"], bd=bd)
+
+    cfg = _config(tmp_path, max_turns=5)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+    assert result.parked_issues == ["harness-a"]
+
+    # Locate + reload state file; the parked list must persist.
+    state_dir = tmp_path / ".harness" / "loop_runs"
+    state_files = list(state_dir.glob("*.json"))
+    assert state_files, "loop run state was not persisted"
+    reloaded = LoopRunState.load(state_files[0])
+    assert reloaded.parked_issues == ["harness-a"]
 
 
 def test_run_loop_halts_after_max_attempts_default_is_three(
@@ -600,7 +727,7 @@ def test_run_loop_halts_after_max_attempts_default_is_three(
     result = run_loop(
         _FakeAdapter(),  # type: ignore[arg-type]
         bd,  # type: ignore[arg-type]
-        _config(tmp_path, max_turns=5),
+        _config(tmp_path, max_turns=5, skip_on_max_attempts=False),
     )
     assert result.exit_reason == "halted"
     assert result.halted_on == "harness-a"
@@ -628,7 +755,7 @@ def test_run_loop_exits_exhausted_at_max_turns(
     )
     _stub_git_head(monkeypatch)
     _stub_run_tool_loop(monkeypatch, outcomes=["open harness-a", "open harness-a"], bd=bd)
-    cfg = _config(tmp_path, max_turns=2, max_attempts_per_issue=2)
+    cfg = _config(tmp_path, max_turns=2, max_attempts_per_issue=2, skip_on_max_attempts=False)
 
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
     assert result.exit_reason == "halted"
@@ -1402,7 +1529,13 @@ def test_run_loop_verify_fails_twice_halts(monkeypatch: pytest.MonkeyPatch, tmp_
     _write_draft_with_verify(draft_path, "implement foo", ["smoke.js"])
 
     monkeypatch.setattr("harness.driver.loop._exec_verify_cmd", lambda *_a, **_k: (1, "boom"))
-    cfg = _config(tmp_path, plan_draft_path=draft_path, max_turns=5, max_attempts_per_issue=2)
+    cfg = _config(
+        tmp_path,
+        plan_draft_path=draft_path,
+        max_turns=5,
+        max_attempts_per_issue=2,
+        skip_on_max_attempts=False,
+    )
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
 
     assert result.exit_reason == "halted"
@@ -2589,7 +2722,13 @@ def test_run_loop_fsm_halts_when_assess_produces_no_assessment(
     monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
     monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd", lambda *_a, **_k: (0, ""))
 
-    cfg = _config(tmp_path, use_fsm=True, max_turns=3, max_attempts_per_issue=2)
+    cfg = _config(
+        tmp_path,
+        use_fsm=True,
+        max_turns=3,
+        max_attempts_per_issue=2,
+        skip_on_max_attempts=False,
+    )
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
 
     assert result.exit_reason == "halted"

@@ -78,6 +78,13 @@ class LoopRunState:
     last_turn_phase: dict[str, str] = field(default_factory=dict)
     last_assessment: dict[str, dict[str, Any]] = field(default_factory=dict)
     last_test_cmd: dict[str, str] = field(default_factory=dict)
+    # harness-zcrd: bd ids the drive parked after max-attempts
+    # exhaustion. Filtered out of subsequent `ready_under_epic` results
+    # so the drive doesn't re-pick them within the same run. Each entry
+    # is also flagged via `bd flag_human` so the operator sees it in
+    # `bd human list`. Resume reloads the set; clear manually
+    # (state file edit or new loop_run_id) to retry a parked issue.
+    parked_issues: list[str] = field(default_factory=list)
 
     # --- construction -------------------------------------------------
 
@@ -159,4 +166,5 @@ class LoopRunState:
             last_turn_phase=dict(raw.get("last_turn_phase", {})),
             last_assessment=dict(raw.get("last_assessment", {})),
             last_test_cmd=dict(raw.get("last_test_cmd", {})),
+            parked_issues=list(raw.get("parked_issues", [])),
         )

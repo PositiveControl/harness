@@ -235,6 +235,16 @@ class LoopConfig:
     # the bd close subprocess itself failed. Set False via
     # `--no-auto-close-on-claim` to restore the pre-b7m1 behavior.
     auto_close_on_claim: bool = True
+    # harness-zcrd: when an issue exhausts max_attempts_per_issue, park
+    # it (`bd flag_human` + add to state.parked_issues) and continue
+    # the drive against the next ready issue instead of halting the
+    # whole run. Loop 1a6e4437 closed 6 issues then stopped on §9a
+    # (genuinely complex pickups task) — pre-zcrd, ONE hard issue
+    # killed the whole drive. With skip-on, the drive completes
+    # everything it can and the operator picks up parked issues via
+    # `bd human list`. Set False via `--no-skip-on-max-attempts` to
+    # restore the halt-the-whole-run behavior.
+    skip_on_max_attempts: bool = True
 
 
 @dataclass
@@ -242,11 +252,19 @@ class LoopResult:
     """What `run_loop` returns to the caller.
 
     `exit_reason` matches the lifecycle event names in the progress log:
-      - "success":     ready_under_epic emptied; epic complete.
+      - "success":     ready_under_epic emptied; epic complete (modulo
+                       parked_issues, which the operator handles).
       - "exhausted":   turns_used reached max_turns.
-      - "halted":      second failure on the same issue; bd-human flagged.
+      - "halted":      catastrophic failure (e.g. startup exception) OR
+                       max-attempts halt with `skip_on_max_attempts=False`.
       - "interrupted": SIGINT mid-loop.
       - "dry_run":     --dry-run; one handoff printed, no turn ran.
+
+    `parked_issues` (harness-zcrd): bd ids the drive parked via
+    `bd flag_human` after max-attempts exhaustion. Populated when
+    `LoopConfig.skip_on_max_attempts` is True (default); on the
+    opt-out path the drive halts instead and parked_issues stays
+    empty.
     """
 
     loop_run_id: str
@@ -256,6 +274,7 @@ class LoopResult:
     turns_used: int
     exit_reason: Literal["success", "halted", "exhausted", "interrupted", "dry_run"]
     handoffs: list[Handoff] = field(default_factory=list)
+    parked_issues: list[str] = field(default_factory=list)
 
 
 # --- top-level entry --------------------------------------------------
@@ -318,6 +337,15 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             except DriverBdError as exc:
                 log(f"bd ready_under_epic failed: {exc}; halting")
                 return _exit_halted(bd, state, current_id=state.epic_id, reason=str(exc), log=log)
+            # harness-zcrd: skip-and-flag mode parks max-attempts
+            # exhausted issues. Filter them out of ready so the next
+            # iteration grabs the next genuinely-ready issue instead of
+            # cycling back to the parked one. The bd-side flag (set in
+            # _park_issue) doesn't necessarily exclude the issue from
+            # `bd ready` — the filter is the load-bearing mechanism here.
+            if state.parked_issues:
+                parked = set(state.parked_issues)
+                ready = [issue for issue in ready if issue.id not in parked]
             if not ready:
                 return _exit_success(state, log)
 
@@ -524,17 +552,23 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     f"({reopen_note}; {verify_failure})"
                 )
                 # Verify failure counts as the iteration's failure for
-                # attempt accounting — halt at config.max_attempts_per_issue
-                # (was hard-coded 2; harness-d8e3 made it configurable).
-                # last_failure was already stored above (line 414); the
-                # next iteration picks up `verify_failed: ...` via the
-                # handoff's prior_attempt_failure block.
+                # attempt accounting — halt OR park at
+                # config.max_attempts_per_issue. harness-zcrd: skip-on
+                # parks the issue and moves to the next ready one;
+                # skip-off preserves the legacy halt-the-whole-run
+                # behavior so operators who depend on that signal can
+                # opt out.
                 if attempt >= config.max_attempts_per_issue:
+                    fail_reason = f"verify_failed: {verify_failure}"
+                    if config.skip_on_max_attempts:
+                        _park_issue(bd, state, current_id=current.id, reason=fail_reason, log=log)
+                        _save_state(state, config.workspace)
+                        continue
                     return _exit_halted(
                         bd,
                         state,
                         current_id=current.id,
-                        reason=f"verify_failed: {verify_failure}",
+                        reason=fail_reason,
                         log=log,
                     )
                 continue
@@ -546,7 +580,12 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 _save_state(state, config.workspace)
                 continue
 
-            # Final consecutive failure — halt (harness-d8e3).
+            # Final consecutive failure (harness-d8e3 + zcrd): park
+            # under skip-on (the new default), halt under skip-off.
+            if config.skip_on_max_attempts:
+                _park_issue(bd, state, current_id=current.id, reason=reason, log=log)
+                _save_state(state, config.workspace)
+                continue
             return _exit_halted(bd, state, current_id=current.id, reason=reason, log=log)
 
 
@@ -1303,7 +1342,12 @@ class _LogWriter:
 
 
 def _exit_success(state: LoopRunState, log: _LogWriter) -> LoopResult:
-    log(f"loop_run={state.loop_run_id} SUCCESS (epic empty)")
+    parked_tail = (
+        f" ({len(state.parked_issues)} parked: {', '.join(state.parked_issues)})"
+        if state.parked_issues
+        else ""
+    )
+    log(f"loop_run={state.loop_run_id} SUCCESS (epic empty){parked_tail}")
     return LoopResult(
         loop_run_id=state.loop_run_id,
         epic_id=state.epic_id,
@@ -1311,6 +1355,7 @@ def _exit_success(state: LoopRunState, log: _LogWriter) -> LoopResult:
         halted_on=None,
         turns_used=state.turns_used,
         exit_reason="success",
+        parked_issues=list(state.parked_issues),
     )
 
 
@@ -1326,6 +1371,7 @@ def _exit_exhausted(state: LoopRunState, log: _LogWriter) -> LoopResult:
         halted_on=None,
         turns_used=state.turns_used,
         exit_reason="exhausted",
+        parked_issues=list(state.parked_issues),
     )
 
 
@@ -1354,6 +1400,7 @@ def _exit_halted(
         halted_on=current_id,
         turns_used=state.turns_used,
         exit_reason="halted",
+        parked_issues=list(state.parked_issues),
     )
 
 
@@ -1373,7 +1420,42 @@ def _exit_interrupted(bd: DriverBd, state: LoopRunState, log: _LogWriter) -> Loo
         halted_on=None,
         turns_used=state.turns_used,
         exit_reason="interrupted",
+        parked_issues=list(state.parked_issues),
     )
+
+
+def _park_issue(
+    bd: DriverBd,
+    state: LoopRunState,
+    *,
+    current_id: str,
+    reason: str,
+    log: _LogWriter,
+) -> None:
+    """harness-zcrd: park an issue after max-attempts exhaustion.
+
+    Records the bd-id in `state.parked_issues` (filtered out of
+    subsequent ready_under_epic results), flags via `bd flag_human`
+    so the operator sees it in `bd human list`, writes a session-state
+    bead, and logs a PARKED line. Does NOT return — the caller
+    `continue`s the loop to pick up the next ready issue.
+
+    `bd flag_human` and session-state writes are best-effort: a bd
+    hiccup here doesn't break the drive's forward motion. The
+    in-memory `state.parked_issues` is the load-bearing filter; the
+    bd flag is operator-facing signal."""
+    log(f"loop_run={state.loop_run_id} PARKED {current_id}: {reason}")
+    if current_id not in state.parked_issues:
+        state.parked_issues.append(current_id)
+    with contextlib.suppress(DriverBdError):
+        bd.flag_human(current_id, reason=f"drive parked after max attempts: {reason}")
+    with contextlib.suppress(DriverBdError):
+        bd.write_session_state(
+            loop_run_id=state.loop_run_id,
+            current_issue_id=current_id,
+            status="parked",
+            body=reason,
+        )
 
 
 def _on_success(bd: DriverBd, state: LoopRunState, current_id: str, log: _LogWriter) -> None:
