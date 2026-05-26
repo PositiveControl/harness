@@ -306,9 +306,36 @@ def test_smoke_step_added_for_browser_app_when_playwright_present(tmp_path: Path
         steps = default_workspace_verify_steps(tmp_path)
     smoke_steps = [s for s in steps if "smoke_runner" in s.cmd]
     assert len(smoke_steps) == 1
-    # The step must reference the absolute index path so subprocess
-    # cwd doesn't change the resolution surface.
-    assert str(tmp_path / "index.html") in smoke_steps[0].cmd
+    # The step must reference the absolute, resolved index path so
+    # subprocess cwd doesn't change the resolution surface (harness-53tp).
+    # Use .resolve() on both sides — on macOS tmp_path is under a
+    # /var -> /private/var symlink that resolve() canonicalizes.
+    assert str((tmp_path / "index.html").resolve()) in smoke_steps[0].cmd
+
+
+def test_smoke_step_index_absolute_with_relative_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """harness-53tp regression: when the driver passes a RELATIVE
+    workspace path, the smoke step must still embed an ABSOLUTE index
+    path — otherwise the runner double-joins it to its cwd
+    (<workspace>/<workspace>/index.html) and fails 'index not found'
+    on every turn, exhausting the run (loop_run 104e40b5)."""
+    (tmp_path / "index.html").write_text(
+        '<html><body><script src="game.js"></script></body></html>',
+    )
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    # Reproduce the driver's calling convention: cwd at the parent,
+    # workspace passed as a relative path.
+    monkeypatch.chdir(tmp_path.parent)
+    relative_ws = Path(tmp_path.name)
+    with patch("harness.driver.workspace_verify._playwright_available", return_value=True):
+        steps = default_workspace_verify_steps(relative_ws)
+    smoke_step = next(s for s in steps if "smoke_runner" in s.cmd)
+    expected = str((tmp_path / "index.html").resolve())
+    assert expected in smoke_step.cmd
+    # And crucially: the workspace path segment must not be doubled.
+    assert f"{tmp_path.name}/{tmp_path.name}" not in smoke_step.cmd
 
 
 def test_smoke_step_skipped_when_playwright_unavailable(tmp_path: Path) -> None:

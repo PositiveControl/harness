@@ -217,8 +217,19 @@ def _smoke_execute_step(index: Path) -> VerifyStep:
     ``Math.flor`` silently returning undefined, ``addEventListner``
     typos, etc. The parse-gate accepts these as valid JS; only running
     the artifact surfaces the throw.
+
+    The index is resolved to an ABSOLUTE path here (harness-53tp). The
+    verify step executes with cwd set to the workspace, and the runner
+    joins any relative path to its cwd — so a relative ``index`` (which
+    ``_browser_app_index`` returns when the driver passes a relative
+    ``--workspace``) would double-join to
+    ``<workspace>/<workspace>/index.html`` and fail "index not found"
+    on every turn. Absolute path → the runner uses it verbatim.
     """
-    cmd = f"{shlex.quote(sys.executable)} -m harness.driver.smoke_runner {shlex.quote(str(index))}"
+    cmd = (
+        f"{shlex.quote(sys.executable)} -m harness.driver.smoke_runner "
+        f"{shlex.quote(str(index.resolve()))}"
+    )
     # S604: ``shell=True`` here is a VerifyStep dataclass field, NOT a
     # subprocess kwarg (mirrors _js_verify_step / _py_verify_step
     # above). The cmd is built from sys.executable + a workspace-
