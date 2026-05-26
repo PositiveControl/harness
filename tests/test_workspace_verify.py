@@ -313,6 +313,34 @@ def test_smoke_step_added_for_browser_app_when_playwright_present(tmp_path: Path
     assert str((tmp_path / "index.html").resolve()) in smoke_steps[0].cmd
 
 
+def test_smoke_step_enforces_blank_canvas_by_default(tmp_path: Path) -> None:
+    """Default: the smoke cmd does NOT carry --no-blank-canvas, so the
+    runner's blank-canvas check stays on (verifying an already-built
+    game)."""
+    (tmp_path / "index.html").write_text(
+        '<html><body><script src="game.js"></script></body></html>',
+    )
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    with patch("harness.driver.workspace_verify._playwright_available", return_value=True):
+        steps = default_workspace_verify_steps(tmp_path)
+    smoke = next(s for s in steps if "smoke_runner" in s.cmd)
+    assert "--no-blank-canvas" not in smoke.cmd
+
+
+def test_smoke_step_suppresses_blank_canvas_when_disabled(tmp_path: Path) -> None:
+    """harness-6dsn: enforce_blank_canvas=False threads --no-blank-canvas
+    into the smoke cmd so an incremental from-scratch skeleton isn't
+    failed for a legitimately-blank canvas."""
+    (tmp_path / "index.html").write_text(
+        '<html><body><script src="game.js"></script></body></html>',
+    )
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    with patch("harness.driver.workspace_verify._playwright_available", return_value=True):
+        steps = default_workspace_verify_steps(tmp_path, enforce_blank_canvas=False)
+    smoke = next(s for s in steps if "smoke_runner" in s.cmd)
+    assert "--no-blank-canvas" in smoke.cmd
+
+
 def test_smoke_step_index_absolute_with_relative_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -497,6 +525,28 @@ def test_blank_canvas_check_disabled_by_env(
     )
     monkeypatch.setenv("HARNESS_SMOKE_BLANK_CANVAS", "0")
     steps = default_workspace_verify_steps(tmp_path)
+    smoke_step = next(s for s in steps if "smoke_runner" in s.cmd)
+    exit_code, _tail = _exec_test_cmd(smoke_step.cmd, tmp_path, shell_mode=smoke_step.shell)
+    assert exit_code == 0
+
+
+@_requires_playwright
+def test_blank_canvas_suppressed_via_enforce_flag(tmp_path: Path) -> None:
+    """harness-6dsn end-to-end: enforce_blank_canvas=False (the driver's
+    early-phase setting) lets a legitimately-blank skeleton pass the
+    smoke step, while console/page-error checks still apply. This is
+    what lets an incremental from-scratch build clear §1 instead of
+    failing blank-canvas on every turn (loop_run 8e73902f)."""
+    (tmp_path / "index.html").write_text(
+        "<!DOCTYPE html><html><body>"
+        '<canvas id="game" width="100" height="100"></canvas>'
+        '<script src="game.js"></script>'
+        "</body></html>",
+    )
+    (tmp_path / "game.js").write_text(
+        "const canvas = document.getElementById('game');\nconst ctx = canvas.getContext('2d');\n",
+    )
+    steps = default_workspace_verify_steps(tmp_path, enforce_blank_canvas=False)
     smoke_step = next(s for s in steps if "smoke_runner" in s.cmd)
     exit_code, _tail = _exec_test_cmd(smoke_step.cmd, tmp_path, shell_mode=smoke_step.shell)
     assert exit_code == 0

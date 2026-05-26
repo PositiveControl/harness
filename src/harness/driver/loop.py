@@ -248,6 +248,16 @@ class LoopConfig:
     # `bd human list`. Set False via `--no-skip-on-max-attempts` to
     # restore the halt-the-whole-run behavior.
     skip_on_max_attempts: bool = True
+    # harness-6dsn: id of the bd issue that marks "the workspace should
+    # now render something" (e.g. §2 world map). The blank-canvas smoke
+    # check (harness-7bxm) is suppressed until this issue is closed —
+    # an incremental from-scratch build has legitimately-blank skeletons
+    # (§1 project shape) that the check would otherwise fail on every
+    # turn, blocking the whole build. None = enforce blank-canvas always
+    # (the right default for verifying an already-built game). The
+    # console / page-error smoke checks always run regardless. CLI wires
+    # this via --render-milestone.
+    render_milestone_id: str | None = None
 
 
 @dataclass
@@ -278,6 +288,27 @@ class LoopResult:
     exit_reason: Literal["success", "halted", "exhausted", "interrupted", "dry_run"]
     handoffs: list[Handoff] = field(default_factory=list)
     parked_issues: list[str] = field(default_factory=list)
+
+
+def _blank_canvas_enforced(bd: DriverBd, milestone_id: str | None) -> bool:
+    """Whether the smoke gate's blank-canvas check should be enforced
+    this turn (harness-6dsn).
+
+    - No milestone configured → always enforce (the right default for
+      verifying an already-built game; preserves pre-6dsn behavior).
+    - Milestone configured → enforce only once that issue is CLOSED.
+      Before then the build is still wiring up its first render, so a
+      blank canvas is expected, not a bug.
+    - Milestone lookup fails (bad id, bd error) → enforce + let the
+      caller log it. Failing toward the stricter gate keeps a typo'd
+      milestone loud rather than silently disabling a safety check."""
+    if milestone_id is None:
+        return True
+    try:
+        issue = bd.show(milestone_id)
+    except DriverBdError:
+        return True
+    return issue.status == "closed"
 
 
 # --- top-level entry --------------------------------------------------
@@ -313,11 +344,20 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
     # for non-FSM turns; the legacy path recomputes per-turn (post-write)
     # so empty workspaces still pick up the model's freshly-created files
     # when the gate runs.
-    default_verify_steps = default_workspace_verify_steps(config.workspace)
+    enforce_blank = _blank_canvas_enforced(bd, config.render_milestone_id)
+    default_verify_steps = default_workspace_verify_steps(
+        config.workspace, enforce_blank_canvas=enforce_blank
+    )
     if default_verify_steps:
         log(f"workspace-typed verify defaults active: {len(default_verify_steps)} step(s)")
     else:
         log("workspace-typed verify defaults: none at startup (will recompute per turn)")
+    if config.render_milestone_id is not None and not enforce_blank:
+        log(
+            "blank-canvas smoke check SUPPRESSED until render milestone "
+            f"{config.render_milestone_id} closes (harness-6dsn); console/"
+            "page-error checks still active"
+        )
     # harness-7bxm: never let a degraded runtime-verify gate stay silent.
     # If the workspace is a browser app but the smoke-execute gate can't
     # run, say so loudly — this is the b85f4008 false-close root cause.
@@ -442,7 +482,13 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             # model just wrote and the per-turn verify reflects current
             # reality. Recompute is cheap (a few directory walks) and
             # idempotent — empty workspaces still yield ().
-            default_verify_steps = default_workspace_verify_steps(config.workspace)
+            # harness-6dsn: recompute blank-canvas enforcement too — the
+            # render milestone may have closed on a prior turn, flipping
+            # the smoke gate from skeleton-tolerant to render-strict.
+            default_verify_steps = default_workspace_verify_steps(
+                config.workspace,
+                enforce_blank_canvas=_blank_canvas_enforced(bd, config.render_milestone_id),
+            )
 
             success, reason, forbidden_warnings = _classify_post_turn(
                 bd,

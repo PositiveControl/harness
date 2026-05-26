@@ -203,7 +203,7 @@ def _playwright_available() -> bool:
         return False
 
 
-def _smoke_execute_step(index: Path) -> VerifyStep:
+def _smoke_execute_step(index: Path, *, enforce_blank_canvas: bool = True) -> VerifyStep:
     """Smoke-execute verify step (harness-4b8v).
 
     Invokes ``harness.driver.smoke_runner`` under the same interpreter
@@ -225,10 +225,18 @@ def _smoke_execute_step(index: Path) -> VerifyStep:
     ``--workspace``) would double-join to
     ``<workspace>/<workspace>/index.html`` and fail "index not found"
     on every turn. Absolute path → the runner uses it verbatim.
+
+    ``enforce_blank_canvas`` (harness-6dsn): when False, append
+    ``--no-blank-canvas`` so the runner skips the all-one-color check.
+    The driver passes False during the early phase of an incremental
+    from-scratch build, where a skeleton legitimately renders nothing
+    until a later render milestone closes. Console / page-error checks
+    stay active regardless — those are unconditional bugs.
     """
+    flag = "" if enforce_blank_canvas else " --no-blank-canvas"
     cmd = (
-        f"{shlex.quote(sys.executable)} -m harness.driver.smoke_runner "
-        f"{shlex.quote(str(index.resolve()))}"
+        f"{shlex.quote(sys.executable)} -m harness.driver.smoke_runner"
+        f"{flag} {shlex.quote(str(index.resolve()))}"
     )
     # S604: ``shell=True`` here is a VerifyStep dataclass field, NOT a
     # subprocess kwarg (mirrors _js_verify_step / _py_verify_step
@@ -267,7 +275,9 @@ def browser_smoke_skip_reason(workspace: Path) -> str | None:
     )
 
 
-def default_workspace_verify_steps(workspace: Path) -> tuple[VerifyStep, ...]:
+def default_workspace_verify_steps(
+    workspace: Path, *, enforce_blank_canvas: bool = True
+) -> tuple[VerifyStep, ...]:
     """Synthesize the baseline VerifyStep tuple for a workspace.
 
     Inspects the workspace for known file types and returns one
@@ -283,6 +293,12 @@ def default_workspace_verify_steps(workspace: Path) -> tuple[VerifyStep, ...]:
     Playwright is importable, also appends a smoke-execute step that
     runtime-loads ``index.html`` to catch runtime-on-load JS bugs that
     parse gates can't see. Skips silently when either condition fails.
+
+    harness-6dsn: ``enforce_blank_canvas`` is threaded to the smoke
+    step. The driver sets it False during the early phase of an
+    incremental from-scratch build (before the render milestone closes)
+    so a legitimately-blank skeleton isn't failed. Console / page-error
+    checks always run.
     """
     steps: list[VerifyStep] = []
     if _workspace_has_file(workspace, (".js", ".mjs", ".cjs")) and shutil.which("node"):
@@ -292,7 +308,7 @@ def default_workspace_verify_steps(workspace: Path) -> tuple[VerifyStep, ...]:
     if _playwright_available():
         index = _browser_app_index(workspace)
         if index is not None:
-            steps.append(_smoke_execute_step(index))
+            steps.append(_smoke_execute_step(index, enforce_blank_canvas=enforce_blank_canvas))
     return tuple(steps)
 
 

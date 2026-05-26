@@ -43,13 +43,22 @@ from typing import Any
 _DEFAULT_SETTLE_MS = 1500
 
 
-def _blank_canvas_check_enabled() -> bool:
+def _blank_canvas_check_enabled(*, cli_disabled: bool = False) -> bool:
     """Whether to fail the smoke step when a canvas renders entirely
     one color. Default ON — it catches the "draw loop never wired into
-    requestAnimationFrame" class (all-black map). Off-switch for the
-    rare legitimate case: a canvas app that intentionally renders
-    nothing until user interaction. Set ``HARNESS_SMOKE_BLANK_CANVAS=0``
-    (or ``false`` / ``no``) to disable."""
+    requestAnimationFrame" class (all-black map).
+
+    Two off-switches, either disables:
+    - ``cli_disabled`` (the ``--no-blank-canvas`` flag): the driver
+      passes this for early phases of an incremental from-scratch build
+      where a §1-style skeleton legitimately renders nothing until a
+      later render milestone lands (harness-6dsn). The blank canvas is
+      EXPECTED there, not a bug.
+    - ``HARNESS_SMOKE_BLANK_CANVAS=0`` (or ``false`` / ``no`` / ``off``):
+      operator-level off-switch for a canvas app that intentionally
+      renders nothing until user interaction."""
+    if cli_disabled:
+        return False
     raw = os.environ.get("HARNESS_SMOKE_BLANK_CANVAS", "").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
@@ -147,13 +156,16 @@ def _format_page_error(err: Any) -> str:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2:
+    flags = {a for a in argv[1:] if a.startswith("--")}
+    positionals = [a for a in argv[1:] if not a.startswith("--")]
+    no_blank_canvas = "--no-blank-canvas" in flags
+    if not positionals:
         print(
-            "usage: python -m harness.driver.smoke_runner <index.html>",
+            "usage: python -m harness.driver.smoke_runner [--no-blank-canvas] <index.html>",
             file=sys.stderr,
         )
         return 1
-    raw = Path(argv[1])
+    raw = Path(positionals[0])
     index_path = raw if raw.is_absolute() else (Path.cwd() / raw).resolve()
     if not index_path.is_file():
         print(f"smoke-execute: index not found at {index_path}", file=sys.stderr)
@@ -193,7 +205,7 @@ def main(argv: list[str]) -> int:
                 # Blank-canvas check runs only if the load was otherwise
                 # clean — a page that already threw has a more actionable
                 # error to report than "your canvas is one color."
-                if not errors and _blank_canvas_check_enabled():
+                if not errors and _blank_canvas_check_enabled(cli_disabled=no_blank_canvas):
                     try:
                         result = page.evaluate(_BLANK_CANVAS_JS)
                         if isinstance(result, list):

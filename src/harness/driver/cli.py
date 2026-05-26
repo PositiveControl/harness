@@ -359,6 +359,20 @@ def loop_command(
             "max-attempts halts the entire run."
         ),
     ),
+    render_milestone: str | None = typer.Option(
+        None,
+        "--render-milestone",
+        help=(
+            "bd issue id that marks 'the workspace should now render "
+            "something' (e.g. the §2 world-map issue). The blank-canvas "
+            "smoke check is suppressed until this issue closes, so an "
+            "incremental from-scratch build whose early sections (§1 "
+            "skeleton) legitimately render nothing isn't failed on every "
+            "turn (harness-6dsn). Console/page-error checks always run. "
+            "Omit to enforce blank-canvas always (right for an "
+            "already-built game)."
+        ),
+    ),
 ) -> None:
     """Drive a bd epic to closure across multiple turns."""
     if list_runs:
@@ -405,6 +419,7 @@ def loop_command(
         summarize_tool_results=summarize_tool_results,
         auto_close_on_claim=auto_close_on_claim,
         skip_on_max_attempts=skip_on_max_attempts,
+        render_milestone_id=render_milestone,
     )
     result = run_loop(adapter, bd, config)
     _print_result(result)

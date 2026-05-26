@@ -63,3 +63,20 @@ def test_blank_canvas_enabled_by_truthy_or_empty(
 ) -> None:
     monkeypatch.setenv("HARNESS_SMOKE_BLANK_CANVAS", value)
     assert _blank_canvas_check_enabled() is True
+
+
+def test_blank_canvas_cli_flag_disables_even_when_env_enables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """harness-6dsn: the driver's --no-blank-canvas flag wins even if
+    the env var would enable the check. The flag is how the driver
+    suppresses the check during early-phase incremental builds."""
+    monkeypatch.setenv("HARNESS_SMOKE_BLANK_CANVAS", "1")
+    assert _blank_canvas_check_enabled(cli_disabled=True) is False
+
+
+def test_blank_canvas_cli_flag_absent_keeps_env_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HARNESS_SMOKE_BLANK_CANVAS", raising=False)
+    assert _blank_canvas_check_enabled(cli_disabled=False) is True

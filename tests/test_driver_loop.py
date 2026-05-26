@@ -24,6 +24,7 @@ from harness.driver.loop import (
     EXECUTOR_USER_MESSAGE,
     LoopConfig,
     LoopResult,
+    _blank_canvas_enforced,
     run_loop,
 )
 from harness.driver.state import LoopRunState
@@ -2194,7 +2195,9 @@ def test_run_loop_default_verify_steps_recomputed_per_turn(
     # gate's auto-close must use the recomputed value.
     compute_calls = [0]
 
-    def fake_default_steps(_workspace: Any) -> tuple[VerifyStep, ...]:
+    def fake_default_steps(
+        _workspace: Any, *, enforce_blank_canvas: bool = True
+    ) -> tuple[VerifyStep, ...]:
         compute_calls[0] += 1
         if compute_calls[0] == 1:
             return ()  # startup snapshot
@@ -2864,3 +2867,40 @@ def test_run_loop_fsm_persists_phase_and_assessment_to_state(
     assert reloaded.last_turn_phase["harness-a"] == "done"
     assert "current state value" in reloaded.last_assessment["harness-a"]["current_state"]
     assert reloaded.last_test_cmd["harness-a"] == "pytest tests/test_foo.py -v"
+
+
+# --- harness-6dsn: phase-aware blank-canvas enforcement -----------
+
+
+def test_blank_canvas_enforced_when_no_milestone() -> None:
+    """No render milestone → always enforce (the already-built-game
+    default; preserves pre-6dsn behavior)."""
+    bd = _ScenarioBd(ready_sequence=[[]])
+    assert _blank_canvas_enforced(bd, None) is True  # type: ignore[arg-type]
+
+
+def test_blank_canvas_suppressed_while_milestone_open() -> None:
+    """Milestone configured but still open → suppress. An incremental
+    build is still wiring its first render; a blank canvas is expected."""
+    bd = _ScenarioBd(
+        ready_sequence=[[]],
+        issues={"harness-vjb6": _issue("harness-vjb6", status="open")},
+    )
+    assert _blank_canvas_enforced(bd, "harness-vjb6") is False  # type: ignore[arg-type]
+
+
+def test_blank_canvas_enforced_once_milestone_closed() -> None:
+    """Milestone closed → enforce. The build should render now, so a
+    blank canvas is a real bug again."""
+    bd = _ScenarioBd(
+        ready_sequence=[[]],
+        issues={"harness-vjb6": _issue("harness-vjb6", status="closed")},
+    )
+    assert _blank_canvas_enforced(bd, "harness-vjb6") is True  # type: ignore[arg-type]
+
+
+def test_blank_canvas_enforced_when_milestone_lookup_fails() -> None:
+    """Bad milestone id / bd error → fail toward the stricter gate
+    (enforce) rather than silently disabling the check."""
+    bd = _ScenarioBd(ready_sequence=[[]], show_errors={"harness-typo"})
+    assert _blank_canvas_enforced(bd, "harness-typo") is True  # type: ignore[arg-type]
