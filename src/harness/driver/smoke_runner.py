@@ -28,16 +28,96 @@ Exit codes:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 # Window in ms the runner waits AFTER the load event for animation-
-# frame and microtask-driven init bugs to surface. ~500 ms covers
-# one requestAnimationFrame tick on a hot machine plus a few queued
-# Promise resolutions; longer windows trade verify cost for marginal
-# additional coverage.
-_SETTLE_MS = 500
+# frame and microtask-driven init bugs to surface. Default 1500 ms
+# covers many requestAnimationFrame ticks plus queued Promise
+# resolutions, so a bug that throws a few frames into the render loop
+# (not just on the very first tick) still surfaces. Override via
+# HARNESS_SMOKE_SETTLE_MS for slower machines or longer warm-up
+# sequences; longer windows trade verify cost for coverage.
+_DEFAULT_SETTLE_MS = 1500
+
+
+def _blank_canvas_check_enabled() -> bool:
+    """Whether to fail the smoke step when a canvas renders entirely
+    one color. Default ON — it catches the "draw loop never wired into
+    requestAnimationFrame" class (all-black map). Off-switch for the
+    rare legitimate case: a canvas app that intentionally renders
+    nothing until user interaction. Set ``HARNESS_SMOKE_BLANK_CANVAS=0``
+    (or ``false`` / ``no``) to disable."""
+    raw = os.environ.get("HARNESS_SMOKE_BLANK_CANVAS", "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _settle_ms() -> int:
+    """Resolve the post-load settle window from
+    ``HARNESS_SMOKE_SETTLE_MS`` (clamped to [100, 30000]) or the
+    default. A malformed / non-positive value falls back to the
+    default rather than failing the verify on a misconfigured env."""
+    raw = os.environ.get("HARNESS_SMOKE_SETTLE_MS", "").strip()
+    if not raw:
+        return _DEFAULT_SETTLE_MS
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_SETTLE_MS
+    if value < 100:
+        return 100
+    if value > 30000:
+        return 30000
+    return value
+
+
+# JS evaluated in the page after the settle window to detect a canvas
+# that loaded clean but rendered nothing — the all-uniform-color
+# "blank canvas" failure mode (e.g. a game whose draw loop was never
+# wired into requestAnimationFrame, so the map never paints). Returns
+# the list of canvas descriptors that are entirely one color. A canvas
+# is "blank" when every sampled pixel is identical. We downsample to a
+# small grid (toDataURL is avoided — getImageData is cheaper and
+# doesn't need a data URL round-trip) and compare RGBA tuples.
+#
+# Canvases smaller than 2x2 or with a zero dimension are skipped (not
+# meaningfully renderable). Cross-origin / tainted canvases throw on
+# getImageData; we swallow that and treat them as non-blank (we can't
+# inspect them, so we don't fail on them).
+_BLANK_CANVAS_JS = r"""
+() => {
+  const blanks = [];
+  const canvases = Array.from(document.querySelectorAll('canvas'));
+  for (let i = 0; i < canvases.length; i++) {
+    const c = canvases[i];
+    const w = c.width, h = c.height;
+    if (!w || !h || w < 2 || h < 2) continue;
+    const ctx = c.getContext('2d');
+    if (!ctx) continue;
+    let data;
+    try {
+      data = ctx.getImageData(0, 0, w, h).data;
+    } catch (e) {
+      continue;  // tainted/cross-origin — can't inspect, don't fail
+    }
+    const r0 = data[0], g0 = data[1], b0 = data[2], a0 = data[3];
+    let uniform = true;
+    const stride = Math.max(4, Math.floor(data.length / 4 / 256) * 4);
+    for (let p = 0; p < data.length; p += stride) {
+      if (data[p] !== r0 || data[p+1] !== g0 || data[p+2] !== b0 || data[p+3] !== a0) {
+        uniform = false;
+        break;
+      }
+    }
+    if (uniform) {
+      blanks.push({ index: i, width: w, height: h, rgba: [r0, g0, b0, a0] });
+    }
+  }
+  return blanks;
+}
+"""
 
 
 def _format_console_error(msg: Any) -> str:
@@ -92,6 +172,7 @@ def main(argv: list[str]) -> int:
         return 0
 
     errors: list[str] = []
+    blanks: list[Any] = []
 
     def _on_console(msg: Any) -> None:
         if getattr(msg, "type", "") == "error":
@@ -108,7 +189,23 @@ def main(argv: list[str]) -> int:
                 page.on("console", _on_console)
                 page.on("pageerror", _on_pageerror)
                 page.goto(f"file://{index_path}", wait_until="load")
-                page.wait_for_timeout(_SETTLE_MS)
+                page.wait_for_timeout(_settle_ms())
+                # Blank-canvas check runs only if the load was otherwise
+                # clean — a page that already threw has a more actionable
+                # error to report than "your canvas is one color."
+                if not errors and _blank_canvas_check_enabled():
+                    try:
+                        result = page.evaluate(_BLANK_CANVAS_JS)
+                        if isinstance(result, list):
+                            blanks = result
+                    except Exception as exc:
+                        # Canvas inspection is best-effort. A failure to
+                        # evaluate (page navigated away, eval disabled)
+                        # must not turn a clean load red.
+                        print(
+                            f"smoke-execute: blank-canvas check skipped: {exc}",
+                            file=sys.stderr,
+                        )
             finally:
                 browser.close()
     except Exception as exc:
@@ -130,6 +227,22 @@ def main(argv: list[str]) -> int:
         print("smoke-execute: runtime errors detected on load:", file=sys.stderr)
         for err in errors:
             print(err, file=sys.stderr)
+        return 1
+    if blanks:
+        print(
+            "smoke-execute: canvas rendered nothing (entirely one color) after "
+            f"{_settle_ms()}ms — draw loop likely not wired up:",
+            file=sys.stderr,
+        )
+        for blank in blanks:
+            idx = blank.get("index", "?") if isinstance(blank, dict) else "?"
+            dims = (
+                f"{blank.get('width', '?')}x{blank.get('height', '?')}"
+                if isinstance(blank, dict)
+                else "?"
+            )
+            rgba = blank.get("rgba", "?") if isinstance(blank, dict) else "?"
+            print(f"blank-canvas #{idx} ({dims}) uniform rgba={rgba}", file=sys.stderr)
         return 1
     return 0
 

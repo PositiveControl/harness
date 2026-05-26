@@ -20,6 +20,7 @@ from harness.driver.fsm_turn import _exec_test_cmd
 from harness.driver.workspace_verify import (
     _browser_app_index,
     _workspace_has_file,
+    browser_smoke_skip_reason,
     default_workspace_verify_steps,
 )
 
@@ -334,6 +335,40 @@ def test_smoke_step_skipped_when_not_a_browser_app(tmp_path: Path) -> None:
     assert smoke_steps == []
 
 
+# --- harness-7bxm: loud skip-warning when the gate is degraded ----
+
+
+def test_skip_reason_set_when_browser_app_but_no_playwright(tmp_path: Path) -> None:
+    """The b85f4008 root cause: a browser app whose runtime-verify gate
+    is OFF because Playwright isn't importable. browser_smoke_skip_reason
+    must return a non-empty message so the loop can log it loudly."""
+    (tmp_path / "index.html").write_text(
+        '<html><body><script src="game.js"></script></body></html>',
+    )
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    with patch("harness.driver.workspace_verify._playwright_available", return_value=False):
+        reason = browser_smoke_skip_reason(tmp_path)
+    assert reason is not None
+    assert "Playwright" in reason
+
+
+def test_skip_reason_none_when_playwright_present(tmp_path: Path) -> None:
+    """Gate WILL run → no warning."""
+    (tmp_path / "index.html").write_text(
+        '<html><body><script src="game.js"></script></body></html>',
+    )
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    with patch("harness.driver.workspace_verify._playwright_available", return_value=True):
+        assert browser_smoke_skip_reason(tmp_path) is None
+
+
+def test_skip_reason_none_when_not_a_browser_app(tmp_path: Path) -> None:
+    """No browser app → nothing to warn about, even without Playwright."""
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    with patch("harness.driver.workspace_verify._playwright_available", return_value=False):
+        assert browser_smoke_skip_reason(tmp_path) is None
+
+
 # --- end-to-end: smoke-execute against real Playwright -----------
 
 
@@ -365,8 +400,38 @@ def test_smoke_step_fails_on_runtime_canvas_error(tmp_path: Path) -> None:
 
 @_requires_playwright
 def test_smoke_step_passes_on_clean_canvas_workspace(tmp_path: Path) -> None:
-    """A clean canvas init (getContext('2d')) loads without console
-    errors — smoke step exits 0."""
+    """A clean canvas init that actually renders content (a colored
+    fill plus a contrasting rect) loads without console errors AND
+    isn't flagged blank — smoke step exits 0."""
+    (tmp_path / "index.html").write_text(
+        "<!DOCTYPE html><html><body>"
+        '<canvas id="game" width="100" height="100"></canvas>'
+        '<script src="game.js"></script>'
+        "</body></html>",
+    )
+    # Draw two distinct colors so the canvas is non-uniform — this is
+    # what a working render loop produces and what the blank-canvas
+    # check (harness-7bxm) expects to see.
+    (tmp_path / "game.js").write_text(
+        "const canvas = document.getElementById('game');\n"
+        "const ctx = canvas.getContext('2d');\n"
+        "ctx.fillStyle = '#3a3a3a';\n"
+        "ctx.fillRect(0, 0, 100, 100);\n"
+        "ctx.fillStyle = '#1e6fd9';\n"
+        "ctx.fillRect(40, 40, 20, 20);\n",
+    )
+    steps = default_workspace_verify_steps(tmp_path)
+    smoke_step = next(s for s in steps if "smoke_runner" in s.cmd)
+    exit_code, _tail = _exec_test_cmd(smoke_step.cmd, tmp_path, shell_mode=smoke_step.shell)
+    assert exit_code == 0
+
+
+@_requires_playwright
+def test_smoke_step_fails_on_blank_canvas(tmp_path: Path) -> None:
+    """harness-7bxm: a workspace that loads clean (no console/page
+    error) but never draws to its canvas — the all-uniform "blank
+    canvas" failure mode (e.g. §2 tile render never wired into the
+    rAF loop) — must fail the smoke step."""
     (tmp_path / "index.html").write_text(
         "<!DOCTYPE html><html><body>"
         '<canvas id="game" width="100" height="100"></canvas>'
@@ -376,8 +441,34 @@ def test_smoke_step_passes_on_clean_canvas_workspace(tmp_path: Path) -> None:
     (tmp_path / "game.js").write_text(
         "const canvas = document.getElementById('game');\n"
         "const ctx = canvas.getContext('2d');\n"
-        "ctx.clearRect(0, 0, 100, 100);\n",
+        "// draw loop never wired up — canvas stays uniform\n"
+        "function draw() { /* TODO */ }\n",
     )
+    steps = default_workspace_verify_steps(tmp_path)
+    smoke_step = next(s for s in steps if "smoke_runner" in s.cmd)
+    exit_code, tail = _exec_test_cmd(smoke_step.cmd, tmp_path, shell_mode=smoke_step.shell)
+    assert exit_code != 0
+    assert "blank" in tail.lower() or "one color" in tail.lower()
+
+
+@_requires_playwright
+def test_blank_canvas_check_disabled_by_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The blank-canvas check has an off-switch
+    (HARNESS_SMOKE_BLANK_CANVAS=0) for the rare canvas app that
+    intentionally renders nothing on load. With it disabled, an
+    otherwise-clean blank canvas passes."""
+    (tmp_path / "index.html").write_text(
+        "<!DOCTYPE html><html><body>"
+        '<canvas id="game" width="100" height="100"></canvas>'
+        '<script src="game.js"></script>'
+        "</body></html>",
+    )
+    (tmp_path / "game.js").write_text(
+        "const canvas = document.getElementById('game');\nconst ctx = canvas.getContext('2d');\n",
+    )
+    monkeypatch.setenv("HARNESS_SMOKE_BLANK_CANVAS", "0")
     steps = default_workspace_verify_steps(tmp_path)
     smoke_step = next(s for s in steps if "smoke_runner" in s.cmd)
     exit_code, _tail = _exec_test_cmd(smoke_step.cmd, tmp_path, shell_mode=smoke_step.shell)

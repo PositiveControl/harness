@@ -72,7 +72,10 @@ from harness.driver.claim_detector import (
 from harness.driver.handoff import Handoff, build_handoff
 from harness.driver.planner import PlanDraft, PlannerError, VerifyStep
 from harness.driver.state import LoopRunState
-from harness.driver.workspace_verify import default_workspace_verify_steps
+from harness.driver.workspace_verify import (
+    browser_smoke_skip_reason,
+    default_workspace_verify_steps,
+)
 from harness.model.adapter import ChatMessage, ModelAdapter
 from harness.orchestrator import ToolLoopEvent, ToolLoopResult, run_tool_loop
 from harness.orchestrator.hook_wiring import make_write_file_redirect_hook
@@ -315,6 +318,12 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
         log(f"workspace-typed verify defaults active: {len(default_verify_steps)} step(s)")
     else:
         log("workspace-typed verify defaults: none at startup (will recompute per turn)")
+    # harness-7bxm: never let a degraded runtime-verify gate stay silent.
+    # If the workspace is a browser app but the smoke-execute gate can't
+    # run, say so loudly — this is the b85f4008 false-close root cause.
+    smoke_skip = browser_smoke_skip_reason(config.workspace)
+    if smoke_skip is not None:
+        log(f"WARNING: {smoke_skip}")
 
     # harness-9ijr: snapshot the workspace once per fresh run BEFORE
     # the first turn fires. Resume runs inherit the original

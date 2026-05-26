@@ -226,6 +226,36 @@ def _smoke_execute_step(index: Path) -> VerifyStep:
     return VerifyStep(cmd=cmd, shell=True)  # noqa: S604
 
 
+def browser_smoke_skip_reason(workspace: Path) -> str | None:
+    """Return a human-readable reason iff ``workspace`` looks like a
+    browser app (index.html referencing local JS) but the smoke-execute
+    gate cannot contribute a step — else None.
+
+    This exists so a *degraded* verify is never silent. The original
+    b85f4008 false-close (two GTAII issues auto-closed while the game
+    crashed on load) happened precisely because the smoke gate skipped
+    invisibly: Playwright wasn't importable, so the strongest gate
+    produced no step and no signal. The loop logs this reason loudly at
+    startup so the operator knows runtime verification is OFF and can
+    install the ``browser`` extra (``uv sync --extra browser`` +
+    ``playwright install chromium``) before trusting auto-closes.
+
+    Returns None when there's no browser app (nothing to warn about) or
+    when the smoke gate WILL run (Playwright importable) — the
+    chromium-binary-missing case still surfaces at smoke-runner exec
+    time as a one-line skip hint, so we don't duplicate it here."""
+    if _playwright_available():
+        return None
+    if _browser_app_index(workspace) is None:
+        return None
+    return (
+        "browser app detected (index.html + local JS) but the smoke-execute "
+        "verify gate is OFF: Playwright is not installed. Runtime-on-load JS "
+        "bugs will NOT fail verify, so auto-closes are syntax-only. Install "
+        "with `uv sync --extra browser && uv run playwright install chromium`."
+    )
+
+
 def default_workspace_verify_steps(workspace: Path) -> tuple[VerifyStep, ...]:
     """Synthesize the baseline VerifyStep tuple for a workspace.
 
@@ -256,5 +286,6 @@ def default_workspace_verify_steps(workspace: Path) -> tuple[VerifyStep, ...]:
 
 
 __all__ = [
+    "browser_smoke_skip_reason",
     "default_workspace_verify_steps",
 ]
