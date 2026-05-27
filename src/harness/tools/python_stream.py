@@ -22,6 +22,7 @@ eval is ``harness.evals.file_ops``.
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -178,6 +179,49 @@ sys.__stdout__.flush()
 """
 
 
+# Corrective nudges for the blocked builtins the model reaches for most
+# (harness-vszp). The sandbox already strips these (see _BAD_BUILTINS),
+# but a bare `NameError: name 'open' is not defined` thrown from deep in
+# a traceback doesn't tell the model what to do instead — so it retries
+# the same call across turns. Catching the call at validation time lets
+# us return the contract-specific fix as the tool result, turning N
+# silent retries into one correction.
+_BLOCKED_CALL_HINTS: dict[str, str] = {
+    "open": (
+        "python_stream has no `open()` — the sandbox has no filesystem "
+        "access. Your input is ALREADY loaded: read it from the "
+        "pre-bound `text` (full input as one string) or `lines` "
+        "(text.splitlines()). To process a file, pass it via "
+        '`paths=["file"]` and operate on `text`; do not call open().'
+    ),
+    "exec": "python_stream blocks `exec()` — write the code directly as the expr.",
+    "eval": "python_stream blocks `eval()` — write the expression directly as the expr.",
+    "compile": "python_stream blocks `compile()`.",
+    "input": "python_stream blocks `input()` — there is no stdin prompt; use the `text` binding.",
+    "breakpoint": "python_stream blocks `breakpoint()`.",
+}
+
+
+def _detect_blocked_call(expr: str) -> str | None:
+    """Return a corrective hint if `expr` calls a blocked builtin as a
+    bare name (e.g. `open(...)`), else None. AST-based so it doesn't
+    false-positive on method calls (`io.open(...)`, `x.eval(...)`) or
+    substrings (`reopen(...)`). Unparseable expr → None: let the normal
+    path surface the syntax error rather than masking it."""
+    try:
+        tree = ast.parse(expr)
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in _BLOCKED_CALL_HINTS
+        ):
+            return _BLOCKED_CALL_HINTS[node.func.id]
+    return None
+
+
 def _validate_expr(expr: str) -> None:
     if not isinstance(expr, str):
         raise TypeError(f"python_stream: expr must be a string, got {type(expr).__name__}")
@@ -187,6 +231,9 @@ def _validate_expr(expr: str) -> None:
         raise ValueError(
             f"python_stream: expr is {len(expr.encode('utf-8'))} bytes — max is {_MAX_EXPR_BYTES}"
         )
+    hint = _detect_blocked_call(expr)
+    if hint is not None:
+        raise ValueError(f"python_stream: {hint}")
 
 
 def _resolve_path(root: Path, rel: str) -> Path:
@@ -259,21 +306,25 @@ class PythonStreamTool:
             name="python_stream",
             description=(
                 "Run a Python expression or snippet over a file (or "
-                "inline text) in a sandboxed child interpreter. The "
-                "child has these names pre-bound:\n"
+                "inline text) in a sandboxed child interpreter.\n\n"
+                "DO NOT call open() — the sandbox has no filesystem "
+                "access. Your input is pre-loaded under these names:\n"
                 "  text   — the full input as a single string\n"
                 "  lines  — text.splitlines()\n"
                 "  paths  — tuple of input paths (empty when using stdin)\n"
+                "Read from `text`/`lines`; never open() a file.\n"
                 "Pre-imported: re, json, math, statistics, itertools, "
                 "functools, collections, textwrap, string, operator, "
-                "decimal, fractions, hashlib, base64, datetime.\n\n"
+                "decimal, fractions, hashlib, base64, datetime. (No "
+                "exec/eval/compile/input either.)\n\n"
                 "If the final statement is an expression, its repr() (or "
                 "value, if it's already a string) is returned. Otherwise "
                 "the captured stdout is returned.\n\n"
-                "Read input from `paths` (workspace-relative) or inline "
-                "`stdin`. Without `in_place`, returns the result string "
-                "(read-tier). With `in_place=true`, the result is "
-                "written back to each path (write-tier). No file I/O, "
+                "Choose the input source: `paths` (workspace-relative "
+                "list) OR inline `stdin` — provide exactly one. Without "
+                "`in_place`, returns the result string (read-tier). With "
+                "`in_place=true` (and exactly one path), the result is "
+                "written back to that path (write-tier). No file I/O, "
                 "no network, no subprocess inside the child."
             ),
             parameters={

@@ -103,7 +103,13 @@ def _validate_args(args: list[str]) -> list[str]:
     ``exec`` literally. Validation is per-element: length cap, total
     list cap, and metachar scan."""
     if not isinstance(args, list):
-        raise TypeError(f"stream_edit: args must be a list, got {type(args).__name__}")
+        raise TypeError(
+            f"stream_edit: args must be a list of argv strings, got "
+            f"{type(args).__name__}. One element per argv slot — e.g. "
+            f'sed substitution is args=["-E", "s/old/new/g"], not a '
+            f"single joined string. Do not put the file path in args; "
+            f"pass it via `paths`."
+        )
     if not args:
         raise ValueError("stream_edit: args must be a non-empty list")
     if len(args) > _MAX_ARGV_LEN:
@@ -197,8 +203,10 @@ class StreamEditTool:
                 "  tool='sed',  args=['s/foo/bar/g']\n"
                 "  tool='cut',  args=['-d', ',', '-f', '2']\n"
                 "  tool='tr',   args=['a-z', 'A-Z']\n\n"
-                "Read input from `paths` (relative to the workspace) or "
-                "from inline `stdin`. Without `in_place`, the tool "
+                "The file path goes in `paths`, NOT in `args` — args is "
+                "only the tool's flags/program. Read input from `paths` "
+                "(relative to the workspace) or from inline `stdin`; "
+                "provide exactly one. Without `in_place`, the tool "
                 "returns the captured stdout (read-tier). With "
                 "`in_place=true`, each path's transformed output is "
                 "written back to that path (write-tier).\n\n"

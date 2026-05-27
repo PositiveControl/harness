@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.tools.python_stream import PythonStreamTool
+from harness.tools.python_stream import PythonStreamTool, _detect_blocked_call
 
 
 @pytest.fixture
@@ -120,9 +120,32 @@ def test_filter_jsonl_via_python(tool: PythonStreamTool, workspace: Path) -> Non
 
 
 def test_open_is_blocked(tool: PythonStreamTool) -> None:
-    out = tool.call(expr="open('/etc/passwd').read()", stdin="x")
-    assert "ERROR" in out
-    assert "open" in out or "NameError" in out
+    # harness-vszp: a bare open() call is now caught at validation time
+    # with a corrective hint pointing at the `text` binding, BEFORE the
+    # subprocess runs — instead of a cryptic runtime NameError the model
+    # tends to retry. The sandbox builtin-strip stays as defense in depth.
+    with pytest.raises(ValueError, match="open"):
+        tool.call(expr="open('/etc/passwd').read()", stdin="x")
+
+
+def test_blocked_call_hint_names_text_binding(tool: PythonStreamTool) -> None:
+    # The corrective nudge must tell the model what to do INSTEAD of
+    # open() — read from the pre-bound `text` — not just that open failed.
+    with pytest.raises(ValueError, match="text"):
+        tool.call(expr="data = open('game.js').read()\nprint(data)", stdin="x")
+
+
+def test_detect_blocked_call_no_false_positives() -> None:
+    # AST-based detection must fire only on a bare builtin call by name —
+    # not attribute calls (io.open), not substrings (reopen), not
+    # identifiers that merely contain the word, and not unparseable expr.
+    assert _detect_blocked_call("open('f').read()") is not None
+    assert _detect_blocked_call("data = open('f').read()") is not None
+    assert _detect_blocked_call("io.open('f')") is None
+    assert _detect_blocked_call("reopen(text)") is None
+    assert _detect_blocked_call("opener = len(text); opener") is None
+    assert _detect_blocked_call("text.upper()") is None
+    assert _detect_blocked_call("this is not valid python (((") is None
 
 
 def test_os_import_blocked(tool: PythonStreamTool) -> None:
@@ -137,8 +160,10 @@ def test_subprocess_import_blocked(tool: PythonStreamTool) -> None:
 
 
 def test_eval_builtin_blocked(tool: PythonStreamTool) -> None:
-    out = tool.call(expr="eval('1+1')", stdin="x")
-    assert "ERROR" in out
+    # harness-vszp: eval() is now caught at validation time (corrective
+    # ValueError) rather than at runtime in the sandbox.
+    with pytest.raises(ValueError, match="eval"):
+        tool.call(expr="eval('1+1')", stdin="x")
 
 
 def test_re_is_pre_imported(tool: PythonStreamTool) -> None:

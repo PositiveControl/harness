@@ -98,6 +98,17 @@ def test_empty_args_rejected(tool: StreamEditTool, workspace: Path) -> None:
         tool.call(tool="awk", args=[], paths=["in.txt"])
 
 
+def test_args_as_string_rejected_with_corrective_message(
+    tool: StreamEditTool, workspace: Path
+) -> None:
+    # harness-vszp: the model sometimes passes args as a single joined
+    # string instead of an argv list. The error must show the expected
+    # list shape (corrective), not just the type mismatch.
+    (workspace / "in.txt").write_text("hello\n")
+    with pytest.raises(TypeError, match=r"list of argv strings"):
+        tool.call(tool="sed", args="s/old/new/g", paths=["in.txt"])  # type: ignore[arg-type]
+
+
 def test_oversized_arg_rejected(tool: StreamEditTool, workspace: Path) -> None:
     (workspace / "in.txt").write_text("hello\n")
     huge = "a" * (4 * 1024 + 1)
