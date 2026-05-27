@@ -55,6 +55,7 @@ from harness.orchestrator.hooks import (
     ScopeRedirectHook,
     ScopeViolationHook,
     SelfContradictingRankHook,
+    ShellEchoNoopHook,
     Skip,
     SourceCountInflationHook,
     TableFabricationHook,
@@ -6843,3 +6844,54 @@ def test_empty_reply_after_tools_placement_in_default_pipeline() -> None:
     assert "empty_reply_after_tools" in names
     assert names.index("false_success") < names.index("empty_reply_after_tools")
     assert names.index("empty_reply_after_tools") < names.index("post_dup_completion_claim")
+
+
+# --- harness-jmkc: ShellEchoNoopHook --------------------------------
+
+
+def _shell(cmd: str) -> PreToolContext:
+    return PreToolContext(call=ToolCall(name="shell", arguments={"cmd": cmd}), seen_calls={})
+
+
+def test_shell_echo_noop_skips_dry_run_close() -> None:
+    out = ShellEchoNoopHook().check(_shell('echo "Would run: bd close harness-x"'))
+    assert isinstance(out, Skip)
+    assert out.result.error == "shell_echo_noop"
+    assert "bd close" in out.result.output
+
+
+def test_shell_echo_noop_skips_celebratory_close_echo() -> None:
+    ctx = _shell('echo "Issue harness-bjw7 closed - fully implemented and verified"')
+    assert isinstance(ShellEchoNoopHook().check(ctx), Skip)
+
+
+def test_shell_echo_noop_strips_cd_prefix() -> None:
+    ctx = _shell('cd /ws && echo "Checking if all acceptance criteria are met"')
+    assert isinstance(ShellEchoNoopHook().check(ctx), Skip)
+
+
+def test_shell_echo_noop_passes_real_bd_close() -> None:
+    assert isinstance(ShellEchoNoopHook().check(_shell("bd close harness-x")), Continue)
+
+
+def test_shell_echo_noop_passes_echo_with_redirect() -> None:
+    # An echo that writes a file is a real side effect, not narration.
+    assert isinstance(ShellEchoNoopHook().check(_shell('echo "done" > out.txt')), Continue)
+
+
+def test_shell_echo_noop_passes_echo_chained_to_real_command() -> None:
+    ctx = _shell('echo "closing now" && bd close harness-x')
+    assert isinstance(ShellEchoNoopHook().check(ctx), Continue)
+
+
+def test_shell_echo_noop_passes_plain_echo_without_narration() -> None:
+    # A bare echo with no intent-narration keyword is left alone.
+    assert isinstance(ShellEchoNoopHook().check(_shell('echo "hello world"')), Continue)
+
+
+def test_shell_echo_noop_ignores_non_shell_tools() -> None:
+    ctx = PreToolContext(
+        call=ToolCall(name="read_file", arguments={"path": "echo would run bd close"}),
+        seen_calls={},
+    )
+    assert isinstance(ShellEchoNoopHook().check(ctx), Continue)

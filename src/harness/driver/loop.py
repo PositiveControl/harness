@@ -129,7 +129,10 @@ EXECUTOR_USER_MESSAGE = (
     "Edit the existing deliverable in place — do NOT rewrite a working file "
     "from scratch (deleting existing functions fails the regression gate) and "
     "do NOT create planning, temp, validate, or backup files; they are swept "
-    "after the issue and only waste your round budget."
+    "after the issue and only waste your round budget. "
+    "Execute commands directly — do NOT echo intent strings or dry-runs. A "
+    'shell `echo "Would run: bd close …"` or `echo "…closed…"` does nothing '
+    "and is invisible to the loop; run `bd close <issue-id>` for real."
 )
 
 
@@ -937,13 +940,17 @@ def _build_driver_hook_pipeline(
     deterministic). Failure to summarize is non-fatal — the hook
     falls through with `Continue` and the raw output reaches the
     model untouched."""
-    from harness.orchestrator.hooks import ToolResultSummarizerHook
+    from harness.orchestrator.hooks import ShellEchoNoopHook, ToolResultSummarizerHook
 
     write_file_redirect_hook = make_write_file_redirect_hook(
         registry=registry,
         workspace_path=workspace,
     )
     pipeline = default_hook_pipeline(write_file_redirect_hook=write_file_redirect_hook)
+    # harness-jmkc: drive-only. Catch the model echoing "Would run: bd
+    # close X" / "Issue closed…" instead of executing the close — a
+    # narration no-op that left issues open and burned attempts.
+    pipeline.pre_tool.append(ShellEchoNoopHook())
     if summarize_tool_results:
         pipeline.post_tool.append(ToolResultSummarizerHook(summarizer=adapter))
     return pipeline

@@ -3845,6 +3845,76 @@ class DuplicateCallHook:
         )
 
 
+# harness-jmkc: narration-echo detection. A shell call that is ONLY an
+# `echo` of one of these phrases — no redirection, pipe, or chained
+# command — accomplishes nothing toward the task; the model substituted
+# *describing* an action (often `bd close`) for *doing* it. 32B+ models
+# over-trained on "dry-run destructive commands first" do this with
+# state-changing commands like `bd close`. Skip + nudge to run for real.
+_ECHO_NARRATION_RE = re.compile(
+    r"\b(would run|bd close|closing|closed|checking|verif|acceptance|"
+    r"complete|implemented|done|fix applied|successfully|let me|i will|"
+    r"next step|going to|ready to)\b",
+    re.IGNORECASE,
+)
+
+# Shell metacharacters that mean the echo feeds a real command (pipe,
+# redirect, chain, command-substitution). Their presence means the call
+# DOES something — never treat it as a pure narration no-op.
+_SHELL_SIDE_EFFECT_TOKENS = ("|", ">", "<", "&&", ";", "$(", "`", "&")
+
+_SHELL_ECHO_NOOP_NUDGE = (
+    "[NARRATION ECHO IGNORED] That shell command only echoes text — it "
+    "changes nothing and is invisible to the loop. Do NOT describe or "
+    "dry-run an action. If the acceptance criteria are met, run the real "
+    "command now (e.g. `bd close <issue-id>`). Execute, don't narrate."
+)
+
+
+def _is_narration_echo(cmd: str) -> bool:
+    """True iff `cmd` is a bare narration ``echo`` — a single echo, no
+    redirection / pipe / chain, whose text reads as describing an action
+    rather than performing one. Strips one leading ``cd <path> &&``
+    wrapper first (the executor habitually prefixes one)."""
+    stripped = cmd.strip()
+    lead = re.match(r"cd\s+\S+\s*&&\s*(.+)", stripped, re.DOTALL)
+    if lead:
+        stripped = lead.group(1).strip()
+    if not re.match(r"echo\b", stripped, re.IGNORECASE):
+        return False
+    if any(tok in stripped for tok in _SHELL_SIDE_EFFECT_TOKENS):
+        return False
+    return _ECHO_NARRATION_RE.search(stripped) is not None
+
+
+@dataclass
+class ShellEchoNoopHook:
+    """Skip a shell call that is a pure narration ``echo`` standing in
+    for a real action (harness-jmkc). Pre-tool phase; runs only against
+    the ``shell`` tool. The Skip feeds back a nudge ToolResult (marked
+    failed) so the model learns the echo did nothing and runs the real
+    command. A real shell command — ``bd close``, ``ls``, anything with
+    a redirect/pipe/chain, or an echo without narration keywords —
+    passes through untouched."""
+
+    name: str = "shell_echo_noop"
+
+    def check(self, ctx: PreToolContext) -> PreToolOutcome:
+        if ctx.call.name != "shell":
+            return Continue()
+        cmd = ctx.call.arguments.get("cmd")
+        if not isinstance(cmd, str) or not _is_narration_echo(cmd):
+            return Continue()
+        return Skip(
+            ToolResult(
+                tool_name=ctx.call.name,
+                output=_SHELL_ECHO_NOOP_NUDGE,
+                success=False,
+                error="shell_echo_noop",
+            )
+        )
+
+
 # Default no-op closure for the AutoLoadOnUnknownHook (harness-2uso).
 # When the hook isn't wired, the closure reports nothing is loadable —
 # the hook becomes a no-op and the loop falls back to the existing
@@ -6481,6 +6551,7 @@ __all__ = [
     "ReplaceResult",
     "ReservedSquawkCodeHook",
     "ScopeRedirectHook",
+    "ShellEchoNoopHook",
     "Skip",
     "SourceCountInflationHook",
     "TableFabricationHook",
