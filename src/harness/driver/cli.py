@@ -281,6 +281,25 @@ def loop_command(
             "more tries on a run aiming for full closure."
         ),
     ),
+    regression_guard: bool = typer.Option(
+        True,
+        "--regression-guard/--no-regression-guard",
+        help=(
+            "Guard the baseline against regressions (harness-16w6): fail "
+            "verify when an edit deletes previously-defined symbols or "
+            "shrinks the deliverable vs the last-green snapshot, and on "
+            "park restore last-green so a break can't cascade. Default on."
+        ),
+    ),
+    scratch_sweep: bool = typer.Option(
+        True,
+        "--scratch-sweep/--no-scratch-sweep",
+        help=(
+            "Archive agent-created scratch (plans, temp_*, validate_*, "
+            "backups) into .harness/loop_runs/<id>_scratch/ when the issue "
+            "that made it completes (harness-ul5z). Default on."
+        ),
+    ),
     snapshot: bool = typer.Option(
         True,
         "--snapshot/--no-snapshot",
@@ -422,6 +441,8 @@ def loop_command(
         forbidden_patterns=() if no_verify else ("TODO", "FIXME", "XXX", "HACK"),
         executor_max_rounds=executor_max_rounds,
         max_attempts_per_issue=max_attempts,
+        regression_guard=regression_guard,
+        scratch_sweep=scratch_sweep,
         snapshot=snapshot,
         plan_draft_path=plan_draft,
         use_fsm=use_fsm,

@@ -72,6 +72,15 @@ from harness.driver.claim_detector import (
 from harness.driver.handoff import Handoff, build_handoff
 from harness.driver.planner import PlanDraft, PlannerError, VerifyStep
 from harness.driver.state import LoopRunState
+from harness.driver.workspace_guard import (
+    DEFAULT_SCRATCH_PATTERNS,
+    WorkspaceTooBigError,
+    archive_workspace,
+    detect_regression,
+    list_workspace_files,
+    restore_workspace,
+    sweep_scratch,
+)
 from harness.driver.workspace_verify import (
     browser_smoke_skip_reason,
     default_workspace_verify_steps,
@@ -116,7 +125,11 @@ from harness.tools import (
 EXECUTOR_USER_MESSAGE = (
     "Drive the bd issue described in the session handoff to closure. "
     "Run `bd close <issue-id>` via shell when the acceptance criteria are met. "
-    "Do not invent acceptance criteria the issue doesn't list."
+    "Do not invent acceptance criteria the issue doesn't list. "
+    "Edit the existing deliverable in place — do NOT rewrite a working file "
+    "from scratch (deleting existing functions fails the regression gate) and "
+    "do NOT create planning, temp, validate, or backup files; they are swept "
+    "after the issue and only waste your round budget."
 )
 
 
@@ -258,6 +271,22 @@ class LoopConfig:
     # console / page-error smoke checks always run regardless. CLI wires
     # this via --render-milestone.
     render_milestone_id: str | None = None
+    # harness-16w6: regression guard + no-punting. Maintains a
+    # last-green workspace snapshot (refreshed on every close) and (a)
+    # fails verify when the deliverable lost previously-defined symbols
+    # or shrank dramatically vs last-green — the stub-rewrite smoke
+    # can't see — feeding the regression back so the model fixes it
+    # before advancing; (b) on park (max attempts), if the issue left
+    # the baseline broken, restores last-green so the break can't
+    # cascade to later issues. Off via --no-regression-guard.
+    regression_guard: bool = True
+    # harness-ul5z: archive agent-created scratch (planning / temp /
+    # validate / backup files) into .harness/loop_runs/<id>_scratch/
+    # when the issue that created it completes, so it stops
+    # accumulating + getting re-read on later turns. Off via
+    # --no-scratch-sweep. Patterns matched against the file basename.
+    scratch_sweep: bool = True
+    scratch_patterns: tuple[str, ...] = DEFAULT_SCRATCH_PATTERNS
 
 
 @dataclass
@@ -381,6 +410,24 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
         snapshot_path = _snapshot_workspace(config.workspace, state.loop_run_id)
         log(f"workspace snapshot: {snapshot_path}")
 
+    # harness-16w6: last-green rollback target + harness-ul5z scratch
+    # census. last_green is refreshed on every close (so it's the
+    # current issue's clean starting point) and used both as the
+    # regression-comparison baseline and the park rollback target. Seed
+    # it from the start workspace only if it's already green — never
+    # enshrine a broken baseline as the restore point.
+    last_green: Path | None = None
+    if config.regression_guard:
+        if _baseline_is_green(default_verify_steps, config.workspace):
+            last_green = _refresh_last_green(config, state, log)
+            if last_green is not None:
+                log(f"regression guard: last-green baseline set ({last_green.name})")
+        else:
+            log(
+                "regression guard: workspace not green at start; last-green deferred to first close"
+            )
+    issue_start_files: dict[str, set[str]] = {}
+
     with _sigint_guard() as interrupted:
         while True:
             if interrupted.is_set():
@@ -416,6 +463,11 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             current = ready[0]
             attempt = state.attempt_counts.get(current.id, 0) + 1
             state.attempt_counts[current.id] = attempt
+            # harness-ul5z: census the workspace the first time we touch
+            # this issue, so the scratch sweep on completion can tell
+            # which files the issue itself created vs pre-existing ones.
+            if current.id not in issue_start_files:
+                issue_start_files[current.id] = list_workspace_files(config.workspace)
             prior_failure = state.last_failure.get(current.id) if attempt > 1 else None
             # harness-lefw: signal targeted-fix mode when the loop has
             # already touched this issue OR the operator left a
@@ -572,6 +624,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     current.id,
                     config.workspace,
                     default_steps=default_verify_steps,
+                    regression_snapshot=last_green if config.regression_guard else None,
                 )
                 if verify_failure is not None:
                     reason = f"{_CLAIM_WITHOUT_CLOSE_PREFIX} {verify_failure}"
@@ -588,6 +641,9 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                         f"(claim + verify passed, {steps_ran} step{'s' if steps_ran != 1 else ''})"
                     )
                     _on_success(bd, state, current.id, log)
+                    last_green = _post_close_housekeeping(
+                        config, state, issue_start_files.pop(current.id, set()), last_green, log
+                    )
                     _save_state(state, config.workspace)
                     continue
                 else:
@@ -608,9 +664,13 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     current.id,
                     config.workspace,
                     default_steps=default_verify_steps,
+                    regression_snapshot=last_green if config.regression_guard else None,
                 )
                 if verify_failure is None:
                     _on_success(bd, state, current.id, log)
+                    last_green = _post_close_housekeeping(
+                        config, state, issue_start_files.pop(current.id, set()), last_green, log
+                    )
                     _save_state(state, config.workspace)
                     continue
                 reopened = _try_reopen(bd, current.id)
@@ -632,6 +692,14 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     fail_reason = f"verify_failed: {verify_failure}"
                     if config.skip_on_max_attempts:
                         _park_issue(bd, state, current_id=current.id, reason=fail_reason, log=log)
+                        _post_park_housekeeping(
+                            config,
+                            state,
+                            issue_start_files.pop(current.id, set()),
+                            last_green,
+                            default_verify_steps,
+                            log,
+                        )
                         _save_state(state, config.workspace)
                         continue
                     return _exit_halted(
@@ -654,6 +722,14 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             # under skip-on (the new default), halt under skip-off.
             if config.skip_on_max_attempts:
                 _park_issue(bd, state, current_id=current.id, reason=reason, log=log)
+                _post_park_housekeeping(
+                    config,
+                    state,
+                    issue_start_files.pop(current.id, set()),
+                    last_green,
+                    default_verify_steps,
+                    log,
+                )
                 _save_state(state, config.workspace)
                 continue
             return _exit_halted(bd, state, current_id=current.id, reason=reason, log=log)
@@ -1098,6 +1174,7 @@ def _run_issue_verify(
     workspace: Path,
     *,
     default_steps: Sequence[VerifyStep] = (),
+    regression_snapshot: Path | None = None,
 ) -> tuple[str | None, int]:
     """Run the verify steps registered for `issue_id` (looked up by bd
     title). Returns ``(failure_msg_or_None, steps_run_count)``:
@@ -1133,6 +1210,14 @@ def _run_issue_verify(
         # same issue if it's still open. Count 0 keeps auto-close from
         # firing on a lookup miss.
         return f"verify lookup failed (bd.show): {exc}", 0
+    # harness-16w6: regression gate runs FIRST — before any shell step —
+    # so a stub-rewrite that still loads (passes smoke) is caught here.
+    # Counts as a verify failure so the existing reopen/retry/park path
+    # feeds the "you deleted X/Y/Z" reason back and blocks the close.
+    if regression_snapshot is not None and regression_snapshot.is_file():
+        regression = detect_regression(workspace, regression_snapshot)
+        if regression is not None:
+            return f"regression: {regression}", 1
     per_item_steps = verify_map.get(issue.title, ()) if verify_map else ()
     steps: tuple[VerifyStep, ...] = tuple(default_steps) + tuple(per_item_steps)
     if not steps:
@@ -1687,6 +1772,116 @@ def _snapshot_workspace(
             arcname = path.relative_to(workspace)
             tf.add(path, arcname=str(arcname), recursive=False)
     return snapshot_path
+
+
+# --- harness-16w6 / harness-ul5z: regression guard + scratch hygiene ---
+
+
+def _last_green_path(workspace: Path, loop_run_id: str) -> Path:
+    """`.harness/loop_runs/<id>_lastgreen.tar.gz` — the rollback target,
+    overwritten on every close (so it's always the current issue's clean
+    starting point)."""
+    return workspace / ".harness" / "loop_runs" / f"{loop_run_id}_lastgreen.tar.gz"
+
+
+def _scratch_archive_dir(workspace: Path, loop_run_id: str) -> Path:
+    return workspace / ".harness" / "loop_runs" / f"{loop_run_id}_scratch"
+
+
+def _baseline_is_green(default_steps: Sequence[VerifyStep], workspace: Path) -> bool:
+    """True iff every workspace-typed default verify step passes — i.e.
+    the deliverable loads/parses. No bd / no per-item steps; this is the
+    standalone baseline check the regression guard uses at start and on
+    park. Empty steps (nothing to verify) counts as green."""
+    for step in default_steps:
+        exit_code, _ = _exec_verify_cmd(step, workspace)
+        if exit_code != 0:
+            return False
+    return True
+
+
+def _refresh_last_green(config: LoopConfig, state: LoopRunState, log: _LogWriter) -> Path | None:
+    """Snapshot the (now-green) workspace as the rollback target. Returns
+    the snapshot path, or None if the snapshot couldn't be taken (over
+    cap / IO error) — a missing last-green just disables rollback for the
+    next issue, it never fails the run."""
+    dest = _last_green_path(config.workspace, state.loop_run_id)
+    try:
+        return archive_workspace(config.workspace, dest, size_cap_bytes=SNAPSHOT_SIZE_CAP_BYTES)
+    except (WorkspaceTooBigError, OSError) as exc:
+        log(f"regression guard: could not refresh last-green snapshot ({exc}); rollback disabled")
+        return None
+
+
+def _sweep_issue_scratch(
+    config: LoopConfig,
+    state: LoopRunState,
+    baseline_files: set[str],
+    log: _LogWriter,
+) -> None:
+    """Archive scratch files the issue created (vs `baseline_files`) into
+    `.harness/loop_runs/<id>_scratch/`. No-op when scratch_sweep is off."""
+    if not config.scratch_sweep:
+        return
+    archive_dir = _scratch_archive_dir(config.workspace, state.loop_run_id)
+    moved = sweep_scratch(
+        config.workspace,
+        baseline_files,
+        patterns=config.scratch_patterns,
+        archive_dir=archive_dir,
+    )
+    if moved:
+        log(
+            f"scratch sweep: archived {len(moved)} file(s) -> "
+            f"{archive_dir.name}: {', '.join(moved)}"
+        )
+
+
+def _post_close_housekeeping(
+    config: LoopConfig,
+    state: LoopRunState,
+    baseline_files: set[str],
+    last_green: Path | None,
+    log: _LogWriter,
+) -> Path | None:
+    """After a close: archive the issue's scratch, then refresh the
+    last-green snapshot (the workspace just passed verify, so it's the
+    new clean baseline). Returns the (possibly updated) last-green path."""
+    _sweep_issue_scratch(config, state, baseline_files, log)
+    if config.regression_guard:
+        return _refresh_last_green(config, state, log)
+    return last_green
+
+
+def _post_park_housekeeping(
+    config: LoopConfig,
+    state: LoopRunState,
+    baseline_files: set[str],
+    last_green: Path | None,
+    default_steps: Sequence[VerifyStep],
+    log: _LogWriter,
+) -> None:
+    """After a park (harness-16w6 no-punting): if the parked issue left
+    the baseline degraded — either it no longer loads (red verify) OR it
+    regressed vs last-green (lost symbols / shrank, which still "loads"
+    but is gutted) — restore last-green so the break can't cascade. The
+    restore also removes the issue's scratch (files added since the
+    snapshot). If the baseline is still healthy (incomplete-but-intact
+    work), keep it and just sweep scratch."""
+    has_green = config.regression_guard and last_green is not None and last_green.is_file()
+    if has_green:
+        assert last_green is not None  # narrowed by has_green
+        red = not _baseline_is_green(default_steps, config.workspace)
+        regressed = detect_regression(config.workspace, last_green) is not None
+        if red or regressed:
+            restored, removed = restore_workspace(config.workspace, last_green)
+            why = "broken" if red else "regressed (lost code vs last-green)"
+            log(
+                f"loop_run={state.loop_run_id} ROLLED_BACK after park: baseline {why}; "
+                f"restored last-green ({restored} files, removed {len(removed)} issue-added)"
+            )
+            return
+    _sweep_issue_scratch(config, state, baseline_files, log)
 
 
 __all__ = [

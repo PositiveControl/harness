@@ -2906,3 +2906,106 @@ def test_blank_canvas_enforced_when_milestone_lookup_fails() -> None:
     (enforce) rather than silently disabling the check."""
     bd = _ScenarioBd(ready_sequence=[[]], show_errors={"harness-typo"})
     assert _blank_canvas_enforced(bd, "harness-typo") is True  # type: ignore[arg-type]
+
+
+# --- harness-16w6 / harness-ul5z: regression guard + scratch hygiene ---
+
+
+def test_regression_guard_blocks_close_then_rolls_back_on_park(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A stub-rewrite that deletes previously-defined functions must NOT
+    close (the regression gate reopens it), and on park the workspace is
+    restored to the last-green snapshot so the gutted file can't poison
+    later issues (force-fix + rollback safety net)."""
+    ws = tmp_path
+    issue_a = _issue("harness-a", title="A", status="open")
+    issue_b = _issue("harness-b", title="B", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a, issue_b], [issue_b]],
+        issues={
+            "harness-a": issue_a,
+            "harness-b": issue_b,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    good = "function a(){}\nfunction b(){}\nfunction c(){}\n"
+    stub = "function a(){}\n"
+
+    def mutate(idx: int, _outcome: str) -> None:
+        # idx 0 = issue A's turn (full impl); idx>=1 = issue B attempts
+        # rewriting game.js down to a stub (deletes b + c).
+        (ws / "game.js").write_text(good if idx == 0 else stub)
+
+    _stub_run_tool_loop(
+        monkeypatch,
+        outcomes=["close harness-a", "close harness-b", "close harness-b", "close harness-b"],
+        bd=bd,
+        on_each_call=mutate,
+    )
+
+    result = run_loop(_FakeAdapter(), bd, _config(tmp_path, max_turns=10))  # type: ignore[arg-type]
+
+    assert result.closed == ["harness-a"]
+    assert result.parked_issues == ["harness-b"]
+    assert result.exit_reason == "partial"
+    # B was reopened by the regression gate each attempt, never closed.
+    assert "harness-b" in bd.log.reopens
+    # Rollback restored the last-green deliverable (all three functions).
+    assert (ws / "game.js").read_text() == good
+
+
+def test_scratch_sweep_archives_agent_scratch_on_close(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Files the issue creates that match scratch patterns are archived
+    on close; the deliverable + pre-existing files are untouched."""
+    ws = tmp_path
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={"harness-a": issue_a, "harness-e9oq": _issue("harness-e9oq", title="epic")},
+    )
+    _stub_git_head(monkeypatch)
+
+    def mutate(_idx: int, _outcome: str) -> None:
+        (ws / "game.js").write_text("function a(){}\n")
+        (ws / "police_plan.md").write_text("plan")
+        (ws / "temp_grid.js").write_text("scratch")
+
+    _stub_run_tool_loop(monkeypatch, outcomes=["close harness-a"], bd=bd, on_each_call=mutate)
+
+    result = run_loop(_FakeAdapter(), bd, _config(tmp_path, max_turns=5))  # type: ignore[arg-type]
+
+    assert result.closed == ["harness-a"]
+    archive = ws / ".harness" / "loop_runs" / f"{result.loop_run_id}_scratch"
+    assert (archive / "police_plan.md").read_text() == "plan"
+    assert (archive / "temp_grid.js").exists()
+    assert not (ws / "police_plan.md").exists()
+    assert not (ws / "temp_grid.js").exists()
+    # Deliverable survives the sweep.
+    assert (ws / "game.js").read_text() == "function a(){}\n"
+
+
+def test_scratch_sweep_off_leaves_scratch_in_place(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """--no-scratch-sweep (scratch_sweep=False) disables the archive."""
+    ws = tmp_path
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={"harness-a": issue_a, "harness-e9oq": _issue("harness-e9oq", title="epic")},
+    )
+    _stub_git_head(monkeypatch)
+
+    def mutate(_idx: int, _outcome: str) -> None:
+        (ws / "game.js").write_text("function a(){}\n")
+        (ws / "temp_grid.js").write_text("scratch")
+
+    _stub_run_tool_loop(monkeypatch, outcomes=["close harness-a"], bd=bd, on_each_call=mutate)
+
+    run_loop(_FakeAdapter(), bd, _config(tmp_path, max_turns=5, scratch_sweep=False))  # type: ignore[arg-type]
+
+    assert (ws / "temp_grid.js").exists()
