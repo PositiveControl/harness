@@ -272,6 +272,15 @@ def loop_command(
             "(orchestrator's default 8 is too tight for multi-edit work)."
         ),
     ),
+    max_attempts: int = typer.Option(
+        3,
+        "--max-attempts",
+        help=(
+            "Per-issue retry budget before the issue is parked (skip-on) "
+            "or the run halts. Default 3. Raise it to give hard issues "
+            "more tries on a run aiming for full closure."
+        ),
+    ),
     snapshot: bool = typer.Option(
         True,
         "--snapshot/--no-snapshot",
@@ -412,6 +421,7 @@ def loop_command(
         extra_observer=_stderr_observer if verbose else None,
         forbidden_patterns=() if no_verify else ("TODO", "FIXME", "XXX", "HACK"),
         executor_max_rounds=executor_max_rounds,
+        max_attempts_per_issue=max_attempts,
         snapshot=snapshot,
         plan_draft_path=plan_draft,
         use_fsm=use_fsm,

@@ -221,6 +221,41 @@ def test_drive_loop_runs_against_epic(monkeypatch: pytest.MonkeyPatch, workspace
     assert result.exit_code == 0, result.output
     assert "exit=success" in result.stdout
     assert captured["config"].epic_id == "harness-e9oq"
+    # Default per-issue retry budget when --max-attempts is omitted.
+    assert captured["config"].max_attempts_per_issue == 3
+
+
+def test_drive_loop_max_attempts_flag_flows_into_config(
+    monkeypatch: pytest.MonkeyPatch, workspace: Path
+) -> None:
+    """harness-8fvh: --max-attempts overrides the per-issue retry budget
+    (previously fixed at LoopConfig's default of 3)."""
+    _stub_load_character(monkeypatch)
+    captured = _stub_run_loop(
+        monkeypatch,
+        LoopResult(
+            loop_run_id="abc12345",
+            epic_id="harness-e9oq",
+            closed=[],
+            halted_on=None,
+            turns_used=0,
+            exit_reason="success",
+        ),
+    )
+    result = runner.invoke(
+        drive_app,
+        [
+            "loop",
+            "--epic",
+            "harness-e9oq",
+            "--workspace",
+            str(workspace),
+            "--max-attempts",
+            "5",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["config"].max_attempts_per_issue == 5
 
 
 def test_drive_loop_halted_exits_2_and_prints_to_stderr(
