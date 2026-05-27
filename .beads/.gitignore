@@ -11,6 +11,16 @@ last-touched
 # Local version tracking (prevents upgrade notification spam after git ops)
 .local_version
 
+# Credential key (per-machine secret — must never be committed)
+.beads-credential-key
+
+# Secrets + per-machine runtime that bd doctor flags
+.env
+embeddeddolt/
+daemon.*
+*.lock
+*.corrupt.backup/
+
 # Worktree redirect file (contains relative path to main repo's .beads/)
 # Must not be committed as paths would be wrong in other clones
 redirect

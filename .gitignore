@@ -90,3 +90,7 @@ memory/
 # One-off bd graph exports + unrelated top-level scratch
 beads-export.jsonl
 battista_comparison.md
+
+# bd credential key — per-machine secret, never commit (belt-and-suspenders
+# alongside .beads/.gitignore)
+.beads-credential-key
