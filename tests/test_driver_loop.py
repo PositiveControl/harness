@@ -588,7 +588,9 @@ def test_run_loop_parks_on_max_attempts_and_continues_to_next(
     the drive against the next ready issue. Pre-zcrd this halted the
     whole run; loop 1a6e4437 had this exact shape — 6 closes, then a
     hard issue stopped everything. With skip-on, the drive completes
-    the other work and the operator picks up the parked issue."""
+    the other work and the operator picks up the parked issue. The run
+    exits "partial" (not "success", harness-iljv) because A is left
+    parked — the ready queue only emptied via the in-memory filter."""
     issue_a = _issue("harness-a", title="A", status="open")
     issue_b = _issue("harness-b", title="B", status="open")
     bd = _ScenarioBd(
@@ -621,7 +623,7 @@ def test_run_loop_parks_on_max_attempts_and_continues_to_next(
     cfg = _config(tmp_path, max_turns=10)
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
 
-    assert result.exit_reason == "success"
+    assert result.exit_reason == "partial"
     assert result.closed == ["harness-b"]
     assert result.parked_issues == ["harness-a"]
     # The bd flag carries the park reason so operators can see it via
@@ -670,7 +672,7 @@ def test_run_loop_park_filters_from_subsequent_ready(
     cfg = _config(tmp_path, max_turns=10)
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
 
-    assert result.exit_reason == "success"
+    assert result.exit_reason == "partial"
     # B closed; A stayed parked despite still showing up in
     # ready_under_epic — the filter held.
     assert result.closed == ["harness-b"]

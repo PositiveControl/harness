@@ -265,8 +265,15 @@ class LoopResult:
     """What `run_loop` returns to the caller.
 
     `exit_reason` matches the lifecycle event names in the progress log:
-      - "success":     ready_under_epic emptied; epic complete (modulo
-                       parked_issues, which the operator handles).
+      - "success":     ready_under_epic emptied with nothing parked —
+                       the epic is genuinely complete.
+      - "partial":     ready_under_epic emptied, but only because
+                       parked issues were filtered out of it
+                       (harness-iljv). The epic is NOT complete: the
+                       parked issues — and anything depending on them —
+                       are stranded pending operator pickup. Kept
+                       distinct from "success" so callers don't read a
+                       stalled epic as finished.
       - "exhausted":   turns_used reached max_turns.
       - "halted":      catastrophic failure (e.g. startup exception) OR
                        max-attempts halt with `skip_on_max_attempts=False`.
@@ -285,7 +292,7 @@ class LoopResult:
     closed: list[str]
     halted_on: str | None
     turns_used: int
-    exit_reason: Literal["success", "halted", "exhausted", "interrupted", "dry_run"]
+    exit_reason: Literal["success", "partial", "halted", "exhausted", "interrupted", "dry_run"]
     handoffs: list[Handoff] = field(default_factory=list)
     parked_issues: list[str] = field(default_factory=list)
 
@@ -396,6 +403,14 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 parked = set(state.parked_issues)
                 ready = [issue for issue in ready if issue.id not in parked]
             if not ready:
+                # harness-iljv: distinguish a genuinely-complete epic
+                # from one whose ready queue only emptied because we
+                # filtered out parked issues above. The latter leaves
+                # the parked issues (and their dependents) stranded, so
+                # it's a "partial", not a "success" — callers and the
+                # exit code must be able to tell the difference.
+                if state.parked_issues:
+                    return _exit_partial(state, log)
                 return _exit_success(state, log)
 
             current = ready[0]
@@ -1397,12 +1412,10 @@ class _LogWriter:
 
 
 def _exit_success(state: LoopRunState, log: _LogWriter) -> LoopResult:
-    parked_tail = (
-        f" ({len(state.parked_issues)} parked: {', '.join(state.parked_issues)})"
-        if state.parked_issues
-        else ""
-    )
-    log(f"loop_run={state.loop_run_id} SUCCESS (epic empty){parked_tail}")
+    # harness-iljv: reached only when the ready queue emptied with
+    # nothing parked, so the epic is genuinely complete. A run that
+    # parked anything exits via _exit_partial instead.
+    log(f"loop_run={state.loop_run_id} SUCCESS (epic complete)")
     return LoopResult(
         loop_run_id=state.loop_run_id,
         epic_id=state.epic_id,
@@ -1410,6 +1423,27 @@ def _exit_success(state: LoopRunState, log: _LogWriter) -> LoopResult:
         halted_on=None,
         turns_used=state.turns_used,
         exit_reason="success",
+        parked_issues=list(state.parked_issues),
+    )
+
+
+def _exit_partial(state: LoopRunState, log: _LogWriter) -> LoopResult:
+    """The ready queue emptied only because parked issues were filtered
+    out (harness-iljv). Some work may have closed, but the parked issues
+    — and anything depending on them — are stranded pending operator
+    pickup, so this is reported distinctly from "success"."""
+    parked_tail = ", ".join(state.parked_issues)
+    log(
+        f"loop_run={state.loop_run_id} PARTIAL "
+        f"(ready queue drained; {len(state.parked_issues)} parked: {parked_tail})"
+    )
+    return LoopResult(
+        loop_run_id=state.loop_run_id,
+        epic_id=state.epic_id,
+        closed=list(state.closed_this_run),
+        halted_on=None,
+        turns_used=state.turns_used,
+        exit_reason="partial",
         parked_issues=list(state.parked_issues),
     )
 

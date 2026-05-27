@@ -602,6 +602,15 @@ def _print_result(result: LoopResult) -> None:
             f"`harness drive loop --resume {result.loop_run_id} --max-turns <N>`.",
             err=True,
         )
+    elif result.exit_reason == "partial":
+        parked = ", ".join(result.parked_issues)
+        typer.echo(
+            f"PARTIAL — ready queue drained but {len(result.parked_issues)} "
+            f"issue(s) parked for operator pickup: {parked}. These (and "
+            f"anything depending on them) are NOT done. Inspect with "
+            f"`bd human-list`; clear a park to resume.",
+            err=True,
+        )
 
 
 # --- harness drive logs <list|prune> (harness-830a) -----------------
@@ -766,7 +775,8 @@ drive_app.add_typer(logs_app, name="logs")
 
 def _exit_code(result: LoopResult) -> int:
     """Map exit_reason → process exit code. Success / dry_run = 0;
-    halted = 2 (operator action needed); exhausted / interrupted = 1."""
+    halted = 2 (operator action needed); partial / exhausted /
+    interrupted = 1 (ran within constraints but the epic isn't done)."""
     if result.exit_reason in ("success", "dry_run"):
         return 0
     if result.exit_reason == "halted":

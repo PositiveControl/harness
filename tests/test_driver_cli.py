@@ -268,6 +268,33 @@ def test_drive_loop_interrupted_exits_1(monkeypatch: pytest.MonkeyPatch, workspa
     assert "abc12345" in result.stderr
 
 
+def test_drive_loop_partial_exits_1(monkeypatch: pytest.MonkeyPatch, workspace: Path) -> None:
+    """harness-iljv: a run that parked issues exits "partial" → exit
+    code 1 (not 0), and the summary names the stranded parked issues so
+    the operator knows the epic isn't actually done."""
+    _stub_load_character(monkeypatch)
+    _stub_run_loop(
+        monkeypatch,
+        LoopResult(
+            loop_run_id="abc12345",
+            epic_id="harness-e9oq",
+            closed=["harness-b"],
+            halted_on=None,
+            turns_used=4,
+            exit_reason="partial",
+            parked_issues=["harness-a", "harness-c"],
+        ),
+    )
+    result = runner.invoke(
+        drive_app,
+        ["loop", "--epic", "harness-e9oq", "--workspace", str(workspace)],
+    )
+    assert result.exit_code == 1
+    assert "PARTIAL" in result.stderr
+    assert "harness-a" in result.stderr
+    assert "harness-c" in result.stderr
+
+
 def test_drive_loop_rejects_dirty_tree_by_default(
     monkeypatch: pytest.MonkeyPatch, workspace: Path
 ) -> None:
