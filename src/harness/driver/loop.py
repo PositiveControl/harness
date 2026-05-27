@@ -431,15 +431,22 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
     with _sigint_guard() as interrupted:
         while True:
             if interrupted.is_set():
-                return _exit_interrupted(bd, state, log)
+                return _exit_interrupted(bd, state, config.workspace, log)
             if state.turns_used >= state.max_turns:
-                return _exit_exhausted(state, log)
+                return _exit_exhausted(state, config.workspace, log)
 
             try:
                 ready = bd.ready_under_epic(state.epic_id)
             except DriverBdError as exc:
                 log(f"bd ready_under_epic failed: {exc}; halting")
-                return _exit_halted(bd, state, current_id=state.epic_id, reason=str(exc), log=log)
+                return _exit_halted(
+                    bd,
+                    state,
+                    current_id=state.epic_id,
+                    reason=str(exc),
+                    workspace=config.workspace,
+                    log=log,
+                )
             # harness-zcrd: skip-and-flag mode parks max-attempts
             # exhausted issues. Filter them out of ready so the next
             # iteration grabs the next genuinely-ready issue instead of
@@ -457,8 +464,8 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 # it's a "partial", not a "success" — callers and the
                 # exit code must be able to tell the difference.
                 if state.parked_issues:
-                    return _exit_partial(state, log)
-                return _exit_success(state, log)
+                    return _exit_partial(state, config.workspace, log)
+                return _exit_success(state, config.workspace, log)
 
             current = ready[0]
             attempt = state.attempt_counts.get(current.id, 0) + 1
@@ -707,6 +714,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                         state,
                         current_id=current.id,
                         reason=fail_reason,
+                        workspace=config.workspace,
                         log=log,
                     )
                 continue
@@ -732,7 +740,9 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 )
                 _save_state(state, config.workspace)
                 continue
-            return _exit_halted(bd, state, current_id=current.id, reason=reason, log=log)
+            return _exit_halted(
+                bd, state, current_id=current.id, reason=reason, workspace=config.workspace, log=log
+            )
 
 
 # --- per-turn -----------------------------------------------------
@@ -1496,11 +1506,12 @@ class _LogWriter:
 # --- exit paths --------------------------------------------------
 
 
-def _exit_success(state: LoopRunState, log: _LogWriter) -> LoopResult:
+def _exit_success(state: LoopRunState, workspace: Path, log: _LogWriter) -> LoopResult:
     # harness-iljv: reached only when the ready queue emptied with
     # nothing parked, so the epic is genuinely complete. A run that
     # parked anything exits via _exit_partial instead.
     log(f"loop_run={state.loop_run_id} SUCCESS (epic complete)")
+    _save_state(state, workspace)  # harness-3zu3: persist on every exit path
     return LoopResult(
         loop_run_id=state.loop_run_id,
         epic_id=state.epic_id,
@@ -1512,7 +1523,7 @@ def _exit_success(state: LoopRunState, log: _LogWriter) -> LoopResult:
     )
 
 
-def _exit_partial(state: LoopRunState, log: _LogWriter) -> LoopResult:
+def _exit_partial(state: LoopRunState, workspace: Path, log: _LogWriter) -> LoopResult:
     """The ready queue emptied only because parked issues were filtered
     out (harness-iljv). Some work may have closed, but the parked issues
     — and anything depending on them — are stranded pending operator
@@ -1522,6 +1533,7 @@ def _exit_partial(state: LoopRunState, log: _LogWriter) -> LoopResult:
         f"loop_run={state.loop_run_id} PARTIAL "
         f"(ready queue drained; {len(state.parked_issues)} parked: {parked_tail})"
     )
+    _save_state(state, workspace)  # harness-3zu3: persist on every exit path
     return LoopResult(
         loop_run_id=state.loop_run_id,
         epic_id=state.epic_id,
@@ -1533,11 +1545,12 @@ def _exit_partial(state: LoopRunState, log: _LogWriter) -> LoopResult:
     )
 
 
-def _exit_exhausted(state: LoopRunState, log: _LogWriter) -> LoopResult:
+def _exit_exhausted(state: LoopRunState, workspace: Path, log: _LogWriter) -> LoopResult:
     log(
         f"loop_run={state.loop_run_id} EXHAUSTED "
         f"(turns_used={state.turns_used} max={state.max_turns})"
     )
+    _save_state(state, workspace)  # harness-3zu3: persist on every exit path
     return LoopResult(
         loop_run_id=state.loop_run_id,
         epic_id=state.epic_id,
@@ -1555,9 +1568,15 @@ def _exit_halted(
     *,
     current_id: str,
     reason: str,
+    workspace: Path,
     log: _LogWriter,
 ) -> LoopResult:
     log(f"loop_run={state.loop_run_id} HALTED on {current_id}: {reason}")
+    # harness-3zu3: persist before returning so a resume sees the
+    # post-halt attempt_counts + turns_used (the increments that led to
+    # the halt), not the stale pre-halt values — otherwise the operator
+    # gets one retry instead of the expected budget after reopen.
+    _save_state(state, workspace)
     with contextlib.suppress(DriverBdError):
         bd.flag_human(current_id, reason=f"loop halted: {reason}")
     with contextlib.suppress(DriverBdError):
@@ -1578,8 +1597,11 @@ def _exit_halted(
     )
 
 
-def _exit_interrupted(bd: DriverBd, state: LoopRunState, log: _LogWriter) -> LoopResult:
+def _exit_interrupted(
+    bd: DriverBd, state: LoopRunState, workspace: Path, log: _LogWriter
+) -> LoopResult:
     log(f"loop_run={state.loop_run_id} INTERRUPTED")
+    _save_state(state, workspace)  # harness-3zu3: persist on every exit path
     with contextlib.suppress(DriverBdError):
         bd.write_session_state(
             loop_run_id=state.loop_run_id,

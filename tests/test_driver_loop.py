@@ -3009,3 +3009,48 @@ def test_scratch_sweep_off_leaves_scratch_in_place(
     run_loop(_FakeAdapter(), bd, _config(tmp_path, max_turns=5, scratch_sweep=False))  # type: ignore[arg-type]
 
     assert (ws / "temp_grid.js").exists()
+
+
+def test_halt_persists_post_halt_state_to_disk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-3zu3: _exit_halted must persist state before returning, so
+    a resume sees the post-halt attempt_counts + turns_used (not the
+    stale pre-halt values that gave the operator one retry too few)."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a]],
+        issues={"harness-a": issue_a, "harness-e9oq": _issue("harness-e9oq", title="epic")},
+    )
+    _stub_git_head(monkeypatch)
+    # skip_on_max_attempts=False → the 3rd consecutive failure halts.
+    _stub_run_tool_loop(monkeypatch, outcomes=["fail", "fail", "fail"], bd=bd)
+
+    cfg = _config(tmp_path, max_turns=10, skip_on_max_attempts=False)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "halted"
+    assert result.turns_used == 3
+    # The on-disk state must match the in-memory post-halt values.
+    loaded = LoopRunState.load(LoopRunState.state_path(tmp_path, result.loop_run_id))
+    assert loaded.turns_used == 3
+    assert loaded.attempt_counts["harness-a"] == 3
+
+
+def test_exhausted_persists_state_to_disk(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """harness-3zu3: _exit_exhausted persists too, so a --max-turns
+    resume continues from the real turns_used."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a]],
+        issues={"harness-a": issue_a, "harness-e9oq": _issue("harness-e9oq", title="epic")},
+    )
+    _stub_git_head(monkeypatch)
+    _stub_run_tool_loop(monkeypatch, outcomes=["fail", "fail"], bd=bd)
+
+    cfg = _config(tmp_path, max_turns=2)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "exhausted"
+    loaded = LoopRunState.load(LoopRunState.state_path(tmp_path, result.loop_run_id))
+    assert loaded.turns_used == 2
