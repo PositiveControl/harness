@@ -199,3 +199,15 @@ def test_sweep_leaves_preexisting_scratch_named_file(tmp_path: Path) -> None:
 
     assert moved == []
     assert (ws / "temp_legacy.js").exists()
+
+
+def test_detect_regression_flags_deleted_index_html(tmp_path: Path) -> None:
+    # harness-9ugc: .html is now a tracked source suffix, so deleting the
+    # entry index.html trips the regression guard.
+    ws = _ws(tmp_path)
+    (ws / "index.html").write_text("<script src='game.js'></script>\n")
+    snap = archive_workspace(ws, tmp_path / "g.tar.gz", size_cap_bytes=_CAP)
+    (ws / "index.html").unlink()
+    reason = detect_regression(ws, snap)
+    assert reason is not None
+    assert "index.html" in reason

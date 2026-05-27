@@ -51,6 +51,7 @@ from harness.driver.planner import (
     write_draft,
 )
 from harness.driver.state import LoopRunState
+from harness.driver.workspace_verify import missing_entry_html_reason
 from harness.model.adapter import ModelAdapter
 from harness.model.factory import AdapterName, make_adapter
 
@@ -330,6 +331,15 @@ def loop_command(
         "--allow-dirty",
         help="Allow running on a dirty git tree (uncommitted changes).",
     ),
+    allow_missing_smoke: bool = typer.Option(
+        False,
+        "--allow-missing-smoke",
+        help=(
+            "Allow running a browser-JS workspace that has no index.html "
+            "(runtime smoke gate OFF → syntax-only closes). Refused by "
+            "default (harness-9ugc false-success guard)."
+        ),
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -499,6 +509,15 @@ def loop_command(
             err=True,
         )
         raise typer.Exit(code=2)
+
+    # harness-9ugc: refuse a browser-JS workspace with no entry index.html
+    # — the runtime smoke gate would be silently OFF and the drive would
+    # false-close on syntax only (the run 3c7c9da2 failure).
+    if not allow_missing_smoke:
+        smoke_gap = missing_entry_html_reason(workspace)
+        if smoke_gap is not None:
+            typer.echo(f"refusing to drive: {smoke_gap}", err=True)
+            raise typer.Exit(code=2)
 
     adapter = _resolve_driver_adapter(
         model,

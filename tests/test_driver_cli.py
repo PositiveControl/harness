@@ -833,3 +833,54 @@ def test_lint_epic_clean_epic_exits_0(monkeypatch: pytest.MonkeyPatch) -> None:
     result = runner.invoke(drive_app, ["lint-epic", "--epic", "harness-epic"])
     assert result.exit_code == 0, result.output
     assert "0 flagged" in result.stdout
+
+
+# --- harness-9ugc: missing-smoke refuse -----------------------------
+
+
+def test_drive_loop_refuses_browser_js_without_index(
+    monkeypatch: pytest.MonkeyPatch, workspace: Path
+) -> None:
+    """harness-9ugc: a browser-JS workspace with no index.html → the
+    runtime smoke gate is OFF → refuse (exit 2) rather than false-close."""
+    _stub_load_character(monkeypatch)
+    (workspace / "game.js").write_text("const ctx = canvas.getContext('2d');\n")
+    monkeypatch.setattr(
+        "harness.driver.cli.run_loop", lambda *a, **k: pytest.fail("should not run")
+    )
+    result = runner.invoke(
+        drive_app, ["loop", "--epic", "harness-e9oq", "--workspace", str(workspace)]
+    )
+    assert result.exit_code == 2
+    assert "index.html" in result.stderr
+    assert "--allow-missing-smoke" in result.stderr
+
+
+def test_drive_loop_allow_missing_smoke_overrides(
+    monkeypatch: pytest.MonkeyPatch, workspace: Path
+) -> None:
+    _stub_load_character(monkeypatch)
+    (workspace / "game.js").write_text("const ctx = canvas.getContext('2d');\n")
+    _stub_run_loop(
+        monkeypatch,
+        LoopResult(
+            loop_run_id="abc12345",
+            epic_id="harness-e9oq",
+            closed=[],
+            halted_on=None,
+            turns_used=0,
+            exit_reason="success",
+        ),
+    )
+    result = runner.invoke(
+        drive_app,
+        [
+            "loop",
+            "--epic",
+            "harness-e9oq",
+            "--workspace",
+            str(workspace),
+            "--allow-missing-smoke",
+        ],
+    )
+    assert result.exit_code == 0, result.output

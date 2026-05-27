@@ -85,6 +85,12 @@ _SOURCE_SUFFIXES: tuple[str, ...] = (
     ".ts",
     ".tsx",
     ".py",
+    # harness-9ugc: entry HTML + CSS count as deliverable source, so the
+    # regression guard catches a deleted/gutted index.html — the exact
+    # loss (no smoke gate, false success) that motivated this.
+    ".html",
+    ".htm",
+    ".css",
 )
 
 # Top-level callable definitions we track across a snapshot boundary.

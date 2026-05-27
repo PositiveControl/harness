@@ -245,6 +245,62 @@ def _smoke_execute_step(index: Path, *, enforce_blank_canvas: bool = True) -> Ve
     return VerifyStep(cmd=cmd, shell=True)  # noqa: S604
 
 
+# Browser globals that mark a .js/.mjs file as browser-authored (vs a
+# Node script). Their presence + the ABSENCE of an entry index.html is
+# the "lost / never-had the entry point" signal (harness-9ugc) — the
+# runtime smoke gate needs index.html, so without it a drive verifies
+# syntax-only and false-closes.
+_BROWSER_GLOBAL_RE = re.compile(
+    r"\b(?:document|window|requestAnimationFrame|getElementById|"
+    r"getContext|addEventListener|canvas)\b"
+)
+
+
+def _workspace_has_browser_js(workspace: Path) -> bool:
+    """True iff some workspace .js / .mjs references a browser global —
+    i.e. it's browser-authored code that needs an index.html to run.
+    Bounded read; tolerates unreadable files silently."""
+    for path in workspace.rglob("*"):
+        if path.suffix not in _LOCAL_JS_SUFFIXES or not path.is_file():
+            continue
+        if any(part in _EXCLUDED_DIR_NAMES for part in path.parts):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, PermissionError):
+            continue
+        if _BROWSER_GLOBAL_RE.search(text):
+            return True
+    return False
+
+
+def missing_entry_html_reason(workspace: Path) -> str | None:
+    """Loud reason when the workspace has browser-authored JS but NO
+    entry ``index.html`` at the root (harness-9ugc). The runtime
+    smoke-execute gate requires index.html; without it the gate
+    silently produces no step and the drive verifies syntax-only — the
+    b85f4008 false-close class for the *absent*-index case that
+    ``browser_smoke_skip_reason`` (which only fires when index.html
+    EXISTS but Playwright is missing) does not cover. Run 3c7c9da2
+    closed 8 beads this way against a wiped workspace.
+
+    Returns None when an index.html exists (gate can run) OR there's no
+    browser JS (nothing runtime to verify — e.g. a fresh §1 build that
+    hasn't created any source yet)."""
+    for name in _INDEX_FILENAMES:
+        if (workspace / name).is_file():
+            return None
+    if not _workspace_has_browser_js(workspace):
+        return None
+    return (
+        "workspace has browser-authored JS (uses document/canvas/window) but "
+        "no index.html at the root — the runtime smoke gate is OFF, so closes "
+        "would be SYNTAX-ONLY (the false-success class that closed 8 beads in "
+        "run 3c7c9da2). Restore/create the entry index.html, or pass "
+        "--allow-missing-smoke to proceed without runtime verification."
+    )
+
+
 def browser_smoke_skip_reason(workspace: Path) -> str | None:
     """Return a human-readable reason iff ``workspace`` looks like a
     browser app (index.html referencing local JS) but the smoke-execute
@@ -315,4 +371,5 @@ def default_workspace_verify_steps(
 __all__ = [
     "browser_smoke_skip_reason",
     "default_workspace_verify_steps",
+    "missing_entry_html_reason",
 ]

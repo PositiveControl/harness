@@ -22,6 +22,7 @@ from harness.driver.workspace_verify import (
     _workspace_has_file,
     browser_smoke_skip_reason,
     default_workspace_verify_steps,
+    missing_entry_html_reason,
 )
 
 _HAS_NODE = shutil.which("node") is not None
@@ -550,3 +551,32 @@ def test_blank_canvas_suppressed_via_enforce_flag(tmp_path: Path) -> None:
     smoke_step = next(s for s in steps if "smoke_runner" in s.cmd)
     exit_code, _tail = _exec_test_cmd(smoke_step.cmd, tmp_path, shell_mode=smoke_step.shell)
     assert exit_code == 0
+
+
+# --- harness-9ugc: missing entry-html guard --------------------------
+
+
+def test_missing_entry_html_fires_on_browser_js_without_index(tmp_path: Path) -> None:
+    (tmp_path / "game.js").write_text("const ctx = canvas.getContext('2d');\n")
+    reason = missing_entry_html_reason(tmp_path)
+    assert reason is not None
+    assert "index.html" in reason
+    assert "SYNTAX-ONLY" in reason
+
+
+def test_missing_entry_html_none_when_index_present(tmp_path: Path) -> None:
+    (tmp_path / "game.js").write_text("document.getElementById('x')\n")
+    (tmp_path / "index.html").write_text("<script src='game.js'></script>")
+    assert missing_entry_html_reason(tmp_path) is None
+
+
+def test_missing_entry_html_none_when_no_browser_js(tmp_path: Path) -> None:
+    # A Node script (no browser globals) + no index.html is legit — nothing
+    # runtime to smoke-test, so no false-success risk.
+    (tmp_path / "tool.js").write_text("const fs = require('fs'); fs.readFileSync('x');\n")
+    assert missing_entry_html_reason(tmp_path) is None
+
+
+def test_missing_entry_html_none_on_empty_workspace(tmp_path: Path) -> None:
+    # A fresh §1 build with no source yet must not be refused.
+    assert missing_entry_html_reason(tmp_path) is None
