@@ -40,8 +40,9 @@ from typing import get_args
 import typer
 
 from harness.character import load_character
-from harness.driver.bd import DriverBd
+from harness.driver.bd import DriverBd, DriverBdError
 from harness.driver.loop import LoopConfig, LoopResult, run_loop
+from harness.driver.plan_linter import score_bead
 from harness.driver.planner import (
     PlannerConfig,
     PlannerError,
@@ -176,6 +177,84 @@ def plan_command(
             "stderr.",
             err=True,
         )
+
+
+# --- harness drive lint-epic (harness-bpix) ----------------------------
+
+
+@drive_app.command("lint-epic")
+def lint_epic_command(
+    epic: str = typer.Option("", "--epic", help="bd id of the epic to lint."),
+    workspace: Path = typer.Option(
+        Path.cwd(),  # noqa: B008 — typer evaluates at call time
+        "--workspace",
+        help="Workspace root (resolves the bd dir).",
+    ),
+    include_closed: bool = typer.Option(
+        False,
+        "--include-closed",
+        help="Also score already-closed children (default: open only).",
+    ),
+) -> None:
+    """Score each open child of an epic for decomposition risk and flag
+    the over-scoped ones BEFORE a drive burns turns discovering them
+    (harness-bpix). Pure text-shape heuristic — no model call. Exits 1
+    when any bead is flagged so it can gate a pre-drive check."""
+    if not epic:
+        raise typer.BadParameter("--epic is required")
+    bd = DriverBd(bd_dir=workspace)
+    try:
+        epic_issue = bd.show(epic)
+    except DriverBdError as exc:
+        typer.echo(f"lint-epic: cannot load epic {epic}: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    child_ids = [
+        str(d.get("id")) for d in (epic_issue.raw.get("dependencies") or []) if d.get("id")
+    ]
+    scored = []
+    for cid in child_ids:
+        try:
+            child = bd.show(cid)
+        except DriverBdError:
+            continue
+        if child.status == "closed" and not include_closed:
+            continue
+        scored.append(
+            score_bead(
+                cid,
+                child.title,
+                str(child.raw.get("description", "")),
+                str(child.raw.get("acceptance_criteria", "") or ""),
+            )
+        )
+
+    if not scored:
+        typer.echo(f"lint-epic: no open children under {epic} to score.")
+        return
+
+    # Flagged first, then by sub-section spread — worst offenders on top.
+    scored.sort(key=lambda c: (c.flagged, c.subsection_refs, c.description_chars), reverse=True)
+    flagged = [c for c in scored if c.flagged]
+
+    typer.echo(f"lint-epic {epic}: {len(scored)} open bead(s), {len(flagged)} flagged\n")
+    typer.echo(f"  {'FLAG':<5}{'§subs':>6}{'chars':>7}{'bullets':>8}  id / title")
+    for c in scored:
+        mark = "⚠" if c.flagged else " "
+        title = c.title if len(c.title) <= 52 else c.title[:49] + "..."
+        cols = f"{mark:<5}{c.subsection_refs:>6}{c.description_chars:>7}{c.bullets:>8}"
+        typer.echo(f"  {cols}  {c.bead_id}  {title}")
+    if flagged:
+        typer.echo("\nDecomposition candidates:")
+        for c in flagged:
+            typer.echo(f"  {c.bead_id} {c.title}")
+            for r in c.reasons:
+                typer.echo(f"    - {r}")
+        typer.echo(
+            "\nConsider splitting these into per-sub-section beads before driving "
+            "(each one is a wall that costs ~5+ turns to discover mid-drive)."
+        )
+        raise typer.Exit(code=1)
 
 
 # --- harness drive loop ------------------------------------------------

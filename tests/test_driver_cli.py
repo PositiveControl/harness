@@ -767,3 +767,69 @@ def test_logs_list_handles_empty_dir(tmp_path: Path) -> None:
     result = CliRunner().invoke(drive_app, ["logs", "list", "--workspace", str(tmp_path)])
     assert result.exit_code == 0
     assert "no loop runs" in result.stdout
+
+
+# --- harness drive lint-epic (harness-bpix) -------------------------
+
+
+class _LintBd:
+    """Minimal bd fake for lint-epic: an epic with two children — one
+    over-scoped (many §refs + long), one right-sized."""
+
+    def __init__(self, bd_dir: Any) -> None:
+        from harness.store._bd_types import _issue_from_json
+
+        self._issues = {
+            "harness-epic": _issue_from_json(
+                {
+                    "id": "harness-epic",
+                    "title": "epic",
+                    "status": "open",
+                    "dependencies": [{"id": "harness-big"}, {"id": "harness-small"}],
+                }
+            ),
+            "harness-big": _issue_from_json(
+                {
+                    "id": "harness-big",
+                    "title": "§7 Police",
+                    "status": "open",
+                    "description": (
+                        "Implement §7:\n- §7.1 state\n- §7.2 spawn\n- §7.3 chase AI\n"
+                        "- §7.4 visual per §3.3\n- §7.5 siren\n" + ("detail " * 300)
+                    ),
+                }
+            ),
+            "harness-small": _issue_from_json(
+                {
+                    "id": "harness-small",
+                    "title": "§7a spawn",
+                    "status": "open",
+                    "description": "Add a cop-state factory and spawn function.",
+                }
+            ),
+        }
+
+    def show(self, issue_id: str) -> Any:
+        return self._issues[issue_id]
+
+
+def test_lint_epic_flags_overscoped_and_exits_1(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("harness.driver.cli.DriverBd", _LintBd)
+    result = runner.invoke(drive_app, ["lint-epic", "--epic", "harness-epic"])
+    assert result.exit_code == 1  # at least one flagged → gate fails
+    assert "harness-big" in result.stdout
+    assert "Decomposition candidates" in result.stdout
+    assert "sub-section" in result.stdout
+
+
+def test_lint_epic_clean_epic_exits_0(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _CleanBd(_LintBd):
+        def __init__(self, bd_dir: Any) -> None:
+            super().__init__(bd_dir)
+            # Drop the over-scoped child; only the right-sized one remains.
+            self._issues["harness-epic"].raw["dependencies"] = [{"id": "harness-small"}]
+
+    monkeypatch.setattr("harness.driver.cli.DriverBd", _CleanBd)
+    result = runner.invoke(drive_app, ["lint-epic", "--epic", "harness-epic"])
+    assert result.exit_code == 0, result.output
+    assert "0 flagged" in result.stdout
