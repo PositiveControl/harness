@@ -253,3 +253,17 @@ def test_oversized_output_truncated(tool: PythonStreamTool) -> None:
     """A 600 KB result is capped at 512 KB with a marker."""
     out = tool.call(expr="'y' * (600 * 1024)", stdin="x")
     assert "[truncated at" in out
+
+
+def test_detect_blocked_call_suppresses_syntax_warning() -> None:
+    # harness regression: the parent-side ast.parse in _detect_blocked_call
+    # must not leak the model's invalid-escape SyntaxWarning to the
+    # operator's terminal. expr has a bad escape ('\.') and a blocked open().
+    import warnings as _w
+
+    from harness.tools.python_stream import _detect_blocked_call
+
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        _detect_blocked_call("import re\nx = '\\.'\nopen('f')")
+    assert not [w for w in caught if issubclass(w.category, SyntaxWarning)]

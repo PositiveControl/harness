@@ -27,6 +27,7 @@ import json
 import subprocess
 import sys
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -209,7 +210,14 @@ def _detect_blocked_call(expr: str) -> str | None:
     substrings (`reopen(...)`). Unparseable expr → None: let the normal
     path surface the syntax error rather than masking it."""
     try:
-        tree = ast.parse(expr)
+        # Suppress SyntaxWarning (e.g. the model's invalid escape
+        # sequences like '\.') — this parse only inspects structure for
+        # blocked builtins; unlike the child interpreter's parse it runs
+        # in the PARENT process, where the warning would otherwise leak
+        # to the operator's terminal (`<unknown>:N: SyntaxWarning`).
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(expr)
     except SyntaxError:
         return None
     for node in ast.walk(tree):
