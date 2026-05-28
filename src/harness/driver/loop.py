@@ -975,6 +975,7 @@ def _build_driver_hook_pipeline(
     on workspace verify. When supplied, it runs ahead of
     ShellEchoNoopHook so a verify-fail Skips the close before the echo
     detector ever sees it."""
+    from harness.driver.bd_warning_filter import make_bd_auto_export_warning_filter
     from harness.orchestrator.hooks import ShellEchoNoopHook, ToolResultSummarizerHook
     from harness.orchestrator.parse_gate_escalation import (
         make_parse_gate_escalation_pair,
@@ -1004,6 +1005,11 @@ def _build_driver_hook_pipeline(
     # narration no-op that left issues open and burned attempts.
     pipeline.pre_tool.append(ShellEchoNoopHook())
     pipeline.post_tool.append(gate_observer)
+    # harness-rtwm: strip bd's "auto-export: git add failed" warning
+    # from shell-tool output when the workspace is gitignored. Enabled
+    # automatically based on a one-shot `git check-ignore`; tracked
+    # workspaces get a hook that no-ops on every call.
+    pipeline.post_tool.append(make_bd_auto_export_warning_filter(workspace))
     if summarize_tool_results:
         pipeline.post_tool.append(ToolResultSummarizerHook(summarizer=adapter))
     return pipeline
