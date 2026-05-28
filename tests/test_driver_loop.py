@@ -466,6 +466,43 @@ def test_run_loop_no_summarize_flag_omits_hook(
     assert not summarizers
 
 
+def test_run_loop_wires_pre_close_verify_hook(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-nlj7: every executor turn must install a PreCloseVerifyHook
+    in the pre_tool phase so bd close of the focal issue is gated on
+    workspace verify before it can land."""
+    from harness.driver.precommit_verify_hook import PreCloseVerifyHook
+
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    captured: list[Any] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **kwargs: Any
+    ) -> ToolLoopResult:
+        captured.append(kwargs.get("hooks"))
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+
+    pipeline = captured[0]
+    assert pipeline is not None, "drive loop must pass a non-None HookPipeline"
+    pre_close = [h for h in pipeline.pre_tool if isinstance(h, PreCloseVerifyHook)]
+    assert pre_close, "pre_tool must include PreCloseVerifyHook"
+    assert pre_close[0]._current_issue_id == "harness-a"
+
+
 def test_run_loop_catches_context_overflow_as_turn_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -42,6 +42,7 @@ from harness.driver.bd import DriverBd, DriverBdError
 from harness.driver.claim_detector import last_shell_cmd_in_messages
 from harness.driver.handoff import Handoff
 from harness.driver.planner import VerifyStep
+from harness.driver.precommit_verify_hook import PreCloseVerifyHook
 from harness.driver.turn_fsm import (
     DEFAULT_PHASE_BUDGETS,
     PhaseOutcome,
@@ -345,11 +346,17 @@ def _run_one_phase(
     max_rounds: int,
     observe: ExecutorObserver | None,
     summarize_tool_results: bool = True,
+    pre_close_verify: PreCloseVerifyHook | None = None,
 ) -> _PhaseExecutionResult:
     """Drive one phase: assemble the system+user messages, install
     the default hook pipeline + WriteFileRedirectHook (+ the optional
     ToolResultSummarizerHook from harness-tu4o), call run_tool_loop.
-    Returns the bare result; caller maps it to a PhaseOutcome."""
+    Returns the bare result; caller maps it to a PhaseOutcome.
+
+    `pre_close_verify` (harness-nlj7), when supplied, gates ``bd close
+    <current_issue>`` shell calls on workspace verify. A no-op for any
+    phase that doesn't run shell — but kept in the pipeline regardless
+    so the wiring stays uniform across phases."""
     from harness.driver.loop import _build_driver_hook_pipeline
 
     # harness-d6ak (smaller surgery): keep the character's identity +
@@ -372,6 +379,7 @@ def _run_one_phase(
         registry=registry,
         workspace=workspace,
         summarize_tool_results=summarize_tool_results,
+        pre_close_verify=pre_close_verify,
     )
     succeeded_tools: set[str] = set()
     # Wrap observe to also sniff succeeded tool names — needed for
@@ -588,6 +596,7 @@ def run_fsm_turn(
     tdd_required: bool = True,
     observe: ExecutorObserver | None = None,
     summarize_tool_results: bool = True,
+    pre_close_verify: PreCloseVerifyHook | None = None,
 ) -> FsmTurnResult:
     """Drive `current_issue_id` through the TurnPhase FSM.
 
@@ -650,6 +659,7 @@ def run_fsm_turn(
             max_rounds=max_rounds,
             observe=observe,
             summarize_tool_results=summarize_tool_results,
+            pre_close_verify=pre_close_verify,
         )
         if execution.tool_loop_result.content:
             last_reply = execution.tool_loop_result.content

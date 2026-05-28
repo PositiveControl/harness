@@ -71,6 +71,10 @@ from harness.driver.claim_detector import (
 )
 from harness.driver.handoff import Handoff, build_handoff
 from harness.driver.planner import PlanDraft, PlannerError, VerifyStep
+from harness.driver.precommit_verify_hook import (
+    PreCloseVerifyHook,
+    make_pre_close_verify_hook,
+)
 from harness.driver.state import LoopRunState
 from harness.driver.workspace_guard import (
     DEFAULT_SCRATCH_PATTERNS,
@@ -514,6 +518,18 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             turn_observer = _make_turn_observer(
                 log_path, state.turns_used + 1, config.extra_observer
             )
+            # harness-nlj7: per-turn pre-close verify hook. current_id and
+            # regression_snapshot change between turns, so the factory
+            # runs HERE (not at run startup) — the closure captures
+            # this turn's verify config.
+            pre_close_verify = make_pre_close_verify_hook(
+                verify_map=verify_map,
+                bd=bd,
+                current_issue_id=current.id,
+                workspace=config.workspace,
+                default_steps=default_verify_steps,
+                regression_snapshot=last_green if config.regression_guard else None,
+            )
             if config.use_fsm:
                 (
                     turn_success,
@@ -532,6 +548,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     verify_map=verify_map,
                     default_verify_steps=default_verify_steps,
                     observe=turn_observer,
+                    pre_close_verify=pre_close_verify,
                 )
             else:
                 (
@@ -547,6 +564,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     observe=turn_observer,
                     max_rounds=config.executor_max_rounds,
                     summarize_tool_results=config.summarize_tool_results,
+                    pre_close_verify=pre_close_verify,
                 )
             state.turns_used += 1
 
@@ -820,6 +838,7 @@ def _run_fsm_turn_via_driver(
     verify_map: Mapping[str, Sequence[VerifyStep]],
     default_verify_steps: Sequence[VerifyStep],
     observe: ExecutorObserver | None,
+    pre_close_verify: PreCloseVerifyHook | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Adapter that wraps `run_fsm_turn` to match the legacy
     `_run_executor_turn` return shape (succeeded, reason, reply,
@@ -899,6 +918,7 @@ def _run_fsm_turn_via_driver(
             tdd_required=config.tdd_required,
             observe=observe,
             summarize_tool_results=config.summarize_tool_results,
+            pre_close_verify=pre_close_verify,
         )
     except Exception as exc:
         # harness-tu4o: see _run_executor_turn for the same rationale.
@@ -926,6 +946,7 @@ def _build_driver_hook_pipeline(
     registry: Any,
     workspace: Path,
     summarize_tool_results: bool,
+    pre_close_verify: PreCloseVerifyHook | None = None,
 ) -> HookPipeline:
     """Drive-loop hook pipeline (harness-tu4o). Mirrors
     `cli_classic._build_hook_pipeline` but trimmed to what the executor
@@ -939,7 +960,12 @@ def _build_driver_hook_pipeline(
     result), and correct (the summarizer prompt is short and
     deterministic). Failure to summarize is non-fatal — the hook
     falls through with `Continue` and the raw output reaches the
-    model untouched."""
+    model untouched.
+
+    `pre_close_verify` (harness-nlj7) gates ``bd close <current_issue>``
+    on workspace verify. When supplied, it runs ahead of
+    ShellEchoNoopHook so a verify-fail Skips the close before the echo
+    detector ever sees it."""
     from harness.orchestrator.hooks import ShellEchoNoopHook, ToolResultSummarizerHook
 
     write_file_redirect_hook = make_write_file_redirect_hook(
@@ -947,6 +973,12 @@ def _build_driver_hook_pipeline(
         workspace_path=workspace,
     )
     pipeline = default_hook_pipeline(write_file_redirect_hook=write_file_redirect_hook)
+    # harness-nlj7: pre-close verify gate. Runs FIRST in pre_tool so a
+    # verify failure Skips the bd close before any downstream hook sees
+    # it. The model gets a verify_blocked failure result instead of a
+    # close-success ack, killing the wrap_up_forced narration spiral.
+    if pre_close_verify is not None:
+        pipeline.pre_tool.append(pre_close_verify)
     # harness-jmkc: drive-only. Catch the model echoing "Would run: bd
     # close X" / "Issue closed…" instead of executing the close — a
     # narration no-op that left issues open and burned attempts.
@@ -984,6 +1016,7 @@ def _run_executor_turn(
     observe: ExecutorObserver | None = None,
     max_rounds: int = 12,
     summarize_tool_results: bool = True,
+    pre_close_verify: PreCloseVerifyHook | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Run one executor turn. Returns (succeeded, reason, reply, last_shell_cmd).
 
@@ -1036,6 +1069,7 @@ def _run_executor_turn(
         registry=registry,
         workspace=workspace,
         summarize_tool_results=summarize_tool_results,
+        pre_close_verify=pre_close_verify,
     )
     try:
         result: ToolLoopResult = run_tool_loop(
