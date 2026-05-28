@@ -174,6 +174,45 @@ def test_search_is_case_insensitive() -> None:
     assert names == ["Now"]
 
 
+# --- harness-53jm: ranked search ----------------------------------
+
+
+def test_search_ranks_name_match_above_tier_tag_flood() -> None:
+    """A query token that only brushes the shared 'read' tier tag is
+    near-zero signal; a tool whose NAME matches the token must rank above
+    the flood of read-tier tools, not get buried alphabetically."""
+    cat = ToolCatalog()
+    # Three decoys that match 'read' only via the tier tag, named so they
+    # sort alphabetically before 'read_file' (the old bug surfaced these).
+    for name in ("aaa_tool", "bbb_tool", "ccc_tool"):
+        cat.register(ToolCatalogEntry(name=name, tags=("read", "misc")))
+    cat.register(ToolCatalogEntry(name="read_file", tags=("read", "file")))
+    ranked = [e.name for e in cat.search("read file")]
+    # read_file matches name + the specific 'file' tag → ranks first,
+    # despite sorting last alphabetically among the matches.
+    assert ranked[0] == "read_file"
+
+
+def test_search_ranks_specific_tag_above_description_only() -> None:
+    cat = ToolCatalog()
+    cat.register(ToolCatalogEntry(name="exact", tags=("outline",), description="x"))
+    cat.register(ToolCatalogEntry(name="incidental", description="produces an outline somewhere"))
+    ranked = [e.name for e in cat.search("outline")]
+    assert ranked == ["exact", "incidental"]
+
+
+def test_search_ties_break_by_specificity_then_name() -> None:
+    """Equal score → fewer tags first (more specific), then name for
+    determinism."""
+    cat = ToolCatalog()
+    cat.register(ToolCatalogEntry(name="zebra", tags=("alpha",)))
+    cat.register(ToolCatalogEntry(name="yak", tags=("alpha", "extra1", "extra2")))
+    ranked = [e.name for e in cat.search("alpha")]
+    # both score the same on the 'alpha' tag; zebra has fewer tags so it
+    # wins the tie even though 'yak' < 'zebra' alphabetically.
+    assert ranked == ["zebra", "yak"]
+
+
 # --- persistence -------------------------------------------------------
 
 

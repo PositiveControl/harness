@@ -677,14 +677,13 @@ def test_builtin_catalog_surfaces_outline_and_symbol_read() -> None:
     seed_builtins_into(cat, now_iso="2026-01-01T00:00:00Z")
     tool = ToolSearchTool(catalog=cat)
 
-    # Distinctive capability terms — "skeleton"/"outline" and "symbol"/
-    # "whole-function" are near-unique to these tools, so they rank into
-    # the displayed window. (A flooding query like "read a function" OR-
-    # matches every read-tier tool and the alphabetical display cap buries
-    # the precise match — a known tool_search ranking limitation tracked
-    # separately, not a wiring gap.)
-    nav = tool.call(query="skeleton outline of a source file")
+    # Natural-language capability queries (not distinctively-worded). Post
+    # harness-53jm these rank the precise tool into the displayed window
+    # even though the query floods every read-tier tool via the shared
+    # "read" tag — match-strength ranking puts name + specific-tag hits on
+    # top, so the alphabetical-cap burial is gone.
+    nav = tool.call(query="navigate functions and classes in a file")
     assert "outline" in nav
 
-    whole = tool.call(query="symbol whole-function span")
+    whole = tool.call(query="read a whole function by symbol name")
     assert "read_file" in whole

@@ -72,6 +72,40 @@ class ToolCatalogEntry:
     quarantine_reason: str | None = None
 
 
+# Tier tags ("read"/"write") sit on almost every tool, so a query token
+# that hits one is near-zero signal — it's what produced the OR-flood
+# that buried precise matches (harness-53jm). They still count, but at a
+# token weight low enough that any name/specific-tag match outranks them.
+_TIER_TAGS: frozenset[str] = frozenset({"read", "write"})
+
+
+def _match_score(entry: ToolCatalogEntry, tokens: list[str]) -> int:
+    """Relevance score of `entry` against query `tokens` (lowercased,
+    length-filtered). Weighted so the signal gradient is
+    name > specific-tag > description > tier-tag. Zero means no field
+    matched any token — the caller drops those. Used only by
+    ToolCatalog.search to rank before the display cap (harness-53jm)."""
+    name = entry.name.lower()
+    tags = [t.lower() for t in entry.tags]
+    desc = entry.description.lower()
+    score = 0
+    for tok in tokens:
+        if tok == name:
+            score += 100
+        elif tok in name:
+            score += 40
+        tag_points = 0
+        for tag in tags:
+            if tok == tag:
+                tag_points = max(tag_points, 3 if tag in _TIER_TAGS else 30)
+            elif tok in tag:
+                tag_points = max(tag_points, 1 if tag in _TIER_TAGS else 15)
+        score += tag_points
+        if tok in desc:
+            score += 5
+    return score
+
+
 @dataclass
 class ToolCatalog:
     """Mutable collection of catalog entries with grouping +
@@ -155,16 +189,23 @@ class ToolCatalog:
                     or any(stripped in t.lower() for t in e.tags)
                 )
             ]
-        out: list[ToolCatalogEntry] = []
+        # Rank by match strength, not alphabet (harness-53jm). The old
+        # implementation appended in name order and the caller truncated
+        # to `limit`, so a precise match (read_file, outline) sorted past
+        # position 10 vanished behind the common-token flood: every
+        # read-tier tool shares the "read" tag, so "read a function by
+        # symbol" matched 30+ tools and the alphabetically-first 10 won.
+        # Now a tool that matches on name + a specific tag outranks one
+        # that only brushed a tier tag.
+        scored: list[tuple[int, ToolCatalogEntry]] = []
         for entry in self.all():
-            haystacks = (
-                entry.name.lower(),
-                entry.description.lower(),
-                *(t.lower() for t in entry.tags),
-            )
-            if any(token in hay for token in tokens for hay in haystacks):
-                out.append(entry)
-        return out
+            score = _match_score(entry, tokens)
+            if score > 0:
+                scored.append((score, entry))
+        # Higher score first; ties broken by specificity (fewer tags, then
+        # shorter description) then name, so the order stays deterministic.
+        scored.sort(key=lambda se: (-se[0], len(se[1].tags), len(se[1].description), se[1].name))
+        return [entry for _, entry in scored]
 
 
 # --- persistence -----------------------------------------------------
