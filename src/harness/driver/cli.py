@@ -35,9 +35,12 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from typing import get_args
+from typing import TYPE_CHECKING, get_args
 
 import typer
+
+if TYPE_CHECKING:
+    from harness.driver.auto_iterate import AutoIterateResult
 
 from harness.character import load_character
 from harness.driver.bd import DriverBd, DriverBdError
@@ -554,6 +557,146 @@ def loop_command(
     result = run_loop(adapter, bd, config)
     _print_result(result)
     raise typer.Exit(code=_exit_code(result))
+
+
+# --- harness drive auto-iterate (harness-3f8e) ------------------------
+
+
+@drive_app.command("auto-iterate")
+def auto_iterate_command(
+    epic: str = typer.Option("", "--epic", help="bd id of the epic to drain."),
+    spec: Path | None = typer.Option(
+        None,
+        "--spec",
+        help=(
+            "Path to the source spec used by the critic. Default: resolve "
+            "from the epic's `plan-source:<file>` label."
+        ),
+    ),
+    max_passes: int = typer.Option(
+        8,
+        "--max-passes",
+        help="Hard cap on drive+critic passes.",
+    ),
+    convergence_streak: int = typer.Option(
+        2,
+        "--convergence-streak",
+        help="Empty critic passes in a row before declaring converged.",
+    ),
+    critic_max_findings: int = typer.Option(
+        10,
+        "--critic-max-findings",
+        help="Cap on beads filed per critic pass.",
+    ),
+    # Forwarded `drive loop` options (same names + semantics).
+    max_turns: int = typer.Option(20, "--max-turns"),
+    workspace: Path = typer.Option(
+        Path.cwd(),  # noqa: B008 — typer evaluates at call time
+        "--workspace",
+    ),
+    model: str = typer.Option("echo", "--model"),
+    model_repo: str | None = typer.Option(None, "--model-repo"),
+    lora_path: str | None = typer.Option(None, "--lora-path"),
+    draft_repo: str | None = typer.Option(None, "--draft-repo"),
+    character_path: Path = typer.Option(Path("./character/airton"), "--character"),
+    allow_dirty: bool = typer.Option(False, "--allow-dirty"),
+    allow_missing_smoke: bool = typer.Option(False, "--allow-missing-smoke"),
+    executor_max_rounds: int = typer.Option(12, "--executor-max-rounds"),
+    max_attempts: int = typer.Option(3, "--max-attempts"),
+    regression_guard: bool = typer.Option(True, "--regression-guard/--no-regression-guard"),
+    use_fsm: bool = typer.Option(False, "--fsm/--no-fsm"),
+    tdd: bool = typer.Option(True, "--tdd/--no-tdd"),
+    summarize_tool_results: bool = typer.Option(
+        True, "--summarize-tool-results/--no-summarize-tool-results"
+    ),
+    auto_close_on_claim: bool = typer.Option(
+        True, "--auto-close-on-claim/--no-auto-close-on-claim"
+    ),
+    skip_on_max_attempts: bool = typer.Option(
+        True, "--skip-on-max-attempts/--no-skip-on-max-attempts"
+    ),
+    render_milestone: str | None = typer.Option(None, "--render-milestone"),
+) -> None:
+    """Drive + critic until convergence: drains the epic, asks the model
+    to propose follow-up bugs grounded in the spec, files them as
+    auto-blocked beads, and drives again. Stops when N consecutive
+    critic passes return zero findings or `--max-passes` hits.
+    """
+    if not epic:
+        raise typer.BadParameter("--epic is required")
+    if not allow_dirty and _git_tree_is_dirty(workspace):
+        typer.echo(
+            "git tree has uncommitted changes; pass --allow-dirty to override.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if not allow_missing_smoke:
+        smoke_gap = missing_entry_html_reason(workspace)
+        if smoke_gap is not None:
+            typer.echo(f"refusing to drive: {smoke_gap}", err=True)
+            raise typer.Exit(code=2)
+
+    from harness.driver.auto_iterate import AutoIterateConfig, run_auto_iterate
+
+    adapter = _resolve_driver_adapter(
+        model,
+        model_repo=model_repo,
+        lora_path=lora_path,
+        draft_repo=draft_repo,
+    )
+    character = load_character(character_path)
+    bd = DriverBd(bd_dir=workspace)
+    loop_config = LoopConfig(
+        epic_id=epic,
+        workspace=workspace,
+        character=character,
+        max_turns=max_turns,
+        executor_max_rounds=executor_max_rounds,
+        max_attempts_per_issue=max_attempts,
+        regression_guard=regression_guard,
+        use_fsm=use_fsm,
+        tdd_required=tdd,
+        summarize_tool_results=summarize_tool_results,
+        auto_close_on_claim=auto_close_on_claim,
+        skip_on_max_attempts=skip_on_max_attempts,
+        render_milestone_id=render_milestone,
+    )
+    config = AutoIterateConfig(
+        loop_config=loop_config,
+        spec_path=spec,
+        max_passes=max_passes,
+        convergence_streak=convergence_streak,
+        critic_max_findings=critic_max_findings,
+    )
+    result: AutoIterateResult = run_auto_iterate(adapter, bd, config)
+    _print_auto_iterate_result(result)
+    raise typer.Exit(code=_auto_iterate_exit_code(result))
+
+
+def _print_auto_iterate_result(result: AutoIterateResult) -> None:
+    typer.echo(
+        f"auto-iterate: passes={result.passes_run} "
+        f"critic_findings={result.critic_findings_total} "
+        f"exit={result.exit_reason}"
+    )
+    if result.filed_beads:
+        typer.echo(f"filed beads ({len(result.filed_beads)}):")
+        for bid in result.filed_beads:
+            typer.echo(f"  - {bid}")
+    for i, dr in enumerate(result.drive_results, start=1):
+        typer.echo(
+            f"  pass {i}: drive={dr.exit_reason} closed={len(dr.closed)} turns={dr.turns_used}"
+        )
+
+
+def _auto_iterate_exit_code(result: AutoIterateResult) -> int:
+    if result.exit_reason == "converged":
+        return 0
+    if result.exit_reason == "drive_halted":
+        return 1
+    # passes_exhausted: ran out of budget with critic still finding bugs.
+    # Surface as non-zero so a CI / cron wrapper sees the unfinished state.
+    return 2
 
 
 # --- helpers ----------------------------------------------------------
