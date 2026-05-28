@@ -110,6 +110,18 @@ browser = [
     # skips silently when Playwright isn't importable.
     "playwright>=1.40",
 ]
+code = [
+    # Language-agnostic symbol indexing for symbol-addressed reads +
+    # the outline tool (harness-2aes / epic harness-umvg). tree-sitter
+    # is the parser core; tree-sitter-language-pack bundles ~165
+    # precompiled grammars in one wheel, which is what makes the
+    # feature multi-language instead of Python-only. Both are imported
+    # lazily inside harness/tools/_symbols.py — a base install stays
+    # clean and the symbol layer degrades to line-based reads when the
+    # extra is absent (parse_check / playwright skip-policy precedent).
+    "tree-sitter>=0.23",
+    "tree-sitter-language-pack>=0.7",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -241,4 +253,13 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["playwright", "playwright.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "tree_sitter",
+    "tree_sitter.*",
+    "tree_sitter_language_pack",
+    "tree_sitter_language_pack.*",
+]
 ignore_missing_imports = true
