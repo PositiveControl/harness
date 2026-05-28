@@ -38,6 +38,7 @@ from harness.tools.list_dir import ListDirTool
 from harness.tools.load_tool import LoadToolTool
 from harness.tools.now import NowTool
 from harness.tools.ops import ConsolidateMemoryTool, ScribeSessionTool
+from harness.tools.outline import OutlineTool
 from harness.tools.phraseology_lint import (
     PhraseologyLintTool,
     PhraseologyVerdict,
@@ -89,6 +90,7 @@ __all__ = [
     "LoadToolTool",
     "ModelReply",
     "NowTool",
+    "OutlineTool",
     "PhraseologyLintTool",
     "PhraseologyVerdict",
     "PythonEvalTool",

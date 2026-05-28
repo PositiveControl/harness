@@ -57,6 +57,7 @@ from harness.tools import (
     ListDirTool,
     LoadToolTool,
     NowTool,
+    OutlineTool,
     PythonEvalTool,
     PythonStreamTool,
     ReadFileTool,
@@ -359,6 +360,7 @@ def build_classic_registry(
 
     builders: dict[str, Callable[[], Tool | None]] = {
         "read_file": lambda: ReadFileTool(root=workspace_path),
+        "outline": lambda: OutlineTool(root=workspace_path),
         "edit_file": lambda: EditFileTool(root=workspace_path),
         "write_file": lambda: WriteFileTool(root=workspace_path),
         "stream_edit": lambda: StreamEditTool(root=workspace_path),

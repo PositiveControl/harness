@@ -73,6 +73,7 @@ from harness.tools import (
     ListDirTool,
     LoadToolTool,
     NowTool,
+    OutlineTool,
     PhraseologyLintTool,
     PythonEvalTool,
     PythonStreamTool,
@@ -1593,6 +1594,7 @@ def _build_tool_registry_for_tui(
 
     builders: dict[str, Callable[[], Tool | None]] = {
         "read_file": lambda: ReadFileTool(root=workspace_path),
+        "outline": lambda: OutlineTool(root=workspace_path),
         "edit_file": lambda: EditFileTool(root=workspace_path),
         "write_file": lambda: WriteFileTool(root=workspace_path),
         "stream_edit": lambda: StreamEditTool(root=workspace_path),
@@ -3629,6 +3631,7 @@ def _resolve_router_tool_specs(tool_names: Sequence[str], workspace: Path) -> li
     will see the spec from a dummy no-op tool below."""
     builders: dict[str, Callable[[], Tool]] = {
         "read_file": lambda: ReadFileTool(root=workspace),
+        "outline": lambda: OutlineTool(root=workspace),
         "list_dir": lambda: ListDirTool(root=workspace),
         "grep": lambda: GrepTool(root=workspace),
         "glob": lambda: GlobTool(root=workspace),
