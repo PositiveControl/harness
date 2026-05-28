@@ -545,6 +545,49 @@ def test_run_loop_inter_attempt_restore_skipped_when_regression_guard_off(
     assert restore_calls == []
 
 
+def test_run_loop_wires_parse_gate_escalation_pair(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-0v6d: every executor turn must install the parse-gate
+    escalation pair — observer in post_tool, escalation in pre_tool,
+    with both sharing one ParseGateState."""
+    from harness.orchestrator.parse_gate_escalation import (
+        ParseGateEscalationHook,
+        ParseGateFailureObserver,
+    )
+
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    captured: list[Any] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **kwargs: Any
+    ) -> ToolLoopResult:
+        captured.append(kwargs.get("hooks"))
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+
+    pipeline = captured[0]
+    observers = [h for h in pipeline.post_tool if isinstance(h, ParseGateFailureObserver)]
+    escalators = [h for h in pipeline.pre_tool if isinstance(h, ParseGateEscalationHook)]
+    assert observers, "post_tool must include ParseGateFailureObserver"
+    assert escalators, "pre_tool must include ParseGateEscalationHook"
+    assert observers[0].state is escalators[0].state, (
+        "observer and escalation hook must share one ParseGateState"
+    )
+
+
 def test_run_loop_wires_pre_close_verify_hook(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

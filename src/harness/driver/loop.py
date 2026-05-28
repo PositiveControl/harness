@@ -976,6 +976,9 @@ def _build_driver_hook_pipeline(
     ShellEchoNoopHook so a verify-fail Skips the close before the echo
     detector ever sees it."""
     from harness.orchestrator.hooks import ShellEchoNoopHook, ToolResultSummarizerHook
+    from harness.orchestrator.parse_gate_escalation import (
+        make_parse_gate_escalation_pair,
+    )
 
     write_file_redirect_hook = make_write_file_redirect_hook(
         registry=registry,
@@ -988,10 +991,19 @@ def _build_driver_hook_pipeline(
     # close-success ack, killing the wrap_up_forced narration spiral.
     if pre_close_verify is not None:
         pipeline.pre_tool.append(pre_close_verify)
+    # harness-0v6d: parse-gate escalation pair. The observer counts
+    # parse-gate failures per file in post_tool; once a file has
+    # tripped twice this turn, the escalation hook intercepts the
+    # NEXT edit_file / stream_edit / python_stream call against that
+    # path and Skips it with a whole-file-rewrite nudge. Both share a
+    # per-pipeline ParseGateState (resets between turns).
+    gate_observer, gate_escalation = make_parse_gate_escalation_pair()
+    pipeline.pre_tool.append(gate_escalation)
     # harness-jmkc: drive-only. Catch the model echoing "Would run: bd
     # close X" / "Issue closed…" instead of executing the close — a
     # narration no-op that left issues open and burned attempts.
     pipeline.pre_tool.append(ShellEchoNoopHook())
+    pipeline.post_tool.append(gate_observer)
     if summarize_tool_results:
         pipeline.post_tool.append(ToolResultSummarizerHook(summarizer=adapter))
     return pipeline
