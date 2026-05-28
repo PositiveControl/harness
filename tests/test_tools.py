@@ -370,6 +370,97 @@ def test_read_file_without_offset_or_limit_returns_full_file(tmp_path: Path) -> 
     assert "showing lines" not in result
 
 
+# --- harness-2kob: symbol addressing ------------------------------
+
+try:
+    import tree_sitter_language_pack  # noqa: F401
+
+    _HAS_CODE = True
+except ImportError:  # pragma: no cover - exercised only on lean installs
+    _HAS_CODE = False
+
+_requires_code = pytest.mark.skipif(not _HAS_CODE, reason="requires the [code] extra")
+
+_PY_MODULE = """import os
+
+
+class Foo:
+    def bar(self, x):
+        return x + 1
+
+    def baz(self):
+        return 2
+
+
+def top(a, b):
+    return a + b
+"""
+
+
+@_requires_code
+def test_read_file_symbol_returns_whole_span(tmp_path: Path) -> None:
+    (tmp_path / "m.py").write_text(_PY_MODULE)
+    tool = ReadFileTool(root=tmp_path)
+    result = tool.call(path="m.py", symbol="Foo.bar")
+    assert "def bar(self, x):" in result
+    assert "return x + 1" in result
+    # the *whole* span, not a guessed slice — and nothing from baz/top.
+    assert "def baz" not in result
+    assert "def top" not in result
+    assert "[symbol Foo.bar, lines 5-6 of 13]" in result
+
+
+@_requires_code
+def test_read_file_symbol_bare_name_resolves(tmp_path: Path) -> None:
+    (tmp_path / "m.py").write_text(_PY_MODULE)
+    tool = ReadFileTool(root=tmp_path)
+    result = tool.call(path="m.py", symbol="top")
+    assert "def top(a, b):" in result
+    assert "[symbol top, lines" in result
+
+
+@_requires_code
+def test_read_file_symbol_ambiguous_lists_candidates(tmp_path: Path) -> None:
+    (tmp_path / "m.py").write_text(
+        "class A:\n    def run(self):\n        pass\n\nclass B:\n    def run(self):\n        pass\n"
+    )
+    tool = ReadFileTool(root=tmp_path)
+    result = tool.call(path="m.py", symbol="run")
+    assert "2 symbols match" in result
+    assert "A.run" in result
+    assert "B.run" in result
+    # ambiguous => no body returned, just the candidate list.
+    assert "pass" not in result
+
+
+@_requires_code
+def test_read_file_symbol_not_found_note(tmp_path: Path) -> None:
+    (tmp_path / "m.py").write_text(_PY_MODULE)
+    tool = ReadFileTool(root=tmp_path)
+    result = tool.call(path="m.py", symbol="nonexistent")
+    assert "no symbol named 'nonexistent'" in result
+
+
+def test_read_file_symbol_with_offset_is_rejected(tmp_path: Path) -> None:
+    """Mutual exclusion: symbol + offset/limit is a usage error, not a
+    silent precedence. Needs no parser — the guard fires first."""
+    (tmp_path / "m.py").write_text(_PY_MODULE)
+    tool = ReadFileTool(root=tmp_path)
+    with pytest.raises(ValueError, match="cannot be combined with offset/limit"):
+        tool.call(path="m.py", symbol="top", offset=1)
+
+
+def test_read_file_symbol_unsupported_extension_degrades(tmp_path: Path) -> None:
+    """A symbol read of a file with no grammar degrades to a guidance
+    note (never raises) — and needs no [code] extra, since the
+    unsupported-extension check precedes the lazy tree-sitter import."""
+    (tmp_path / "notes.txt").write_text("just prose, no code\n")
+    tool = ReadFileTool(root=tmp_path)
+    result = tool.call(path="notes.txt", symbol="anything")
+    assert "symbol read unavailable" in result
+    assert "offset/limit" in result
+
+
 def test_read_file_slice_preserves_trailing_newlines(tmp_path: Path) -> None:
     """splitlines(keepends=True) keeps newlines so the slice round-
     trips faithfully — edit_file's old_string matching depends on
