@@ -466,6 +466,85 @@ def test_run_loop_no_summarize_flag_omits_hook(
     assert not summarizers
 
 
+def test_run_loop_inter_attempt_restore_fires_between_failed_attempts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-2qth: when an attempt fails but the retry budget is not
+    exhausted, the loop must restore the workspace to last-green before
+    starting the next attempt — so the next attempt doesn't inherit the
+    failing attempt's broken edits."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    issue_b = _issue("harness-b", title="B", status="open")
+    bd = _ScenarioBd(
+        # A closes turn 1 → last_green refreshed.
+        # B fails turn 2 → expected per-attempt restore.
+        # B closes turn 3.
+        ready_sequence=[[issue_a, issue_b], [issue_b], [issue_b], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-b": issue_b,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    _stub_run_tool_loop(
+        monkeypatch,
+        outcomes=["close harness-a", "open harness-b", "close harness-b"],
+        bd=bd,
+    )
+
+    restore_calls: list[tuple[Path, Path]] = []
+
+    def fake_restore(workspace: Path, snapshot: Path) -> tuple[int, list[str]]:
+        restore_calls.append((workspace, snapshot))
+        return 0, []
+
+    monkeypatch.setattr("harness.driver.loop.restore_workspace", fake_restore)
+    result = run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-a", "harness-b"]
+    # Exactly one inter-attempt restore: between B's attempt 1 (fail)
+    # and attempt 2 (close). A had no failed attempts.
+    assert len(restore_calls) == 1, (
+        f"expected 1 inter-attempt restore, got {len(restore_calls)}: {restore_calls}"
+    )
+
+
+def test_run_loop_inter_attempt_restore_skipped_when_regression_guard_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-2qth: when regression_guard=False, the per-attempt restore
+    never fires — same gate as the existing park-time rollback."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    issue_b = _issue("harness-b", title="B", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a, issue_b], [issue_b], [issue_b], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-b": issue_b,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    _stub_run_tool_loop(
+        monkeypatch,
+        outcomes=["close harness-a", "open harness-b", "close harness-b"],
+        bd=bd,
+    )
+
+    restore_calls: list[Any] = []
+
+    def fake_restore(workspace: Path, snapshot: Path) -> tuple[int, list[str]]:
+        restore_calls.append((workspace, snapshot))
+        return 0, []
+
+    monkeypatch.setattr("harness.driver.loop.restore_workspace", fake_restore)
+    run_loop(_FakeAdapter(), bd, _config(tmp_path, regression_guard=False))  # type: ignore[arg-type]
+
+    assert restore_calls == []
+
+
 def test_run_loop_wires_pre_close_verify_hook(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

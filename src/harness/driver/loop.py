@@ -738,6 +738,12 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                         workspace=config.workspace,
                         log=log,
                     )
+                # harness-2qth: between attempts, restore workspace to
+                # last-green so the next attempt starts from the clean
+                # baseline instead of inheriting this attempt's broken
+                # edits. See loop_run=3e295564 turns 16-19: attempts 2-5
+                # each compounded onto an already-broken file.
+                _inter_attempt_restore(config, state, last_green, issue_id=current.id, log=log)
                 continue
 
             log(f"turn {state.turns_used}: {current.id} attempt={attempt} FAIL ({reason})")
@@ -745,6 +751,9 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             if attempt < config.max_attempts_per_issue:
                 state.last_failure[current.id] = reason
                 _save_state(state, config.workspace)
+                # harness-2qth: same per-attempt rollback as the
+                # verify-fail branch above.
+                _inter_attempt_restore(config, state, last_green, issue_id=current.id, log=log)
                 continue
 
             # Final consecutive failure (harness-d8e3 + zcrd): park
@@ -1914,6 +1923,29 @@ def _post_close_housekeeping(
     if config.regression_guard:
         return _refresh_last_green(config, state, log)
     return last_green
+
+
+def _inter_attempt_restore(
+    config: LoopConfig,
+    state: LoopRunState,
+    last_green: Path | None,
+    *,
+    issue_id: str,
+    log: _LogWriter,
+) -> None:
+    """harness-2qth: between attempts on the same issue, roll the
+    workspace back to last-green so the next attempt starts clean
+    instead of compounding edits onto a broken baseline. Same gate as
+    `_post_park_housekeeping` (config.regression_guard + last_green is
+    a real snapshot) — the only difference is when we run it. No-op
+    when regression_guard is off or no green baseline exists yet."""
+    if not config.regression_guard or last_green is None or not last_green.is_file():
+        return
+    restored, removed = restore_workspace(config.workspace, last_green)
+    log(
+        f"loop_run={state.loop_run_id} RESTORED before retry of {issue_id}: "
+        f"last-green ({restored} files, removed {len(removed)} issue-added)"
+    )
 
 
 def _post_park_housekeeping(
