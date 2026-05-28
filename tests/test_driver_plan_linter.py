@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from harness.driver.plan_linter import (
     SUBSECTION_THRESHOLD,
     BeadComplexity,
@@ -91,3 +93,119 @@ def test_returns_beadcomplexity_shape() -> None:
     assert isinstance(c, BeadComplexity)
     assert c.bead_id == "harness-abc"
     assert c.title == "title"
+
+
+# ---- harness-yzg8: wrap-long-function heuristic ------------------------
+
+
+_BIG_JS_FUNCTION = "function {name}(now) {{\n" + ("    let x = 1;\n" * 120) + "}}\n"
+_SHORT_JS_FUNCTION = "function {name}(now) {{\n" + ("    let x = 1;\n" * 5) + "}}\n"
+
+
+def test_wrap_heuristic_flags_long_function_referenced_in_text(tmp_path: Path) -> None:
+    """harness-yzg8: when the bead text matches a wrap-pattern phrase
+    AND the referenced function is >=LONG_FUNCTION_THRESHOLD lines in
+    the workspace, surface a whole-file-rewrite hint."""
+    (tmp_path / "game.js").write_text(_BIG_JS_FUNCTION.format(name="gameLoop"))
+    c = score_bead(
+        "harness-yd3m",
+        "§15b Controls — pause toggle",
+        "let paused=false; Escape toggles paused. `gameLoop`: when paused, "
+        "SKIP the update step but still render + draw PAUSED overlay.",
+        workspace=tmp_path,
+    )
+    assert c.flagged is True
+    assert any("gameLoop" in r and "whole-file rewrite" in r for r in c.reasons)
+
+
+def test_wrap_heuristic_quiet_when_function_is_short(tmp_path: Path) -> None:
+    """Wrap-pattern wording on a short function is NOT flagged — the
+    pattern alone is too noisy; both signals required."""
+    (tmp_path / "game.js").write_text(_SHORT_JS_FUNCTION.format(name="gameLoop"))
+    c = score_bead(
+        "harness-x",
+        "trivial wrap",
+        "Wrap `gameLoop` to skip the update step when paused.",
+        workspace=tmp_path,
+    )
+    assert not any("whole-file rewrite" in r for r in c.reasons)
+
+
+def test_wrap_heuristic_quiet_without_wrap_pattern(tmp_path: Path) -> None:
+    """A long function alone (no wrap-pattern wording) is fine — beads
+    that ADD a new function or REPLACE one don't need the warning."""
+    (tmp_path / "game.js").write_text(_BIG_JS_FUNCTION.format(name="gameLoop"))
+    c = score_bead(
+        "harness-x",
+        "add render call",
+        "Call `gameLoop` after init() in main.",
+        workspace=tmp_path,
+    )
+    assert not any("whole-file rewrite" in r for r in c.reasons)
+
+
+def test_wrap_heuristic_quiet_when_function_absent(tmp_path: Path) -> None:
+    """Wrap-pattern wording but no matching function in the workspace —
+    silent; the lint is about coding strategy, not bead-text quality."""
+    (tmp_path / "game.js").write_text(_SHORT_JS_FUNCTION.format(name="otherThing"))
+    c = score_bead(
+        "harness-x",
+        "wrap mystery",
+        "Wrap `gameLoop` to skip the update step.",
+        workspace=tmp_path,
+    )
+    assert not any("whole-file rewrite" in r for r in c.reasons)
+
+
+def test_wrap_heuristic_disabled_via_flag(tmp_path: Path) -> None:
+    """`check_long_functions=False` skips the workspace scan entirely
+    (opt-out per bead acceptance)."""
+    (tmp_path / "game.js").write_text(_BIG_JS_FUNCTION.format(name="gameLoop"))
+    c = score_bead(
+        "harness-x",
+        "pause toggle",
+        "Wrap `gameLoop` to skip the update step when paused.",
+        workspace=tmp_path,
+        check_long_functions=False,
+    )
+    assert not any("whole-file rewrite" in r for r in c.reasons)
+
+
+def test_wrap_heuristic_handles_python_def(tmp_path: Path) -> None:
+    """Python def is measured by indent-drop, not braces."""
+    body = "def process(data):\n" + ("    x = 1\n" * 120)
+    (tmp_path / "thing.py").write_text(body)
+    c = score_bead(
+        "harness-x",
+        "freeze processing",
+        "Wrap `process` to freeze the update step on pause.",
+        workspace=tmp_path,
+    )
+    assert any("process" in r and "whole-file rewrite" in r for r in c.reasons)
+
+
+def test_wrap_heuristic_skips_excluded_dirs(tmp_path: Path) -> None:
+    """node_modules / .git / .harness etc. are skipped so vendored
+    code never triggers the warning."""
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "vendor.js").write_text(_BIG_JS_FUNCTION.format(name="gameLoop"))
+    c = score_bead(
+        "harness-x",
+        "pause toggle",
+        "Wrap `gameLoop` to skip the update step.",
+        workspace=tmp_path,
+    )
+    assert not any("whole-file rewrite" in r for r in c.reasons)
+
+
+def test_wrap_heuristic_workspace_none_is_noop(tmp_path: Path) -> None:
+    """Callers that don't want filesystem access pass workspace=None
+    (the legacy text-only signature). All existing tests use this
+    shape — must stay a pure-text behavior."""
+    c = score_bead(
+        "harness-x",
+        "pause toggle",
+        "Wrap `gameLoop` to skip the update step.",
+        workspace=None,
+    )
+    assert not any("whole-file rewrite" in r for r in c.reasons)

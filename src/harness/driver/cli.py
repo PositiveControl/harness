@@ -227,6 +227,7 @@ def lint_epic_command(
                 child.title,
                 str(child.raw.get("description", "")),
                 str(child.raw.get("acceptance_criteria", "") or ""),
+                workspace=workspace,
             )
         )
 
