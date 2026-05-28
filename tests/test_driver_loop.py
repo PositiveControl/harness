@@ -12,6 +12,7 @@ short-circuits, resume rehydrates state, exhaustion fires on max_turns.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -543,6 +544,76 @@ def test_run_loop_inter_attempt_restore_skipped_when_regression_guard_off(
     run_loop(_FakeAdapter(), bd, _config(tmp_path, regression_guard=False))  # type: ignore[arg-type]
 
     assert restore_calls == []
+
+
+def test_run_loop_sets_default_vllm_trace_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-xxdr: when HARNESS_VLLM_TRACE is unset, the loop should
+    set it to <workspace>/.harness/loop_runs/<run_id>.vllm_trace.jsonl
+    for the duration of the run."""
+    monkeypatch.delenv("HARNESS_VLLM_TRACE", raising=False)
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    captured_env: list[str | None] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        captured_env.append(os.environ.get("HARNESS_VLLM_TRACE"))
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+
+    assert captured_env, "run_tool_loop was never invoked"
+    trace_env = captured_env[0]
+    assert trace_env is not None
+    assert ".harness/loop_runs/" in trace_env
+    assert trace_env.endswith(".vllm_trace.jsonl")
+    # Restored on exit so chat / non-loop callers aren't surprised.
+    assert os.environ.get("HARNESS_VLLM_TRACE") is None
+
+
+def test_run_loop_preserves_user_set_vllm_trace_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """User-supplied HARNESS_VLLM_TRACE wins: the loop must NOT
+    overwrite it, and the original value must survive the run."""
+    monkeypatch.setenv("HARNESS_VLLM_TRACE", "/var/folders/test/user-set.jsonl")
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    captured_env: list[str | None] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        captured_env.append(os.environ.get("HARNESS_VLLM_TRACE"))
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(content="done.", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+
+    assert captured_env[0] == "/var/folders/test/user-set.jsonl"
+    assert os.environ.get("HARNESS_VLLM_TRACE") == "/var/folders/test/user-set.jsonl"
 
 
 def test_run_loop_wires_parse_gate_escalation_pair(

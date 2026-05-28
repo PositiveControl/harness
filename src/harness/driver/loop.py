@@ -435,7 +435,20 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             )
     issue_start_files: dict[str, set[str]] = {}
 
-    with _sigint_guard() as interrupted:
+    # harness-xxdr: ambient HARNESS_VLLM_TRACE default. If unset, point
+    # at .harness/loop_runs/<run_id>.vllm_trace.jsonl so the trace
+    # colocates with run state and gets cleaned by the same lifecycle.
+    # User-set value wins; restored on exit so chat / non-loop callers
+    # in the same process aren't surprised by tracing. ExitStack so the
+    # rest of the function keeps its indentation level — the env-var
+    # manager is a sibling concern to the sigint guard, not nested.
+    with contextlib.ExitStack() as stack:
+        ambient_trace = stack.enter_context(
+            _ambient_vllm_trace(config.workspace, state.loop_run_id)
+        )
+        if ambient_trace is not None:
+            log(f"vllm trace: {ambient_trace}")
+        interrupted = stack.enter_context(_sigint_guard())
         while True:
             if interrupted.is_set():
                 return _exit_interrupted(bd, state, config.workspace, log)
@@ -947,6 +960,38 @@ def _run_fsm_turn_via_driver(
         state.last_test_cmd[issue_id] = result.last_test_cmd
 
     return result.succeeded, result.reason, result.reply, result.last_shell_cmd
+
+
+# harness-xxdr: name + default-path resolution for the vLLM trace.
+# The adapter (`harness.model.vllm._vllm_trace`) reads this env var;
+# the driver SETS it (when unset) to colocate traces alongside the
+# .json/.log/.tar.gz loop-run artifacts. User-supplied values win.
+_VLLM_TRACE_ENV = "HARNESS_VLLM_TRACE"
+
+
+def _default_vllm_trace_path(workspace: Path, loop_run_id: str) -> Path:
+    """`.harness/loop_runs/<id>.vllm_trace.jsonl` — sibling of the
+    run state .json / .log / .tar.gz so a cleanup pass on the
+    loop_runs directory sweeps the trace too."""
+    return workspace / ".harness" / "loop_runs" / f"{loop_run_id}.vllm_trace.jsonl"
+
+
+@contextlib.contextmanager
+def _ambient_vllm_trace(workspace: Path, loop_run_id: str) -> Iterator[Path | None]:
+    """If HARNESS_VLLM_TRACE is unset, install a default path scoped to
+    this run for the duration of the context. Restore the original
+    environment on exit so chat / non-loop callers running in the same
+    process aren't surprised by tracing they didn't ask for."""
+    prior = os.environ.get(_VLLM_TRACE_ENV)
+    if prior is not None:
+        yield None
+        return
+    path = _default_vllm_trace_path(workspace, loop_run_id)
+    os.environ[_VLLM_TRACE_ENV] = str(path)
+    try:
+        yield path
+    finally:
+        os.environ.pop(_VLLM_TRACE_ENV, None)
 
 
 def _build_driver_hook_pipeline(
