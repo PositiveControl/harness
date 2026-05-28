@@ -43,6 +43,7 @@ from harness.model.adapter import ChatMessage, ModelAdapter
 from harness.model.ollama import OllamaAdapter
 from harness.orchestrator import run_tool_loop
 from harness.tools import (
+    OutlineTool,
     ReadFileTool,
     SearchFactsTool,
     SearchMemoryTool,
@@ -252,6 +253,7 @@ def _build_all_tools() -> list[Any]:
     semantic = SemanticStore(settings.db_path, embedder=embedder)
     return [
         ReadFileTool(root=settings.root),
+        OutlineTool(root=settings.root),
         EditFileTool(root=settings.root),
         WriteFileTool(root=settings.root),
         ShellTool(cwd=settings.root),

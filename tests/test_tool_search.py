@@ -665,3 +665,26 @@ def test_phase_3a_fallback_note_carries_verification_hint() -> None:
     assert "VERIFY" in out
     assert "search" in out
     assert "lookup" in out
+
+
+def test_builtin_catalog_surfaces_outline_and_symbol_read() -> None:
+    """harness-roia: outline + read_file's symbol mode must be
+    discoverable via tool_search so the model finds them when it wants to
+    navigate or read a whole function, rather than over-reading a file."""
+    from harness.tools.catalog import seed_builtins_into
+
+    cat = ToolCatalog()
+    seed_builtins_into(cat, now_iso="2026-01-01T00:00:00Z")
+    tool = ToolSearchTool(catalog=cat)
+
+    # Distinctive capability terms — "skeleton"/"outline" and "symbol"/
+    # "whole-function" are near-unique to these tools, so they rank into
+    # the displayed window. (A flooding query like "read a function" OR-
+    # matches every read-tier tool and the alphabetical display cap buries
+    # the precise match — a known tool_search ranking limitation tracked
+    # separately, not a wiring gap.)
+    nav = tool.call(query="skeleton outline of a source file")
+    assert "outline" in nav
+
+    whole = tool.call(query="symbol whole-function span")
+    assert "read_file" in whole

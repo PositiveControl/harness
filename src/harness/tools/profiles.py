@@ -102,8 +102,19 @@ TOOL_PROFILES: dict[str, tuple[str, ...]] = {
     # (harness-s8sw). Coding's pre-existing schema was already large;
     # python_eval / tz_convert / stats / sun stay off-by-default and
     # available via --tools-add reckon.
+    #
+    # `outline` (harness-roia) ships default-on here: outline-and-expand
+    # only pays off if the small model reaches for it unprompted, which
+    # --tools-add can't deliver. Measured cost (Qwen 2.5 tokenizer): the
+    # outline spec is ~270 tokens standalone, ~191 marginal in coding's
+    # combined context. Note coding already sat at ~4,974 tokens — well
+    # past the ~3,500 soft target — BEFORE outline; the +191 is marginal,
+    # not the cause. The pre-existing overage is tracked separately
+    # (follow-up bead) and is the real lever if this profile needs to
+    # slim down (trim git_diff/git_log/fetch_url, not outline).
     "coding": (
         "read_file",
+        "outline",
         "list_dir",
         "grep",
         "glob",

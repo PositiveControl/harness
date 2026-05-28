@@ -305,8 +305,17 @@ BUILTIN_TOOL_METADATA: dict[str, tuple[str, tuple[str, ...], str, str]] = {
     # filesystem read
     "read_file": (
         "filesystem",
-        ("read", "file", "open"),
-        "Read a file from the workspace.",
+        ("read", "file", "open", "symbol", "function", "class", "whole-function"),
+        "Read a file from the workspace — a line range, or a whole "
+        "function/class/method by symbol name.",
+        "read",
+    ),
+    "outline": (
+        "filesystem",
+        ("read", "outline", "skeleton", "symbols", "signatures", "navigate", "code-map"),
+        "Show a signatures-only skeleton of a source file "
+        "(functions/classes/methods + line ranges, bodies elided) to "
+        "navigate it cheaply before reading a symbol in full.",
         "read",
     ),
     "list_dir": (
