@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from collections.abc import Iterable
 
@@ -19,6 +20,9 @@ from harness.driver.critic import (
     _numbered_cost,
     _parse_findings,
     _parse_verdict,
+    _Slice,
+    _slice_file,
+    _slice_snapshot,
     _title_matches_any,
     _validate_finding,
     budget_snapshot,
@@ -318,6 +322,77 @@ def test_budget_snapshot_drops_later_files_when_budget_spent() -> None:
     assert "a.js" in kept
     assert "b.js" not in kept
     assert any(n.startswith("b.js") and "dropped" in n for n in notes)
+
+
+# ---- symbol-aligned slicer (harness-a0yj) ------------------------------
+
+_PY_SRC = (
+    "import os\n"  # 1
+    "\n"  # 2
+    "def alpha():\n"  # 3
+    "    return 1\n"  # 4
+    "\n"  # 5
+    "def beta():\n"  # 6
+    "    return 2\n"  # 7
+    "\n"  # 8
+    "def gamma():\n"  # 9
+    "    return 3\n"  # 10
+)
+
+
+def _covers_all_lines(slices: list[_Slice], n: int) -> bool:
+    """Slices tile lines 1..n contiguously with no gaps or overlaps."""
+    spans = sorted((s.start_line, s.end_line) for s in slices)
+    if not spans:
+        return n == 0
+    if spans[0][0] != 1 or spans[-1][1] != n:
+        return False
+    return all(nxt[0] == cur[1] + 1 for cur, nxt in itertools.pairwise(spans))
+
+
+def test_slice_file_covers_all_lines_no_gaps() -> None:
+    slices = _slice_file("g.py", _PY_SRC, target_chars=10_000)
+    assert _covers_all_lines(slices, len(_PY_SRC.splitlines()))
+
+
+def test_slice_file_true_line_numbers() -> None:
+    slices = _slice_file("g.py", _PY_SRC, target_chars=10_000)
+    assert slices[0].start_line == 1
+    assert "    1 | import os" in slices[0].numbered_text
+    last_line = len(_PY_SRC.splitlines())
+    assert f"{last_line:>5} | " in slices[-1].numbered_text  # true last line number
+
+
+def test_slice_file_splits_on_symbol_boundaries_under_small_target() -> None:
+    from harness.tools._symbols import SymbolsUnavailableError, outline
+
+    try:
+        tops = [s for s in outline(_PY_SRC, filename="g.py") if s.depth == 0]
+    except SymbolsUnavailableError:
+        pytest.skip("tree-sitter [code] extra not installed")
+    slices = _slice_file("g.py", _PY_SRC, target_chars=1)  # never merge spans
+    assert _covers_all_lines(slices, len(_PY_SRC.splitlines()))
+    starts = {s.start_line for s in slices}
+    # No definition is split: every top-level symbol begins a slice.
+    assert all(t.start_line in starts for t in tops)
+
+
+def test_slice_file_unknown_extension_degrades_to_single_slice() -> None:
+    slices = _slice_file("notes.txt", "a\nb\nc\n", target_chars=1)
+    assert len(slices) == 1
+    assert (slices[0].start_line, slices[0].end_line) == (1, 3)
+
+
+def test_slice_file_empty_file() -> None:
+    assert _slice_file("g.py", "", target_chars=10) == []
+
+
+def test_slice_snapshot_flattens_path_ordered() -> None:
+    snap = {"b.py": _PY_SRC, "a.py": "def z():\n    return 0\n"}
+    slices = _slice_snapshot(snap, target_chars=10_000)
+    paths = [s.path for s in slices]
+    assert paths == sorted(paths)
+    assert {"a.py", "b.py"} <= set(paths)
 
 
 # ---- run_critic --------------------------------------------------------
@@ -695,3 +770,99 @@ def _validate_finding_ok(**overrides: object) -> CriticFinding:
     )
     assert finding is not None
     return finding
+
+
+# ---- run_critic slice mode (harness-a0yj) ------------------------------
+
+
+def test_run_critic_slice_mode_aggregates_across_slices() -> None:
+    """_SNAP has 2 files (no extractable symbols -> one whole-file slice
+    each) = 2 generation calls. Distinct findings from each slice are
+    aggregated."""
+    f_game = json.dumps(
+        [
+            _finding_dict(
+                title="bug in game",
+                description="see game.js:42",
+                evidence_path="game.js:42",
+                code_quote="line 42",
+            )
+        ]
+    )
+    f_smoke = json.dumps(
+        [
+            _finding_dict(
+                title="bug in smoke",
+                description="see smoke.js:1",
+                evidence_path="smoke.js:1",
+                code_quote="console.log('ok');",
+            )
+        ]
+    )
+    adapter = _SeqAdapter([f_game, f_smoke])  # path order: game.js, smoke.js
+    findings = run_critic(
+        adapter=adapter,
+        spec_text=_SPEC,
+        workspace_snapshot=_SNAP,
+        closed_this_run=(),
+        open_under_epic=(),
+        slice_mode=True,
+        verify_grounding=False,
+    )
+    assert {f.title for f in findings} == {"bug in game", "bug in smoke"}
+    assert len(adapter.calls) == 2  # one generation call per slice
+
+
+def test_run_critic_slice_mode_raises_on_adapter_error() -> None:
+    """A slice generation failure propagates (an outage is not 'no bugs')."""
+    adapter = _SeqAdapter([RuntimeError("slice gen down")])
+    with pytest.raises(CriticAdapterError):
+        run_critic(
+            adapter=adapter,
+            spec_text=_SPEC,
+            workspace_snapshot=_SNAP,
+            closed_this_run=(),
+            open_under_epic=(),
+            slice_mode=True,
+        )
+
+
+def test_run_critic_slice_mode_dedups_same_finding_across_slices() -> None:
+    """Two slices surfacing the identical finding file it once."""
+    same = json.dumps(
+        [
+            _finding_dict(
+                title="same bug",
+                description="see game.js:42",
+                evidence_path="game.js:42",
+                code_quote="line 42",
+            )
+        ]
+    )
+    adapter = _SeqAdapter([same, same])
+    findings = run_critic(
+        adapter=adapter,
+        spec_text=_SPEC,
+        workspace_snapshot=_SNAP,
+        closed_this_run=(),
+        open_under_epic=(),
+        slice_mode=True,
+        verify_grounding=False,
+    )
+    assert len(findings) == 1
+
+
+def test_run_critic_slice_mode_verify_gate_still_fires() -> None:
+    """Gates run against the full snapshot regardless of mode: a slice
+    finding that reaches verify and is REFUTED is dropped."""
+    adapter = _SeqAdapter([json.dumps([_finding_dict()]), "[]", "REFUTED: nope"])
+    findings = run_critic(
+        adapter=adapter,
+        spec_text=_SPEC,
+        workspace_snapshot=_SNAP,
+        closed_this_run=(),
+        open_under_epic=(),
+        slice_mode=True,
+    )
+    assert findings == []
+    assert len(adapter.calls) == 3  # 2 slice gen calls + 1 verify

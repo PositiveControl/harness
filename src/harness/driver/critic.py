@@ -90,6 +90,15 @@ _CHARS_PER_TOKEN = 2.6
 _LINE_NUMBER_OVERHEAD = 8
 # Fixed token reserve for the system prompt + closed/open lists + framing.
 _PROMPT_OVERHEAD_TOKENS = 900
+# Slice-scoped critique (harness-a0yj). Default critic mode: partition each
+# file into symbol-aligned slices and critique one at a time, so the model
+# reasons about a bounded span of REAL code instead of generating plausible
+# bugs against a whole-file dump. _SLICE_TARGET_CHARS is the soft size of a
+# slice's numbered text (a single symbol bigger than this still rides whole
+# — we never split a definition). _SLICE_MAX_FINDINGS caps findings per
+# slice so one slice can't monopolize the budget.
+_SLICE_TARGET_CHARS = 12_000
+_SLICE_MAX_FINDINGS = 3
 
 
 class CriticAdapterError(RuntimeError):
@@ -209,6 +218,129 @@ def budget_snapshot(
         else:
             notes.append(f"{path}: dropped ({total_lines} lines, no room)")
     return kept, notes
+
+
+@dataclass(frozen=True)
+class _Slice:
+    """One symbol-aligned slice of a file fed to the critic (harness-a0yj).
+    `numbered_text` carries TRUE file line numbers so the grounding gates
+    (citation/code_quote/verify) keep validating against the real file."""
+
+    path: str
+    start_line: int  # 1-based, inclusive
+    end_line: int  # 1-based, inclusive
+    numbered_text: str
+
+
+def _make_slice(path: str, lines: list[str], start: int, end: int) -> _Slice:
+    numbered = "\n".join(f"{n:>5} | {lines[n - 1]}" for n in range(start, end + 1))
+    return _Slice(path=path, start_line=start, end_line=end, numbered_text=numbered)
+
+
+def _top_level_cut_lines(path: str, text: str, n_lines: int) -> list[int]:
+    """1-based line numbers where a top-level definition starts — the cut
+    points the slicer partitions on. Falls back to ``[1]`` (whole file is
+    one span) when the language has no grammar or symbols can't be
+    extracted, so an unsupported file degrades to a single slice."""
+    try:
+        from harness.tools._symbols import SymbolsUnavailableError, language_for, outline
+
+        if language_for(path) is None:
+            return [1]
+        try:
+            syms = outline(text, filename=path)
+        except SymbolsUnavailableError:
+            return [1]
+    except Exception:
+        # Symbol layer is best-effort; any failure degrades to a single slice.
+        return [1]
+    tops = sorted({s.start_line for s in syms if s.depth == 0 and 1 <= s.start_line <= n_lines})
+    return sorted({1, *tops})
+
+
+def _slice_file(path: str, text: str, *, target_chars: int) -> list[_Slice]:
+    """Partition one file into symbol-aligned slices, each ~target_chars of
+    numbered text. Spans between consecutive top-level definitions are
+    merged greedily up to the target; a single span larger than the target
+    is kept whole (never split a definition). Degrades to one whole-file
+    slice when symbols are unavailable."""
+    lines = text.splitlines()
+    n = len(lines)
+    if n == 0:
+        return []
+    cuts = _top_level_cut_lines(path, text, n)
+    spans: list[tuple[int, int]] = []
+    for i, start in enumerate(cuts):
+        end = (cuts[i + 1] - 1) if i + 1 < len(cuts) else n
+        if end >= start:
+            spans.append((start, end))
+
+    slices: list[_Slice] = []
+    cur_start: int | None = None
+    cur_end = 0
+    cur_chars = 0
+    for start, end in spans:
+        span_chars = sum(len(lines[i]) + 1 + _LINE_NUMBER_OVERHEAD for i in range(start - 1, end))
+        if cur_start is None:
+            cur_start, cur_end, cur_chars = start, end, span_chars
+        elif cur_chars + span_chars <= target_chars:
+            cur_end, cur_chars = end, cur_chars + span_chars
+        else:
+            slices.append(_make_slice(path, lines, cur_start, cur_end))
+            cur_start, cur_end, cur_chars = start, end, span_chars
+    if cur_start is not None:
+        slices.append(_make_slice(path, lines, cur_start, cur_end))
+    return slices
+
+
+def _slice_snapshot(
+    workspace_snapshot: Mapping[str, str], *, target_chars: int = _SLICE_TARGET_CHARS
+) -> list[_Slice]:
+    """Flatten the whole snapshot into symbol-aligned slices, path-ordered."""
+    out: list[_Slice] = []
+    for path in sorted(workspace_snapshot):
+        out.extend(_slice_file(path, workspace_snapshot[path], target_chars=target_chars))
+    return out
+
+
+def _context_tail(
+    closed_this_run: Sequence[str], open_under_epic: Sequence[str], max_findings: int
+) -> list[str]:
+    """The shared [CLOSED THIS RUN] / [ALREADY OPEN] / footer blocks used by
+    both the whole-file and per-slice critic prompts."""
+    parts = ["[CLOSED THIS RUN]"]
+    parts.extend(f"- {t}" for t in closed_this_run) if closed_this_run else parts.append("- (none)")
+    parts.append("[ALREADY OPEN UNDER EPIC]")
+    parts.extend(f"- {t}" for t in open_under_epic) if open_under_epic else parts.append("- (none)")
+    parts.append(
+        f"Return at most {max_findings} findings as a JSON array. "
+        f"Prioritize the bugs most likely to break gameplay."
+    )
+    return parts
+
+
+def _slice_user_prompt(
+    *,
+    spec_text: str | None,
+    slice_: _Slice,
+    closed_this_run: Sequence[str],
+    open_under_epic: Sequence[str],
+    max_findings: int,
+) -> str:
+    """Critic user prompt scoped to a single slice. The WORKSPACE section
+    is just this slice's numbered span (true line numbers), so the model
+    reasons about bounded real code instead of a whole-file dump."""
+    spec_block = "[SPEC]\n" + (
+        spec_text.strip() if spec_text else "(no spec supplied — leave spec_quote empty)"
+    )
+    header = f"=== {slice_.path} (lines {slice_.start_line}-{slice_.end_line}) ==="
+    parts: list[str] = [
+        spec_block,
+        "[WORKSPACE]",
+        f"{header}\n{slice_.numbered_text}",
+    ]
+    parts.extend(_context_tail(closed_this_run, open_under_epic, max_findings))
+    return "\n\n".join(parts)
 
 
 def _user_prompt(
@@ -527,6 +659,45 @@ def _finding_is_grounded(
     return _parse_verdict(raw)
 
 
+def _gather_sliced_candidates(
+    adapter: ModelAdapter,
+    *,
+    spec_text: str | None,
+    workspace_snapshot: Mapping[str, str],
+    closed_this_run: Sequence[str],
+    open_under_epic: Sequence[str],
+    slice_target_chars: int,
+    max_tokens: int,
+    temperature: float,
+) -> list[dict[str, Any]]:
+    """Slice-scoped generation (harness-a0yj): one critic call per
+    symbol-aligned slice, candidates concatenated. An adapter failure on
+    ANY slice propagates as CriticAdapterError (an outage is not 'no bugs'
+    — harness-fote). Returns raw candidate dicts for the shared validate/
+    verify pipeline; all gates still run against the FULL snapshot."""
+    candidates: list[dict[str, Any]] = []
+    for sl in _slice_snapshot(workspace_snapshot, target_chars=slice_target_chars):
+        messages = [
+            ChatMessage(role="system", content=_system_prompt()),
+            ChatMessage(
+                role="user",
+                content=_slice_user_prompt(
+                    spec_text=spec_text,
+                    slice_=sl,
+                    closed_this_run=closed_this_run,
+                    open_under_epic=open_under_epic,
+                    max_findings=_SLICE_MAX_FINDINGS,
+                ),
+            ),
+        ]
+        try:
+            raw = adapter.complete(messages, max_tokens=max_tokens, temperature=temperature)
+        except Exception as exc:  # transport/model failure — propagate, don't fake "no bugs".
+            raise CriticAdapterError("critic generation call failed (slice)") from exc
+        candidates.extend(_parse_findings(raw))
+    return candidates
+
+
 def run_critic(
     *,
     adapter: ModelAdapter,
@@ -540,6 +711,8 @@ def run_critic(
     verify_grounding: bool = True,
     verify_max_tokens: int = 256,
     verify_temperature: float = 0.0,
+    slice_mode: bool = False,
+    slice_target_chars: int = _SLICE_TARGET_CHARS,
 ) -> list[CriticFinding]:
     """Call the adapter with a CRITIC prompt, parse its output, and
     return the subset of findings that pass `_validate_finding` and the
@@ -562,43 +735,79 @@ def run_critic(
     the cheap deterministic gates is then checked against the actual
     code at its citation via `_finding_is_grounded` — one extra adapter
     call per surviving finding, default-reject. Set False to skip the
-    gate (e.g. in unit tests that only exercise parsing/validation)."""
-    messages = [
-        ChatMessage(role="system", content=_system_prompt()),
-        ChatMessage(
-            role="user",
-            content=_user_prompt(
-                spec_text=spec_text,
-                workspace_snapshot=workspace_snapshot,
-                closed_this_run=closed_this_run,
-                open_under_epic=open_under_epic,
-                max_findings=max_findings,
+    gate (e.g. in unit tests that only exercise parsing/validation).
+
+    When `slice_mode` is True (harness-a0yj), generation is symbol-scoped:
+    one critic call per symbol-aligned slice rather than a single
+    whole-file dump, so the model reasons about bounded REAL code and
+    fabricates less. The shared validate→verify pipeline (and all its
+    gates) runs against the FULL snapshot regardless of mode. The
+    parameter defaults False — the low-level primitive keeps the simple
+    single-call path — and the orchestration layer sets policy:
+    `AutoIterateConfig.critic_slice_mode` defaults True, so real
+    `harness drive auto-iterate` runs slice by default
+    (`--no-critic-slice` opts out)."""
+    if slice_mode:
+        candidates = _gather_sliced_candidates(
+            adapter,
+            spec_text=spec_text,
+            workspace_snapshot=workspace_snapshot,
+            closed_this_run=closed_this_run,
+            open_under_epic=open_under_epic,
+            slice_target_chars=slice_target_chars,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        input_cap = len(candidates)
+    else:
+        messages = [
+            ChatMessage(role="system", content=_system_prompt()),
+            ChatMessage(
+                role="user",
+                content=_user_prompt(
+                    spec_text=spec_text,
+                    workspace_snapshot=workspace_snapshot,
+                    closed_this_run=closed_this_run,
+                    open_under_epic=open_under_epic,
+                    max_findings=max_findings,
+                ),
             ),
-        ),
-    ]
-    try:
-        raw = adapter.complete(messages, max_tokens=max_tokens, temperature=temperature)
-    except Exception as exc:  # transport/model failure — propagate, don't fake "no bugs".
-        raise CriticAdapterError("critic generation call failed") from exc
-    candidates = _parse_findings(raw)
+        ]
+        try:
+            raw = adapter.complete(messages, max_tokens=max_tokens, temperature=temperature)
+        except Exception as exc:  # transport/model failure — propagate, don't fake "no bugs".
+            raise CriticAdapterError("critic generation call failed") from exc
+        candidates = _parse_findings(raw)
+        input_cap = max_findings * 2  # cap input before the validator
+
     out: list[CriticFinding] = []
-    for c in candidates[: max_findings * 2]:  # cap input before the validator
+    accepted_norm_titles: set[str] = set()
+    for c in candidates[:input_cap]:
         finding = _validate_finding(
             c,
             spec_text=spec_text,
             workspace_snapshot=workspace_snapshot,
             open_titles=open_under_epic,
         )
-        if finding is not None:
-            if verify_grounding and not _finding_is_grounded(
-                adapter,
-                finding,
-                workspace_snapshot,
-                max_tokens=verify_max_tokens,
-                temperature=verify_temperature,
-            ):
-                continue
-            out.append(finding)
+        if finding is None:
+            continue
+        # Within-batch dedup: slices (or a sloppy single response) can
+        # surface the SAME finding twice. Use EXACT normalized-title match
+        # here (not the fuzzy cross-bead matcher) so genuinely distinct
+        # findings that merely share a prefix aren't collapsed.
+        norm = _normalize_title(finding.title)
+        if norm in accepted_norm_titles:
+            continue
+        if verify_grounding and not _finding_is_grounded(
+            adapter,
+            finding,
+            workspace_snapshot,
+            max_tokens=verify_max_tokens,
+            temperature=verify_temperature,
+        ):
+            continue
+        out.append(finding)
+        accepted_norm_titles.add(norm)
         if len(out) >= max_findings:
             break
     return out

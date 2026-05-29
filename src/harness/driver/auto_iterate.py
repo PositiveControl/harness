@@ -111,6 +111,12 @@ class AutoIterateConfig:
     # code at its citation before it is filed. Disable only to reproduce
     # the pre-hdwp behavior for attribution/measurement.
     critic_verify_grounding: bool = True
+    # Slice-scoped critique (harness-a0yj). On by default: critique one
+    # symbol-aligned slice at a time so the model is anchored to bounded
+    # real code. When on, the whole-file context budget (harness-zk3c) is
+    # skipped — slicing bounds each call, and the gates still validate
+    # against the full snapshot. Set False for the legacy whole-file path.
+    critic_slice_mode: bool = True
 
 
 @dataclass
@@ -347,18 +353,21 @@ def run_auto_iterate(
         # change the spec. Workspace snapshot IS recomputed per pass
         # (the drive just wrote to it).
         snapshot = _snapshot_source_files(config.loop_config.workspace)
-        # Budget the snapshot against the model context window so a large
-        # workspace (or one bloated by line numbering) doesn't overflow and
-        # fail the whole pass (harness-zk3c). Trims are surfaced — never
-        # silent — so the operator knows the critic didn't see everything.
-        char_budget = critic_char_budget(
-            context_window=adapter.context_window,
-            max_tokens=config.critic_max_tokens,
-            spec_text=spec_text,
-        )
-        snapshot, trim_notes = budget_snapshot(snapshot, char_budget=char_budget)
-        for note in trim_notes:
-            print(f"critic: context budget — {note}", file=sys.stderr)
+        # In slice mode (harness-a0yj) each critic call sees one bounded
+        # slice, so the whole-file context budget would only shrink what the
+        # gates validate against — skip it. In whole-file mode, budget the
+        # snapshot against the model context window so a large workspace
+        # doesn't overflow and fail the pass (harness-zk3c). Trims are
+        # surfaced — never silent.
+        if not config.critic_slice_mode:
+            char_budget = critic_char_budget(
+                context_window=adapter.context_window,
+                max_tokens=config.critic_max_tokens,
+                spec_text=spec_text,
+            )
+            snapshot, trim_notes = budget_snapshot(snapshot, char_budget=char_budget)
+            for note in trim_notes:
+                print(f"critic: context budget — {note}", file=sys.stderr)
         dedup_titles = _dedup_titles_under_epic(bd, epic_id)
         try:
             # harness-5t0a: wrap the critic in the same ambient trace as the
@@ -378,6 +387,7 @@ def run_auto_iterate(
                     max_tokens=config.critic_max_tokens,
                     temperature=config.critic_temperature,
                     verify_grounding=config.critic_verify_grounding,
+                    slice_mode=config.critic_slice_mode,
                 )
         except CriticAdapterError:
             # The model was never reached this pass. Surface it — do NOT

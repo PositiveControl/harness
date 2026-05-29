@@ -588,6 +588,13 @@ def auto_iterate_command(
         "--critic-max-findings",
         help="Cap on beads filed per critic pass.",
     ),
+    critic_slice: bool = typer.Option(
+        True,
+        "--critic-slice/--no-critic-slice",
+        help="Symbol-scoped critique: critique one symbol-aligned slice at a time "
+        "(anchors the model to real code, harness-a0yj). --no-critic-slice uses the "
+        "legacy whole-file prompt with a context budget (harness-zk3c).",
+    ),
     # Forwarded `drive loop` options (same names + semantics).
     max_turns: int = typer.Option(20, "--max-turns"),
     workspace: Path = typer.Option(
@@ -675,6 +682,7 @@ def auto_iterate_command(
         max_passes=max_passes,
         convergence_streak=convergence_streak,
         critic_max_findings=critic_max_findings,
+        critic_slice_mode=critic_slice,
     )
     result: AutoIterateResult = run_auto_iterate(adapter, bd, config)
     _print_auto_iterate_result(result)
