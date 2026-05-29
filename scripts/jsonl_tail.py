@@ -74,7 +74,11 @@ def _summary(rec: dict[str, Any]) -> str:
         if fr := rec.get("finish_reason"):
             bits.append(f"[{fr}]")
         req = rec.get("request") or {}
-        bits.append(f"{len(req.get('messages') or [])}msg/{len(req.get('tools') or [])}tool")
+        bits.append(
+            f"{len(req.get('messages') or [])}msg"
+            f"/{len(calls)}call"
+            f"/{len(req.get('tools') or [])}avail"
+        )
         return "  ".join(bits)
     if mode == "complete":
         resp = rec.get("response") or {}
