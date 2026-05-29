@@ -11,7 +11,7 @@ import pytest
 
 from harness.driver.auto_iterate import (
     AutoIterateConfig,
-    _open_titles_under_epic,
+    _dedup_titles_under_epic,
     _resolve_spec,
     _snapshot_source_files,
     run_auto_iterate,
@@ -275,10 +275,12 @@ def test_resolve_spec_walks_workspace_parents_for_label(tmp_path: Path) -> None:
     assert _resolve_spec(cfg, bd) == "parent-relative content"  # type: ignore[arg-type]
 
 
-# ---- _open_titles_under_epic ------------------------------------------
+# ---- _dedup_titles_under_epic -----------------------------------------
 
 
-def test_open_titles_returns_open_children(tmp_path: Path) -> None:
+def test_dedup_titles_returns_open_and_closed_children(tmp_path: Path) -> None:
+    """Dedup must see closed children too (harness-hdwp) — otherwise the
+    critic refiles a bug that was already filed/fixed on a prior pass."""
     bd = _FakeBd(
         issues={
             "harness-epic": _issue("harness-epic", title="GTAII", deps=("harness-a", "harness-b")),
@@ -286,13 +288,13 @@ def test_open_titles_returns_open_children(tmp_path: Path) -> None:
             "harness-b": _issue("harness-b", title="B", status="closed"),
         }
     )
-    titles = _open_titles_under_epic(bd, "harness-epic")  # type: ignore[arg-type]
-    assert titles == ("A",)
+    titles = _dedup_titles_under_epic(bd, "harness-epic")  # type: ignore[arg-type]
+    assert titles == ("A", "B")
 
 
-def test_open_titles_returns_empty_on_show_failure(tmp_path: Path) -> None:
+def test_dedup_titles_returns_empty_on_show_failure(tmp_path: Path) -> None:
     bd = _FakeBd(show_failures={"harness-epic"})
-    assert _open_titles_under_epic(bd, "harness-epic") == ()  # type: ignore[arg-type]
+    assert _dedup_titles_under_epic(bd, "harness-epic") == ()  # type: ignore[arg-type]
 
 
 # ---- run_auto_iterate -------------------------------------------------

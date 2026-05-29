@@ -17,13 +17,26 @@ Grounding contract (load-bearing):
     inside the supplied workspace snapshot.
   * Each finding MUST carry a ``spec_quote`` that appears verbatim in
     the supplied spec text (when a spec was supplied at all).
-  * The finding's normalized title must not fuzzy-match any open bead
-    title under the epic (dedupe against the operator's queue).
+  * The finding's normalized title must not fuzzy-match any open *or
+    closed* bead title under the epic (dedupe against the operator's
+    queue AND against what was already filed/fixed on prior passes).
+  * The cited code must actually exhibit the claimed defect. A
+    resolvable citation only proves the *line exists*, not that it
+    *says what the finding claims* (harness-hdwp). After the cheap
+    deterministic gates pass, ``_finding_is_grounded`` shows the model
+    the real code window at the citation and asks a narrow, adversarial
+    "does this code exhibit that defect?" — default-reject. This is the
+    generate-then-verify asymmetry: the critic call is generative and
+    hallucination-prone; the verify call is discriminative with the
+    exact lines in focus.
 
-``_validate_finding`` enforces all three silently — invalid findings
-are dropped rather than raised. The cost of a false negative (a real
-bug we drop) is lower than the cost of a false positive (a fabricated
-bug the next drive chases).
+``_validate_finding`` enforces the first three gates silently and the
+verify gate runs on the survivors — invalid findings are dropped rather
+than raised. The cost of a false negative (a real bug we drop) is lower
+than the cost of a false positive (a fabricated bug the next drive
+chases): the 2026-05-29 harness-lpsq run filed 30 findings, ~24 of them
+fabricated, because the citation gate waved through in-range lines whose
+content contradicted the claim.
 """
 
 from __future__ import annotations
@@ -55,6 +68,15 @@ _TITLE_DUPE_RATIO = 0.85
 # that match by accident.
 _SPEC_QUOTE_MIN = 16
 _SPEC_QUOTE_MAX = 240  # a bit of slack over the prompt's 200
+# Lines of context on each side of the cited line handed to the verify
+# gate. Wide enough to show the surrounding function/condition, narrow
+# enough that the model focuses on the cited construct rather than
+# re-scanning the file.
+_VERIFY_WINDOW = 6
+# Verdict keywords for the grounding-verify gate. Earliest-match wins;
+# absence of GROUNDED is a reject (default-reject contract).
+_GROUNDED_RE = re.compile(r"\bGROUNDED\b", re.IGNORECASE)
+_REFUTED_RE = re.compile(r"\bREFUTED\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -172,29 +194,39 @@ def _title_matches_any(title: str, open_titles: Sequence[str]) -> bool:
     return False
 
 
+def _locate_citation(
+    citation: str, workspace_snapshot: Mapping[str, str]
+) -> tuple[str, int] | None:
+    """Resolve the first ``<file>:<line>`` citation in `citation` to a
+    ``(snapshot_key, line_no)`` pair when it points at a real line in
+    the snapshot; otherwise None. Tolerates basename-only citations
+    (the model sometimes drops the leading directory)."""
+    m = _CITATION_RE.search(citation)
+    if not m:
+        return None
+    path, line_str = m.group(1), m.group(2)
+    if path in workspace_snapshot:
+        key = path
+    else:
+        candidates = [k for k in workspace_snapshot if k.endswith("/" + path) or k == path]
+        if not candidates:
+            return None
+        key = candidates[0]
+    try:
+        line = int(line_str)
+    except ValueError:
+        return None
+    if 1 <= line <= len(workspace_snapshot[key].splitlines()):
+        return (key, line)
+    return None
+
+
 def _citation_in_workspace(citation: str, workspace_snapshot: Mapping[str, str]) -> bool:
     """True iff `citation` ("<file>:<line>") resolves to an actual line
     in the workspace snapshot. Matches paths against the snapshot's
     keys; for multi-path citations (e.g. when description carries
     several) only the first must resolve."""
-    m = _CITATION_RE.search(citation)
-    if not m:
-        return False
-    path, line_str = m.group(1), m.group(2)
-    text = workspace_snapshot.get(path)
-    if text is None:
-        # Tolerate basename matches — the model sometimes drops the
-        # leading directory. e.g. "src/game.js" cited as "game.js".
-        # Match against any snapshot key whose basename matches.
-        candidates = [k for k in workspace_snapshot if k.endswith("/" + path) or k == path]
-        if not candidates:
-            return False
-        text = workspace_snapshot[candidates[0]]
-    try:
-        line = int(line_str)
-    except ValueError:
-        return False
-    return 1 <= line <= len(text.splitlines())
+    return _locate_citation(citation, workspace_snapshot) is not None
 
 
 def _validate_finding(
@@ -260,6 +292,102 @@ def _validate_finding(
     )
 
 
+def _evidence_window(
+    finding: CriticFinding, workspace_snapshot: Mapping[str, str]
+) -> tuple[str, int, str] | None:
+    """Return ``(snapshot_key, cited_line, numbered_window)`` for the
+    finding's citation — preferring ``evidence_path`` then the citation
+    embedded in the description. The window is the cited line plus
+    ``_VERIFY_WINDOW`` lines either side, rendered with real line
+    numbers and a ``>`` marker on the cited line so the verifier can
+    check the exact construct. None when neither field resolves."""
+    for citation in (finding.evidence_path, finding.description):
+        loc = _locate_citation(citation, workspace_snapshot)
+        if loc is None:
+            continue
+        key, line = loc
+        lines = workspace_snapshot[key].splitlines()
+        lo = max(1, line - _VERIFY_WINDOW)
+        hi = min(len(lines), line + _VERIFY_WINDOW)
+        rendered = "\n".join(
+            f"{'>' if n == line else ' '} {n:>5} | {lines[n - 1]}" for n in range(lo, hi + 1)
+        )
+        return key, line, rendered
+    return None
+
+
+def _verify_system_prompt() -> str:
+    return (
+        "You are a skeptical grounding checker. A code critic proposed a BUG "
+        "FINDING with a `file:line` citation. Below is the ACTUAL code at that "
+        "location. Your only job is to decide whether the cited code visibly "
+        "exhibits the EXACT defect the finding describes.\n\n"
+        "Default to REFUTED. Answer REFUTED when:\n"
+        "  - the construct the finding names (a comparison, call, assignment, "
+        "missing reset, draw order, etc.) is NOT present at or adjacent to the "
+        "cited line;\n"
+        "  - the code already does the correct thing the finding claims is "
+        "missing or wrong;\n"
+        "  - the finding's claim contradicts what the code plainly shows;\n"
+        "  - you are unsure.\n\n"
+        "Answer GROUNDED ONLY when the cited code plainly contains the defect "
+        "as described.\n\n"
+        "Respond with one word first — `GROUNDED` or `REFUTED` — optionally "
+        "followed by a colon and a brief reason."
+    )
+
+
+def _verify_user_prompt(finding: CriticFinding, window: str) -> str:
+    return (
+        "[FINDING]\n"
+        f"title: {finding.title}\n"
+        f"description: {finding.description}\n"
+        f"cited: {finding.evidence_path}\n\n"
+        "[ACTUAL CODE AT CITATION]\n"
+        f"{window}\n\n"
+        "Does the cited code visibly exhibit the exact defect described? "
+        "Answer GROUNDED or REFUTED."
+    )
+
+
+def _parse_verdict(raw: str) -> bool:
+    """Parse a verify response into grounded? — default-reject. Requires
+    an explicit GROUNDED that is not preceded by REFUTED (earliest match
+    wins, so 'REFUTED: ...' loses even if it later mentions grounded)."""
+    g = _GROUNDED_RE.search(raw)
+    if g is None:
+        return False
+    r = _REFUTED_RE.search(raw)
+    return r is None or g.start() < r.start()
+
+
+def _finding_is_grounded(
+    adapter: ModelAdapter,
+    finding: CriticFinding,
+    workspace_snapshot: Mapping[str, str],
+    *,
+    max_tokens: int,
+    temperature: float,
+) -> bool:
+    """Discriminative grounding gate (harness-hdwp). Shows the model the
+    real code window at the finding's citation and asks whether that code
+    actually exhibits the claimed defect. Default-reject on a missing
+    window, an adapter error, or anything short of an explicit GROUNDED."""
+    window = _evidence_window(finding, workspace_snapshot)
+    if window is None:
+        return False
+    _, _, window_text = window
+    messages = [
+        ChatMessage(role="system", content=_verify_system_prompt()),
+        ChatMessage(role="user", content=_verify_user_prompt(finding, window_text)),
+    ]
+    try:
+        raw = adapter.complete(messages, max_tokens=max_tokens, temperature=temperature)
+    except Exception:
+        return False
+    return _parse_verdict(raw)
+
+
 def run_critic(
     *,
     adapter: ModelAdapter,
@@ -270,9 +398,13 @@ def run_critic(
     max_findings: int = 10,
     max_tokens: int = 4096,
     temperature: float = 0.2,
+    verify_grounding: bool = True,
+    verify_max_tokens: int = 256,
+    verify_temperature: float = 0.0,
 ) -> list[CriticFinding]:
     """Call the adapter with a CRITIC prompt, parse its output, and
-    return the subset of findings that pass `_validate_finding`.
+    return the subset of findings that pass `_validate_finding` and the
+    grounding-verify gate.
 
     Silent on every failure mode (adapter raises, model emits non-JSON,
     every finding is invalid) — the auto-iterate loop's contract is
@@ -281,7 +413,13 @@ def run_critic(
 
     `temperature=0.2` is low enough that the model commits to its
     grounded findings rather than improvising, high enough that it
-    won't get stuck in a single failure mode across passes."""
+    won't get stuck in a single failure mode across passes.
+
+    When `verify_grounding` is True (default), each finding that clears
+    the cheap deterministic gates is then checked against the actual
+    code at its citation via `_finding_is_grounded` — one extra adapter
+    call per surviving finding, default-reject. Set False to skip the
+    gate (e.g. in unit tests that only exercise parsing/validation)."""
     messages = [
         ChatMessage(role="system", content=_system_prompt()),
         ChatMessage(
@@ -309,6 +447,14 @@ def run_critic(
             open_titles=open_under_epic,
         )
         if finding is not None:
+            if verify_grounding and not _finding_is_grounded(
+                adapter,
+                finding,
+                workspace_snapshot,
+                max_tokens=verify_max_tokens,
+                temperature=verify_temperature,
+            ):
+                continue
             out.append(finding)
         if len(out) >= max_findings:
             break

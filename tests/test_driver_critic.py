@@ -8,9 +8,13 @@ from collections.abc import Iterable
 from harness.driver.critic import (
     CriticFinding,
     _citation_in_workspace,
+    _evidence_window,
     _extract_json_array,
+    _finding_is_grounded,
+    _locate_citation,
     _normalize_title,
     _parse_findings,
+    _parse_verdict,
     _title_matches_any,
     _validate_finding,
     run_critic,
@@ -254,6 +258,7 @@ def test_run_critic_returns_validated_findings() -> None:
         workspace_snapshot=_SNAP,
         closed_this_run=("harness-yd3m",),
         open_under_epic=(),
+        verify_grounding=False,
     )
     assert len(findings) == 1
     assert findings[0].title.startswith("keys map never written")
@@ -282,6 +287,7 @@ def test_run_critic_drops_invalid_keeps_valid() -> None:
         workspace_snapshot=_SNAP,
         closed_this_run=(),
         open_under_epic=(),
+        verify_grounding=False,
     )
     assert len(findings) == 1
     assert findings[0].title == "HUD rendered under camera transform"
@@ -329,6 +335,7 @@ def test_run_critic_caps_at_max_findings() -> None:
         closed_this_run=(),
         open_under_epic=(),
         max_findings=10,
+        verify_grounding=False,
     )
     assert len(findings) == 10
 
@@ -348,6 +355,7 @@ def test_run_critic_drops_dupes_against_open_titles() -> None:
         workspace_snapshot=_SNAP,
         closed_this_run=(),
         open_under_epic=open_titles,
+        verify_grounding=False,
     )
     # Only the HUD finding survives — the keys finding dupes the open one.
     assert len(findings) == 1
@@ -365,6 +373,7 @@ def test_run_critic_works_without_spec() -> None:
         workspace_snapshot=_SNAP,
         closed_this_run=(),
         open_under_epic=(),
+        verify_grounding=False,
     )
     assert len(findings) == 1
 
@@ -387,3 +396,175 @@ def test_run_critic_prompt_includes_spec_and_workspace() -> None:
     assert "- a" in user
     assert "[ALREADY OPEN UNDER EPIC]" in user
     assert "- b" in user
+
+
+# ---- grounding-verify gate (harness-hdwp) ------------------------------
+
+
+class _SeqAdapter:
+    """ModelAdapter stand-in that returns queued responses in order — the
+    first `complete` call gets the critic findings, each subsequent call
+    gets a verify verdict. Raises if the queue is exhausted."""
+
+    id = "seq"
+    context_window = 32000
+
+    def __init__(self, responses: list[str]) -> None:
+        self._responses = list(responses)
+        self.calls: list[list[ChatMessage]] = []
+
+    def complete(
+        self,
+        messages: Iterable[ChatMessage],
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+    ) -> str:
+        self.calls.append(list(messages))
+        return self._responses.pop(0)
+
+
+def test_parse_verdict_grounded() -> None:
+    assert _parse_verdict("GROUNDED: line 42 compares against the wrong tile")
+
+
+def test_parse_verdict_refuted() -> None:
+    assert not _parse_verdict("REFUTED: the code already checks tile === 'B'")
+
+
+def test_parse_verdict_refuted_first_wins() -> None:
+    """A verdict that refutes first loses even if it later says grounded."""
+    assert not _parse_verdict("REFUTED — this is not grounded in the code")
+
+
+def test_parse_verdict_missing_keyword_rejects() -> None:
+    """Default-reject: anything without an explicit GROUNDED is a no."""
+    assert not _parse_verdict("I'm not sure, the code is ambiguous here.")
+
+
+def test_evidence_window_builds_numbered_window() -> None:
+    win = _evidence_window(_validate_finding_ok(), _SNAP)
+    assert win is not None
+    key, line, text = win
+    assert key == "game.js"
+    assert line == 42
+    assert "> " in text  # cited line is marked
+    assert "42 |" in text
+    assert "line 42" in text  # _GAME_SOURCE content at the cited line
+    assert "line 36" in text  # window lower bound
+    assert "line 48" in text  # window upper bound
+
+
+def test_evidence_window_none_when_citation_unresolvable() -> None:
+    # Built directly — the validator would reject an unresolvable citation,
+    # but the snapshot could shift between validate and verify in theory.
+    finding = CriticFinding(
+        title="ghost bug",
+        description="no citation in this prose",
+        acceptance="n/a",
+        priority=2,
+        spec_quote="",
+        evidence_path="ghost.js",
+    )
+    assert _evidence_window(finding, _SNAP) is None
+
+
+def test_locate_citation_resolves_and_rejects() -> None:
+    assert _locate_citation("game.js:42", _SNAP) == ("game.js", 42)
+    assert _locate_citation("game.js:9999", _SNAP) is None
+    assert _locate_citation("nope", _SNAP) is None
+
+
+def test_finding_is_grounded_accepts_on_grounded_verdict() -> None:
+    adapter = _SeqAdapter(["GROUNDED: yep, line 42 is wrong"])
+    assert _finding_is_grounded(
+        adapter,
+        _validate_finding_ok(),
+        _SNAP,
+        max_tokens=64,
+        temperature=0.0,
+    )
+
+
+def test_finding_is_grounded_rejects_on_refuted_verdict() -> None:
+    adapter = _SeqAdapter(["REFUTED: the code already does the right thing"])
+    assert not _finding_is_grounded(
+        adapter,
+        _validate_finding_ok(),
+        _SNAP,
+        max_tokens=64,
+        temperature=0.0,
+    )
+
+
+def test_finding_is_grounded_rejects_when_no_window() -> None:
+    """No resolvable citation → no code to show → reject without a call."""
+    adapter = _SeqAdapter([])  # would raise if called
+    finding = CriticFinding(
+        title="ghost bug",
+        description="no citation in this prose",
+        acceptance="n/a",
+        priority=2,
+        spec_quote="",
+        evidence_path="ghost.js",
+    )
+    assert not _finding_is_grounded(
+        adapter,
+        finding,
+        _SNAP,
+        max_tokens=64,
+        temperature=0.0,
+    )
+
+
+def test_finding_is_grounded_rejects_on_adapter_error() -> None:
+    adapter = _StubAdapter(RuntimeError("model down"))
+    assert not _finding_is_grounded(
+        adapter,
+        _validate_finding_ok(),
+        _SNAP,
+        max_tokens=64,
+        temperature=0.0,
+    )
+
+
+def test_run_critic_verify_gate_drops_refuted_finding() -> None:
+    """End-to-end: a finding that clears the deterministic gates but whose
+    cited code doesn't support the claim (verifier says REFUTED) is dropped
+    — this is the harness-lpsq fabrication mode (6rai/l4je/draw-order)."""
+    adapter = _SeqAdapter([json.dumps([_finding_dict()]), "REFUTED: code is fine"])
+    findings = run_critic(
+        adapter=adapter,
+        spec_text=_SPEC,
+        workspace_snapshot=_SNAP,
+        closed_this_run=(),
+        open_under_epic=(),
+    )
+    assert findings == []
+    assert len(adapter.calls) == 2  # critic call + one verify call
+
+
+def test_run_critic_verify_gate_keeps_grounded_finding() -> None:
+    adapter = _SeqAdapter([json.dumps([_finding_dict()]), "GROUNDED: confirmed at line 42"])
+    findings = run_critic(
+        adapter=adapter,
+        spec_text=_SPEC,
+        workspace_snapshot=_SNAP,
+        closed_this_run=(),
+        open_under_epic=(),
+    )
+    assert len(findings) == 1
+    assert findings[0].title.startswith("keys map never written")
+
+
+def _validate_finding_ok(**overrides: object) -> CriticFinding:
+    """Build a CriticFinding via the real validator so the window/verify
+    helpers get a record shaped exactly like production."""
+    finding = _validate_finding(
+        _finding_dict(**overrides),
+        spec_text=None,
+        workspace_snapshot=_SNAP,
+        open_titles=(),
+    )
+    assert finding is not None
+    return finding

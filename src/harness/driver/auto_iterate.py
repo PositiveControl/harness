@@ -77,6 +77,11 @@ class AutoIterateConfig:
     # match the critic module's own defaults.
     critic_max_tokens: int = 4096
     critic_temperature: float = 0.2
+    # Grounding-verify gate (harness-hdwp). On by default: each finding
+    # that clears the deterministic gates is re-checked against the real
+    # code at its citation before it is filed. Disable only to reproduce
+    # the pre-hdwp behavior for attribution/measurement.
+    critic_verify_grounding: bool = True
 
 
 @dataclass
@@ -244,16 +249,17 @@ def run_auto_iterate(
         # change the spec. Workspace snapshot IS recomputed per pass
         # (the drive just wrote to it).
         snapshot = _snapshot_source_files(config.loop_config.workspace)
-        open_titles = _open_titles_under_epic(bd, epic_id)
+        dedup_titles = _dedup_titles_under_epic(bd, epic_id)
         findings = run_critic(
             adapter=adapter,
             spec_text=spec_text,
             workspace_snapshot=snapshot,
             closed_this_run=tuple(drive_result.closed),
-            open_under_epic=open_titles,
+            open_under_epic=dedup_titles,
             max_findings=config.critic_max_findings,
             max_tokens=config.critic_max_tokens,
             temperature=config.critic_temperature,
+            verify_grounding=config.critic_verify_grounding,
         )
 
         if not findings:
@@ -297,14 +303,19 @@ def _clear_resume(loop_config: LoopConfig) -> LoopConfig:
     return replace(loop_config, resume_from=None)
 
 
-def _open_titles_under_epic(bd: DriverBd, epic_id: str) -> tuple[str, ...]:
-    """Titles of every open bead under `epic_id`. Fed to the critic so
-    its dedupe gate can drop near-dupes BEFORE they're filed.
+def _dedup_titles_under_epic(bd: DriverBd, epic_id: str) -> tuple[str, ...]:
+    """Titles of every child bead under `epic_id`, **open or closed**.
+    Fed to the critic so its dedupe gate drops near-dupes BEFORE they're
+    filed — including refiles of bugs that were already fixed/closed on
+    a prior pass (harness-hdwp). The 2026-05-29 run refiled closed
+    harness-77ht as harness-6rai precisely because dedup only looked at
+    open beads, and re-rolled the same themes every pass because each
+    pass closed the prior pass's findings out of the open set.
 
     Soft on bd errors — a stale title list just means the critic might
-    propose a dupe; the existing fuzz-match still catches the strong
-    overlaps, and the operator can close the dupe by hand. Better than
-    failing the whole auto-iterate run on a transient bd hiccup."""
+    propose a dupe; the fuzz-match still catches strong overlaps and the
+    grounding-verify gate catches fabricated ones. Better than failing
+    the whole auto-iterate run on a transient bd hiccup."""
     try:
         epic = bd.show(epic_id)
     except DriverBdError:
@@ -317,8 +328,6 @@ def _open_titles_under_epic(bd: DriverBd, epic_id: str) -> tuple[str, ...]:
         try:
             child = bd.show(dep_id)
         except DriverBdError:
-            continue
-        if child.status != "open":
             continue
         titles.append(child.title)
     return tuple(titles)
