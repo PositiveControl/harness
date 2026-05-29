@@ -449,9 +449,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
     # rest of the function keeps its indentation level — the env-var
     # manager is a sibling concern to the sigint guard, not nested.
     with contextlib.ExitStack() as stack:
-        ambient_trace = stack.enter_context(
-            _ambient_vllm_trace(config.workspace, state.loop_run_id)
-        )
+        ambient_trace = stack.enter_context(ambient_vllm_trace(config.workspace, state.loop_run_id))
         if ambient_trace is not None:
             log(f"vllm trace: {ambient_trace}")
         interrupted = stack.enter_context(_sigint_guard())
@@ -983,11 +981,14 @@ def _default_vllm_trace_path(workspace: Path, loop_run_id: str) -> Path:
 
 
 @contextlib.contextmanager
-def _ambient_vllm_trace(workspace: Path, loop_run_id: str) -> Iterator[Path | None]:
+def ambient_vllm_trace(workspace: Path, loop_run_id: str) -> Iterator[Path | None]:
     """If HARNESS_VLLM_TRACE is unset, install a default path scoped to
     this run for the duration of the context. Restore the original
     environment on exit so chat / non-loop callers running in the same
-    process aren't surprised by tracing they didn't ask for."""
+    process aren't surprised by tracing they didn't ask for.
+
+    Public so auto_iterate can reuse it to wrap the post-drive critic
+    pass under the same per-run trace file (harness-5t0a)."""
     prior = os.environ.get(_VLLM_TRACE_ENV)
     if prior is not None:
         yield None

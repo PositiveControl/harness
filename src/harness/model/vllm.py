@@ -417,6 +417,17 @@ class VllmAdapter:
             raise RuntimeError(f"vLLM returned no choices: {data!r}")
         msg = choices[0].get("message") or {}
         content = msg.get("content")
+        # harness-5t0a: trace the non-tool path too. Only complete_with_tools
+        # was instrumented, so the driver critic + verify gate (which call
+        # complete()) were invisible even with HARNESS_VLLM_TRACE set.
+        _vllm_trace(
+            {
+                "mode": "complete",
+                "model": self.model,
+                "request": payload,
+                "response": data,
+            }
+        )
         if not isinstance(content, str):
             return ""
         return content
@@ -437,6 +448,7 @@ class VllmAdapter:
         }
         if self.stop:
             payload["stop"] = list(self.stop)
+        parts: list[str] = []
         for chunk in self._post_stream("/chat/completions", payload):
             choices = chunk.get("choices") or []
             if not choices:
@@ -444,9 +456,22 @@ class VllmAdapter:
             delta = choices[0].get("delta") or {}
             text = delta.get("content")
             if isinstance(text, str) and text:
+                parts.append(text)
                 yield text
             if choices[0].get("finish_reason"):
                 break
+        # harness-5t0a: trace the reassembled stream once the generator is
+        # fully consumed (mirrors stream_with_tools). A consumer that breaks
+        # early or an exception mid-stream skips this — partial streams stay
+        # untraced, same as the tool path.
+        _vllm_trace(
+            {
+                "mode": "stream",
+                "model": self.model,
+                "request": payload,
+                "reassembled_message": {"content": "".join(parts)},
+            }
+        )
 
     def complete_with_tools(
         self,

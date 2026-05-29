@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -366,6 +367,36 @@ def test_run_auto_iterate_exits_critic_failed_without_feeding_streak(
     assert result.exit_reason == "critic_failed"
     assert result.passes_run == 1  # bailed on the first failed pass
     assert result.critic_findings_total == 0
+
+
+def test_run_auto_iterate_wraps_critic_in_ambient_trace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With HARNESS_VLLM_TRACE unset, the critic call runs with the env
+    pointed at the pass's colocated trace file, so the critic + verify
+    calls land alongside the drive turns (harness-5t0a)."""
+    bd = _FakeBd(issues={"harness-epic": _issue("harness-epic", title="GTAII")})
+    cfg = _config(tmp_path, convergence_streak=1)  # one empty pass converges
+
+    monkeypatch.setattr(
+        "harness.driver.auto_iterate.run_loop",
+        lambda _a, _b, _c: _loop_result(loop_run_id="passrun"),
+    )
+    monkeypatch.delenv("HARNESS_VLLM_TRACE", raising=False)
+
+    seen: dict[str, str | None] = {}
+
+    def critic_capture(**_: Any) -> list[CriticFinding]:
+        seen["trace"] = os.environ.get("HARNESS_VLLM_TRACE")
+        return []
+
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", critic_capture)
+    run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert seen["trace"] is not None
+    assert seen["trace"].endswith("loop_runs/passrun.vllm_trace.jsonl")
+    # Restored after the run — no leak into the rest of the process.
+    assert os.environ.get("HARNESS_VLLM_TRACE") is None
 
 
 def test_run_auto_iterate_files_and_autoblocks_findings(

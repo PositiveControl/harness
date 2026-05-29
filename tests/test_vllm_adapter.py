@@ -564,6 +564,74 @@ def test_vllm_trace_complete_with_tools_writes_jsonl(tmp_path: Any) -> None:
     assert "ts" in record
 
 
+def test_vllm_trace_complete_writes_jsonl(tmp_path: Any) -> None:
+    """harness-5t0a: the non-tool complete() path must trace too — this is
+    what the driver critic + grounding-verify gate call, and it was
+    invisible before."""
+    trace_target = tmp_path / "trace.jsonl"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "REFUTED: line is fine"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    adapter = VllmAdapter(model="m")
+    with (
+        patch("httpx.Client", _make_factory(handler)),
+        patch.dict("os.environ", {"HARNESS_VLLM_TRACE": str(trace_target)}),
+    ):
+        out = adapter.complete([ChatMessage(role="user", content="is this grounded?")])
+
+    assert out == "REFUTED: line is fine"
+    lines = trace_target.read_text().splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["mode"] == "complete"
+    assert record["model"] == "m"
+    assert record["request"]["messages"][0]["content"] == "is this grounded?"
+    assert record["response"]["choices"][0]["message"]["content"] == "REFUTED: line is fine"
+    assert "ts" in record
+
+
+def test_vllm_trace_stream_writes_jsonl(tmp_path: Any) -> None:
+    """harness-5t0a: the non-tool stream() path traces the reassembled
+    content once the generator is fully consumed."""
+    trace_target = tmp_path / "trace.jsonl"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {"choices": [{"index": 0, "delta": {"content": "hello "}}]},
+                {"choices": [{"index": 0, "delta": {"content": "world"}}]},
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                "[DONE]",
+            ]
+        )
+
+    adapter = VllmAdapter(model="m")
+    with (
+        patch("httpx.Client", _make_factory(handler)),
+        patch.dict("os.environ", {"HARNESS_VLLM_TRACE": str(trace_target)}),
+    ):
+        chunks = list(adapter.stream([ChatMessage(role="user", content="hi")]))
+
+    assert "".join(chunks) == "hello world"
+    lines = trace_target.read_text().splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["mode"] == "stream"
+    assert record["model"] == "m"
+    assert record["reassembled_message"]["content"] == "hello world"
+
+
 def test_vllm_trace_stream_with_tools_writes_jsonl(tmp_path: Any) -> None:
     """Streaming path must also write a trace record — using
     reassembled_message + per-index tool_call slots, which is what the

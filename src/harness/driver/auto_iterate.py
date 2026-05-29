@@ -30,7 +30,7 @@ from typing import Literal
 
 from harness.driver.bd import DriverBd, DriverBdError
 from harness.driver.critic import CriticAdapterError, CriticFinding, run_critic
-from harness.driver.loop import LoopConfig, LoopResult, run_loop
+from harness.driver.loop import LoopConfig, LoopResult, ambient_vllm_trace, run_loop
 from harness.model.adapter import ModelAdapter
 
 # Source-file suffixes we sample into the critic's workspace snapshot.
@@ -251,17 +251,24 @@ def run_auto_iterate(
         snapshot = _snapshot_source_files(config.loop_config.workspace)
         dedup_titles = _dedup_titles_under_epic(bd, epic_id)
         try:
-            findings = run_critic(
-                adapter=adapter,
-                spec_text=spec_text,
-                workspace_snapshot=snapshot,
-                closed_this_run=tuple(drive_result.closed),
-                open_under_epic=dedup_titles,
-                max_findings=config.critic_max_findings,
-                max_tokens=config.critic_max_tokens,
-                temperature=config.critic_temperature,
-                verify_grounding=config.critic_verify_grounding,
-            )
+            # harness-5t0a: wrap the critic in the same ambient trace as the
+            # drive, scoped to this pass's loop_run_id, so an env-unset run
+            # records the critic generation + verify calls in
+            # .harness/loop_runs/<id>.vllm_trace.jsonl alongside the drive
+            # turns. An explicit HARNESS_VLLM_TRACE still wins (the context
+            # is a no-op when the env is already set).
+            with ambient_vllm_trace(config.loop_config.workspace, drive_result.loop_run_id):
+                findings = run_critic(
+                    adapter=adapter,
+                    spec_text=spec_text,
+                    workspace_snapshot=snapshot,
+                    closed_this_run=tuple(drive_result.closed),
+                    open_under_epic=dedup_titles,
+                    max_findings=config.critic_max_findings,
+                    max_tokens=config.critic_max_tokens,
+                    temperature=config.critic_temperature,
+                    verify_grounding=config.critic_verify_grounding,
+                )
         except CriticAdapterError:
             # The model was never reached this pass. Surface it — do NOT
             # let a silent [] feed the convergence streak (harness-fote).
