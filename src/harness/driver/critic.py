@@ -77,6 +77,11 @@ _VERIFY_WINDOW = 6
 # absence of GROUNDED is a reject (default-reject contract).
 _GROUNDED_RE = re.compile(r"\bGROUNDED\b", re.IGNORECASE)
 _REFUTED_RE = re.compile(r"\bREFUTED\b", re.IGNORECASE)
+# Retry budget for the per-finding verify call (harness-ascz7.1). The call
+# is small and the observed failure was a transient endpoint drop mid-pass;
+# a couple of immediate retries ride that out without discarding the pass.
+# Only adapter exceptions retry — a clean REFUTED/unconfirmed verdict does not.
+_VERIFY_MAX_RETRIES = 2
 # Minimum normalized length of a code_quote. Below this a quote is too
 # generic to ground a finding (a bare "});" would match almost any
 # window) — reject it (harness-mur6).
@@ -467,6 +472,34 @@ def _normalize_code(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# Per-language trailing/whole-line comment strippers (harness-ascz7.2). The
+# marker must start the line or follow non-token punctuation, so a marker
+# inside a string/URL (`https://`, a py `"#fff"` color literal) is left
+# intact. Stripping only ever WIDENS what matches, so it can drop a finding
+# but never admit a fabricated citation.
+_JS_COMMENT_RE = re.compile(r"(?<![:/])//.*$")
+_PY_COMMENT_RE = re.compile(r"""(?<![\w'"#])#.*$""")
+
+
+def _strip_injected_comments(code_quote: str, path: str) -> list[str]:
+    """Remove model-injected line comments and elision-placeholder lines
+    from a code_quote, returning the surviving real-code lines
+    (harness-ascz7.2). A 30B critic appends editorial text the source does
+    not contain — `chainTimer = 3; // BUG: should be 3000`,
+    `// ... existing code ...`, `// this function is missing the decay
+    mechanism` — which defeats verbatim matching even when the finding is
+    real. Stripping the comment leaves the actual code (`chainTimer = 3;`)
+    to match; a line that is ENTIRELY a comment collapses to nothing and is
+    dropped (an all-editorial quote still grounds nothing)."""
+    pattern = _PY_COMMENT_RE if path.endswith(".py") else _JS_COMMENT_RE
+    kept: list[str] = []
+    for raw_line in code_quote.splitlines():
+        stripped = pattern.sub("", raw_line).rstrip()
+        if stripped.strip():
+            kept.append(stripped)
+    return kept
+
+
 def _code_quote_grounded(
     code_quote: str,
     loc: tuple[str, int],
@@ -476,16 +509,28 @@ def _code_quote_grounded(
     ``_VERIFY_WINDOW`` lines of the cited line in the actual snapshot
     (harness-mur6). Forces the model to copy real source at generation
     time: a fabricated quote isn't in the window, so the finding is
-    dropped before the expensive verify call."""
-    norm_q = _normalize_code(code_quote)
-    if len(norm_q) < _CODE_QUOTE_MIN:
-        return False
+    dropped before the expensive verify call.
+
+    Verbatim copy is the fast path. When it misses, the quote is re-checked
+    with model-injected trailing comments / elision markers stripped
+    (harness-ascz7.2): every surviving real-code fragment must still appear
+    verbatim in the window, so a genuine finding wrapped in editorial text
+    is salvaged while a fabricated or wrong-line citation still drops."""
     key, line = loc
     lines = workspace_snapshot[key].splitlines()
     lo = max(1, line - _VERIFY_WINDOW)
     hi = min(len(lines), line + _VERIFY_WINDOW)
     window = _normalize_code("\n".join(lines[lo - 1 : hi]))
-    return norm_q in window
+
+    norm_q = _normalize_code(code_quote)
+    if len(norm_q) >= _CODE_QUOTE_MIN and norm_q in window:
+        return True
+
+    fragments = [_normalize_code(frag) for frag in _strip_injected_comments(code_quote, key)]
+    fragments = [f for f in fragments if len(f) >= _CODE_QUOTE_MIN]
+    if not fragments:
+        return False
+    return all(f in window for f in fragments)
 
 
 def _validate_finding(
@@ -637,11 +682,18 @@ def _finding_is_grounded(
     *,
     max_tokens: int,
     temperature: float,
+    max_retries: int = _VERIFY_MAX_RETRIES,
 ) -> bool:
     """Discriminative grounding gate (harness-hdwp). Shows the model the
     real code window at the finding's citation and asks whether that code
     actually exhibits the claimed defect. Default-reject on a missing
-    window, an adapter error, or anything short of an explicit GROUNDED."""
+    window or anything short of an explicit GROUNDED.
+
+    The verify call is small (a few hundred tokens) and the dominant
+    observed failure was a transient endpoint drop mid-pass (harness-ascz7.1),
+    so the call is retried up to `max_retries` times before an adapter
+    failure is surfaced as `CriticAdapterError`. A successful-but-unconfirmed
+    response (no GROUNDED) is a verdict, not a failure — it does NOT retry."""
     window = _evidence_window(finding, workspace_snapshot)
     if window is None:
         return False
@@ -650,13 +702,17 @@ def _finding_is_grounded(
         ChatMessage(role="system", content=_verify_system_prompt()),
         ChatMessage(role="user", content=_verify_user_prompt(finding, window_text)),
     ]
-    try:
-        raw = adapter.complete(messages, max_tokens=max_tokens, temperature=temperature)
-    except Exception as exc:  # transport/model failure — an outage, not a verdict.
-        raise CriticAdapterError("verify call failed") from exc
-    # A successful-but-unconfirmed response (no explicit GROUNDED) is still
-    # a default-reject — that's a real model verdict, not a failure.
-    return _parse_verdict(raw)
+    last_exc: Exception | None = None
+    for _ in range(max_retries + 1):
+        try:
+            raw = adapter.complete(messages, max_tokens=max_tokens, temperature=temperature)
+        except Exception as exc:  # transport/model failure — retry, then surface.
+            last_exc = exc
+            continue
+        # A successful-but-unconfirmed response (no explicit GROUNDED) is
+        # still a default-reject — that's a real model verdict, not a failure.
+        return _parse_verdict(raw)
+    raise CriticAdapterError("verify call failed") from last_exc
 
 
 def _gather_sliced_candidates(
@@ -781,7 +837,8 @@ def run_critic(
         input_cap = max_findings * 2  # cap input before the validator
 
     out: list[CriticFinding] = []
-    accepted_norm_titles: set[str] = set()
+    seen_norm_titles: set[str] = set()
+    verify_outage: CriticAdapterError | None = None
     for c in candidates[:input_cap]:
         finding = _validate_finding(
             c,
@@ -791,25 +848,46 @@ def run_critic(
         )
         if finding is None:
             continue
-        # Within-batch dedup: slices (or a sloppy single response) can
-        # surface the SAME finding twice. Use EXACT normalized-title match
-        # here (not the fuzzy cross-bead matcher) so genuinely distinct
-        # findings that merely share a prefix aren't collapsed.
+        # Within-batch dedup runs BEFORE the verify gate (harness-ascz7.3):
+        # overlapping slices surface the SAME finding repeatedly, and the
+        # verify call is the expensive, outage-prone step. Mark the title
+        # seen as soon as it clears validation — regardless of the later
+        # verdict — so each distinct finding is verified at most once and a
+        # refuted finding's near-dupes don't each pay a fresh round-trip.
+        # EXACT normalized-title match (not the fuzzy cross-bead matcher) so
+        # genuinely distinct findings that merely share a prefix aren't
+        # collapsed.
         norm = _normalize_title(finding.title)
-        if norm in accepted_norm_titles:
+        if norm in seen_norm_titles:
             continue
-        if verify_grounding and not _finding_is_grounded(
-            adapter,
-            finding,
-            workspace_snapshot,
-            max_tokens=verify_max_tokens,
-            temperature=verify_temperature,
-        ):
-            continue
+        seen_norm_titles.add(norm)
+        if verify_grounding:
+            try:
+                grounded = _finding_is_grounded(
+                    adapter,
+                    finding,
+                    workspace_snapshot,
+                    max_tokens=verify_max_tokens,
+                    temperature=verify_temperature,
+                )
+            except CriticAdapterError as exc:
+                # Verify-stage outage (harness-ascz7.1). The model produced
+                # findings this pass; a transient verify failure must NOT
+                # discard the whole pass. Stop verifying, salvage everything
+                # already cleared (in `out`), and let the caller file it.
+                # Only re-raise if NOTHING was salvaged — then the outage is
+                # indistinguishable from a generation failure and must surface
+                # as critic_failed rather than masquerade as a clean empty
+                # pass (harness-fote).
+                verify_outage = exc
+                break
+            if not grounded:
+                continue
         out.append(finding)
-        accepted_norm_titles.add(norm)
         if len(out) >= max_findings:
             break
+    if verify_outage is not None and not out:
+        raise verify_outage
     return out
 
 

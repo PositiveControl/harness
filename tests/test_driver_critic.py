@@ -12,6 +12,7 @@ from harness.driver.critic import (
     CriticAdapterError,
     CriticFinding,
     _citation_in_workspace,
+    _code_quote_grounded,
     _evidence_window,
     _extract_json_array,
     _finding_is_grounded,
@@ -866,3 +867,151 @@ def test_run_critic_slice_mode_verify_gate_still_fires() -> None:
     )
     assert findings == []
     assert len(adapter.calls) == 3  # 2 slice gen calls + 1 verify
+
+
+# ---- harness-ascz7.3: dedup before the verify gate ---------------------
+
+
+def test_run_critic_dedups_before_verify_gate() -> None:
+    """A duplicate-title candidate must be deduped BEFORE the verify call,
+    not after — so each distinct title is verified at most once, even when
+    the first instance is REFUTED (harness-ascz7.3). Pre-fix, a refuted
+    finding's near-dupes each paid a fresh verify round-trip because the
+    seen-set was only populated on a passing verdict."""
+    candidates = [_finding_dict(), _finding_dict()]  # identical title
+    # gen + exactly ONE verify (REFUTED). If the dupe re-verified, the
+    # SeqAdapter queue would be exhausted and raise.
+    adapter = _SeqAdapter([json.dumps(candidates), "REFUTED: not grounded"])
+    findings = run_critic(
+        adapter=adapter,
+        spec_text=_SPEC,
+        workspace_snapshot=_SNAP,
+        closed_this_run=(),
+        open_under_epic=(),
+    )
+    assert findings == []
+    assert len(adapter.calls) == 2  # 1 generation + 1 verify (dupe skipped)
+
+
+# ---- harness-ascz7.1: verify-outage salvage + retry --------------------
+
+
+def test_run_critic_salvages_verified_findings_on_verify_outage() -> None:
+    """A verify-stage outage mid-pass must NOT discard the whole pass:
+    findings already cleared by the verify gate are salvaged and returned
+    (harness-ascz7.1)."""
+    a = _finding_dict(
+        title="A distinct bug",
+        description="see game.js:42",
+        evidence_path="game.js:42",
+        code_quote="line 42",
+    )
+    b = _finding_dict(
+        title="B distinct bug",
+        description="see game.js:100",
+        evidence_path="game.js:100",
+        code_quote="line 100",
+    )
+    # A verifies GROUNDED; B's verify fails on every retry attempt.
+    responses: list[str | Exception] = [
+        json.dumps([a, b]),
+        "GROUNDED",
+        RuntimeError("verify down"),
+        RuntimeError("verify down"),
+        RuntimeError("verify down"),
+    ]
+    adapter = _SeqAdapter(responses)
+    findings = run_critic(
+        adapter=adapter,
+        spec_text=_SPEC,
+        workspace_snapshot=_SNAP,
+        closed_this_run=(),
+        open_under_epic=(),
+    )
+    assert [f.title for f in findings] == ["A distinct bug"]
+
+
+def test_run_critic_verify_retry_recovers_transient_failure() -> None:
+    """A transient verify failure is retried — two failures then a GROUNDED
+    keeps the finding (harness-ascz7.1)."""
+    adapter = _SeqAdapter(
+        [
+            json.dumps([_finding_dict()]),
+            RuntimeError("blip"),
+            RuntimeError("blip"),
+            "GROUNDED",
+        ]
+    )
+    findings = run_critic(
+        adapter=adapter,
+        spec_text=_SPEC,
+        workspace_snapshot=_SNAP,
+        closed_this_run=(),
+        open_under_epic=(),
+    )
+    assert len(findings) == 1
+
+
+def test_run_critic_verify_outage_with_nothing_salvaged_still_raises() -> None:
+    """When a verify outage leaves NOTHING salvaged, it must still surface
+    as CriticAdapterError — an outage with zero filed findings must not
+    masquerade as a clean empty pass (harness-fote)."""
+    adapter = _SeqAdapter(
+        [
+            json.dumps([_finding_dict()]),
+            RuntimeError("down"),
+            RuntimeError("down"),
+            RuntimeError("down"),
+        ]
+    )
+    with pytest.raises(CriticAdapterError):
+        run_critic(
+            adapter=adapter,
+            spec_text=_SPEC,
+            workspace_snapshot=_SNAP,
+            closed_this_run=(),
+            open_under_epic=(),
+        )
+
+
+# ---- harness-ascz7.2: code_quote tolerates injected editorial text -----
+
+_BUG_SRC = "\n".join(
+    [
+        "function update() {",  # 1
+        "  chainTimer = 3;",  # 2
+        '  const u = "https://x";',  # 3
+        "  lastShotAt;",  # 4
+        "}",  # 5
+    ]
+)
+_BUG_SNAP = {"game.js": _BUG_SRC}
+
+
+def test_code_quote_grounded_tolerates_injected_trailing_comment() -> None:
+    assert _code_quote_grounded(
+        "chainTimer = 3; // BUG: should be 3000 milliseconds", ("game.js", 2), _BUG_SNAP
+    )
+
+
+def test_code_quote_grounded_tolerates_elision_markers() -> None:
+    quote = "chainTimer = 3;\n// ... existing code ...\nlastShotAt;"
+    assert _code_quote_grounded(quote, ("game.js", 3), _BUG_SNAP)
+
+
+def test_code_quote_grounded_rejects_pure_editorial_quote() -> None:
+    assert not _code_quote_grounded(
+        "// this entire function is missing the decay mechanism", ("game.js", 2), _BUG_SNAP
+    )
+
+
+def test_code_quote_grounded_rejects_fabricated_with_trailing_comment() -> None:
+    assert not _code_quote_grounded(
+        "notReal = 5; // BUG: fabricated line", ("game.js", 2), _BUG_SNAP
+    )
+
+
+def test_code_quote_grounded_leaves_url_slashes_intact() -> None:
+    """A `//` inside a string/URL must not be treated as a comment — the
+    real source line still matches verbatim."""
+    assert _code_quote_grounded('const u = "https://x"; // note', ("game.js", 3), _BUG_SNAP)
