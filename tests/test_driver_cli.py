@@ -664,6 +664,45 @@ def test_resolve_driver_adapter_passes_base_url_to_vllm(
     assert seen == {"base_url": "http://gx10-5fb9:8000/v1"}
 
 
+def test_resolve_driver_adapter_passes_context_window_to_vllm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """harness-zk3c: --context-window should set VllmAdapter.context_window
+    so a server relaunched at a larger --max-model-len is actually used."""
+    seen: dict[str, Any] = {}
+
+    class _FakeVllm:
+        def __init__(self, **kwargs: Any) -> None:
+            seen.update(kwargs)
+
+    import harness.model.vllm as vllm_mod
+
+    monkeypatch.setattr(vllm_mod, "VllmAdapter", _FakeVllm)
+    cli_mod._resolve_driver_adapter(
+        "vllm",
+        model_repo="http://gx10-5fb9:8000/v1",
+        lora_path=None,
+        draft_repo=None,
+        context_window=65536,
+    )
+    assert seen == {"base_url": "http://gx10-5fb9:8000/v1", "context_window": 65536}
+
+
+def test_resolve_driver_adapter_rejects_context_window_with_non_vllm() -> None:
+    """harness-zk3c: --context-window is vLLM-only; reject it for other
+    backends rather than silently ignoring it."""
+    import typer
+
+    with pytest.raises(typer.BadParameter):
+        cli_mod._resolve_driver_adapter(
+            "mlx",
+            model_repo=None,
+            lora_path=None,
+            draft_repo=None,
+            context_window=65536,
+        )
+
+
 # --- harness drive logs (harness-830a) ------------------------------
 
 

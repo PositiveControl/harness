@@ -598,6 +598,13 @@ def auto_iterate_command(
     model_repo: str | None = typer.Option(None, "--model-repo"),
     lora_path: str | None = typer.Option(None, "--lora-path"),
     draft_repo: str | None = typer.Option(None, "--draft-repo"),
+    context_window: int | None = typer.Option(
+        None,
+        "--context-window",
+        help="Override the adapter context window (vLLM only). Set this to match "
+        "a server relaunched with a larger --max-model-len so the critic budgets "
+        "against the real window (harness-zk3c). Default: adapter's own (vLLM 32768).",
+    ),
     character_path: Path = typer.Option(Path("./character/airton"), "--character"),
     allow_dirty: bool = typer.Option(False, "--allow-dirty"),
     allow_missing_smoke: bool = typer.Option(False, "--allow-missing-smoke"),
@@ -643,6 +650,7 @@ def auto_iterate_command(
         model_repo=model_repo,
         lora_path=lora_path,
         draft_repo=draft_repo,
+        context_window=context_window,
     )
     character = load_character(character_path)
     bd = DriverBd(bd_dir=workspace)
@@ -739,6 +747,7 @@ def _resolve_driver_adapter(
     model_repo: str | None,
     lora_path: str | None,
     draft_repo: str | None,
+    context_window: int | None = None,
 ) -> ModelAdapter:
     """Driver-scoped adapter resolver (harness-gu6k). Mirrors the
     relevant subset of cli._resolve_adapter:
@@ -754,7 +763,9 @@ def _resolve_driver_adapter(
         raise typer.BadParameter("--lora-path requires --model mlx.")
     if draft_repo and validated != "mlx":
         raise typer.BadParameter("--draft-repo requires --model mlx.")
-    if not (model_repo or lora_path or draft_repo):
+    if context_window is not None and validated != "vllm":
+        raise typer.BadParameter("--context-window requires --model vllm.")
+    if not (model_repo or lora_path or draft_repo or context_window):
         return make_adapter(validated)
     if validated == "mlx":
         from harness.model.mlx import MLXAdapter
@@ -774,7 +785,12 @@ def _resolve_driver_adapter(
     if validated == "vllm":
         from harness.model.vllm import VllmAdapter
 
-        return VllmAdapter(base_url=model_repo) if model_repo else VllmAdapter()
+        vllm_kwargs: dict[str, object] = {}
+        if model_repo:
+            vllm_kwargs["base_url"] = model_repo
+        if context_window is not None:
+            vllm_kwargs["context_window"] = context_window
+        return VllmAdapter(**vllm_kwargs)  # type: ignore[arg-type]
     # echo: model_repo not meaningful; refuse rather than silently ignore.
     raise typer.BadParameter(
         f"--model-repo not supported for --model {validated}; use mlx, ollama, or vllm."

@@ -199,6 +199,19 @@ def test_snapshot_drops_files_over_size_cap(tmp_path: Path) -> None:
     assert "vendor.js" not in snap
 
 
+def test_snapshot_skips_generated_report_dirs(tmp_path: Path) -> None:
+    """Generated coverage reports etc. must not be snapshotted — they're
+    not source and they blew the context window (harness-zk3c)."""
+    (tmp_path / "htmlcov").mkdir()
+    (tmp_path / "htmlcov" / "index.html").write_text("<html>coverage</html>")
+    (tmp_path / "htmlcov" / "snake_py.html").write_text("<html>big</html>")
+    (tmp_path / ".pytest_cache").mkdir()
+    (tmp_path / ".pytest_cache" / "junk.py").write_text("cache")
+    (tmp_path / "snake_game.py").write_text("real source")
+    snap = _snapshot_source_files(tmp_path)
+    assert snap == {"snake_game.py": "real source"}
+
+
 def test_snapshot_recurses_into_subdirectories(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "game.js").write_text("nested")

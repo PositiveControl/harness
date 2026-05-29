@@ -81,6 +81,15 @@ _REFUTED_RE = re.compile(r"\bREFUTED\b", re.IGNORECASE)
 # generic to ground a finding (a bare "});" would match almost any
 # window) — reject it (harness-mur6).
 _CODE_QUOTE_MIN = 6
+# Context-budget tuning (harness-zk3c). Code/HTML tokenizes denser than
+# prose; a GTA critic prompt of 80,231 chars measured ~28,654 tok
+# (~2.8 chars/tok). Use 2.6 so we under-fill the window rather than risk
+# an overflow that fails the whole pass.
+_CHARS_PER_TOKEN = 2.6
+# Per-line cost added by _user_prompt's line numbering ("{n:>5} | ").
+_LINE_NUMBER_OVERHEAD = 8
+# Fixed token reserve for the system prompt + closed/open lists + framing.
+_PROMPT_OVERHEAD_TOKENS = 900
 
 
 class CriticAdapterError(RuntimeError):
@@ -136,6 +145,70 @@ def _system_prompt() -> str:
         "Output: a single JSON array. No prose before or after. If no bugs "
         "are found, emit an empty array `[]`."
     )
+
+
+def critic_char_budget(*, context_window: int, max_tokens: int, spec_text: str | None) -> int:
+    """Chars available for the line-numbered workspace snapshot in the
+    critic prompt (harness-zk3c). Reserves the output budget, the spec,
+    and a fixed system/framing slack, then converts the remaining token
+    budget to chars conservatively so the prompt under-fills the window
+    rather than risking an overflow that fails the whole pass."""
+    usable_tokens = context_window - max_tokens - _PROMPT_OVERHEAD_TOKENS
+    usable_chars = int(max(0, usable_tokens) * _CHARS_PER_TOKEN)
+    return max(0, usable_chars - len(spec_text or ""))
+
+
+def _numbered_cost(text: str) -> int:
+    """Char cost of `text` once `_user_prompt` line-numbers it."""
+    return len(text) + _LINE_NUMBER_OVERHEAD * (text.count("\n") + 1)
+
+
+def _truncate_to_lines(text: str, char_budget: int) -> str:
+    """Longest whole-line prefix of `text` whose numbered cost fits
+    `char_budget`. Empty when not even the first line fits. Truncating
+    from the end keeps line numbers accurate for the kept prefix."""
+    if char_budget <= 0:
+        return ""
+    out: list[str] = []
+    used = 0
+    for line in text.split("\n"):
+        cost = len(line) + 1 + _LINE_NUMBER_OVERHEAD  # +1 for the newline
+        if used + cost > char_budget:
+            break
+        out.append(line)
+        used += cost
+    return "\n".join(out)
+
+
+def budget_snapshot(
+    snapshot: Mapping[str, str], *, char_budget: int
+) -> tuple[dict[str, str], list[str]]:
+    """Trim `snapshot` so its line-numbered rendering fits `char_budget`
+    (harness-zk3c). Keeps whole files in path order until the budget is
+    reached; truncates the file that would overflow to its first lines
+    that fit; drops any remaining files. Returns ``(kept, notes)`` where
+    `notes` names every truncation/drop so the caller can surface it —
+    no silent truncation."""
+    kept: dict[str, str] = {}
+    notes: list[str] = []
+    used = 0
+    for path in sorted(snapshot):
+        text = snapshot[path]
+        cost = _numbered_cost(text)
+        if used + cost <= char_budget:
+            kept[path] = text
+            used += cost
+            continue
+        prefix = _truncate_to_lines(text, char_budget - used)
+        total_lines = text.count("\n") + 1
+        if prefix:
+            kept[path] = prefix
+            used += _numbered_cost(prefix)
+            dropped = total_lines - (prefix.count("\n") + 1)
+            notes.append(f"{path}: truncated, dropped last {dropped} of {total_lines} lines")
+        else:
+            notes.append(f"{path}: dropped ({total_lines} lines, no room)")
+    return kept, notes
 
 
 def _user_prompt(
@@ -531,4 +604,10 @@ def run_critic(
     return out
 
 
-__all__ = ["CriticAdapterError", "CriticFinding", "run_critic"]
+__all__ = [
+    "CriticAdapterError",
+    "CriticFinding",
+    "budget_snapshot",
+    "critic_char_budget",
+    "run_critic",
+]

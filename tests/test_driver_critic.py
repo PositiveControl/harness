@@ -16,10 +16,13 @@ from harness.driver.critic import (
     _finding_is_grounded,
     _locate_citation,
     _normalize_title,
+    _numbered_cost,
     _parse_findings,
     _parse_verdict,
     _title_matches_any,
     _validate_finding,
+    budget_snapshot,
+    critic_char_budget,
     run_critic,
 )
 from harness.model.adapter import ChatMessage
@@ -267,6 +270,54 @@ def test_validate_finding_code_quote_matches_within_window() -> None:
     raw = _finding_dict(evidence_path="game.js:42", code_quote="line 46")
     finding = _validate_finding(raw, spec_text=_SPEC, workspace_snapshot=_SNAP, open_titles=())
     assert isinstance(finding, CriticFinding)
+
+
+# ---- context budget (harness-zk3c) -------------------------------------
+
+
+def test_critic_char_budget_reserves_output_and_spec() -> None:
+    no_spec = critic_char_budget(context_window=32768, max_tokens=4096, spec_text=None)
+    with_spec = critic_char_budget(context_window=32768, max_tokens=4096, spec_text="x" * 1000)
+    assert no_spec > 0
+    assert with_spec == no_spec - 1000  # spec chars come straight off the budget
+    # A bigger window grants a bigger budget.
+    bigger = critic_char_budget(context_window=65536, max_tokens=4096, spec_text=None)
+    assert bigger > no_spec
+
+
+def test_critic_char_budget_floors_at_zero() -> None:
+    # Output reserve alone exceeds a tiny window → no room for source.
+    assert critic_char_budget(context_window=100, max_tokens=4096, spec_text=None) == 0
+
+
+def test_budget_snapshot_keeps_everything_under_budget() -> None:
+    snap = {"a.js": "x\n" * 10, "b.js": "y\n" * 10}
+    kept, notes = budget_snapshot(snap, char_budget=100_000)
+    assert kept == snap
+    assert notes == []
+
+
+def test_budget_snapshot_truncates_overflow_file_on_line_boundary() -> None:
+    big = "\n".join(f"line{i}" for i in range(100))  # 100 lines
+    kept, notes = budget_snapshot({"big.js": big}, char_budget=200)
+    assert "big.js" in kept
+    kept_lines = kept["big.js"].count("\n") + 1
+    assert kept_lines < 100  # truncated
+    # Kept prefix is a whole-line prefix (line numbers stay accurate).
+    assert big.startswith(kept["big.js"])
+    assert any("truncated" in n for n in notes)
+
+
+def test_budget_snapshot_drops_later_files_when_budget_spent() -> None:
+    first = "\n".join(f"a{i}" for i in range(40))
+    second = "\n".join(f"b{i}" for i in range(40))
+    # Budget fits exactly the first file's numbered cost.
+    kept, notes = budget_snapshot(
+        {"a.js": first, "b.js": second}, char_budget=_numbered_cost(first)
+    )
+    assert "a.js" in kept
+    assert "b.js" not in kept
+    assert any(n.startswith("b.js") and "dropped" in n for n in notes)
 
 
 # ---- run_critic --------------------------------------------------------

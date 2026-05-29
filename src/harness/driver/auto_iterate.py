@@ -23,13 +23,20 @@ isn't enough — a transient model whiff would false-converge. A hard
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
 from harness.driver.bd import DriverBd, DriverBdError
-from harness.driver.critic import CriticAdapterError, CriticFinding, run_critic
+from harness.driver.critic import (
+    CriticAdapterError,
+    CriticFinding,
+    budget_snapshot,
+    critic_char_budget,
+    run_critic,
+)
 from harness.driver.loop import LoopConfig, LoopResult, ambient_vllm_trace, run_loop
 from harness.model.adapter import ModelAdapter
 
@@ -51,6 +58,21 @@ _EXCLUDE_DIRS: frozenset[str] = frozenset(
         ".venv",
         "dist",
         "build",
+        # Generated reports / tool caches (harness-zk3c). These carry no
+        # source the critic should review and — being large generated
+        # HTML/JS/CSS — blew the context window (snake htmlcov was ~115 KB
+        # of a ~120 KB snapshot, vs ~6 KB of actual code).
+        "htmlcov",
+        "coverage",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".nyc_output",
+        ".next",
+        ".svelte-kit",
+        "site-packages",
+        "target",
     }
 )
 # Bytes-per-file ceiling on the workspace snapshot. A single file over
@@ -250,6 +272,18 @@ def run_auto_iterate(
         # change the spec. Workspace snapshot IS recomputed per pass
         # (the drive just wrote to it).
         snapshot = _snapshot_source_files(config.loop_config.workspace)
+        # Budget the snapshot against the model context window so a large
+        # workspace (or one bloated by line numbering) doesn't overflow and
+        # fail the whole pass (harness-zk3c). Trims are surfaced — never
+        # silent — so the operator knows the critic didn't see everything.
+        char_budget = critic_char_budget(
+            context_window=adapter.context_window,
+            max_tokens=config.critic_max_tokens,
+            spec_text=spec_text,
+        )
+        snapshot, trim_notes = budget_snapshot(snapshot, char_budget=char_budget)
+        for note in trim_notes:
+            print(f"critic: context budget — {note}", file=sys.stderr)
         dedup_titles = _dedup_titles_under_epic(bd, epic_id)
         try:
             # harness-5t0a: wrap the critic in the same ambient trace as the
