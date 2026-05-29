@@ -79,6 +79,16 @@ _GROUNDED_RE = re.compile(r"\bGROUNDED\b", re.IGNORECASE)
 _REFUTED_RE = re.compile(r"\bREFUTED\b", re.IGNORECASE)
 
 
+class CriticAdapterError(RuntimeError):
+    """Raised when an adapter call inside the critic fails (transport,
+    timeout, HTTP, OOM — anything `adapter.complete` throws). Distinct
+    from "the model responded but produced no valid findings": the
+    latter returns an empty list, this signals the model was never
+    reached. The auto-iterate loop must treat it as a failed pass, NOT a
+    clean/empty one, so an endpoint outage can't masquerade as
+    convergence (harness-fote)."""
+
+
 @dataclass(frozen=True)
 class CriticFinding:
     """One critic-proposed bug. Maps onto a bd create call in the
@@ -383,8 +393,10 @@ def _finding_is_grounded(
     ]
     try:
         raw = adapter.complete(messages, max_tokens=max_tokens, temperature=temperature)
-    except Exception:
-        return False
+    except Exception as exc:  # transport/model failure — an outage, not a verdict.
+        raise CriticAdapterError("verify call failed") from exc
+    # A successful-but-unconfirmed response (no explicit GROUNDED) is still
+    # a default-reject — that's a real model verdict, not a failure.
     return _parse_verdict(raw)
 
 
@@ -406,10 +418,14 @@ def run_critic(
     return the subset of findings that pass `_validate_finding` and the
     grounding-verify gate.
 
-    Silent on every failure mode (adapter raises, model emits non-JSON,
-    every finding is invalid) — the auto-iterate loop's contract is
-    "critic returned no findings ⇒ this pass is empty". The same
-    contract holds when the critic genuinely sees no bugs.
+    Returns an empty list when the model RESPONDS but produces nothing
+    usable (non-JSON, every finding invalid) — that is a real "no bugs
+    found" signal and the auto-iterate loop counts it toward
+    convergence. But an adapter FAILURE (transport/timeout/HTTP/OOM —
+    `adapter.complete` raising) propagates as `CriticAdapterError`: the
+    model was never reached, so the loop must treat it as a failed pass,
+    not a clean one (harness-fote). Conflating the two let an endpoint
+    outage masquerade as convergence.
 
     `temperature=0.2` is low enough that the model commits to its
     grounded findings rather than improvising, high enough that it
@@ -435,8 +451,8 @@ def run_critic(
     ]
     try:
         raw = adapter.complete(messages, max_tokens=max_tokens, temperature=temperature)
-    except Exception:
-        return []
+    except Exception as exc:  # transport/model failure — propagate, don't fake "no bugs".
+        raise CriticAdapterError("critic generation call failed") from exc
     candidates = _parse_findings(raw)
     out: list[CriticFinding] = []
     for c in candidates[: max_findings * 2]:  # cap input before the validator
@@ -461,4 +477,4 @@ def run_critic(
     return out
 
 
-__all__ = ["CriticFinding", "run_critic"]
+__all__ = ["CriticAdapterError", "CriticFinding", "run_critic"]

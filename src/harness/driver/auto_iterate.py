@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Literal
 
 from harness.driver.bd import DriverBd, DriverBdError
-from harness.driver.critic import CriticFinding, run_critic
+from harness.driver.critic import CriticAdapterError, CriticFinding, run_critic
 from harness.driver.loop import LoopConfig, LoopResult, run_loop
 from harness.model.adapter import ModelAdapter
 
@@ -93,7 +93,7 @@ class AutoIterateResult:
     passes_run: int
     drive_results: list[LoopResult]
     critic_findings_total: int
-    exit_reason: Literal["converged", "passes_exhausted", "drive_halted"]
+    exit_reason: Literal["converged", "passes_exhausted", "drive_halted", "critic_failed"]
     filed_beads: list[str] = field(default_factory=list)
 
 
@@ -250,17 +250,28 @@ def run_auto_iterate(
         # (the drive just wrote to it).
         snapshot = _snapshot_source_files(config.loop_config.workspace)
         dedup_titles = _dedup_titles_under_epic(bd, epic_id)
-        findings = run_critic(
-            adapter=adapter,
-            spec_text=spec_text,
-            workspace_snapshot=snapshot,
-            closed_this_run=tuple(drive_result.closed),
-            open_under_epic=dedup_titles,
-            max_findings=config.critic_max_findings,
-            max_tokens=config.critic_max_tokens,
-            temperature=config.critic_temperature,
-            verify_grounding=config.critic_verify_grounding,
-        )
+        try:
+            findings = run_critic(
+                adapter=adapter,
+                spec_text=spec_text,
+                workspace_snapshot=snapshot,
+                closed_this_run=tuple(drive_result.closed),
+                open_under_epic=dedup_titles,
+                max_findings=config.critic_max_findings,
+                max_tokens=config.critic_max_tokens,
+                temperature=config.critic_temperature,
+                verify_grounding=config.critic_verify_grounding,
+            )
+        except CriticAdapterError:
+            # The model was never reached this pass. Surface it — do NOT
+            # let a silent [] feed the convergence streak (harness-fote).
+            return AutoIterateResult(
+                passes_run=pass_index + 1,
+                drive_results=drive_results,
+                critic_findings_total=findings_total,
+                exit_reason="critic_failed",
+                filed_beads=filed_beads,
+            )
 
         if not findings:
             empty_streak += 1

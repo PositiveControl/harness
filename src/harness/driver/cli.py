@@ -694,6 +694,11 @@ def _auto_iterate_exit_code(result: AutoIterateResult) -> int:
         return 0
     if result.exit_reason == "drive_halted":
         return 1
+    if result.exit_reason == "critic_failed":
+        # The critic's model call failed (outage/timeout) — distinct from a
+        # clean finish. Non-zero so a wrapper retries rather than trusting
+        # a false "converged" (harness-fote).
+        return 3
     # passes_exhausted: ran out of budget with critic still finding bugs.
     # Surface as non-zero so a CI / cron wrapper sees the unfinished state.
     return 2

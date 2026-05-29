@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 
+import pytest
+
 from harness.driver.critic import (
+    CriticAdapterError,
     CriticFinding,
     _citation_in_workspace,
     _evidence_window,
@@ -293,16 +296,33 @@ def test_run_critic_drops_invalid_keeps_valid() -> None:
     assert findings[0].title == "HUD rendered under camera transform"
 
 
-def test_run_critic_returns_empty_on_adapter_error() -> None:
+def test_run_critic_raises_on_adapter_error() -> None:
+    """An adapter failure must NOT be swallowed as 'no bugs found' — it
+    propagates as CriticAdapterError so the loop can't false-converge on
+    an outage (harness-fote)."""
     adapter = _StubAdapter(RuntimeError("model unavailable"))
-    findings = run_critic(
-        adapter=adapter,
-        spec_text=_SPEC,
-        workspace_snapshot=_SNAP,
-        closed_this_run=(),
-        open_under_epic=(),
-    )
-    assert findings == []
+    with pytest.raises(CriticAdapterError):
+        run_critic(
+            adapter=adapter,
+            spec_text=_SPEC,
+            workspace_snapshot=_SNAP,
+            closed_this_run=(),
+            open_under_epic=(),
+        )
+
+
+def test_run_critic_raises_when_verify_call_fails() -> None:
+    """A failure on the per-finding verify call also propagates — the
+    generation succeeded but the model became unreachable mid-pass."""
+    adapter = _SeqAdapter([json.dumps([_finding_dict()]), RuntimeError("verify down")])
+    with pytest.raises(CriticAdapterError):
+        run_critic(
+            adapter=adapter,
+            spec_text=_SPEC,
+            workspace_snapshot=_SNAP,
+            closed_this_run=(),
+            open_under_epic=(),
+        )
 
 
 def test_run_critic_returns_empty_on_non_json_output() -> None:
@@ -409,7 +429,7 @@ class _SeqAdapter:
     id = "seq"
     context_window = 32000
 
-    def __init__(self, responses: list[str]) -> None:
+    def __init__(self, responses: list[str | Exception]) -> None:
         self._responses = list(responses)
         self.calls: list[list[ChatMessage]] = []
 
@@ -421,7 +441,10 @@ class _SeqAdapter:
         temperature: float = 0.7,
     ) -> str:
         self.calls.append(list(messages))
-        return self._responses.pop(0)
+        item = self._responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
 def test_parse_verdict_grounded() -> None:
@@ -517,15 +540,20 @@ def test_finding_is_grounded_rejects_when_no_window() -> None:
     )
 
 
-def test_finding_is_grounded_rejects_on_adapter_error() -> None:
+def test_finding_is_grounded_raises_on_adapter_error() -> None:
+    """A verify-call adapter failure propagates as CriticAdapterError —
+    an outage is not a silent default-reject (harness-fote). (A
+    successful-but-unconfirmed response still default-rejects; that's the
+    REFUTED/no-keyword path, covered separately.)"""
     adapter = _StubAdapter(RuntimeError("model down"))
-    assert not _finding_is_grounded(
-        adapter,
-        _validate_finding_ok(),
-        _SNAP,
-        max_tokens=64,
-        temperature=0.0,
-    )
+    with pytest.raises(CriticAdapterError):
+        _finding_is_grounded(
+            adapter,
+            _validate_finding_ok(),
+            _SNAP,
+            max_tokens=64,
+            temperature=0.0,
+        )
 
 
 def test_run_critic_verify_gate_drops_refuted_finding() -> None:

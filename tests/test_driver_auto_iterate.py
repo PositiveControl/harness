@@ -17,7 +17,7 @@ from harness.driver.auto_iterate import (
     run_auto_iterate,
 )
 from harness.driver.bd import DriverBdError
-from harness.driver.critic import CriticFinding
+from harness.driver.critic import CriticAdapterError, CriticFinding
 from harness.driver.loop import LoopConfig, LoopResult
 from harness.store._bd_types import BeadsIssue
 
@@ -341,6 +341,31 @@ def test_run_auto_iterate_exits_drive_halted(
     assert result.exit_reason == "drive_halted"
     assert result.passes_run == 1
     assert critic_calls[0] == 0
+
+
+def test_run_auto_iterate_exits_critic_failed_without_feeding_streak(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A CriticAdapterError (model unreachable) exits critic_failed on the
+    first pass — it must NOT be treated as an empty pass that feeds the
+    convergence streak (harness-fote)."""
+    bd = _FakeBd(issues={"harness-epic": _issue("harness-epic", title="GTAII")})
+    cfg = _config(tmp_path, max_passes=8, convergence_streak=2)
+
+    monkeypatch.setattr(
+        "harness.driver.auto_iterate.run_loop",
+        lambda _a, _b, _c: _loop_result(closed=["harness-x"]),
+    )
+
+    def critic_raises(**_: Any) -> list[CriticFinding]:
+        raise CriticAdapterError("model unreachable")
+
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", critic_raises)
+
+    result = run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+    assert result.exit_reason == "critic_failed"
+    assert result.passes_run == 1  # bailed on the first failed pass
+    assert result.critic_findings_total == 0
 
 
 def test_run_auto_iterate_files_and_autoblocks_findings(
