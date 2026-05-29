@@ -76,6 +76,7 @@ from harness.tools import (
     ListDirTool,
     LoadToolTool,
     NowTool,
+    OutlineTool,
     ReadFileTool,
     ShellTool,
     Tool,
@@ -140,6 +141,7 @@ def _read_only_tools(workspace: Path) -> dict[str, Tool]:
     (shell can have side effects via redirects)."""
     return {
         "read_file": ReadFileTool(root=workspace),
+        "outline": OutlineTool(root=workspace),
         "list_dir": ListDirTool(root=workspace),
         "grep": GrepTool(root=workspace),
         "glob": GlobTool(root=workspace),
@@ -232,6 +234,19 @@ def _build_phase_registry(
 # --- per-phase user messages --------------------------------------
 
 
+# Read-strategy steering (harness-nfzw). The symbol-aware read tools
+# (outline + read_file symbol=) are registered in every read-capable
+# phase, but the model defaults to offset/limit out of habit unless told
+# otherwise. Appended to the phases that actually read code.
+_READ_STRATEGY_HINT = (
+    "\n\nWhen reading code, prefer `outline <path>` to map a file's "
+    "functions/classes, then `read_file <path> symbol=<name>` "
+    "(e.g. symbol='Foo.bar') to read a whole function or class. Avoid "
+    "blind `offset`/`limit` line ranges on source files — they tend to "
+    "return half a function."
+)
+
+
 _PHASE_INSTRUCTIONS: Mapping[TurnPhase, str] = {
     TurnPhase.ASSESS: (
         "You are in the ASSESS phase.\n\n"
@@ -253,7 +268,7 @@ _PHASE_INSTRUCTIONS: Mapping[TurnPhase, str] = {
         "  - approach: how you plan to close the gap\n"
         "Set tdd_applicable=false ONLY when the issue genuinely admits "
         "no unit test (UI tweak, docs); justify in the approach field. "
-        "Do NOT modify files in this phase — you don't have edit tools."
+        "Do NOT modify files in this phase — you don't have edit tools." + _READ_STRATEGY_HINT
     ),
     TurnPhase.WRITE_TEST: (
         "You are in the WRITE_TEST phase. Write a failing test that "
@@ -275,7 +290,7 @@ _PHASE_INSTRUCTIONS: Mapping[TurnPhase, str] = {
         "registered for this issue.\n"
         "If you wrote a test in WRITE_TEST, your implementation must "
         "make that exact test pass. Do NOT modify the test to make it "
-        "pass — that defeats the purpose of TDD."
+        "pass — that defeats the purpose of TDD." + _READ_STRATEGY_HINT
     ),
     TurnPhase.VERIFY: (
         "You are in the VERIFY phase. The driver will execute the "

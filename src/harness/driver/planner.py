@@ -64,6 +64,7 @@ from harness.orchestrator import ToolLoopEvent, run_tool_loop
 from harness.tools import (
     GlobTool,
     GrepTool,
+    OutlineTool,
     ReadFileTool,
     ToolCatalog,
     ToolRegistry,
@@ -418,6 +419,11 @@ Granularity rules:
   - Do NOT add items that aren't in the spec. The spec_quote is your
     contract; the validator rejects items whose quotes don't appear
     in the source.
+
+When you inspect EXISTING code to scope an item (not the spec itself),
+prefer `outline <path>` to see a file's functions/classes, then
+`read_file <path> symbol=<name>` to read a specific one — avoid blind
+`offset`/`limit` line ranges on source files.
 """
 
 
@@ -746,6 +752,7 @@ def _build_planner_registry(workspace: Path, state: _PlannerState) -> ToolRegist
     seed_builtins_into(catalog, now_iso="")
     registry = ToolRegistry(catalog=catalog)
     registry.register(ReadFileTool(root=workspace))
+    registry.register(OutlineTool(root=workspace))
     registry.register(GrepTool(root=workspace))
     registry.register(GlobTool(root=workspace))
     registry.register(PlanAddTool(state))

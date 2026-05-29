@@ -110,6 +110,7 @@ from harness.tools import (
     ListDirTool,
     LoadToolTool,
     NowTool,
+    OutlineTool,
     PythonStreamTool,
     ReadFileTool,
     ShellTool,
@@ -136,7 +137,12 @@ EXECUTOR_USER_MESSAGE = (
     "after the issue and only waste your round budget. "
     "Execute commands directly — do NOT echo intent strings or dry-runs. A "
     'shell `echo "Would run: bd close …"` or `echo "…closed…"` does nothing '
-    "and is invisible to the loop; run `bd close <issue-id>` for real."
+    "and is invisible to the loop; run `bd close <issue-id>` for real. "
+    "To read code, prefer `outline <path>` to map a file's functions/classes "
+    "cheaply, then `read_file <path> symbol=<name>` (e.g. symbol='Foo.bar') to "
+    "pull a whole function or class. Reach for `read_file` offset/limit line "
+    "ranges only for non-code files or when you already know the exact lines — "
+    "blind line ranges tend to return half a function."
 )
 
 
@@ -1506,6 +1512,7 @@ def _build_executor_registry(workspace: Path) -> ToolRegistry:
 
     builders: dict[str, Tool] = {
         "read_file": ReadFileTool(root=workspace),
+        "outline": OutlineTool(root=workspace),
         "list_dir": ListDirTool(root=workspace),
         "grep": GrepTool(root=workspace),
         "glob": GlobTool(root=workspace),
