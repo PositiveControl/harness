@@ -43,6 +43,7 @@ def _finding_dict(**overrides: object) -> dict[str, object]:
         "priority": 0,
         "spec_quote": "both must update the same map",
         "evidence_path": "game.js:42",
+        "code_quote": "line 42",  # verbatim _GAME_SOURCE content at game.js:42
     }
     base.update(overrides)
     return base
@@ -226,6 +227,48 @@ def test_validate_finding_accepts_citation_in_description_only() -> None:
     assert isinstance(finding, CriticFinding)
 
 
+# ---- code_quote grounding gate (harness-mur6) --------------------------
+
+
+def test_validate_finding_drops_missing_code_quote() -> None:
+    """A finding with no code_quote is invalid — the model must copy the
+    real source at the cited line."""
+    raw = _finding_dict()
+    del raw["code_quote"]
+    assert _validate_finding(raw, spec_text=_SPEC, workspace_snapshot=_SNAP, open_titles=()) is None
+
+
+def test_validate_finding_drops_fabricated_code_quote() -> None:
+    """code_quote that doesn't appear near the cited line is dropped — the
+    model cited a real line but invented what's on it (the harness-lpsq
+    fabrication mode)."""
+    raw = _finding_dict(code_quote="if (tile === '=') { passThroughBuilding(); }")
+    assert _validate_finding(raw, spec_text=_SPEC, workspace_snapshot=_SNAP, open_titles=()) is None
+
+
+def test_validate_finding_drops_too_short_code_quote() -> None:
+    """A trivially short quote can't ground a finding."""
+    raw = _finding_dict(code_quote="});")
+    assert _validate_finding(raw, spec_text=_SPEC, workspace_snapshot=_SNAP, open_titles=()) is None
+
+
+def test_validate_finding_code_quote_tolerates_whitespace() -> None:
+    """Indentation / spacing differences don't matter — match is
+    whitespace-normalized."""
+    raw = _finding_dict(code_quote="   line    42   ")
+    finding = _validate_finding(raw, spec_text=_SPEC, workspace_snapshot=_SNAP, open_titles=())
+    assert isinstance(finding, CriticFinding)
+    assert finding.code_quote == "line    42"  # stored stripped, not normalized
+
+
+def test_validate_finding_code_quote_matches_within_window() -> None:
+    """code_quote need not be exactly on the cited line — anywhere in the
+    +/- _VERIFY_WINDOW band counts (the model often cites a block head)."""
+    raw = _finding_dict(evidence_path="game.js:42", code_quote="line 46")
+    finding = _validate_finding(raw, spec_text=_SPEC, workspace_snapshot=_SNAP, open_titles=())
+    assert isinstance(finding, CriticFinding)
+
+
 # ---- run_critic --------------------------------------------------------
 
 
@@ -276,6 +319,7 @@ def test_run_critic_drops_invalid_keeps_valid() -> None:
             title="HUD rendered under camera transform",
             description="HUD draws at world coords; see game.js:100",
             evidence_path="game.js:100",
+            code_quote="line 100",
         ),
         _finding_dict(  # bad citation
             title="Wanted level starts at 5",
@@ -344,6 +388,7 @@ def test_run_critic_caps_at_max_findings() -> None:
             title=f"distinct bug #{i:02d}",
             description=f"see game.js:{i + 10}",
             evidence_path=f"game.js:{i + 10}",
+            code_quote=f"line {i + 10}",
         )
         for i in range(20)
     ]
@@ -412,6 +457,7 @@ def test_run_critic_prompt_includes_spec_and_workspace() -> None:
     assert "[SPEC]" in user
     assert "Pressing Escape toggles paused" in user
     assert "=== game.js ===" in user
+    assert "   42 | line 42" in user  # source is line-numbered (harness-mur6)
     assert "[CLOSED THIS RUN]" in user
     assert "- a" in user
     assert "[ALREADY OPEN UNDER EPIC]" in user
@@ -488,6 +534,7 @@ def test_evidence_window_none_when_citation_unresolvable() -> None:
         priority=2,
         spec_quote="",
         evidence_path="ghost.js",
+        code_quote="irrelevant",
     )
     assert _evidence_window(finding, _SNAP) is None
 
@@ -530,6 +577,7 @@ def test_finding_is_grounded_rejects_when_no_window() -> None:
         priority=2,
         spec_quote="",
         evidence_path="ghost.js",
+        code_quote="irrelevant",
     )
     assert not _finding_is_grounded(
         adapter,

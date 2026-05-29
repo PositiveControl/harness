@@ -186,6 +186,7 @@ def _file_critic_finding(
     description = (
         f"{finding.description}\n\n"
         f"evidence: {finding.evidence_path}\n"
+        f"code-quote: {finding.code_quote!r}\n"
         f"spec-quote: {finding.spec_quote!r}"
     )
     labels = (f"critic:{loop_run_id}",)

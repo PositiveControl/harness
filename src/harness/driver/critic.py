@@ -77,6 +77,10 @@ _VERIFY_WINDOW = 6
 # absence of GROUNDED is a reject (default-reject contract).
 _GROUNDED_RE = re.compile(r"\bGROUNDED\b", re.IGNORECASE)
 _REFUTED_RE = re.compile(r"\bREFUTED\b", re.IGNORECASE)
+# Minimum normalized length of a code_quote. Below this a quote is too
+# generic to ground a finding (a bare "});" would match almost any
+# window) — reject it (harness-mur6).
+_CODE_QUOTE_MIN = 6
 
 
 class CriticAdapterError(RuntimeError):
@@ -101,25 +105,34 @@ class CriticFinding:
     priority: int
     spec_quote: str
     evidence_path: str  # "<file>:<line>"
+    code_quote: str  # verbatim source at evidence_path that exhibits the bug
 
 
 def _system_prompt() -> str:
     return (
         "You are a code critic. The workspace below was built to satisfy "
-        "the SPEC. Find runtime/behavioral bugs that `node --check` and a "
-        "headless smoke-load WOULD NOT catch — wrong logic, broken control "
-        "wiring, mis-ordered draws, dead-code paths, off-by-one, identifier "
+        "the SPEC. It is shown with line numbers (`  NNN | <source>`). Find "
+        "runtime/behavioral bugs that `node --check` and a headless "
+        "smoke-load WOULD NOT catch — wrong logic, broken control wiring, "
+        "mis-ordered draws, dead-code paths, off-by-one, identifier "
         "shadowing that changes behavior, state never updated.\n\n"
+        "Before reporting a bug: find the exact line in the numbered "
+        "listing, read what it actually says, and copy it verbatim. Do not "
+        "guess a line number, and do not describe a bug whose code you "
+        "cannot point to.\n\n"
         "Each finding MUST include:\n"
         "  - title: ~10 words, action-shaped\n"
         "  - description: 1-3 sentences with a `<file>:<line>` citation\n"
         "  - acceptance: one testable sentence\n"
         "  - priority: integer 0..3 (0=critical / blocks gameplay, 3=cosmetic)\n"
         "  - spec_quote: verbatim quote from SPEC, 16-200 chars\n"
-        '  - evidence_path: "<file>:<line>"\n\n'
-        "A finding with no file:line citation OR no verbatim spec_quote is "
-        "INVALID and will be dropped. Do not invent file paths or line "
-        "numbers. Do not paraphrase the spec — copy text exactly.\n\n"
+        '  - evidence_path: "<file>:<line>"\n'
+        "  - code_quote: the actual source at evidence_path, copied "
+        "verbatim from the numbered listing (the line the bug is on)\n\n"
+        "A finding is INVALID and will be dropped if it lacks a file:line "
+        "citation, lacks a verbatim spec_quote, or its code_quote does not "
+        "match the real source at the cited line. Do not invent file "
+        "paths, line numbers, or source text. Copy, don't paraphrase.\n\n"
         "Output: a single JSON array. No prose before or after. If no bugs "
         "are found, emit an empty array `[]`."
     )
@@ -141,7 +154,10 @@ def _user_prompt(
     parts.append("[WORKSPACE]")
     for path in sorted(workspace_snapshot):
         text = workspace_snapshot[path]
-        parts.append(f"=== {path} ===\n{text}")
+        # Line-number the source so the model cites real lines and can copy
+        # the exact code into code_quote, instead of guessing (harness-mur6).
+        numbered = "\n".join(f"{n:>5} | {ln}" for n, ln in enumerate(text.splitlines(), start=1))
+        parts.append(f"=== {path} ===\n{numbered}")
     parts.append("[CLOSED THIS RUN]")
     parts.extend(f"- {t}" for t in closed_this_run) if closed_this_run else parts.append("- (none)")
     parts.append("[ALREADY OPEN UNDER EPIC]")
@@ -239,6 +255,34 @@ def _citation_in_workspace(citation: str, workspace_snapshot: Mapping[str, str])
     return _locate_citation(citation, workspace_snapshot) is not None
 
 
+def _normalize_code(text: str) -> str:
+    """Collapse all whitespace runs to a single space and strip. Lets a
+    code_quote match real source regardless of the model's indentation /
+    line-break fidelity."""
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _code_quote_grounded(
+    code_quote: str,
+    loc: tuple[str, int],
+    workspace_snapshot: Mapping[str, str],
+) -> bool:
+    """True iff the (whitespace-normalized) `code_quote` appears within
+    ``_VERIFY_WINDOW`` lines of the cited line in the actual snapshot
+    (harness-mur6). Forces the model to copy real source at generation
+    time: a fabricated quote isn't in the window, so the finding is
+    dropped before the expensive verify call."""
+    norm_q = _normalize_code(code_quote)
+    if len(norm_q) < _CODE_QUOTE_MIN:
+        return False
+    key, line = loc
+    lines = workspace_snapshot[key].splitlines()
+    lo = max(1, line - _VERIFY_WINDOW)
+    hi = min(len(lines), line + _VERIFY_WINDOW)
+    window = _normalize_code("\n".join(lines[lo - 1 : hi]))
+    return norm_q in window
+
+
 def _validate_finding(
     raw: dict[str, Any],
     *,
@@ -255,6 +299,7 @@ def _validate_finding(
     priority_raw = raw.get("priority")
     spec_quote_raw = raw.get("spec_quote", "")
     evidence_path = raw.get("evidence_path")
+    code_quote_raw = raw.get("code_quote", "")
 
     # Type checks first — anything malformed is out.
     if not isinstance(title, str) or not title.strip():
@@ -267,15 +312,23 @@ def _validate_finding(
         return None
     if not isinstance(priority_raw, int) or not 0 <= priority_raw <= 3:
         return None
+    if not isinstance(code_quote_raw, str) or not code_quote_raw.strip():
+        return None
     spec_quote = spec_quote_raw if isinstance(spec_quote_raw, str) else ""
 
-    # Citation must resolve in the workspace snapshot. Check both the
-    # explicit evidence_path field AND any citation embedded in the
+    # Citation must resolve in the workspace snapshot. Check the explicit
+    # evidence_path field first, then any citation embedded in the
     # description (the model sometimes only puts it in the prose).
-    if not (
-        _citation_in_workspace(evidence_path, workspace_snapshot)
-        or _citation_in_workspace(description, workspace_snapshot)
-    ):
+    loc = _locate_citation(evidence_path, workspace_snapshot) or _locate_citation(
+        description, workspace_snapshot
+    )
+    if loc is None:
+        return None
+
+    # Generation-time grounding (harness-mur6): the model must have copied
+    # the real source at the cited line. A fabricated bug at a guessed line
+    # can't produce a code_quote that's actually in the window.
+    if not _code_quote_grounded(code_quote_raw, loc, workspace_snapshot):
         return None
 
     # Spec-quote gate. Skipped when no spec was supplied — without a
@@ -299,6 +352,7 @@ def _validate_finding(
         priority=priority_raw,
         spec_quote=spec_quote.strip(),
         evidence_path=evidence_path.strip(),
+        code_quote=code_quote_raw.strip(),
     )
 
 

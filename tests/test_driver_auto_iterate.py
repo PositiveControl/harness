@@ -114,6 +114,7 @@ def _finding(
     priority: int = 0,
     spec_quote: str = "both must update the same map",
     evidence_path: str = "game.js:42",
+    code_quote: str = "keyStates[e.key] = true",
 ) -> CriticFinding:
     return CriticFinding(
         title=title,
@@ -122,6 +123,7 @@ def _finding(
         priority=priority,
         spec_quote=spec_quote,
         evidence_path=evidence_path,
+        code_quote=code_quote,
     )
 
 
