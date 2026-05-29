@@ -12,6 +12,7 @@ from harness.orchestrator.repeat_detector import (
     DEFAULT_REPEAT_THRESHOLD,
     RepeatCounter,
     build_nudge_text,
+    escalation_threshold_for,
     fingerprint,
 )
 from harness.tools.base import ToolCall
@@ -232,3 +233,56 @@ def test_nudge_for_non_file_tool_omits_read_file_suggestion() -> None:
     call = ToolCall(name="shell", arguments={"cmd": "node -e x"})
     text = build_nudge_text(call, count=3)
     assert "read_file" not in text
+
+
+# --- harness-4tphl: escalation past 2x threshold ends the turn -------
+
+
+def test_escalation_threshold_is_double_the_nudge_threshold() -> None:
+    """The hard turn-ender fires at 2x the soft-nudge threshold:
+    shell-verb 3→6, edit/write 5→10."""
+    assert escalation_threshold_for(ToolCall(name="shell", arguments={"cmd": "node x"})) == 6
+    assert escalation_threshold_for(ToolCall(name="edit_file", arguments={"path": "g.js"})) == 10
+
+
+def test_escalated_stays_false_at_nudge_threshold() -> None:
+    """Reaching the nudge threshold (3 for shell) fires the soft nudge
+    but must NOT escalate — legitimate iteration gets the hint and is
+    free to continue."""
+    counter = RepeatCounter()
+    call = ToolCall(name="shell", arguments={"cmd": "node validate.js"})
+    for _ in range(3):
+        counter.record(call)
+    assert counter.escalated is False
+
+
+def test_escalated_latches_at_double_threshold() -> None:
+    """Once the same fingerprint thrashes to 2x its threshold within a
+    turn, `escalated` latches True — the signal the tool loop reads to
+    stop opening new rounds (run b085854e thrash)."""
+    counter = RepeatCounter()
+    call = ToolCall(name="shell", arguments={"cmd": "node validate.js"})
+    for _ in range(6):
+        counter.record(call)
+    assert counter.escalated is True
+
+
+def test_escalation_counts_same_fingerprint_with_differing_args() -> None:
+    """Escalation rides the COARSE fingerprint: `node a.js` and
+    `node b.js` share the `shell`/`node` fingerprint, so six distinct
+    `node` invocations still escalate — that's the thrash pattern
+    (different validator scripts, no convergence) the detector targets."""
+    counter = RepeatCounter()
+    for i in range(6):
+        counter.record(ToolCall(name="shell", arguments={"cmd": f"node check_{i}.js"}))
+    assert counter.escalated is True
+
+
+def test_escalation_ignores_non_whitelisted_tools() -> None:
+    """grep is independent-work (not whitelisted), so even many calls
+    never escalate — the fingerprint is None and the counter never
+    increments."""
+    counter = RepeatCounter()
+    for i in range(20):
+        counter.record(ToolCall(name="grep", arguments={"pattern": f"p{i}"}))
+    assert counter.escalated is False

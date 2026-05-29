@@ -6,6 +6,22 @@ from pathlib import Path
 from harness.tools.base import ToolSpec
 
 
+def _coerce_line_arg(value: int | str | None, *, name: str) -> int | None:
+    """harness-296bh: small models routinely emit numeric tool args as
+    JSON strings (e.g. ``offset='20'``). The schema says integer, so the
+    raw call used to fail and burn a round + a retry (run b085854e turn
+    1: ``read_file offset='20' limit='20'`` → tool_call_failed). Accept a
+    digit string and coerce it; reject only genuinely non-numeric input
+    with a clear message. ``None`` passes through unchanged."""
+    if value is None or isinstance(value, int):
+        return value
+    text = value.strip()
+    try:
+        return int(text)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer; got {value!r}") from exc
+
+
 @dataclass
 class ReadFileTool:
     """Read a text file from within the workspace root. Safe for
@@ -89,10 +105,12 @@ class ReadFileTool:
         self,
         *,
         path: str,
-        offset: int | None = None,
-        limit: int | None = None,
+        offset: int | str | None = None,
+        limit: int | str | None = None,
         symbol: str | None = None,
     ) -> str:
+        offset = _coerce_line_arg(offset, name="offset")
+        limit = _coerce_line_arg(limit, name="limit")
         root = self.root.resolve()
         target = (self.root / path).resolve()
         try:

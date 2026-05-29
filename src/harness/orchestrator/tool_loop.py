@@ -1424,7 +1424,16 @@ def run_tool_loop(
     work_rounds = 0
     total_iterations = 0
     hard_ceiling = max(2 * max_rounds, max_rounds + 1)
-    while work_rounds < max_rounds and total_iterations < hard_ceiling:
+    # harness-4tphl: `repeat_counter.escalated` latches once a fingerprint
+    # thrashes past 2x its nudge threshold this turn. We stop opening new
+    # rounds when it does — the model already got (and ignored) the soft
+    # nudge, so further rounds just burn wall-clock. The wrap-up below
+    # still fires so the turn ends on synthesized text, not interim noise.
+    while (
+        work_rounds < max_rounds
+        and total_iterations < hard_ceiling
+        and not repeat_counter.escalated
+    ):
         round_idx = total_iterations
         total_iterations += 1
         # Drain mid-turn injections (harness-6fr0) BEFORE the model
@@ -1685,7 +1694,10 @@ def run_tool_loop(
     wrap_up_eligible = (
         bool(last_reply.tool_calls)
         and any_tool_succeeded
-        and work_rounds >= max_rounds
+        # harness-4tphl: an escalated (thrash) exit is just as eligible
+        # for synthesis as a max_rounds exit — both leave the model
+        # mid-investigation on a tool call that needs wrapping up.
+        and (work_rounds >= max_rounds or repeat_counter.escalated)
         and total_iterations < hard_ceiling
     )
     if wrap_up_eligible:

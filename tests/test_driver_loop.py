@@ -3284,3 +3284,124 @@ def test_exhausted_persists_state_to_disk(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert result.exit_reason == "exhausted"
     loaded = LoopRunState.load(LoopRunState.state_path(tmp_path, result.loop_run_id))
     assert loaded.turns_used == 2
+
+
+# --- harness-r0s61: reopen a model-closed bead when the turn fails ----
+
+
+def test_run_loop_reopens_bead_when_model_closed_then_turn_failed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-r0s61: the model closes via shell `bd close` (the intended
+    mechanism). If the close ran but the tool loop THEN exhausted and
+    emitted the fabrication-fallback sentinel, the turn is a failure —
+    but the bead is already closed in bd. The driver must reconcile by
+    reopening it, so a failed turn never leaves a closed bead (run
+    b085854e turn 9 / harness-zbnq)."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        # Model shell-closed the bead earlier in the turn, then the loop
+        # exhausted and fell back to the fabrication sentinel.
+        bd.flip_closed("harness-a")
+        return ToolLoopResult(
+            content=EXHAUSTED_FABRICATION_FALLBACK, messages=[], rounds=1, events=[]
+        )
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+
+    cfg = _config(tmp_path, max_turns=2, max_attempts_per_issue=1)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    # The unverified close was reversed.
+    assert bd.log.reopens == ["harness-a"]
+    # bd state agrees with the driver's verdict: not closed.
+    assert "harness-a" not in result.closed
+    assert bd.show("harness-a").status == "open"
+
+
+def test_run_loop_does_not_reopen_when_failed_turn_left_issue_open(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The reconcile is a no-op on the common path: a fabrication-fallback
+    turn that never closed the bead leaves it open, so there is nothing to
+    reopen — reopen must NOT fire (it would be a spurious bd write)."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    _stub_run_tool_loop(monkeypatch, outcomes=["fail"], bd=bd)
+
+    cfg = _config(tmp_path, max_turns=2, max_attempts_per_issue=1)
+    run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert bd.log.reopens == []
+
+
+# --- harness-tro2c: degraded smoke gate blocks syntax-only auto-close -
+
+
+def test_run_loop_auto_close_blocked_when_smoke_gate_degraded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-tro2c: the same claim+verify-pass setup that auto-closes a
+    bead (test_run_loop_auto_close_on_claim_with_verify_pass) must NOT
+    auto-close when the runtime smoke gate is degraded — the steps that
+    ran are syntax-only and can't corroborate a runtime claim. This is the
+    vector that false-closed eznk/8aav/ray4 in run b085854e and 8 beads in
+    run 3c7c9da2. The driver declines to close on the model's behalf."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        return ToolLoopResult(
+            content="The issue has been resolved and all acceptance criteria are met.",
+            messages=[],
+            rounds=1,
+            events=[],
+        )
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+
+    # Verify step would pass (syntax-only) — without the smoke-gate guard
+    # this auto-closes. The guard must override.
+    draft_path = tmp_path / "plan.yaml"
+    _write_draft_with_verify(draft_path, "implement foo", ["smoke.js"])
+    monkeypatch.setattr("harness.driver.loop._exec_verify_cmd", lambda _s, _w: (0, ""))
+    # Runtime smoke gate is degraded (browser app, Playwright absent).
+    monkeypatch.setattr(
+        "harness.driver.loop.browser_smoke_skip_reason",
+        lambda _ws: "runtime smoke gate OFF: playwright not installed",
+    )
+
+    cfg = _config(tmp_path, plan_draft_path=draft_path, max_turns=2, max_attempts_per_issue=1)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    # The driver did NOT close on the model's behalf.
+    assert bd.log.closes == []
+    assert "harness-a" not in result.closed
+    assert bd.show("harness-a").status == "open"

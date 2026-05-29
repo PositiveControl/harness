@@ -673,6 +673,21 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 )
                 if verify_failure is not None:
                     reason = f"{_CLAIM_WITHOUT_CLOSE_PREFIX} {verify_failure}"
+                elif smoke_skip is not None:
+                    # harness-tro2c: the strongest gate (runtime smoke) is
+                    # degraded for this browser app — the steps that ran are
+                    # syntax-only, so they can't corroborate a runtime claim.
+                    # Refuse to auto-close on the model's behalf (the exact
+                    # vector that false-closed eznk/8aav/ray4 in run b085854e
+                    # and 8 beads in run 3c7c9da2). Fall through to a soft hint;
+                    # the issue retries then parks rather than closing blind.
+                    reason = (
+                        f"{_CLAIM_WITHOUT_CLOSE_PREFIX} runtime smoke gate is OFF "
+                        "(syntax-only verify) — not auto-closing a browser app on a "
+                        "claim the gate can't corroborate. Close manually after a "
+                        "real runtime check, or install the browser extra "
+                        "(uv sync --extra browser && playwright install chromium)."
+                    )
                 elif (
                     config.auto_close_on_claim
                     and steps_ran > 0
@@ -762,6 +777,13 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 # each compounded onto an already-broken file.
                 _inter_attempt_restore(config, state, last_green, issue_id=current.id, log=log)
                 continue
+
+            # harness-r0s61: the turn failed (fabrication-fallback, claim
+            # without verifiable work, …). If the model already shell-closed
+            # the bead before failing, reopen it so a failed turn can never
+            # leave a closed bead behind (run b085854e turn 9 / harness-zbnq).
+            if _reconcile_failed_close(bd, current.id, log=log):
+                reason = f"{reason}; reopened unverified model-close"
 
             log(f"turn {state.turns_used}: {current.id} attempt={attempt} FAIL ({reason})")
 
@@ -1462,6 +1484,37 @@ def _try_reopen(bd: DriverBd, issue_id: str) -> bool:
     except DriverBdError:
         return False
     return True
+
+
+def _reconcile_failed_close(bd: DriverBd, issue_id: str, *, log: Callable[[str], None]) -> bool:
+    """harness-r0s61: a failed turn must never leave a closed bead.
+
+    The model closes issues by running ``bd close <id>`` via shell (the
+    intended mechanism — DRIVE_CLOSE_INSTRUCTION; there is no structured
+    ``bd_close`` tool yet). If that close ran but the turn then failed —
+    e.g. the tool loop exhausted and emitted the fabrication-fallback
+    sentinel *after* the close, or a claim-without-verifiable-work gate
+    tripped — the driver records the turn as FAIL but the bead stays
+    CLOSED in bd. The fabrication/convergence gate only governs the
+    driver's accounting and the workspace (last-green restore); it never
+    reverses a model-initiated close, so an unverified close leaks in
+    (run b085854e, turn 9, harness-zbnq).
+
+    Reconcile bd state with the driver's verdict: if the bead is closed
+    on a failure path, reopen it so it returns to the ready set (or is
+    parked while open) instead of silently counting as done. Returns
+    True iff a reopen was performed. Pure best-effort — a bd lookup or
+    reopen hiccup degrades to "leave as-is" and is logged."""
+    try:
+        issue = bd.show(issue_id)
+    except DriverBdError:
+        return False
+    if issue.status != "closed":
+        return False
+    reopened = _try_reopen(bd, issue_id)
+    note = "reopened" if reopened else "REOPEN_FAILED"
+    log(f"{issue_id}: turn failed but bead was closed — {note} (unverified close)")
+    return reopened
 
 
 # --- targeted-fix detection ---------------------------------------

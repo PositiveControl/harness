@@ -129,6 +129,28 @@ def threshold_for(call: ToolCall) -> int:
     return _PER_TOOL_THRESHOLDS.get(call.name, DEFAULT_REPEAT_THRESHOLD)
 
 
+# harness-4tphl: escalation multiplier over the nudge threshold. The
+# nudge (at 1x threshold) is a soft "change approach" hint the model is
+# free to ignore if it's genuinely progressing. But when the SAME
+# fingerprint keeps firing well past that — 2x the threshold within one
+# turn (shell-verb 3→6, edit/write 5→10) — the model is thrashing, not
+# iterating, and every further round burns wall-clock against a wall it
+# already declined to climb. At that point the counter raises a hard
+# `escalated` flag the tool loop reads to end the turn early (forced
+# wrap-up) instead of spinning to max_rounds. Run b085854e burned 13
+# repeat_detected + 11 wrap_up_forced across one pass mostly thrashing
+# on already-doomed parked issues; ending those turns sooner reclaims
+# the rounds.
+_ESCALATION_MULTIPLIER: int = 2
+
+
+def escalation_threshold_for(call: ToolCall) -> int:
+    """Count at which a fingerprint stops being a soft-nudge candidate
+    and becomes a hard turn-ender. ``_ESCALATION_MULTIPLIER`` times the
+    per-tool nudge threshold. Public for the RepeatCounter test surface."""
+    return _ESCALATION_MULTIPLIER * threshold_for(call)
+
+
 @dataclass
 class RepeatCounter:
     """Per-turn counter; one instance per `run_tool_loop` invocation.
@@ -150,13 +172,21 @@ class RepeatCounter:
     threshold: int = DEFAULT_REPEAT_THRESHOLD
     _counts: dict[tuple[str, str], int] = field(default_factory=dict)
     _fired: set[tuple[str, str]] = field(default_factory=set)
+    # harness-4tphl: set True once any fingerprint reaches its
+    # escalation threshold (2x the nudge threshold). One-way latch — the
+    # tool loop reads it to end the turn early. Inspect via `escalated`.
+    _escalated: bool = False
 
     def record(self, call: ToolCall) -> bool:
         """Increment the fingerprint counter; return True the FIRST time
         the count hits the tool's threshold. Returns False on
         subsequent matches (nudge already fired) and False
         unconditionally when the call's fingerprint is None
-        (tool not in the detection whitelist)."""
+        (tool not in the detection whitelist).
+
+        Side effect (harness-4tphl): latches ``escalated`` True once any
+        fingerprint reaches ``_ESCALATION_MULTIPLIER`` x its threshold —
+        the signal the tool loop uses to stop a thrashing turn early."""
         key = fingerprint(call)
         if key is None:
             return False
@@ -167,10 +197,19 @@ class RepeatCounter:
         # detection still construct with a low value; production uses
         # the per-tool map for nuance.
         per_tool = _PER_TOOL_THRESHOLDS.get(call.name, self.threshold)
+        if new_count >= _ESCALATION_MULTIPLIER * per_tool:
+            self._escalated = True
         if new_count >= per_tool and key not in self._fired:
             self._fired.add(key)
             return True
         return False
+
+    @property
+    def escalated(self) -> bool:
+        """True once some fingerprint thrashed past its escalation
+        threshold this turn. The tool loop ends the turn (forced
+        wrap-up) when this latches rather than spinning to max_rounds."""
+        return self._escalated
 
     def count(self, call: ToolCall) -> int:
         """Inspect-only — current cumulative count for a call's
@@ -226,6 +265,7 @@ __all__ = [
     "DEFAULT_REPEAT_THRESHOLD",
     "RepeatCounter",
     "build_nudge_text",
+    "escalation_threshold_for",
     "fingerprint",
     "threshold_for",
 ]
