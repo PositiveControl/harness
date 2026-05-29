@@ -12,6 +12,7 @@ import pytest
 
 from harness.driver.auto_iterate import (
     AutoIterateConfig,
+    AutoIterateResult,
     _dedup_titles_under_epic,
     _resolve_spec,
     _snapshot_source_files,
@@ -132,13 +133,14 @@ def _loop_result(
     closed: Sequence[str] = (),
     exit_reason: str = "success",
     loop_run_id: str = "run01",
+    turns_used: int = 1,
 ) -> LoopResult:
     return LoopResult(
         loop_run_id=loop_run_id,
         epic_id="harness-epic",
         closed=list(closed),
         halted_on=None,
-        turns_used=1,
+        turns_used=turns_used,
         exit_reason=exit_reason,  # type: ignore[arg-type]
     )
 
@@ -289,6 +291,30 @@ def test_resolve_spec_walks_workspace_parents_for_label(tmp_path: Path) -> None:
         }
     )
     assert _resolve_spec(cfg, bd) == "parent-relative content"  # type: ignore[arg-type]
+
+
+def test_resolve_spec_finds_basename_in_sibling_hidden_dir(tmp_path: Path) -> None:
+    """The plan-source label often carries only a bare filename while the
+    spec lives in a sibling hidden dir the exact-path attempts never reach
+    (the real GTA case: label `plan-source:gta2-spec.md`, file at
+    scratch/.artifacts/spec/gta2-spec.md). The bounded basename search must
+    find it (harness-s1rv)."""
+    workspace = tmp_path / "scratch" / "workspace"
+    workspace.mkdir(parents=True)
+    spec_dir = tmp_path / "scratch" / ".artifacts" / "spec"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "gta2-spec.md").write_text("hidden sibling content")
+    cfg = _config(workspace)
+    bd = _FakeBd(
+        issues={
+            "harness-epic": _issue(
+                "harness-epic",
+                title="GTAII",
+                labels=("plan-source:gta2-spec.md",),
+            )
+        }
+    )
+    assert _resolve_spec(cfg, bd) == "hidden sibling content"  # type: ignore[arg-type]
 
 
 # ---- _dedup_titles_under_epic -----------------------------------------
@@ -472,6 +498,67 @@ def test_run_auto_iterate_clean_drain_zero_closed_still_converges(
     assert result.passes_run == 2
 
 
+def test_run_auto_iterate_exits_no_work_on_empty_ready_queue(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A 'success' drive that ran ZERO turns and closed nothing means the
+    ready queue was empty from the start (e.g. all children already closed).
+    That's a no-op run, not convergence — must exit 'no_work' on the first
+    pass, never feeding the empty-pass streak (harness-eh07)."""
+    bd = _FakeBd(issues={"harness-epic": _issue("harness-epic", title="GTAII")})
+    cfg = _config(tmp_path, convergence_streak=2)
+
+    monkeypatch.setattr(
+        "harness.driver.auto_iterate.run_loop",
+        lambda _a, _b, _c: _loop_result(exit_reason="success", closed=[], turns_used=0),
+    )
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", lambda **_: [])
+
+    result = run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+    assert result.exit_reason == "no_work"
+    assert result.passes_run == 1  # bails immediately; does not streak to converged
+
+
+def test_run_auto_iterate_warns_and_flags_when_spec_unresolved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No spec resolvable -> the critic runs artifact-only. The result must
+    flag spec_resolved=False and a warning must hit stderr so the operator
+    knows the critic was spec-blind (harness-s1rv, harness-d3cs)."""
+    # Epic carries no plan-source label and no --spec is set -> None.
+    bd = _FakeBd(issues={"harness-epic": _issue("harness-epic", title="GTAII")})
+    cfg = _config(tmp_path, convergence_streak=2)
+
+    monkeypatch.setattr(
+        "harness.driver.auto_iterate.run_loop",
+        lambda _a, _b, _c: _loop_result(closed=["harness-x"]),
+    )
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", lambda **_: [])
+
+    result = run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+    assert result.spec_resolved is False
+    assert "artifact-only" in capsys.readouterr().err
+
+
+def test_run_auto_iterate_flags_spec_resolved_when_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A resolvable --spec sets spec_resolved=True on the result."""
+    spec = tmp_path / "spec.md"
+    spec.write_text("the spec")
+    bd = _FakeBd(issues={"harness-epic": _issue("harness-epic", title="GTAII")})
+    cfg = _config(tmp_path, spec_path=spec, convergence_streak=2)
+
+    monkeypatch.setattr(
+        "harness.driver.auto_iterate.run_loop",
+        lambda _a, _b, _c: _loop_result(closed=["harness-x"]),
+    )
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", lambda **_: [])
+
+    result = run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+    assert result.spec_resolved is True
+
+
 def test_run_auto_iterate_exhausted_but_progress_is_not_stuck(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -610,3 +697,57 @@ def test_run_auto_iterate_continues_after_bd_create_error(
     # One finding errored, one succeeded.
     assert result.critic_findings_total == 1
     assert len(result.filed_beads) == 1
+
+
+# ---- CLI reporting (exit codes + summary) ------------------------------
+
+
+def _result(
+    *,
+    exit_reason: str,
+    spec_resolved: bool = True,
+    drive_results: list[LoopResult] | None = None,
+) -> AutoIterateResult:
+    return AutoIterateResult(
+        passes_run=1,
+        drive_results=drive_results or [],
+        critic_findings_total=0,
+        exit_reason=exit_reason,  # type: ignore[arg-type]
+        spec_resolved=spec_resolved,
+    )
+
+
+def test_auto_iterate_exit_code_no_work_is_distinct_nonzero() -> None:
+    """no_work must be non-zero (so a wrapper doesn't read the no-op as a
+    finish) and distinct from stuck/converged (harness-eh07)."""
+    from harness.driver.cli import _auto_iterate_exit_code
+
+    assert _auto_iterate_exit_code(_result(exit_reason="no_work")) == 5
+    # Regression guard on the neighbouring reasons.
+    assert _auto_iterate_exit_code(_result(exit_reason="converged")) == 0
+    assert _auto_iterate_exit_code(_result(exit_reason="stuck")) == 4
+
+
+def test_print_auto_iterate_result_shows_spec_mode(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from harness.driver.cli import _print_auto_iterate_result
+
+    _print_auto_iterate_result(_result(exit_reason="converged", spec_resolved=False))
+    assert "spec=artifact-only" in capsys.readouterr().out
+
+
+def test_print_auto_iterate_result_explains_no_work(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from harness.driver.cli import _print_auto_iterate_result
+
+    _print_auto_iterate_result(
+        _result(
+            exit_reason="no_work",
+            drive_results=[_loop_result(exit_reason="success", closed=[], turns_used=0)],
+        )
+    )
+    out = capsys.readouterr().out
+    assert "exit=no_work" in out
+    assert "no ready work" in out

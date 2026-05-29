@@ -682,11 +682,19 @@ def auto_iterate_command(
 
 
 def _print_auto_iterate_result(result: AutoIterateResult) -> None:
+    spec_mode = "resolved" if result.spec_resolved else "artifact-only"
     typer.echo(
         f"auto-iterate: passes={result.passes_run} "
         f"critic_findings={result.critic_findings_total} "
+        f"spec={spec_mode} "
         f"exit={result.exit_reason}"
     )
+    if result.exit_reason == "no_work":
+        typer.echo(
+            "  no ready work under the epic — drive ran zero turns. "
+            "The epic may be complete, or its remaining work isn't wired "
+            "as a direct dependency (ready_under_epic is one level deep)."
+        )
     if result.filed_beads:
         typer.echo(f"filed beads ({len(result.filed_beads)}):")
         for bid in result.filed_beads:
@@ -712,6 +720,13 @@ def _auto_iterate_exit_code(result: AutoIterateResult) -> int:
         # no new critic findings — the work is stuck, not done. Distinct code
         # so a wrapper can branch on it (harness-dqoy).
         return 4
+    if result.exit_reason == "no_work":
+        # The epic's ready queue was empty from the start (e.g. all children
+        # already closed) — the drive ran zero turns and the critic had an
+        # unchanged artifact. Non-zero so a no-op run isn't read as a real
+        # finish; distinct from "stuck" so a wrapper can tell "nothing to do"
+        # from "jammed" (harness-eh07).
+        return 5
     # passes_exhausted: ran out of budget with critic still finding bugs.
     # Surface as non-zero so a CI / cron wrapper sees the unfinished state.
     return 2

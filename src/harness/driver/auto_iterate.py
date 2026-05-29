@@ -19,6 +19,13 @@ Convergence is conservative: ``convergence_streak`` consecutive empty
 critic passes (default 2) before declaring done. One empty critic pass
 isn't enough — a transient model whiff would false-converge. A hard
 ``max_passes`` cap (default 8) terminates regardless.
+
+An empty critic pass only counts toward convergence when the drive made
+progress — closed something, or drained the ready queue by running turns
+(harness-eh07). A ``success`` drive that ran zero turns means the ready
+queue was empty from the start (e.g. every child already closed); that's
+``no_work`` (a no-op run), not convergence, and exits non-zero so a
+wrapper doesn't mistake it for a finish.
 """
 
 from __future__ import annotations
@@ -115,8 +122,14 @@ class AutoIterateResult:
     passes_run: int
     drive_results: list[LoopResult]
     critic_findings_total: int
-    exit_reason: Literal["converged", "passes_exhausted", "drive_halted", "critic_failed", "stuck"]
+    exit_reason: Literal[
+        "converged", "passes_exhausted", "drive_halted", "critic_failed", "stuck", "no_work"
+    ]
     filed_beads: list[str] = field(default_factory=list)
+    # Whether the critic had a spec to ground against this run. False means
+    # it ran artifact-only (no spec_quote grounding) — surfaced so a no-op
+    # run isn't read as a clean finish (harness-d3cs).
+    spec_resolved: bool = False
 
 
 def _resolve_spec(config: AutoIterateConfig, bd: DriverBd) -> str | None:
@@ -153,6 +166,55 @@ def _resolve_spec(config: AutoIterateConfig, bd: DriverBd) -> str | None:
                     return candidate.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     return None
+        # Last resort: the label often carries only a bare filename while
+        # the spec lives in a sibling/hidden dir the exact-path attempts
+        # never reach — e.g. label `plan-source:gta2-spec.md` but the file
+        # at <workspace>/../.artifacts/spec/gta2-spec.md. `.artifacts` is
+        # hidden, so the source walk skips it too. Search the workspace
+        # subtree and its immediate parent for the basename (harness-s1rv).
+        basename = Path(label[len("plan-source:") :]).name
+        found = _search_for_basename(
+            (config.loop_config.workspace, config.loop_config.workspace.parent), basename
+        )
+        if found is not None:
+            try:
+                return found.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return None
+    return None
+
+
+def _search_for_basename(roots: tuple[Path, ...], basename: str) -> Path | None:
+    """Bounded breadth-first search for `basename` under each root. Skips
+    `_EXCLUDE_DIRS` (so a vendored bundle never matches) but — unlike the
+    source walk — descends into hidden dirs, since specs commonly live in
+    `.artifacts/`. Depth- and visit-capped so a huge parent tree can't turn
+    spec resolution into a full-disk crawl. Returns the shallowest match
+    (ties broken lexicographically) for determinism."""
+    max_depth = 6
+    max_dirs = 4096
+    for root in roots:
+        visited = 0
+        # (dir, depth) frontier; sort siblings for a stable match order.
+        frontier: list[tuple[Path, int]] = [(root, 0)]
+        while frontier:
+            cur, depth = frontier.pop(0)
+            visited += 1
+            if visited > max_dirs:
+                break
+            try:
+                entries = sorted(cur.iterdir())
+            except OSError:
+                continue
+            subdirs: list[tuple[Path, int]] = []
+            for entry in entries:
+                if entry.is_dir():
+                    if entry.name in _EXCLUDE_DIRS or depth + 1 > max_depth:
+                        continue
+                    subdirs.append((entry, depth + 1))
+                elif entry.name == basename and entry.is_file():
+                    return entry
+            frontier.extend(subdirs)
     return None
 
 
@@ -248,6 +310,18 @@ def run_auto_iterate(
     findings_total = 0
     empty_streak = 0
     spec_text = _resolve_spec(config, bd)
+    spec_resolved = spec_text is not None
+    if not spec_resolved:
+        # The critic falls back to artifact-only mode (no spec_quote
+        # grounding). Surface it loudly — a silently spec-blind critic on a
+        # fully-drained epic finds nothing and looks like a clean pass
+        # (harness-s1rv).
+        print(
+            "auto-iterate: no spec resolved — critic running artifact-only "
+            "(no spec grounding). Pass --spec PATH or fix the epic's "
+            "plan-source:<file> label.",
+            file=sys.stderr,
+        )
 
     for pass_index in range(config.max_passes):
         # Inner drive. Pass `resume_from` only on the FIRST iteration;
@@ -266,6 +340,7 @@ def run_auto_iterate(
                 critic_findings_total=findings_total,
                 exit_reason="drive_halted",
                 filed_beads=filed_beads,
+                spec_resolved=spec_resolved,
             )
 
         # Critic pass. Spec is loaded once (above) — passes don't
@@ -313,27 +388,41 @@ def run_auto_iterate(
                 critic_findings_total=findings_total,
                 exit_reason="critic_failed",
                 filed_beads=filed_beads,
+                spec_resolved=spec_resolved,
             )
 
         if not findings:
-            # Convergence requires actual progress (harness-dqoy). An empty
-            # critic pass only means "done" if the drive either closed
-            # something this pass or cleanly drained the ready queue
-            # ("success"). When the drive closed nothing AND stalled
-            # ("exhausted" = max_turns hit, "partial" = ready queue emptied
-            # only because issues were parked), the artifact didn't change,
-            # so the critic trivially finds nothing new — that's a stall,
-            # not completion. Surface it as "stuck" instead of letting it
-            # short-circuit to converged.
+            # Convergence requires actual progress (harness-dqoy,
+            # harness-eh07). An empty critic pass only counts toward "done"
+            # if the drive either closed something this pass or drained the
+            # ready queue by actually running turns. The subtlety: a
+            # "success" with turns_used == 0 means the ready queue was EMPTY
+            # FROM THE START (e.g. every child of the epic was already
+            # closed) — nothing was drained, so the critic trivially finds
+            # nothing against an unchanged artifact. That's a no-op run, not
+            # convergence. When this pass made no progress, terminate with
+            # the flavor that fits:
+            #   - success + turns=0 + closed=0 -> "no_work": the epic had no
+            #     ready work to begin with. Non-zero exit so a wrapper
+            #     doesn't read the no-op as a real finish.
+            #   - exhausted / partial          -> "stuck": the drive ran but
+            #     stalled (max_turns hit, or everything parked) without
+            #     closing anything — the artifact didn't change.
             made_progress = bool(drive_result.closed)
-            clean_drain = drive_result.exit_reason == "success"
-            if not (made_progress or clean_drain):
+            drained_by_work = drive_result.exit_reason == "success" and drive_result.turns_used > 0
+            if not (made_progress or drained_by_work):
+                empty_queue = (
+                    drive_result.exit_reason == "success"
+                    and drive_result.turns_used == 0
+                    and not drive_result.closed
+                )
                 return AutoIterateResult(
                     passes_run=pass_index + 1,
                     drive_results=drive_results,
                     critic_findings_total=findings_total,
-                    exit_reason="stuck",
+                    exit_reason="no_work" if empty_queue else "stuck",
                     filed_beads=filed_beads,
+                    spec_resolved=spec_resolved,
                 )
             empty_streak += 1
             if empty_streak >= config.convergence_streak:
@@ -343,6 +432,7 @@ def run_auto_iterate(
                     critic_findings_total=findings_total,
                     exit_reason="converged",
                     filed_beads=filed_beads,
+                    spec_resolved=spec_resolved,
                 )
             continue
 
@@ -364,6 +454,7 @@ def run_auto_iterate(
         critic_findings_total=findings_total,
         exit_reason="passes_exhausted",
         filed_beads=filed_beads,
+        spec_resolved=spec_resolved,
     )
 
 
