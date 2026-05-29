@@ -4143,9 +4143,19 @@ class WriteFileRedirectHook:
         # harness-2tq safety-shrink guard — preserved on the redirect
         # path so the model still gets the 'looks like you meant to
         # append' nudge instead of a silent destroy-via-edit.
+        #
+        # harness-8tjnv: the stub floor is RELATIVE to the existing file
+        # (existing//8) with a 1 KB minimum. A fixed 1024-byte floor let
+        # a ~1.9 KB '§1 skeleton' replace a 72 KB built game.js — a 97%
+        # collapse that cleared the absolute floor (run b085854e:
+        # -70282 bytes; only last-green restore saved the build). The
+        # ratio gate (new < existing//2) is retained so legitimately
+        # rewriting a tiny file with slightly-smaller content still
+        # passes (e.g. an 8-byte config → 6 bytes).
         existing_bytes = len(existing.encode("utf-8"))
         new_bytes = len(content.encode("utf-8"))
-        if new_bytes < existing_bytes // 2 and new_bytes < 1024:
+        stub_floor = max(1024, existing_bytes // 8)
+        if new_bytes < existing_bytes // 2 and new_bytes < stub_floor:
             return Skip(
                 ToolResult(
                     tool_name="write_file",

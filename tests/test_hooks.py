@@ -6226,6 +6226,25 @@ def test_write_file_redirect_preserves_safety_shrink_guard() -> None:
     assert log == []
 
 
+def test_write_file_redirect_blocks_high_ratio_shrink_above_1kb() -> None:
+    """harness-8tjnv: the redirect's shrink floor is relative now. A
+    ~1.9 KB skeleton over a ~72 KB built file (97% collapse) used to slip
+    the fixed 1024-byte floor and reach the edit_file reroute (-70282
+    bytes in run b085854e). It must Skip as suspicious_shrink with no
+    edit dispatch."""
+    existing = {"game.js": "// built\n" + ("x = 1;\n" * 12000)}  # ~72 KB
+    log: list[tuple[str, str, str]] = []
+    hook = _make_redirect_hook(existing=existing, edit_log=log)
+    skeleton = "// minimal skeleton\n" + ("let s;\n" * 300)  # ~1.9 KB, > 1 KB
+    assert len(skeleton) > 1024
+    call = ToolCall(name="write_file", arguments={"path": "game.js", "content": skeleton})
+    outcome = hook.check(PreToolContext(call=call, seen_calls={}))
+    assert isinstance(outcome, Skip)
+    assert outcome.result.error == "suspicious_shrink"
+    # The destructive reroute never ran.
+    assert log == []
+
+
 def test_write_file_redirect_idempotent_on_identical_content() -> None:
     """Content already in the file — edit_file would raise no-op;
     return a clean success Skip instead so the model doesn't see a

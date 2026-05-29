@@ -565,6 +565,40 @@ def test_write_file_allows_overwrite_of_small_config(tmp_path: Path) -> None:
     assert "overwrote" in result
 
 
+def test_write_file_refuses_high_ratio_shrink_above_1kb_floor(tmp_path: Path) -> None:
+    """harness-8tjnv: a ~1.9 KB skeleton replacing a ~72 KB built file is
+    a 97% collapse, but the old fixed 1024-byte floor let it through
+    because 1.9 KB >= 1 KB (run b085854e: -70282 bytes, game.js 2000→51
+    lines). The floor is now relative (existing//8), so the collapse is
+    refused even though the new content clears 1 KB."""
+    tool = WriteFileTool(root=tmp_path)
+    target = tmp_path / "game.js"
+    target.write_text("// built game\n" + ("x = 1;\n" * 12000))  # ~72 KB
+    existing_size = target.stat().st_size
+    assert existing_size > 70_000
+    skeleton = "// minimal skeleton\n" + ("let s;\n" * 300)  # ~1.9 KB, > 1 KB
+    assert 1024 < len(skeleton) < existing_size // 2
+    with pytest.raises(ValueError, match="looks like you meant to append"):
+        tool.call(path="game.js", content=skeleton, overwrite=True)
+    # The built game survives.
+    assert target.stat().st_size == existing_size
+
+
+def test_write_file_allows_substantial_rewrite_above_relative_floor(tmp_path: Path) -> None:
+    """The guard must not block a genuine rewrite that keeps a large
+    chunk of the file: new content above existing//8 is a real edit, not
+    a collapse-to-stub, so it passes (the model can still use edit_file
+    for surgical changes)."""
+    tool = WriteFileTool(root=tmp_path)
+    target = tmp_path / "game.js"
+    target.write_text("x = 1;\n" * 12000)  # ~84 KB
+    existing_size = target.stat().st_size
+    big_rewrite = "y = 2;\n" * 6000  # ~42 KB — a 50% rewrite, well above existing//8
+    assert len(big_rewrite) > existing_size // 8
+    result = tool.call(path="game.js", content=big_rewrite, overwrite=True)
+    assert "overwrote" in result
+
+
 def test_write_file_spec_lists_overwrite_param(tmp_path: Path) -> None:
     spec = WriteFileTool(root=tmp_path).spec
     assert "overwrite" in spec.parameters["properties"]

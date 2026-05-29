@@ -81,11 +81,14 @@ class WriteFileTool:
             # existing file, this is almost certainly the 'model meant to
             # append but reached for overwrite' mistake (see harness-2tq).
             # Refuse the shrink and redirect to edit_file. Threshold: new
-            # content is both under half the existing size AND under 1KB —
-            # the 1KB floor avoids blocking legitimate regenerations of
-            # small configs where the new version happens to be smaller.
+            # content is under half the existing size AND under the stub
+            # floor. harness-8tjnv: the floor is RELATIVE (existing//8,
+            # min 1 KB) — a fixed 1024-byte floor let a ~1.9 KB skeleton
+            # collapse a 72 KB file because it cleared the absolute floor.
+            # The ratio gate still lets a tiny config shrink slightly.
             existing_size = target.stat().st_size
-            if len(content) < existing_size // 2 and len(content) < 1024:
+            stub_floor = max(1024, existing_size // 8)
+            if len(content) < existing_size // 2 and len(content) < stub_floor:
                 raise ValueError(
                     f"refusing to overwrite {path}: new content is "
                     f"{len(content)} bytes but the existing file is "
