@@ -4126,6 +4126,13 @@ class WriteFileRedirectHook:
     read_existing: Callable[[str], str | None] = field(default=_no_read_existing)
     ensure_edit_file_active: Callable[[], bool] = field(default=_no_ensure_edit_file_active)
     invoke_edit_file: Callable[[str, str, str], ToolResult] = field(default=_no_invoke_edit_file)
+    # harness-8tjnv: in targeted-fix mode the driver has told the model
+    # the artifact already exists and this issue is a minimal edit. The
+    # full-file reroute is then the wrong move (it can wipe sections this
+    # issue doesn't own); refuse write_file on an existing path outright
+    # and force a surgical edit_file. Drive sets this from the handoff's
+    # targeted_fix flag; chat leaves it False (the reroute is desirable).
+    targeted_fix: bool = False
 
     def check(self, ctx: PreToolContext) -> PreToolOutcome:
         if ctx.call.name != "write_file":
@@ -4182,6 +4189,31 @@ class WriteFileRedirectHook:
                     tool_name="write_file",
                     output=(f"(write_file → no-op: {path} already has this content)"),
                     success=True,
+                )
+            )
+        # harness-8tjnv: targeted-fix mode — refuse the whole-file write
+        # to an existing artifact (no reroute). The model already has the
+        # "MODE: TARGETED-FIX" banner; this is the enforcement behind it.
+        # Run b085854e burned 3 attempts on harness-90j0 (a one-char typo
+        # fix) because the model kept reaching for write_file to recreate
+        # the §1 skeleton over the built 2000-line game.js.
+        if self.targeted_fix:
+            existing_lines = existing.count("\n") + 1
+            return Skip(
+                ToolResult(
+                    tool_name="write_file",
+                    output=(
+                        f"refusing write_file on existing {path} in TARGETED-FIX "
+                        f"mode: this issue is a minimal edit to an existing "
+                        f"{existing_lines}-line file, not a fresh build. Use "
+                        f"edit_file(path={path!r}, old_string=<the exact lines to "
+                        f"change>, new_string=<replacement>) for just the section "
+                        f"this issue owns. Do NOT recreate the file. If a full "
+                        f"rewrite truly is required, close this issue with reason="
+                        f'"rewrite-required" and stop.'
+                    ),
+                    success=False,
+                    error="targeted_fix_no_overwrite",
                 )
             )
         if not self.ensure_edit_file_active():

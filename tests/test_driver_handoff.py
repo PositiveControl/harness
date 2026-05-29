@@ -16,6 +16,7 @@ from harness.driver.handoff import (
     RENDER_CHAR_CAP,
     Handoff,
     build_handoff,
+    substantial_artifacts,
 )
 from harness.driver.state import LoopRunState
 from harness.store._bd_types import BeadsIssue, _issue_from_json
@@ -305,7 +306,9 @@ def test_render_includes_targeted_fix_banner_when_set() -> None:
     ).render()
     assert "[MODE: TARGETED-FIX]" in out
     assert "edit_file" in out
-    assert "Do NOT call write_file on an existing path" in out
+    assert "write_file on an existing path" in out
+    # harness-8tjnv: the banner now states the hard-block enforcement.
+    assert "REFUSED by the harness" in out
     assert 'reason="rewrite-required"' in out
     # Banner precedes both prior-attempt and current-issue.
     assert out.index("[MODE: TARGETED-FIX]") < out.index("[PRIOR ATTEMPT FAILED]")
@@ -318,6 +321,43 @@ def test_render_omits_targeted_fix_banner_by_default() -> None:
     out = _base_handoff().render()
     assert "[MODE: TARGETED-FIX]" not in out
     assert "rewrite-required" not in out
+
+
+def test_render_targeted_fix_banner_names_built_artifacts() -> None:
+    """harness-8tjnv: when existing_artifacts is populated, the banner
+    names each built file + line count so 'the artifact already exists'
+    is concrete (the generic banner was ignored on run b085854e)."""
+    out = _base_handoff(
+        targeted_fix=True,
+        existing_artifacts=(("game.js", 2094), ("index.html", 60)),
+    ).render()
+    assert "[MODE: TARGETED-FIX]" in out
+    assert "ALREADY BUILT" in out
+    assert "game.js — 2094 lines (built)" in out
+    assert "index.html — 60 lines (built)" in out
+    # The generic fallback wording is replaced by the concrete list.
+    assert "The artifact already exists from a prior implementation" not in out
+
+
+def test_substantial_artifacts_finds_built_source_above_floor(tmp_path: Path) -> None:
+    """harness-8tjnv: a >=50-line source file counts as built; small
+    stubs and hidden/excluded dirs are ignored; result is largest-first."""
+    (tmp_path / "game.js").write_text("// game\n" + ("x();\n" * 200))  # 201 lines
+    (tmp_path / "util.js").write_text("// util\n" + ("y();\n" * 60))  # 61 lines
+    (tmp_path / "stub.js").write_text("let a;\n")  # 2 lines — below floor
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "dep.js").write_text("z();\n" * 500)  # excluded
+    arts = substantial_artifacts(tmp_path)
+    names = [rel for rel, _ in arts]
+    assert names == ["game.js", "util.js"]  # largest-first, stub + node_modules dropped
+    assert dict(arts)["game.js"] == 202  # count("\n")+1 incl. trailing newline
+
+
+def test_substantial_artifacts_empty_workspace_or_none(tmp_path: Path) -> None:
+    """No source files → (); None workspace → () (back-compat for
+    test/chat callers without a workspace)."""
+    assert substantial_artifacts(tmp_path) == ()
+    assert substantial_artifacts(None) == ()
 
 
 def test_render_empty_workspace_contents_shows_placeholder() -> None:

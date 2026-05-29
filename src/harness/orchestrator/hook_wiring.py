@@ -26,6 +26,7 @@ def make_write_file_redirect_hook(
     *,
     registry: ToolRegistry | None,
     workspace_path: Path | None,
+    targeted_fix: bool = False,
 ) -> WriteFileRedirectHook | None:
     """Wire a WriteFileRedirectHook against a live registry + workspace.
 
@@ -95,6 +96,7 @@ def make_write_file_redirect_hook(
         read_existing=read_existing,
         ensure_edit_file_active=ensure_edit_file_active,
         invoke_edit_file=invoke_edit_file,
+        targeted_fix=targeted_fix,
     )
 
 

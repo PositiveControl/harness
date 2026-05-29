@@ -395,6 +395,9 @@ def _run_one_phase(
         workspace=workspace,
         summarize_tool_results=summarize_tool_results,
         pre_close_verify=pre_close_verify,
+        # harness-8tjnv: carry targeted-fix through to the write_file
+        # hard-block so the FSM path matches the legacy executor path.
+        targeted_fix=handoff.targeted_fix,
     )
     succeeded_tools: set[str] = set()
     # Wrap observe to also sniff succeeded tool names — needed for

@@ -136,6 +136,13 @@ class Handoff:
     workspace_path: Path | None = None
     workspace_contents: tuple[str, ...] = ()
     targeted_fix: bool = False
+    # harness-8tjnv: (relpath, line_count) for already-built source
+    # artifacts in the workspace. When targeted_fix is set, the banner
+    # names these concretely so the model can't claim it didn't know the
+    # file already exists — the generic "the artifact already exists"
+    # banner was ignored on run b085854e (harness-90j0 collapsed a
+    # 2000-line game.js to a 51-line skeleton).
+    existing_artifacts: tuple[tuple[str, int], ...] = ()
     # harness-kbnl: FSM-driven turn phase context. `phase` is the
     # current TurnPhase the executor is operating in (string value of
     # the enum, e.g. "assess"); rendered as `[PHASE: <name>]` so the
@@ -206,15 +213,29 @@ class Handoff:
                 ]
             )
         if self.targeted_fix:
+            parts.append("[MODE: TARGETED-FIX]")
+            if self.existing_artifacts:
+                # Name the built files + sizes so "the artifact already
+                # exists" isn't an abstraction the model can talk past
+                # (harness-8tjnv).
+                parts.append(
+                    "These files are ALREADY BUILT in this workspace — do NOT recreate them:"
+                )
+                parts.extend(
+                    f"  {rel} — {lines} lines (built)" for rel, lines in self.existing_artifacts
+                )
+            else:
+                parts.append(
+                    "The artifact already exists from a prior implementation in this workspace."
+                )
             parts.extend(
                 [
-                    "[MODE: TARGETED-FIX]",
-                    "The artifact already exists from a prior implementation in this",
-                    "workspace. Read the file FIRST and make a minimal edit via",
-                    "edit_file. Do NOT call write_file on an existing path; that",
-                    "wipes prior work — including sections this issue does not own.",
-                    "If you believe a full rewrite is required, close this issue with",
-                    'reason="rewrite-required" and stop — the operator will decide.',
+                    "Read the file FIRST and make a minimal edit via edit_file. Do NOT",
+                    "call write_file on an existing path; that wipes prior work —",
+                    "including sections this issue does not own. write_file on a built",
+                    "file is REFUSED by the harness. If you believe a full rewrite is",
+                    'required, close this issue with reason="rewrite-required" and stop',
+                    "— the operator will decide.",
                     "",
                 ]
             )
@@ -336,6 +357,9 @@ def build_handoff(
     parent_epic_summary = _try_epic_summary(bd, state.epic_id)
     files_touched = _git_diff_name_status(git_root, state.started_at_sha)
     workspace_contents = _list_workspace_top_level(workspace) if workspace is not None else ()
+    # harness-8tjnv: only compute the built-artifact list when the banner
+    # will actually use it (targeted_fix) — the rglob is wasted otherwise.
+    existing_artifacts = substantial_artifacts(workspace) if targeted_fix else ()
 
     thoughts = bd.thoughts_in_loop_run(state.loop_run_id)
     decisions = tuple(
@@ -364,12 +388,61 @@ def build_handoff(
         workspace_path=workspace.resolve() if workspace is not None else None,
         workspace_contents=workspace_contents,
         targeted_fix=targeted_fix,
+        existing_artifacts=existing_artifacts,
         phase=phase,
         phase_instructions=phase_instructions,
         prior_assessment=prior_assessment,
         prior_test_cmd=prior_test_cmd,
         forbidden_patterns=forbidden_patterns,
     )
+
+
+# harness-8tjnv: source suffixes that count as a "built artifact" for
+# the targeted-fix banner + trigger. A workspace holding one of these
+# above the line floor is past the skeleton stage, so a bead that would
+# recreate it from scratch is almost certainly a destructive misread.
+_ARTIFACT_SUFFIXES: frozenset[str] = frozenset(
+    {".js", ".mjs", ".ts", ".jsx", ".tsx", ".py", ".html", ".css", ".go", ".rs"}
+)
+_ARTIFACT_EXCLUDED_DIRS: frozenset[str] = frozenset(
+    {".git", ".harness", ".beads", "node_modules", "__pycache__", "dist", "build", ".venv"}
+)
+# A file with at least this many lines is "built", not a stub skeleton.
+_ARTIFACT_LINE_FLOOR: int = 50
+_MAX_ARTIFACTS: int = 5
+
+
+def substantial_artifacts(workspace: Path | None) -> tuple[tuple[str, int], ...]:
+    """Existing source files in `workspace` that are already built out
+    (>= 50 lines), as (relpath, line_count) sorted largest-first, capped
+    at 5. Powers the TARGETED-FIX banner ("game.js exists, 2094 lines —
+    edit, don't recreate") and the loop's targeted-fix trigger
+    (harness-8tjnv). Best-effort: unreadable files / workspaces yield
+    `()` rather than raising."""
+    if workspace is None:
+        return ()
+    found: list[tuple[str, int]] = []
+    try:
+        candidates = sorted(workspace.rglob("*"))
+    except OSError:
+        return ()
+    for path in candidates:
+        if path.suffix not in _ARTIFACT_SUFFIXES or not path.is_file():
+            continue
+        if any(part in _ARTIFACT_EXCLUDED_DIRS for part in path.parts):
+            continue
+        try:
+            line_count = path.read_text(encoding="utf-8", errors="replace").count("\n") + 1
+        except OSError:
+            continue
+        if line_count >= _ARTIFACT_LINE_FLOOR:
+            try:
+                rel = path.relative_to(workspace).as_posix()
+            except ValueError:
+                rel = path.name
+            found.append((rel, line_count))
+    found.sort(key=lambda pair: pair[1], reverse=True)
+    return tuple(found[:_MAX_ARTIFACTS])
 
 
 def _list_workspace_top_level(workspace: Path) -> tuple[str, ...]:

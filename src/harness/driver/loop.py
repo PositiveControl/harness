@@ -69,7 +69,7 @@ from harness.driver.claim_detector import (
     detect_claim_signal,
     last_shell_cmd_in_messages,
 )
-from harness.driver.handoff import Handoff, build_handoff
+from harness.driver.handoff import Handoff, build_handoff, substantial_artifacts
 from harness.driver.planner import PlanDraft, PlannerError, VerifyStep
 from harness.driver.precommit_verify_hook import (
     PreCloseVerifyHook,
@@ -506,7 +506,19 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             # reopening a previously-closed issue). _issue_has_regression
             # tolerates a missing bd lookup — bd.show is called again
             # inside build_handoff and a transient miss there raises.
-            targeted_fix = attempt > 1 or _issue_has_regression(bd, current.id)
+            #
+            # harness-8tjnv: ALSO target-fix when the workspace already
+            # holds a built source artifact (>=50 lines). A foundational
+            # bead (e.g. "§1 game.js skeleton") re-served after later
+            # sections built the file would otherwise get a fresh-build
+            # handoff and the model recreates the skeleton over the built
+            # game (run b085854e: 2000→51→2000). The write_file hard-block
+            # self-gates on file existence, so this only adds protection.
+            targeted_fix = (
+                attempt > 1
+                or _issue_has_regression(bd, current.id)
+                or bool(substantial_artifacts(config.workspace))
+            )
 
             handoff = build_handoff(
                 state,
@@ -1030,6 +1042,7 @@ def _build_driver_hook_pipeline(
     workspace: Path,
     summarize_tool_results: bool,
     pre_close_verify: PreCloseVerifyHook | None = None,
+    targeted_fix: bool = False,
 ) -> HookPipeline:
     """Drive-loop hook pipeline (harness-tu4o). Mirrors
     `cli_classic._build_hook_pipeline` but trimmed to what the executor
@@ -1058,6 +1071,7 @@ def _build_driver_hook_pipeline(
     write_file_redirect_hook = make_write_file_redirect_hook(
         registry=registry,
         workspace_path=workspace,
+        targeted_fix=targeted_fix,
     )
     pipeline = default_hook_pipeline(write_file_redirect_hook=write_file_redirect_hook)
     # harness-nlj7: pre-close verify gate. Runs FIRST in pre_tool so a
@@ -1171,6 +1185,10 @@ def _run_executor_turn(
         workspace=workspace,
         summarize_tool_results=summarize_tool_results,
         pre_close_verify=pre_close_verify,
+        # harness-8tjnv: the handoff already carries targeted_fix (set by
+        # run_loop on retry / REGRESSION / built-artifact); reuse it so
+        # the write_file hard-block lines up with the TARGETED-FIX banner.
+        targeted_fix=handoff.targeted_fix,
     )
     try:
         result: ToolLoopResult = run_tool_loop(

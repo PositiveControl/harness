@@ -6111,12 +6111,14 @@ def _make_redirect_hook(
     existing: dict[str, str],
     edit_active: bool = True,
     edit_log: list[tuple[str, str, str]] | None = None,
+    targeted_fix: bool = False,
 ) -> WriteFileRedirectHook:
     """Build a WriteFileRedirectHook wired against an in-memory file
     map. `existing` maps path → current content; absent paths return
     None from read_existing. `edit_active=True` means
     ensure_edit_file_active reports success. Captures edit_file
-    invocations into `edit_log` if provided."""
+    invocations into `edit_log` if provided. `targeted_fix` toggles the
+    harness-8tjnv hard-block on writes to existing files."""
 
     def read_existing(path: str) -> str | None:
         return existing.get(path)
@@ -6137,6 +6139,7 @@ def _make_redirect_hook(
         read_existing=read_existing,
         ensure_edit_file_active=ensure_edit_file_active,
         invoke_edit_file=invoke_edit_file,
+        targeted_fix=targeted_fix,
     )
 
 
@@ -6243,6 +6246,59 @@ def test_write_file_redirect_blocks_high_ratio_shrink_above_1kb() -> None:
     assert outcome.result.error == "suspicious_shrink"
     # The destructive reroute never ran.
     assert log == []
+
+
+def test_write_file_redirect_hard_blocks_existing_file_in_targeted_mode() -> None:
+    """harness-8tjnv part 2: in targeted-fix mode, write_file on an
+    existing file is refused outright (no reroute) — the model must use
+    edit_file for the section it owns. This is the enforcement behind the
+    TARGETED-FIX banner the model ignored on run b085854e (harness-90j0)."""
+    existing = {"game.js": "// built game\n" + ("render();\n" * 2000)}
+    log: list[tuple[str, str, str]] = []
+    hook = _make_redirect_hook(existing=existing, edit_log=log, targeted_fix=True)
+    # A same-size-ish rewrite that would pass the shrink guard — only the
+    # targeted-fix block stops it.
+    call = ToolCall(
+        name="write_file",
+        arguments={"path": "game.js", "content": "// rewritten\n" + ("draw();\n" * 2000)},
+    )
+    outcome = hook.check(PreToolContext(call=call, seen_calls={}))
+    assert isinstance(outcome, Skip)
+    assert outcome.result.success is False
+    assert outcome.result.error == "targeted_fix_no_overwrite"
+    assert "TARGETED-FIX" in outcome.result.output
+    assert "edit_file" in outcome.result.output
+    # No reroute — the whole-file replace never executed.
+    assert log == []
+
+
+def test_write_file_redirect_targeted_mode_allows_new_file() -> None:
+    """The hard-block self-gates on existence: a write_file to a NEW path
+    in targeted-fix mode is untouched (Continue), so creating a genuinely
+    new helper file still works."""
+    hook = _make_redirect_hook(existing={}, targeted_fix=True)
+    call = ToolCall(name="write_file", arguments={"path": "new.js", "content": "x();\n"})
+    outcome = hook.check(PreToolContext(call=call, seen_calls={}))
+    assert isinstance(outcome, Continue)
+
+
+def test_write_file_redirect_reroutes_existing_file_when_not_targeted() -> None:
+    """Default (targeted_fix=False): the reroute behavior is unchanged —
+    a non-shrink write_file to an existing file still rewrites via
+    edit_file (chat sessions want this convenience)."""
+    existing = {"notes.md": "line one\nline two\n"}
+    log: list[tuple[str, str, str]] = []
+    hook = _make_redirect_hook(existing=existing, edit_log=log, targeted_fix=False)
+    call = ToolCall(
+        name="write_file",
+        arguments={"path": "notes.md", "content": "line one\nline two\nline three\n"},
+    )
+    outcome = hook.check(PreToolContext(call=call, seen_calls={}))
+    assert isinstance(outcome, Skip)
+    assert outcome.result.success is True
+    # The reroute DID run.
+    assert len(log) == 1
+    assert log[0][0] == "notes.md"
 
 
 def test_write_file_redirect_idempotent_on_identical_content() -> None:
