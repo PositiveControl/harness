@@ -93,7 +93,7 @@ class AutoIterateResult:
     passes_run: int
     drive_results: list[LoopResult]
     critic_findings_total: int
-    exit_reason: Literal["converged", "passes_exhausted", "drive_halted", "critic_failed"]
+    exit_reason: Literal["converged", "passes_exhausted", "drive_halted", "critic_failed", "stuck"]
     filed_beads: list[str] = field(default_factory=list)
 
 
@@ -282,6 +282,25 @@ def run_auto_iterate(
             )
 
         if not findings:
+            # Convergence requires actual progress (harness-dqoy). An empty
+            # critic pass only means "done" if the drive either closed
+            # something this pass or cleanly drained the ready queue
+            # ("success"). When the drive closed nothing AND stalled
+            # ("exhausted" = max_turns hit, "partial" = ready queue emptied
+            # only because issues were parked), the artifact didn't change,
+            # so the critic trivially finds nothing new — that's a stall,
+            # not completion. Surface it as "stuck" instead of letting it
+            # short-circuit to converged.
+            made_progress = bool(drive_result.closed)
+            clean_drain = drive_result.exit_reason == "success"
+            if not (made_progress or clean_drain):
+                return AutoIterateResult(
+                    passes_run=pass_index + 1,
+                    drive_results=drive_results,
+                    critic_findings_total=findings_total,
+                    exit_reason="stuck",
+                    filed_beads=filed_beads,
+                )
             empty_streak += 1
             if empty_streak >= config.convergence_streak:
                 return AutoIterateResult(

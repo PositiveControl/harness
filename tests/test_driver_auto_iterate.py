@@ -401,6 +401,83 @@ def test_run_auto_iterate_wraps_critic_in_ambient_trace(
     assert os.environ.get("HARNESS_VLLM_TRACE") is None
 
 
+def test_run_auto_iterate_exits_stuck_on_zero_progress_exhausted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Drive hit max_turns ('exhausted') closing nothing, critic finds
+    nothing new — that's a stall, not completion. Must exit 'stuck', not
+    'converged' (harness-dqoy)."""
+    bd = _FakeBd(issues={"harness-epic": _issue("harness-epic", title="GTAII")})
+    cfg = _config(tmp_path, max_passes=8, convergence_streak=2)
+
+    monkeypatch.setattr(
+        "harness.driver.auto_iterate.run_loop",
+        lambda _a, _b, _c: _loop_result(exit_reason="exhausted", closed=[]),
+    )
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", lambda **_: [])
+
+    result = run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+    assert result.exit_reason == "stuck"
+    assert result.passes_run == 1  # bails on the first stalled pass
+
+
+def test_run_auto_iterate_exits_stuck_on_zero_progress_all_parked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """'partial' = ready queue emptied only because issues were parked. With
+    nothing closed and no new findings, the epic is stranded, not done."""
+    bd = _FakeBd(issues={"harness-epic": _issue("harness-epic", title="GTAII")})
+    cfg = _config(tmp_path, convergence_streak=2)
+
+    monkeypatch.setattr(
+        "harness.driver.auto_iterate.run_loop",
+        lambda _a, _b, _c: _loop_result(exit_reason="partial", closed=[]),
+    )
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", lambda **_: [])
+
+    result = run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+    assert result.exit_reason == "stuck"
+
+
+def test_run_auto_iterate_clean_drain_zero_closed_still_converges(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A drained epic ('success' with closed=0) is legitimately complete —
+    an empty critic pass there still converges, it is NOT stuck. Guards the
+    dqoy fix against over-firing on the normal drained-epic path."""
+    bd = _FakeBd(issues={"harness-epic": _issue("harness-epic", title="GTAII")})
+    cfg = _config(tmp_path, convergence_streak=2)
+
+    monkeypatch.setattr(
+        "harness.driver.auto_iterate.run_loop",
+        lambda _a, _b, _c: _loop_result(exit_reason="success", closed=[]),
+    )
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", lambda **_: [])
+
+    result = run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+    assert result.exit_reason == "converged"
+    assert result.passes_run == 2
+
+
+def test_run_auto_iterate_exhausted_but_progress_is_not_stuck(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """'exhausted' but closed>0 means the drive made progress before
+    hitting max_turns — an empty critic pass counts toward convergence,
+    not stuck (closed>0 satisfies the progress predicate)."""
+    bd = _FakeBd(issues={"harness-epic": _issue("harness-epic", title="GTAII")})
+    cfg = _config(tmp_path, convergence_streak=1)
+
+    monkeypatch.setattr(
+        "harness.driver.auto_iterate.run_loop",
+        lambda _a, _b, _c: _loop_result(exit_reason="exhausted", closed=["harness-x"]),
+    )
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", lambda **_: [])
+
+    result = run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+    assert result.exit_reason == "converged"
+
+
 def test_run_auto_iterate_files_and_autoblocks_findings(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

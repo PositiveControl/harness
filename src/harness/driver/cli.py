@@ -699,6 +699,11 @@ def _auto_iterate_exit_code(result: AutoIterateResult) -> int:
         # clean finish. Non-zero so a wrapper retries rather than trusting
         # a false "converged" (harness-fote).
         return 3
+    if result.exit_reason == "stuck":
+        # Drive made zero progress and stalled (exhausted / all-parked) with
+        # no new critic findings — the work is stuck, not done. Distinct code
+        # so a wrapper can branch on it (harness-dqoy).
+        return 4
     # passes_exhausted: ran out of budget with critic still finding bugs.
     # Surface as non-zero so a CI / cron wrapper sees the unfinished state.
     return 2
