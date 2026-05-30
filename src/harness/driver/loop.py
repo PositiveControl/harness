@@ -300,6 +300,18 @@ class LoopConfig:
     # --no-scratch-sweep. Patterns matched against the file basename.
     scratch_sweep: bool = True
     scratch_patterns: tuple[str, ...] = DEFAULT_SCRATCH_PATTERNS
+    # harness-6y2dc: bd ids to filter out of `ready` up-front, in
+    # addition to this run's own `state.parked_issues`. auto_iterate
+    # carries the union of prior passes' parked issues here so a
+    # fresh-state pass doesn't re-drive an issue that already parked
+    # (hit max_attempts) last pass. Without it, each pass starts with an
+    # empty LoopRunState, re-queries `bd ready` — which still lists
+    # parked-but-open issues — and re-drives them from cold, burning the
+    # whole pass budget re-discovering they can't close. Nothing mutates
+    # the workspace between passes (the critic only reads + files beads),
+    # so a parked issue faces the identical workspace next pass and would
+    # park again; skipping it is correct. Empty for standalone run_loop.
+    skip_issue_ids: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -477,9 +489,14 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             # cycling back to the parked one. The bd-side flag (set in
             # _park_issue) doesn't necessarily exclude the issue from
             # `bd ready` — the filter is the load-bearing mechanism here.
-            if state.parked_issues:
-                parked = set(state.parked_issues)
-                ready = [issue for issue in ready if issue.id not in parked]
+            # harness-6y2dc: ALSO filter config.skip_issue_ids — issues
+            # parked by a PRIOR auto_iterate pass. A fresh-state pass
+            # otherwise re-drives them from cold (the wheel-spin), since
+            # parked-but-open issues still come back from `bd ready`.
+            skip_set = set(state.parked_issues) | config.skip_issue_ids
+            stranded_now = {issue.id for issue in ready if issue.id in skip_set}
+            if skip_set:
+                ready = [issue for issue in ready if issue.id not in skip_set]
             if not ready:
                 # harness-iljv: distinguish a genuinely-complete epic
                 # from one whose ready queue only emptied because we
@@ -487,7 +504,10 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 # the parked issues (and their dependents) stranded, so
                 # it's a "partial", not a "success" — callers and the
                 # exit code must be able to tell the difference.
-                if state.parked_issues:
+                # `stranded_now` is precise: "partial" only when a
+                # skipped id was actually present in this pass's ready
+                # (carried-parked work still open), not merely configured.
+                if state.parked_issues or stranded_now:
                     return _exit_partial(state, config.workspace, log)
                 return _exit_success(state, config.workspace, log)
 
@@ -1847,7 +1867,12 @@ def _park_issue(
 
 
 def _on_success(bd: DriverBd, state: LoopRunState, current_id: str, log: _LogWriter) -> None:
-    state.closed_this_run.append(current_id)
+    # harness-4k2p: dedupe at append time. An issue reopened mid-run
+    # (operator note + status reset, or a resume after reopen) and then
+    # re-closed would otherwise land twice in closed_this_run, inflating
+    # the audit count. Membership check keeps it a set-like ordered list.
+    if current_id not in state.closed_this_run:
+        state.closed_this_run.append(current_id)
     state.last_failure.pop(current_id, None)
     log(f"turn {state.turns_used}: {current_id} CLOSED")
     with contextlib.suppress(DriverBdError):

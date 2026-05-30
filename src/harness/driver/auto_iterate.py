@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -315,6 +315,15 @@ def run_auto_iterate(
     filed_beads: list[str] = []
     findings_total = 0
     empty_streak = 0
+    # harness-6y2dc: union of every prior pass's parked issues. Each
+    # pass runs with a fresh LoopRunState (resume cleared below), so
+    # without this carry a pass re-drives issues that already parked
+    # last pass — `bd ready` still lists parked-but-open issues, and
+    # the workspace is unchanged between passes (critic only reads +
+    # files beads). Carrying them as skip_issue_ids lets the next pass
+    # exit fast (partial) instead of burning its whole budget
+    # re-discovering the same issues can't close.
+    carried_skip: set[str] = set()
     spec_text = _resolve_spec(config, bd)
     spec_resolved = spec_text is not None
     if not spec_resolved:
@@ -336,8 +345,13 @@ def run_auto_iterate(
         # state file. (run_loop's own state machine handles fresh runs
         # cleanly when resume_from is None.)
         loop_config = config.loop_config if pass_index == 0 else _clear_resume(config.loop_config)
+        # harness-6y2dc: feed prior passes' parked ids forward so this
+        # pass skips them instead of re-driving from cold.
+        if carried_skip:
+            loop_config = replace(loop_config, skip_issue_ids=frozenset(carried_skip))
         drive_result = run_loop(adapter, bd, loop_config)
         drive_results.append(drive_result)
+        carried_skip.update(drive_result.parked_issues)
 
         if drive_result.exit_reason in {"halted", "interrupted"}:
             return AutoIterateResult(
@@ -471,8 +485,6 @@ def run_auto_iterate(
 def _clear_resume(loop_config: LoopConfig) -> LoopConfig:
     """Return a LoopConfig with `resume_from=None` so a follow-up pass
     starts a fresh loop_run. Other fields preserved."""
-    from dataclasses import replace
-
     return replace(loop_config, resume_from=None)
 
 

@@ -26,6 +26,8 @@ from harness.driver.loop import (
     LoopConfig,
     LoopResult,
     _blank_canvas_enforced,
+    _on_success,
+    _open_log,
     run_loop,
 )
 from harness.driver.state import LoopRunState
@@ -909,6 +911,68 @@ def test_run_loop_park_filters_from_subsequent_ready(
     assert result.parked_issues == ["harness-a"]
 
 
+def test_run_loop_skip_issue_ids_filters_carried_park(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-6y2dc: an issue parked by a PRIOR auto_iterate pass is
+    passed in via config.skip_issue_ids. run_loop must filter it from
+    ready up-front (never drive it) and pick the next genuinely-ready
+    issue instead — no cold re-drive of last pass's stuck work."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    issue_b = _issue("harness-b", title="B", status="open")
+    bd = _ScenarioBd(
+        # bd still lists A (parked-but-open from last pass); the
+        # skip filter must exclude it without ever running a turn on it.
+        # After B closes, bd still returns A (parked-open) — the filter
+        # empties the queue → partial.
+        ready_sequence=[[issue_a, issue_b], [issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-b": issue_b,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    # Only ONE outcome: B closes. If A were driven, the stub would run
+    # out of outcomes — pinning that A is never touched.
+    _stub_run_tool_loop(monkeypatch, outcomes=["close harness-b"], bd=bd)
+
+    cfg = _config(tmp_path, max_turns=10, skip_issue_ids=frozenset({"harness-a"}))
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.closed == ["harness-b"]
+    assert result.turns_used == 1  # A never drove a turn
+    # A was stranded (carried-park still open), so this is partial, not
+    # success — the epic isn't done, A is pending operator pickup.
+    assert result.exit_reason == "partial"
+
+
+def test_run_loop_skip_issue_ids_absent_from_ready_is_success(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-6y2dc: skip_issue_ids configured but none of them appear
+    in this pass's ready (e.g. they were closed externally between
+    passes) — emptying the queue is a genuine 'success', not a false
+    'partial'. `stranded_now` keeps the distinction precise."""
+    issue_b = _issue("harness-b", title="B", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_b], []],
+        issues={
+            "harness-b": issue_b,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    _stub_run_tool_loop(monkeypatch, outcomes=["close harness-b"], bd=bd)
+
+    # harness-a is configured to skip but never shows up in ready.
+    cfg = _config(tmp_path, max_turns=5, skip_issue_ids=frozenset({"harness-a"}))
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.closed == ["harness-b"]
+    assert result.exit_reason == "success"
+
+
 def test_run_loop_park_persists_to_state_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1083,6 +1147,19 @@ def test_run_loop_resume_rehydrates_state_and_continues(
     assert result.closed == ["harness-z", "harness-b"]
     # turns_used incremented from the pre-resume baseline.
     assert result.turns_used == 2
+
+
+def test_on_success_dedupes_closed_this_run(tmp_path: Path) -> None:
+    """harness-4k2p: closing the same id twice (reopen mid-run, then
+    re-close) must leave one entry in closed_this_run, not two."""
+    bd = _ScenarioBd(ready_sequence=[[]], issues={})
+    state = LoopRunState.fresh(epic_id="harness-e9oq", max_turns=5, started_at_sha="seedsha")
+    log = _open_log(tmp_path / "loop.log")
+
+    _on_success(bd, state, "harness-a", log)  # type: ignore[arg-type]
+    _on_success(bd, state, "harness-a", log)  # type: ignore[arg-type]
+
+    assert state.closed_this_run == ["harness-a"]
 
 
 def test_run_loop_resume_max_turns_override_from_config(
