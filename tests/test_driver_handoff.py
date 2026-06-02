@@ -213,6 +213,26 @@ def test_render_non_smoke_failure_uses_generic_prior_block() -> None:
     assert "fabrication_fallback fired" in out
 
 
+def test_render_no_edit_directive_when_prior_attempt_made_no_edits() -> None:
+    """No-edit-nudge: a prior attempt that made zero edits (investigation
+    loop) renders a 'stop investigating, edit now' directive that names
+    the no-edit pattern and steers straight to edit_file + bd close."""
+    out = _base_handoff(
+        prior_attempt_failure="issue still open after turn",
+        prior_made_no_edits=True,
+    ).render()
+    assert "[NO EDITS LAST ATTEMPT" in out
+    assert "made ZERO edits" in out
+    assert "edit_file" in out
+    # Appears before the current-issue block so the model reads it first.
+    assert out.index("[NO EDITS LAST ATTEMPT") < out.index("Current issue:")
+
+
+def test_render_no_edit_directive_absent_by_default() -> None:
+    out = _base_handoff(prior_attempt_failure="issue still open after turn").render()
+    assert "[NO EDITS LAST ATTEMPT" not in out
+
+
 def test_render_inserts_forbidden_patterns_block_when_set() -> None:
     """harness-d8e3: when the operator sets forbidden_patterns on
     LoopConfig (default 'TODO', 'FIXME', 'XXX', 'HACK'), every

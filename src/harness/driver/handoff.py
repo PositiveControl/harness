@@ -166,6 +166,15 @@ class Handoff:
     # disabled the check (or no forbidden_patterns set in LoopConfig);
     # the block doesn't render.
     forbidden_patterns: tuple[str, ...] = ()
+    # harness-psnz1: True when the PRIOR attempt at this issue
+    # left the workspace byte-identical to the issue baseline — zero net
+    # edits — despite spending its round budget on reads. Renders a
+    # "stop investigating, edit now" directive. cw1m in run b74bef10
+    # parked after 3 such attempts (0 edits, 65 read/grep/outline calls):
+    # the per-turn repeat-counter resets each attempt, so a read-heavy
+    # investigation loop that never writes is invisible to it. This
+    # directive breaks the loop by naming the no-edit pattern explicitly.
+    prior_made_no_edits: bool = False
 
     def render(self) -> str:
         """Produce the `[SESSION HANDOFF]` block. Applies the render-
@@ -276,6 +285,21 @@ class Handoff:
                         "",
                     ]
                 )
+        if self.prior_made_no_edits:
+            parts.extend(
+                [
+                    "[NO EDITS LAST ATTEMPT — stop investigating, make the change now]",
+                    "Your previous attempt at this issue made ZERO edits to the "
+                    "workspace — it spent the whole turn reading/grepping and ran out "
+                    "of rounds before writing anything. Re-reading the same code again "
+                    "will not close the issue.",
+                    "This turn: go straight to the change. Make your edit_file / "
+                    "write_file calls, verify, then run `bd close`. Read at most ONE "
+                    "file to confirm an exact insertion point, then EDIT — do not "
+                    "re-survey the codebase.",
+                    "",
+                ]
+            )
         if self.forbidden_patterns:
             pattern_list = ", ".join(repr(p) for p in self.forbidden_patterns)
             parts.extend(
@@ -358,6 +382,7 @@ def build_handoff(
     prior_assessment: dict[str, object] | None = None,
     prior_test_cmd: str | None = None,
     forbidden_patterns: tuple[str, ...] = (),
+    prior_made_no_edits: bool = False,
 ) -> Handoff:
     """Assemble a `Handoff` for the next executor turn.
 
@@ -423,6 +448,7 @@ def build_handoff(
         prior_assessment=prior_assessment,
         prior_test_cmd=prior_test_cmd,
         forbidden_patterns=forbidden_patterns,
+        prior_made_no_edits=prior_made_no_edits,
     )
 
 

@@ -521,6 +521,20 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             if current.id not in issue_start_files:
                 issue_start_files[current.id] = list_workspace_files(config.workspace)
             prior_failure = state.last_failure.get(current.id) if attempt > 1 else None
+            # harness-psnz1: an investigation-loop retry — the
+            # prior attempt left the workspace byte-identical to the issue
+            # baseline (zero net edits vs last-green) despite burning its
+            # round budget on reads. Run b74bef10 cw1m parked after 3 such
+            # attempts (0 edits, 65 read/grep/outline calls): the per-turn
+            # repeat-counter resets each attempt, so the loop is invisible
+            # to it. Surface it in the handoff as a "stop reading, edit
+            # now" directive. Reuses Fix A's workspace_changed signal.
+            prior_made_no_edits = (
+                attempt > 1
+                and config.regression_guard
+                and last_green is not None
+                and not workspace_changed(config.workspace, last_green)
+            )
             # harness-lefw: signal targeted-fix mode when the loop has
             # already touched this issue OR the operator left a
             # "REGRESSION" marker in notes (their convention when
@@ -550,6 +564,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 workspace=config.workspace,
                 targeted_fix=targeted_fix,
                 forbidden_patterns=config.forbidden_patterns,
+                prior_made_no_edits=prior_made_no_edits,
             )
 
             if config.dry_run:
@@ -595,6 +610,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     current_issue=current,
                     prior_failure=prior_failure,
                     targeted_fix=targeted_fix,
+                    prior_made_no_edits=prior_made_no_edits,
                     verify_map=verify_map,
                     default_verify_steps=default_verify_steps,
                     observe=turn_observer,
@@ -968,6 +984,7 @@ def _run_fsm_turn_via_driver(
     current_issue: Any,
     prior_failure: str | None,
     targeted_fix: bool,
+    prior_made_no_edits: bool = False,
     verify_map: Mapping[str, Sequence[VerifyStep]],
     default_verify_steps: Sequence[VerifyStep],
     observe: ExecutorObserver | None,
@@ -1016,6 +1033,7 @@ def _run_fsm_turn_via_driver(
             phase_instructions=phase_instructions(phase),
             prior_assessment=prior_assessment if prior_assessment else None,
             prior_test_cmd=prior_test_cmd,
+            prior_made_no_edits=prior_made_no_edits,
         )
 
     initial_phase = TurnPhase.ASSESS
