@@ -842,7 +842,17 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 # baseline instead of inheriting this attempt's broken
                 # edits. See loop_run=3e295564 turns 16-19: attempts 2-5
                 # each compounded onto an already-broken file.
-                _inter_attempt_restore(config, state, last_green, issue_id=current.id, log=log)
+                # harness-iteip: restore only fires now when the attempt
+                # left the baseline broken/regressed — a green workspace
+                # keeps its edits.
+                _inter_attempt_restore(
+                    config,
+                    state,
+                    last_green,
+                    issue_id=current.id,
+                    default_steps=default_verify_steps,
+                    log=log,
+                )
                 continue
 
             # harness-r0s61: the turn failed (fabrication-fallback, claim
@@ -858,8 +868,16 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 state.last_failure[current.id] = reason
                 _save_state(state, config.workspace)
                 # harness-2qth: same per-attempt rollback as the
-                # verify-fail branch above.
-                _inter_attempt_restore(config, state, last_green, issue_id=current.id, log=log)
+                # verify-fail branch above. harness-iteip: green,
+                # non-regressed workspaces keep their edits.
+                _inter_attempt_restore(
+                    config,
+                    state,
+                    last_green,
+                    issue_id=current.id,
+                    default_steps=default_verify_steps,
+                    log=log,
+                )
                 continue
 
             # Final consecutive failure (harness-d8e3 + zcrd): park
@@ -2133,20 +2151,41 @@ def _inter_attempt_restore(
     last_green: Path | None,
     *,
     issue_id: str,
+    default_steps: Sequence[VerifyStep],
     log: _LogWriter,
 ) -> None:
     """harness-2qth: between attempts on the same issue, roll the
     workspace back to last-green so the next attempt starts clean
-    instead of compounding edits onto a broken baseline. Same gate as
-    `_post_park_housekeeping` (config.regression_guard + last_green is
-    a real snapshot) — the only difference is when we run it. No-op
-    when regression_guard is off or no green baseline exists yet."""
+    instead of compounding edits onto a broken baseline.
+
+    harness-iteip: restore ONLY when the failed attempt left the
+    workspace broken (red verify) or regressed vs last-green (lost
+    symbols / shrank). A failed attempt that left a healthy, green
+    workspace — correct work the model never `bd close`d, or a
+    non-claim wrap-up stub — keeps its edits so the next attempt builds
+    on them. Wiping a green workspace forces a cold restart that invites
+    the fabricate-from-scratch spiral (run 29f4a974 / gta 6182c539,
+    where the score work was done on attempt 2, restored away, then
+    fabricated on attempt 3 → park). The next handoff still carries the
+    failure reason, so the model fixes forward instead of redoing.
+
+    Mirrors `_post_park_housekeeping`'s restore gate. No-op when
+    regression_guard is off or no green baseline exists yet."""
     if not config.regression_guard or last_green is None or not last_green.is_file():
         return
+    red = not _baseline_is_green(default_steps, config.workspace)
+    regressed = detect_regression(config.workspace, last_green) is not None
+    if not (red or regressed):
+        log(
+            f"loop_run={state.loop_run_id} retry of {issue_id}: workspace green, "
+            f"not regressed — keeping edits (no restore)"
+        )
+        return
     restored, removed = restore_workspace(config.workspace, last_green)
+    why = "broken" if red else "regressed (lost code vs last-green)"
     log(
         f"loop_run={state.loop_run_id} RESTORED before retry of {issue_id}: "
-        f"last-green ({restored} files, removed {len(removed)} issue-added)"
+        f"baseline {why}; last-green ({restored} files, removed {len(removed)} issue-added)"
     )
 
 

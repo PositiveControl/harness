@@ -469,19 +469,26 @@ def test_run_loop_no_summarize_flag_omits_hook(
     assert not summarizers
 
 
-def test_run_loop_inter_attempt_restore_fires_between_failed_attempts(
+def test_run_loop_inter_attempt_restore_fires_when_attempt_regressed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """harness-2qth: when an attempt fails but the retry budget is not
-    exhausted, the loop must restore the workspace to last-green before
-    starting the next attempt — so the next attempt doesn't inherit the
-    failing attempt's broken edits."""
+    """harness-2qth + harness-iteip: when a failed attempt left the
+    workspace REGRESSED vs last-green (dropped a previously-defined
+    symbol), the loop restores last-green before the next attempt so the
+    break can't compound. The harness-iteip gate doesn't suppress the
+    restore here — the workspace is genuinely broken."""
+    from harness.driver.workspace_guard import restore_workspace as _real_restore
+
+    # Source file with two symbols seeds the last-green baseline.
+    game = tmp_path / "game.py"
+    game.write_text("def a():\n    pass\n\n\ndef b():\n    pass\n")
+
     issue_a = _issue("harness-a", title="A", status="open")
     issue_b = _issue("harness-b", title="B", status="open")
     bd = _ScenarioBd(
-        # A closes turn 1 → last_green refreshed.
-        # B fails turn 2 → expected per-attempt restore.
-        # B closes turn 3.
+        # A closes turn 1 → last_green refreshed (a + b present).
+        # B fails turn 2 and drops symbol b → regression → restore.
+        # B closes turn 3 (workspace restored to a + b).
         ready_sequence=[[issue_a, issue_b], [issue_b], [issue_b], []],
         issues={
             "harness-a": issue_a,
@@ -490,28 +497,88 @@ def test_run_loop_inter_attempt_restore_fires_between_failed_attempts(
         },
     )
     _stub_git_head(monkeypatch)
+
+    def regress_on_b_attempt(idx: int, _outcome: str) -> None:
+        # On B's failing turn (idx 1), gut the file — drop symbol b.
+        if idx == 1:
+            game.write_text("def a():\n    pass\n")
+
     _stub_run_tool_loop(
         monkeypatch,
         outcomes=["close harness-a", "open harness-b", "close harness-b"],
         bd=bd,
+        on_each_call=regress_on_b_attempt,
     )
 
     restore_calls: list[tuple[Path, Path]] = []
 
-    def fake_restore(workspace: Path, snapshot: Path) -> tuple[int, list[str]]:
+    def recording_restore(workspace: Path, snapshot: Path) -> tuple[int, list[str]]:
         restore_calls.append((workspace, snapshot))
-        return 0, []
+        return _real_restore(workspace, snapshot)  # actually restore so B can close
 
-    monkeypatch.setattr("harness.driver.loop.restore_workspace", fake_restore)
+    monkeypatch.setattr("harness.driver.loop.restore_workspace", recording_restore)
     result = run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
 
     assert result.exit_reason == "success"
     assert result.closed == ["harness-a", "harness-b"]
-    # Exactly one inter-attempt restore: between B's attempt 1 (fail)
+    # Exactly one inter-attempt restore: between B's attempt 1 (regressed)
     # and attempt 2 (close). A had no failed attempts.
     assert len(restore_calls) == 1, (
         f"expected 1 inter-attempt restore, got {len(restore_calls)}: {restore_calls}"
     )
+    # And the restore brought the dropped symbol back.
+    assert "def b()" in game.read_text()
+
+
+def test_run_loop_inter_attempt_restore_skipped_when_workspace_green(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-iteip: a failed attempt that left the workspace GREEN and
+    not regressed keeps its edits — the loop must NOT restore last-green,
+    because wiping correct work forces a cold restart that invites the
+    fabricate-from-scratch spiral (run 29f4a974 / gta 6182c539)."""
+    game = tmp_path / "game.py"
+    game.write_text("def a():\n    pass\n")
+
+    issue_b = _issue("harness-b", title="B", status="open")
+    bd = _ScenarioBd(
+        # B fails turn 1 (open, but adds code — green, not regressed) →
+        # no restore. B closes turn 2 with the added code intact.
+        ready_sequence=[[issue_b], [issue_b], []],
+        issues={
+            "harness-b": issue_b,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    def add_code_on_first_attempt(idx: int, _outcome: str) -> None:
+        # Adding a symbol never regresses; the workspace stays green.
+        if idx == 0:
+            game.write_text("def a():\n    pass\n\n\ndef c():\n    return 2\n")
+
+    _stub_run_tool_loop(
+        monkeypatch,
+        outcomes=["open harness-b", "close harness-b"],
+        bd=bd,
+        on_each_call=add_code_on_first_attempt,
+    )
+
+    restore_calls: list[Any] = []
+
+    def recording_restore(workspace: Path, snapshot: Path) -> tuple[int, list[str]]:
+        restore_calls.append((workspace, snapshot))
+        return 0, []
+
+    monkeypatch.setattr("harness.driver.loop.restore_workspace", recording_restore)
+    result = run_loop(_FakeAdapter(), bd, _config(tmp_path))  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-b"]
+    # No restore — the green workspace kept its edits across the retry.
+    assert restore_calls == []
+    # The added code from the failed attempt survived into the next.
+    assert "def c()" in game.read_text()
 
 
 def test_run_loop_inter_attempt_restore_skipped_when_regression_guard_off(
