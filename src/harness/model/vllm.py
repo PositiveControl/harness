@@ -365,6 +365,33 @@ class VllmAdapter:
         self._api_key = api_key
         self.stop: tuple[str, ...] = self._DEFAULT_STOP if stop is None else stop
         self.id = f"vllm:{model}" if model else f"vllm:{self.base_url}"
+        # Single pooled client, built lazily on first request and reused
+        # for discovery + every _post / _post_stream (harness-5muh).
+        # Lazy (not eager in __init__) so the SSL context — and the test
+        # MockTransport — is created at first use; one context for the
+        # adapter's life, immune to a mid-run certifi swap rebuilding a
+        # fresh context per call (the FileNotFoundError from a uv sync
+        # rewriting the CA bundle between two calls in one turn).
+        self._client: httpx.Client | None = None
+
+    def _http(self) -> httpx.Client:
+        """The adapter's pooled httpx.Client, constructed once."""
+        if self._client is None:
+            self._client = httpx.Client(timeout=self.timeout)
+        return self._client
+
+    def close(self) -> None:
+        """Close the pooled client. Idempotent; a later request rebuilds
+        one. Call on shutdown, or use the adapter as a context manager."""
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    def __enter__(self) -> VllmAdapter:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
     @property
     def model(self) -> str:
@@ -383,10 +410,9 @@ class VllmAdapter:
         """GET /v1/models — pick the first served id. vLLM hosts exactly
         one model per process, so this is unambiguous."""
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                r = client.get(f"{self.base_url}/models", headers=self._headers())
-                r.raise_for_status()
-                data = r.json()
+            r = self._http().get(f"{self.base_url}/models", headers=self._headers())
+            r.raise_for_status()
+            data = r.json()
         except httpx.HTTPError as exc:
             raise RuntimeError(
                 f"Cannot reach vLLM at {self.base_url} — is `vllm serve` running? ({exc})"
@@ -740,14 +766,13 @@ class VllmAdapter:
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                r = client.post(
-                    f"{self.base_url}{path}",
-                    headers=self._headers(),
-                    json=payload,
-                )
-                r.raise_for_status()
-                data: Any = r.json()
+            r = self._http().post(
+                f"{self.base_url}{path}",
+                headers=self._headers(),
+                json=payload,
+            )
+            r.raise_for_status()
+            data: Any = r.json()
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text
             if _is_context_overflow(exc.response.status_code, detail):
@@ -773,15 +798,12 @@ class VllmAdapter:
         """SSE stream parser. vLLM emits `data: <json>\\n\\n` frames,
         terminated by `data: [DONE]`. Blank lines are keepalives."""
         try:
-            with (
-                httpx.Client(timeout=self.timeout) as client,
-                client.stream(
-                    "POST",
-                    f"{self.base_url}{path}",
-                    headers=self._headers(),
-                    json=payload,
-                ) as r,
-            ):
+            with self._http().stream(
+                "POST",
+                f"{self.base_url}{path}",
+                headers=self._headers(),
+                json=payload,
+            ) as r:
                 # raise_for_status on a streaming response leaves the body
                 # un-read; touching .text outside the `with` then raises
                 # httpx.ResponseNotRead instead of surfacing the server's

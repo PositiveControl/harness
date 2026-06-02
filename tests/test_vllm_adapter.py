@@ -1818,6 +1818,77 @@ def test_vllm_other_4xx_still_raises_runtime_error() -> None:
     assert not isinstance(excinfo.value, PromptBudgetError)
 
 
+# ---------- pooled httpx client (harness-5muh) ---------------------------
+
+
+def _counting_factory(
+    handler: Callable[[httpx.Request], httpx.Response], counter: list[int]
+) -> Callable[..., httpx.Client]:
+    """Like _make_factory but bumps `counter[0]` each time a client is
+    constructed, so a test can assert how many clients the adapter built."""
+    real_client = httpx.Client
+
+    def factory(*args: Any, **kwargs: Any) -> httpx.Client:
+        counter[0] += 1
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    return factory
+
+
+def test_vllm_reuses_single_client_across_calls() -> None:
+    """The adapter builds one httpx.Client and reuses it for every
+    request — no fresh client (and fresh SSL context) per call."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {"choices": [{"index": 0, "delta": {"content": "hi"}}]},
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                "[DONE]",
+            ]
+        )
+
+    built: list[int] = [0]
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _counting_factory(handler, built)):
+        list(adapter.stream_with_tools([ChatMessage(role="user", content="a")]))
+        list(adapter.stream_with_tools([ChatMessage(role="user", content="b")]))
+    assert built == [1], "expected exactly one httpx.Client across multiple calls"
+    adapter.close()
+
+
+def test_vllm_close_releases_client_and_allows_rebuild() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {"choices": [{"index": 0, "message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+
+    built: list[int] = [0]
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _counting_factory(handler, built)):
+        adapter.complete([ChatMessage(role="user", content="a")])
+        adapter.close()  # drops the pooled client
+        adapter.complete([ChatMessage(role="user", content="b")])  # rebuilds
+    assert built == [2]
+    adapter.close()
+
+
+def test_vllm_context_manager_closes_client() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {"choices": [{"index": 0, "message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+
+    built: list[int] = [0]
+    with patch("httpx.Client", _counting_factory(handler, built)):
+        with VllmAdapter(model="m") as adapter:
+            adapter.complete([ChatMessage(role="user", content="a")])
+            assert adapter._client is not None
+        # __exit__ closed and dropped the pooled client.
+        assert adapter._client is None
+
+
 def test_vllm_adapter_does_not_import_vllm_sdk() -> None:
     """Adapter-boundary check: this module must talk to vLLM over HTTP
     only. Importing the `vllm` Python SDK would pull CUDA wheels onto
