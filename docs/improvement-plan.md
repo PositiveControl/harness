@@ -26,32 +26,67 @@ replace them with a larger framework.
 
 ## Phase 0: Safety And Contract Corrections
 
+### Step 0.0: Fix the compaction context-overflow crash
+
+Tracking: `harness-2epb`
+
+Problem: a live turn died with `(prompt 30721 + max_tokens 2048) = 32769 > 32768`
+context window. Compaction folds older turns at `--compact-at × context_window`
+but reserves no headroom for `max_tokens`, so the *request* size (prompt +
+output budget) can exceed the window by a sliver and vLLM returns 422, killing
+the turn. This is a live crash, not a refactor — it sequences ahead of the
+authorization work.
+
+Implementation steps:
+
+1. Make the compaction trigger budget aware: target `prompt ≤ context_window −
+   max_tokens − safety_margin`, not just `prompt ≤ compact_at × window`.
+2. Clamp `max_tokens` down to remaining budget when the prompt is already large,
+   rather than sending a fixed 2048.
+3. Add a regression test that drives a prompt to the window edge and asserts the
+   emitted request stays under `context_window`.
+
+Acceptance:
+
+No turn emits `prompt_tokens + max_tokens > context_window`. The edge case from
+the 2026-05-23 vLLM failure is reproduced as a test and passes.
+
 ### Step 0.1: Fix argument-dependent write authorization
 
 Tracking: `harness-qcukc`
 
 Problem: `stream_edit` advertises `tier="read"` while `in_place=True` overwrites
-files. The orchestrator confirms only `spec.tier == "write"`, so this is a real
-capability leak.
+files. The orchestrator confirms only `spec.tier == "write"`
+(`tool_loop.py:541`, `:1011`), so this is a real capability leak. The inline
+comment at `stream_edit.py:258` ("in_place=True is checked per-call") is stale —
+no such per-call check exists.
+
+Severity is worse than a missed confirmation: the router prelude
+(`tool_loop.py:510`) auto-executes any `tier == "read"` tool with *zero*
+confirmation. So a router classification can silently run
+`stream_edit(in_place=True)` — a destructive overwrite — with no human in the
+loop. `python_stream` has the same `in_place` path and the same leak; the fix
+must cover both tools, not just `stream_edit`.
 
 Implementation steps:
 
 1. Add a capability API that can answer whether a specific `ToolCall` requires
    confirmation. Prefer one of these shapes:
-   - split `stream_edit` into read-only `stream_edit` and write-tier
-     `stream_rewrite`
+   - split each tool into a read-only variant and a write-tier variant
+     (e.g. `stream_edit` / `stream_rewrite`)
    - add `Tool.requires_confirmation(arguments) -> bool`
    - add `ToolSpec.effective_tier(arguments) -> Literal["read", "write"]`
-2. Update router prelude logic so argument-dependent write calls cannot be
-   auto-routed as read-tier.
+2. Update router prelude logic (`tool_loop.py:510`) so argument-dependent write
+   calls cannot be auto-routed as read-tier.
 3. Update CLI/TUI/driver confirmation paths to call the new capability API.
-4. Add regression tests for `stream_edit(in_place=False)` and
-   `stream_edit(in_place=True)`.
+4. Add regression tests for `stream_edit(in_place=False/True)` **and**
+   `python_stream(in_place=False/True)`, including the router-prelude path.
 
 Acceptance:
 
 `in_place=True` must go through the write approval path everywhere the tool loop
-is used. Read-only stream editing should keep its low-friction path.
+is used — including the router prelude — for both `stream_edit` and
+`python_stream`. Read-only stream editing keeps its low-friction path.
 
 ### Step 0.2: Reuse the vLLM HTTP client
 
@@ -94,6 +129,17 @@ Tracking: `harness-5cjj9`
 Problem: `ToolRegistry.call()` forwards raw dict arguments into `tool.call()` and
 then tries to recover from Python exceptions. Pydantic is already a hard
 dependency, so schemas and runtime validation should come from one typed source.
+
+Subsumes two open bugs — fold them into this work rather than patching ad hoc:
+
+- `harness-ln7j`: `stream_edit` raises `TypeError` when the model passes int
+  args (`args=[290, 320]`). A typed `args_model` either coerces or returns a
+  structured field error — exactly what step 4 below produces. Don't ship the
+  one-off coercion in `stream_edit`; let the schema boundary handle it.
+- `harness-47pc`: `plan_add` validation errors aren't actionable (model
+  re-emits the same broken blockquote until `DuplicateCallHook` gives up).
+  Structured validation errors that name the bad field and expected shape are
+  the same mechanism; the planner's blockquote rule should surface through it.
 
 Implementation steps:
 
@@ -292,15 +338,31 @@ sessions have explicit resource limits.
 
 ## Suggested Sequence
 
-1. `harness-qcukc`: close the `stream_edit` authorization gap.
-2. `harness-5muh`: reuse the vLLM HTTP client.
-3. `harness-5cjj9`: add typed tool argument validation, starting with a pilot.
-4. `harness-fl313`: introduce `TurnService` and migrate web `/chat`.
-5. Refresh and execute the CLI extraction plan.
-6. `harness-usbhw`: split hook policies by domain.
-7. `harness-rkijl`: centralize store connection and migration helpers.
-8. Add trace spans and operational health/readiness once the shared service
-   boundary is stable.
+1. `harness-2epb`: fix the compaction context-overflow crash (live failure).
+2. `harness-qcukc`: close the `stream_edit` / `python_stream` authorization gap.
+3. `harness-5muh`: reuse the vLLM HTTP client.
+4. `harness-5cjj9`: add typed tool argument validation, starting with a pilot.
+   Closes `harness-ln7j` and `harness-47pc` as part of the same work.
+5. `harness-fl313`: introduce `TurnService` and migrate web `/chat`.
+6. `harness-lngk`: validate critic findings against the artifact before filing
+   (driver-loop correctness; independent of the above, can slot in any time).
+7. Refresh and execute the CLI extraction plan.
+8. `harness-usbhw`: split hook policies by domain.
+9. `harness-rkijl`: centralize store connection and migration helpers.
+10. Add trace spans and operational health/readiness once the shared service
+    boundary is stable.
+
+Sequencing notes:
+
+- Steps 1–2 are live-defect fixes (a crash and a silent-write hole); they
+  outrank every refactor and ship first.
+- Web `/chat` currently skips the tool loop, retrieval, and `assemble_context`
+  entirely — it ships ungrounded today. `harness-fl313` is the fix for that, so
+  it is a correctness item, not only an architecture cleanup.
+- CLI/hook/store extraction (steps 7–9) are pure maintainability. `cli.py`
+  (6,611 LOC) and `hooks.py` (6,612 LOC) are genuinely oversized, but the work
+  is high-churn and low user-facing value — defer behind the defect fixes and
+  `TurnService`.
 
 ## Verification Strategy
 
