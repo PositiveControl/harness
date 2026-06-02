@@ -49,6 +49,7 @@ from typing import Protocol
 
 from harness.driver.bd import DriverBdError
 from harness.driver.state import LoopRunState
+from harness.driver.workspace_verify import extract_smoke_symptom
 from harness.store._bd_types import BeadsIssue
 
 # Render-budget knobs. Public so tests can pin them and a future eval
@@ -240,13 +241,41 @@ class Handoff:
                 ]
             )
         if self.prior_attempt_failure:
-            parts.extend(
-                [
-                    "[PRIOR ATTEMPT FAILED]",
-                    self.prior_attempt_failure,
-                    "",
-                ]
-            )
+            smoke_symptom = extract_smoke_symptom(self.prior_attempt_failure)
+            if smoke_symptom is not None:
+                # harness-estby follow-up: the prior attempt failed the
+                # runtime smoke gate. Surface the symptom prominently and
+                # as a fix directive rather than burying it in the raw
+                # "<python -m …smoke_runner> exit=1: …" command echo — the
+                # model has to fix the RUNNING app to pass the gate and
+                # close, and "canvas rendered nothing" / "pageerror: X is
+                # not defined" tells it exactly what to fix.
+                parts.append("[RUNTIME CHECK FAILED — fix this before you can close]")
+                parts.append(
+                    "The harness loaded the app in a headless browser and it FAILED the "
+                    "runtime smoke gate. This gate MUST pass to close:"
+                )
+                parts.extend(f"  {line}" for line in smoke_symptom.splitlines())
+                parts.extend(
+                    [
+                        "Fix the RUNNING app so this check passes:",
+                        "  - 'canvas rendered nothing' / 'draw loop likely not wired up' "
+                        "→ the render loop isn't producing pixels; wire it to run every "
+                        "frame and actually draw to the canvas.",
+                        "  - 'pageerror:' / 'runtime errors detected' → a JS error is "
+                        "thrown on load; fix the exact error named above.",
+                        "Do NOT close until the smoke step exits 0.",
+                        "",
+                    ]
+                )
+            else:
+                parts.extend(
+                    [
+                        "[PRIOR ATTEMPT FAILED]",
+                        self.prior_attempt_failure,
+                        "",
+                    ]
+                )
         if self.forbidden_patterns:
             pattern_list = ", ".join(repr(p) for p in self.forbidden_patterns)
             parts.extend(

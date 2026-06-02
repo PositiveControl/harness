@@ -178,6 +178,41 @@ def test_render_prior_attempt_block_absent_on_first_attempt() -> None:
     assert "[PRIOR ATTEMPT FAILED]" not in out
 
 
+def test_render_smoke_failure_surfaces_runtime_block_not_raw_reason() -> None:
+    """harness-estby follow-up: a prior-attempt failure carrying the
+    runtime smoke gate's output renders as a prominent RUNTIME CHECK
+    FAILED block with the cleaned symptom + a fix directive — not the
+    raw command-echo reason under the generic PRIOR ATTEMPT block."""
+    reason = (
+        "claim_without_close: /Users/x/.venv/bin/python3 -m harness.driver.smoke_run... "
+        "exit=1: smoke-execute: canvas rendered nothing (entirely one color) after "
+        "1500ms — draw loop likely not wired up: blank-canvas #0 (1280x960) uniform "
+        "rgba=[0, 0, 0, 0]"
+    )
+    out = _base_handoff(prior_attempt_failure=reason).render()
+    # Prominent runtime block, not the generic one.
+    assert "[RUNTIME CHECK FAILED" in out
+    assert "[PRIOR ATTEMPT FAILED]" not in out
+    # The actionable symptom survives; the command-echo noise is stripped.
+    assert "canvas rendered nothing" in out
+    assert "draw loop likely not wired up" in out
+    assert "smoke_runner" not in out
+    assert "exit=1" not in out
+    # Framed as a fix directive before the current-issue block.
+    assert "Do NOT close until the smoke step exits 0." in out
+    assert out.index("[RUNTIME CHECK FAILED") < out.index("Current issue:")
+
+
+def test_render_non_smoke_failure_uses_generic_prior_block() -> None:
+    """A non-runtime failure (fabrication, parse gate, bd error) still
+    renders under the generic PRIOR ATTEMPT FAILED block verbatim — the
+    runtime reframing only applies to smoke-gate output."""
+    out = _base_handoff(prior_attempt_failure="fabrication_fallback fired").render()
+    assert "[PRIOR ATTEMPT FAILED]" in out
+    assert "[RUNTIME CHECK FAILED" not in out
+    assert "fabrication_fallback fired" in out
+
+
 def test_render_inserts_forbidden_patterns_block_when_set() -> None:
     """harness-d8e3: when the operator sets forbidden_patterns on
     LoopConfig (default 'TODO', 'FIXME', 'XXX', 'HACK'), every

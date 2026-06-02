@@ -22,6 +22,7 @@ from harness.driver.workspace_verify import (
     _workspace_has_file,
     browser_smoke_skip_reason,
     default_workspace_verify_steps,
+    extract_smoke_symptom,
     missing_entry_html_reason,
 )
 
@@ -580,3 +581,39 @@ def test_missing_entry_html_none_when_no_browser_js(tmp_path: Path) -> None:
 def test_missing_entry_html_none_on_empty_workspace(tmp_path: Path) -> None:
     # A fresh §1 build with no source yet must not be refused.
     assert missing_entry_html_reason(tmp_path) is None
+
+
+# --- extract_smoke_symptom (harness-estby handoff feedback) ----------
+
+
+def test_extract_smoke_symptom_strips_command_echo_blank_canvas() -> None:
+    reason = (
+        "claim_without_close: /Users/x/.venv/bin/python3 -m harness.driver.smoke_run... "
+        "exit=1: smoke-execute: canvas rendered nothing (entirely one color) after "
+        "1500ms — draw loop likely not wired up: blank-canvas #0 (1280x960) uniform "
+        "rgba=[0, 0, 0, 0]"
+    )
+    out = extract_smoke_symptom(reason)
+    assert out is not None
+    assert out.startswith("smoke-execute: canvas rendered nothing")
+    # Command echo + exit prefix stripped.
+    assert "smoke_runner" not in out
+    assert "exit=1" not in out
+    assert "claim_without_close" not in out
+
+
+def test_extract_smoke_symptom_pageerror() -> None:
+    reason = "verify_failed: node --check ... exit=1: pageerror: foo is not defined"
+    out = extract_smoke_symptom(reason)
+    assert out == "pageerror: foo is not defined"
+
+
+def test_extract_smoke_symptom_none_for_non_smoke_failure() -> None:
+    assert extract_smoke_symptom("fabrication_fallback fired") is None
+    assert extract_smoke_symptom("verify_failed: pytest exit=1: 2 failed") is None
+    assert extract_smoke_symptom("issue still open after turn") is None
+
+
+def test_extract_smoke_symptom_none_for_empty() -> None:
+    assert extract_smoke_symptom("") is None
+    assert extract_smoke_symptom(None) is None

@@ -331,6 +331,40 @@ def browser_smoke_skip_reason(workspace: Path) -> str | None:
     )
 
 
+# Markers the smoke runner emits to stderr (all printed by
+# smoke_runner.py). Used to pull the actionable symptom out of a verify
+# failure string so the handoff can surface it cleanly instead of the
+# raw "<python -m harness.driver.smoke_runner …> exit=1: …" command echo.
+_SMOKE_MARKERS: tuple[str, ...] = (
+    "smoke-execute:",
+    "pageerror:",
+    "blank-canvas",
+)
+
+
+def extract_smoke_symptom(reason: str | None) -> str | None:
+    """Pull the runtime-smoke symptom out of a verify/close failure
+    ``reason`` — everything from the first smoke marker onward, with the
+    leading command echo (`… python3 -m harness.driver.smoke_runner …
+    exit=1:`) and failure-prefix noise stripped.
+
+    Returns None when ``reason`` carries no smoke output (a parse-gate
+    failure, a bd error, a plain "issue still open" reason, …) so callers
+    can fall back to rendering the reason verbatim. harness-estby follow-up
+    (handoff feedback): a clean symptom — "canvas rendered nothing …",
+    "pageerror: X is not defined" — is far more actionable to the model
+    than the buried command line, and the symptom is what the model has to
+    fix to pass the gate and close."""
+    if not reason:
+        return None
+    hits = [reason.find(m) for m in _SMOKE_MARKERS]
+    hits = [i for i in hits if i >= 0]
+    if not hits:
+        return None
+    symptom = reason[min(hits) :].strip()
+    return symptom or None
+
+
 def default_workspace_verify_steps(
     workspace: Path, *, enforce_blank_canvas: bool = True
 ) -> tuple[VerifyStep, ...]:
@@ -371,5 +405,6 @@ def default_workspace_verify_steps(
 __all__ = [
     "browser_smoke_skip_reason",
     "default_workspace_verify_steps",
+    "extract_smoke_symptom",
     "missing_entry_html_reason",
 ]
