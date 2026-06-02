@@ -244,7 +244,12 @@ class SpawnSubagentTool:
                 unknown.append(name)
                 continue
             tool = self.registry.get(name)
-            if tool.spec.tier != "read":
+            # `can_write`, not `tier != "read"`: a subagent is read-only,
+            # so exclude tools that can write for *any* argument shape
+            # (e.g. stream_edit/python_stream, statically read-tier but
+            # in_place=True overwrites). Gating on tier alone would let a
+            # read-only subagent overwrite files (harness-qcukc).
+            if tool.spec.can_write:
                 write_tier.append(name)
                 continue
             selected.append(tool)

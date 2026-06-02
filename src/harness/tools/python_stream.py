@@ -367,7 +367,8 @@ class PythonStreamTool:
                 },
                 "required": ["expr"],
             },
-            tier="read",
+            tier="read",  # common case; in_place=True escalates via write_when
+            write_when=lambda args: bool(args.get("in_place")),
             display_name="Python stream",
             high_noise=True,
         )

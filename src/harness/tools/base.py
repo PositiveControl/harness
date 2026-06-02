@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -26,10 +26,43 @@ class ToolSpec:
     # tools above a size threshold get compressed before the model
     # sees them. Everything else passes through untouched.
     high_noise: bool = False
+    # Argument-dependent write escalation (harness-qcukc). Some tools are
+    # read-tier in the common case but overwrite files for certain
+    # argument shapes — `stream_edit` / `python_stream` with
+    # `in_place=True` are the canonical offenders. `tier` reflects the
+    # static, common-case authorization; `write_when` is an optional
+    # predicate over the call's arguments that escalates a single
+    # invocation to write-tier. The orchestrator gates confirmation on
+    # `effective_tier(arguments)`, never on `tier` alone, so an
+    # argument-dependent write cannot slip through the read-tier path
+    # (including the router prelude, which only auto-executes read-tier
+    # calls). None = the tier is fixed.
+    write_when: Callable[[Mapping[str, Any]], bool] | None = None
 
     @property
     def label(self) -> str:
         return self.display_name or self.name
+
+    @property
+    def can_write(self) -> bool:
+        """True if this tool ever performs a write, statically — either
+        it is write-tier outright, or some argument shape escalates it.
+        Used where the decision must be made without a concrete call in
+        hand (e.g. excluding escalatable tools from read-only subagents),
+        as opposed to `effective_tier`, which needs the arguments."""
+        return self.tier == "write" or self.write_when is not None
+
+    def effective_tier(self, arguments: Mapping[str, Any]) -> str:
+        """Authorization tier for a *specific* invocation. Returns
+        ``"write"`` when the static tier is write, or when `write_when`
+        fires for these arguments; otherwise the static tier. This is
+        the value the orchestrator must gate confirmation on — gating on
+        `tier` alone leaks argument-dependent writes (harness-qcukc)."""
+        if self.tier == "write":
+            return "write"
+        if self.write_when is not None and self.write_when(arguments):
+            return "write"
+        return self.tier
 
 
 @runtime_checkable

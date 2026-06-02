@@ -149,6 +149,24 @@ def test_subagent_rejects_write_tier_tool(tmp_path: Path) -> None:
     assert "write_file" in out
 
 
+def test_subagent_rejects_in_place_capable_tool(tmp_path: Path) -> None:
+    """A read-only subagent must reject tools that can write for any
+    argument shape — stream_edit is statically read-tier but escalates
+    on in_place=True, so it must not be loadable into a subagent
+    (harness-qcukc)."""
+    from harness.tools.stream_edit import StreamEditTool
+
+    parent = _registry_with(ReadFileTool(root=tmp_path), StreamEditTool(root=tmp_path))
+    tool = SpawnSubagentTool(
+        adapter=_ScriptedAdapter(replies=[]),
+        registry=parent,
+        hooks=default_hook_pipeline(),
+    )
+    out = tool.call(task="rewrite a file", tools=["stream_edit"])
+    assert "write-tier" in out
+    assert "stream_edit" in out
+
+
 def test_subagent_rejects_unknown_tool(tmp_path: Path) -> None:
     tool = _make_tool(tmp_path)
     out = tool.call(task="do something", tools=["does_not_exist"])

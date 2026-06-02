@@ -507,7 +507,11 @@ def _router_prelude(
     if intent.tool_name not in registry:
         return (False, False)
     spec = registry.get(intent.tool_name).spec
-    if spec.tier != "read":
+    # Gate on the *effective* tier for these arguments, not the static
+    # tier — an argument-dependent write (e.g. stream_edit(in_place=True),
+    # which is statically read-tier) must never be auto-executed by the
+    # router prelude without confirmation (harness-qcukc).
+    if spec.effective_tier(intent.arguments) != "read":
         return (False, False)
     required = spec.parameters.get("required", []) or []
     if any(key not in intent.arguments for key in required):
@@ -538,7 +542,7 @@ def _router_prelude(
     attempted_calls[_call_key(call)] = attempted_calls.get(_call_key(call), 0) + 1
     emit(ToolLoopEvent(kind="router_intent", call=call, round_index=0))
     emit(ToolLoopEvent(kind="tool_call_start", call=call, round_index=0))
-    if confirm is not None and spec.tier == "write" and not confirm(call):
+    if confirm is not None and spec.effective_tier(call.arguments) == "write" and not confirm(call):
         # Unreachable under the read-tier guard above, but kept for
         # symmetry with the main loop's confirmation path.
         result = ToolResult(
@@ -1008,7 +1012,11 @@ def _execute_tool_calls(
         emit(ToolLoopEvent(kind="tool_call_start", call=call, round_index=round_idx))
 
         spec = registry.get(call.name).spec if call.name in registry else None
-        needs_confirm = confirm is not None and spec is not None and spec.tier == "write"
+        needs_confirm = (
+            confirm is not None
+            and spec is not None
+            and spec.effective_tier(call.arguments) == "write"
+        )
         if needs_confirm and not confirm(call):  # type: ignore[misc]  # confirm is not None when needs_confirm is True
             result = ToolResult(
                 tool_name=call.name,

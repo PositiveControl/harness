@@ -255,7 +255,8 @@ class StreamEditTool:
                 },
                 "required": ["tool", "args"],
             },
-            tier="read",  # in_place=True is checked per-call; tier reflects the common case
+            tier="read",  # common case; in_place=True escalates via write_when
+            write_when=lambda args: bool(args.get("in_place")),
             display_name="Stream edit (awk/sed/cut/tr)",
             high_noise=True,
         )
