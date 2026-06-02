@@ -617,3 +617,93 @@ def test_extract_smoke_symptom_none_for_non_smoke_failure() -> None:
 def test_extract_smoke_symptom_none_for_empty() -> None:
     assert extract_smoke_symptom("") is None
     assert extract_smoke_symptom(None) is None
+
+
+# --- smoke-setup scenario (harness-5vn6t verify-observability) --------
+
+
+def test_smoke_step_adds_setup_flag_when_scenario_present(tmp_path: Path) -> None:
+    from harness.driver.workspace_verify import _smoke_execute_step
+
+    (tmp_path / "index.html").write_text("<canvas></canvas>")
+    harness_dir = tmp_path / ".harness"
+    harness_dir.mkdir()
+    (harness_dir / "smoke_setup.js").write_text("player.wanted = 3; spawnPoliceCar();")
+    step = _smoke_execute_step(tmp_path / "index.html", workspace=tmp_path)
+    assert "--setup=" in step.cmd
+    assert "smoke_setup.js" in step.cmd
+
+
+def test_smoke_step_no_setup_flag_when_scenario_absent(tmp_path: Path) -> None:
+    from harness.driver.workspace_verify import _smoke_execute_step
+
+    (tmp_path / "index.html").write_text("<canvas></canvas>")
+    step = _smoke_execute_step(tmp_path / "index.html", workspace=tmp_path)
+    assert "--setup=" not in step.cmd
+
+
+def test_read_setup_returns_source_when_present(tmp_path: Path) -> None:
+    from harness.driver.smoke_runner import _read_setup
+
+    f = tmp_path / "scene.js"
+    f.write_text("spawnPoliceCar();")
+    source, error = _read_setup(["prog", f"--setup={f}", "index.html"])
+    assert source == "spawnPoliceCar();"
+    assert error is None
+
+
+def test_read_setup_none_when_no_flag(tmp_path: Path) -> None:
+    from harness.driver.smoke_runner import _read_setup
+
+    source, error = _read_setup(["prog", "index.html"])
+    assert source is None
+    assert error is None
+
+
+def test_read_setup_errors_when_file_missing(tmp_path: Path) -> None:
+    from harness.driver.smoke_runner import _read_setup
+
+    source, error = _read_setup(["prog", f"--setup={tmp_path / 'nope.js'}", "index.html"])
+    assert source is None
+    assert error is not None
+    assert "unreadable" in error
+
+
+@_requires_playwright
+def test_smoke_setup_scenario_throw_fails_smoke(tmp_path: Path) -> None:
+    """End-to-end: a setup scenario that calls a missing function (the
+    render/spawn fn the issue was supposed to provide) surfaces as a
+    smoke failure — the verify-observability payoff."""
+    from harness.driver import smoke_runner
+
+    (tmp_path / "index.html").write_text(
+        "<!doctype html><canvas id='c' width='8' height='8'></canvas>"
+        "<script src='game.js'></script>"
+    )
+    (tmp_path / "game.js").write_text("// loads clean, defines no spawn fn\n")
+    setup = tmp_path / ".harness" / "smoke_setup.js"
+    setup.parent.mkdir()
+    setup.write_text("spawnPoliceCarThatDoesNotExist();")
+    rc = smoke_runner.main(
+        ["prog", "--no-blank-canvas", f"--setup={setup}", str(tmp_path / "index.html")]
+    )
+    assert rc == 1
+
+
+@_requires_playwright
+def test_smoke_setup_scenario_benign_passes(tmp_path: Path) -> None:
+    """A setup that runs cleanly doesn't fail the smoke."""
+    from harness.driver import smoke_runner
+
+    (tmp_path / "index.html").write_text(
+        "<!doctype html><canvas id='c' width='8' height='8'></canvas>"
+        "<script src='game.js'></script>"
+    )
+    (tmp_path / "game.js").write_text("window.__ok = true;\n")
+    setup = tmp_path / ".harness" / "smoke_setup.js"
+    setup.parent.mkdir()
+    setup.write_text("window.__ok = true;")
+    rc = smoke_runner.main(
+        ["prog", "--no-blank-canvas", f"--setup={setup}", str(tmp_path / "index.html")]
+    )
+    assert rc == 0

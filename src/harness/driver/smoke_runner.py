@@ -155,13 +155,38 @@ def _format_page_error(err: Any) -> str:
     return f"pageerror: {err}"
 
 
+def _read_setup(argv: list[str]) -> tuple[str | None, str | None]:
+    """Resolve the optional ``--setup=<file>`` scenario.
+
+    Returns ``(source, error)``: ``source`` is the JS to evaluate in the
+    page after load (None when no --setup given), ``error`` is a
+    one-line failure string when --setup was given but the file is
+    missing/unreadable (so a misconfigured scenario fails loud rather
+    than silently skipping the exercise)."""
+    setup_arg = next((a for a in argv[1:] if a.startswith("--setup=")), None)
+    if setup_arg is None:
+        return None, None
+    path = Path(setup_arg[len("--setup=") :])
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+    try:
+        return path.read_text(encoding="utf-8"), None
+    except OSError as exc:
+        return None, f"smoke-execute: setup script unreadable ({path}): {exc}"
+
+
 def main(argv: list[str]) -> int:
-    flags = {a for a in argv[1:] if a.startswith("--")}
+    flags = {a for a in argv[1:] if a.startswith("--") and "=" not in a}
     positionals = [a for a in argv[1:] if not a.startswith("--")]
     no_blank_canvas = "--no-blank-canvas" in flags
+    setup_source, setup_error = _read_setup(argv)
+    if setup_error is not None:
+        print(setup_error, file=sys.stderr)
+        return 1
     if not positionals:
         print(
-            "usage: python -m harness.driver.smoke_runner [--no-blank-canvas] <index.html>",
+            "usage: python -m harness.driver.smoke_runner "
+            "[--no-blank-canvas] [--setup=<scenario.js>] <index.html>",
             file=sys.stderr,
         )
         return 1
@@ -201,6 +226,20 @@ def main(argv: list[str]) -> int:
                 page.on("console", _on_console)
                 page.on("pageerror", _on_pageerror)
                 page.goto(f"file://{index_path}", wait_until="load")
+                # harness-5vn6t: optional scenario. Exercises
+                # code paths that don't run on a bare load — conditionally
+                # spawned entities (cops, bullets, peds) whose render/init
+                # is a verify blind spot otherwise. Runs AFTER load so the
+                # game's globals/functions exist, BEFORE the settle window
+                # so the next rAF ticks drive the exercised state and any
+                # throw surfaces as a pageerror/console.error. A setup that
+                # throws is a real failure (the function the issue should
+                # provide is missing/broken), so we record it as an error.
+                if setup_source is not None:
+                    try:
+                        page.evaluate(f"() => {{ {setup_source} }}")
+                    except Exception as exc:  # surface any setup throw as a failure
+                        errors.append(f"setup-scenario error: {exc}")
                 page.wait_for_timeout(_settle_ms())
                 # Blank-canvas check runs only if the load was otherwise
                 # clean — a page that already threw has a more actionable

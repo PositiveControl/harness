@@ -203,7 +203,9 @@ def _playwright_available() -> bool:
         return False
 
 
-def _smoke_execute_step(index: Path, *, enforce_blank_canvas: bool = True) -> VerifyStep:
+def _smoke_execute_step(
+    index: Path, *, workspace: Path, enforce_blank_canvas: bool = True
+) -> VerifyStep:
     """Smoke-execute verify step (harness-4b8v).
 
     Invokes ``harness.driver.smoke_runner`` under the same interpreter
@@ -232,11 +234,23 @@ def _smoke_execute_step(index: Path, *, enforce_blank_canvas: bool = True) -> Ve
     from-scratch build, where a skeleton legitimately renders nothing
     until a later render milestone closes. Console / page-error checks
     stay active regardless — those are unconditional bugs.
+
+    harness-5vn6t: when ``<workspace>/.harness/smoke_setup.js``
+    exists, pass it via ``--setup=`` so the runner exercises it after
+    load. This closes the "sprite never on screen at load" verify blind
+    spot — a render path for a conditionally-spawned entity (cops,
+    bullets, peds) that only runs once state is set up. The scenario
+    spawns those entities so their render/init throws surface; a missing
+    spawn function fails the smoke loudly. ``.harness`` is excluded from
+    the file census / regression guard, so the scenario never counts as
+    a deliverable edit.
     """
     flag = "" if enforce_blank_canvas else " --no-blank-canvas"
+    setup = workspace / ".harness" / "smoke_setup.js"
+    setup_flag = f" --setup={shlex.quote(str(setup.resolve()))}" if setup.is_file() else ""
     cmd = (
         f"{shlex.quote(sys.executable)} -m harness.driver.smoke_runner"
-        f"{flag} {shlex.quote(str(index.resolve()))}"
+        f"{flag}{setup_flag} {shlex.quote(str(index.resolve()))}"
     )
     # S604: ``shell=True`` here is a VerifyStep dataclass field, NOT a
     # subprocess kwarg (mirrors _js_verify_step / _py_verify_step
@@ -398,7 +412,11 @@ def default_workspace_verify_steps(
     if _playwright_available():
         index = _browser_app_index(workspace)
         if index is not None:
-            steps.append(_smoke_execute_step(index, enforce_blank_canvas=enforce_blank_canvas))
+            steps.append(
+                _smoke_execute_step(
+                    index, workspace=workspace, enforce_blank_canvas=enforce_blank_canvas
+                )
+            )
     return tuple(steps)
 
 
