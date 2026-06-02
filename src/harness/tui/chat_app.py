@@ -1074,7 +1074,7 @@ class ChatApp(App[None]):
         budget — without this the next adapter call would still send
         the un-compacted history that's already in memory."""
         from harness.compaction import run_compaction, should_compact
-        from harness.model.adapter import count_tokens
+        from harness.model.adapter import DEFAULT_OUTPUT_SAFETY_MARGIN, count_tokens
         from harness.scribe import run_scribe
 
         if self._compaction_store is None or self._compact_at <= 0.0:
@@ -1094,6 +1094,8 @@ class ChatApp(App[None]):
             used_tokens=used,
             context_window=self._adapter.context_window,
             threshold_pct=self._compact_at,
+            reserve_tokens=2048,  # turn generation budget (tool loop + wrap-up)
+            safety_margin=DEFAULT_OUTPUT_SAFETY_MARGIN,
         ):
             return
 

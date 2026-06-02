@@ -66,6 +66,55 @@ class GrammarCapableAdapter(Protocol):
     ) -> str: ...
 
 
+# Output-budget reservation (harness-2epb). A request to a fixed-window
+# model is sized `prompt_tokens + max_tokens`; if that sum exceeds the
+# window the server rejects the whole turn (vLLM returns HTTP 422). We
+# reserve a small margin on top of the generation budget so heuristic
+# token-count drift can't push the real request one token over the edge.
+DEFAULT_OUTPUT_SAFETY_MARGIN = 32
+# Floor below which a clamped generation budget is useless — better to
+# surface a clear error than emit a request that can only dribble out a
+# few tokens before truncating.
+MIN_OUTPUT_TOKENS = 16
+
+
+class PromptBudgetError(RuntimeError):
+    """The prompt is too large to leave room for generation within the
+    model's context window. Raised instead of letting the runtime reject
+    the request with an opaque 422 / KV-cache overflow (harness-2epb)."""
+
+
+def budget_max_tokens(
+    *,
+    context_window: int,
+    prompt_tokens: int,
+    requested_max: int,
+    safety_margin: int = DEFAULT_OUTPUT_SAFETY_MARGIN,
+    min_output: int = MIN_OUTPUT_TOKENS,
+) -> int:
+    """Clamp a generation budget so `prompt_tokens + result <=
+    context_window - safety_margin`. Returns `requested_max` untouched
+    when it already fits; otherwise the largest budget that fits.
+
+    Raises `PromptBudgetError` when the prompt leaves less than
+    `min_output` tokens of room — at that point compaction (or a shorter
+    prompt) is the only remedy, and a clear error beats a silent overflow
+    or a 1-token reply. `context_window <= 0` means the adapter doesn't
+    advertise a window (e.g. a test stub); the budget passes through
+    unclamped."""
+    if context_window <= 0:
+        return requested_max
+    available = context_window - prompt_tokens - safety_margin
+    if available < min_output:
+        raise PromptBudgetError(
+            f"prompt is {prompt_tokens} tokens; with a {safety_margin}-token "
+            f"safety margin only {max(available, 0)} of the {context_window}-token "
+            f"window remain for generation (need >= {min_output}). Compact the "
+            "history or shorten the prompt."
+        )
+    return min(requested_max, available)
+
+
 def approx_token_count(messages: Iterable[ChatMessage]) -> int:
     """Char-heuristic token count: ~4 chars per token plus ~4 tokens of
     role/delimiter overhead per message. Shared fallback for adapters

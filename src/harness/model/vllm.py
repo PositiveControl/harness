@@ -27,7 +27,12 @@ from typing import Any
 
 import httpx
 
-from harness.model.adapter import ChatMessage, approx_token_count
+from harness.model.adapter import (
+    ChatMessage,
+    PromptBudgetError,
+    approx_token_count,
+    budget_max_tokens,
+)
 from harness.model.qwen_parse import _log_tool_bail, _parse_qwen_tool_calls, _TagMasker
 from harness.tools.base import (
     ModelReply,
@@ -68,6 +73,17 @@ def _vllm_trace(record: dict[str, Any]) -> None:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:  # noqa: S110 — diagnostic only; must not break a turn
         pass
+
+
+def _is_context_overflow(status_code: int, detail: str) -> bool:
+    """True when a vLLM error response is the context-length rejection
+    (harness-2epb), not some other 4xx. vLLM returns HTTP 400/422 with a
+    body containing "maximum context length" when prompt + max_tokens
+    exceeds the served window. Matched on the stable phrase so the caller
+    can raise PromptBudgetError instead of an opaque RuntimeError."""
+    if status_code not in (400, 422):
+        return False
+    return "maximum context length" in detail.lower()
 
 
 def _synth_tool_call_id(idx: int, name: str) -> str:
@@ -395,6 +411,21 @@ class VllmAdapter:
         to the char heuristic — good enough for a UI gauge."""
         return approx_token_count(messages)
 
+    def _budgeted_max_tokens(self, messages: list[ChatMessage], requested_max: int) -> int:
+        """Clamp `requested_max` so `prompt + max_tokens` can't exceed
+        the served window (harness-2epb). vLLM rejects an over-budget
+        request with HTTP 422 and kills the turn; clamping pre-empts
+        that. Uses the heuristic prompt count (count_tokens), which can
+        undercount — the safety margin in budget_max_tokens absorbs
+        small drift, and the _post 422 handler is the exact backstop if
+        a large drift slips through. Raises PromptBudgetError when the
+        prompt leaves no room for generation."""
+        return budget_max_tokens(
+            context_window=self.context_window,
+            prompt_tokens=self.count_tokens(messages),
+            requested_max=requested_max,
+        )
+
     def complete(
         self,
         messages: Iterable[ChatMessage],
@@ -402,12 +433,13 @@ class VllmAdapter:
         max_tokens: int = 512,
         temperature: float = 0.7,
     ) -> str:
+        materialized = list(messages)
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [{"role": m.role, "content": m.content} for m in materialized],
             "stream": False,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": self._budgeted_max_tokens(materialized, max_tokens),
         }
         if self.stop:
             payload["stop"] = list(self.stop)
@@ -439,12 +471,13 @@ class VllmAdapter:
         max_tokens: int = 512,
         temperature: float = 0.7,
     ) -> Iterator[str]:
+        materialized = list(messages)
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [{"role": m.role, "content": m.content} for m in materialized],
             "stream": True,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": self._budgeted_max_tokens(materialized, max_tokens),
         }
         if self.stop:
             payload["stop"] = list(self.stop)
@@ -481,12 +514,13 @@ class VllmAdapter:
         max_tokens: int = 1024,
         temperature: float = 0.5,
     ) -> ModelReply:
+        materialized = list(messages)
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": _messages_for_openai(messages),
+            "messages": _messages_for_openai(materialized),
             "stream": False,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": self._budgeted_max_tokens(materialized, max_tokens),
         }
         if tools:
             payload["tools"] = [_tool_spec_for_openai(t) for t in tools]
@@ -561,7 +595,7 @@ class VllmAdapter:
             "messages": _messages_for_openai(materialized),
             "stream": True,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": self._budgeted_max_tokens(materialized, max_tokens),
         }
         if tools:
             payload["tools"] = [_tool_spec_for_openai(t) for t in tools]
@@ -716,6 +750,14 @@ class VllmAdapter:
                 data: Any = r.json()
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text
+            if _is_context_overflow(exc.response.status_code, detail):
+                # Exact backstop for harness-2epb: the proactive clamp in
+                # _budgeted_max_tokens uses a heuristic prompt count and
+                # can undercount; if a request still lands over-budget,
+                # surface a clear harness error instead of the opaque 422.
+                raise PromptBudgetError(
+                    f"vLLM rejected an over-budget request for {self._model!r}: {detail}"
+                ) from exc
             raise RuntimeError(
                 f"vLLM returned HTTP {exc.response.status_code} for {self._model!r}: {detail}"
             ) from exc
@@ -764,6 +806,10 @@ class VllmAdapter:
                         yield chunk
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text
+            if _is_context_overflow(exc.response.status_code, detail):
+                raise PromptBudgetError(
+                    f"vLLM rejected an over-budget request for {self._model!r}: {detail}"
+                ) from exc
             raise RuntimeError(
                 f"vLLM returned HTTP {exc.response.status_code} for {self._model!r}: {detail}"
             ) from exc

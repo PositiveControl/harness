@@ -24,16 +24,35 @@ class CompactionOutcome:
     summary: str | None = None
 
 
-def should_compact(*, used_tokens: int, context_window: int, threshold_pct: float) -> bool:
+def should_compact(
+    *,
+    used_tokens: int,
+    context_window: int,
+    threshold_pct: float,
+    reserve_tokens: int = 0,
+    safety_margin: int = 0,
+) -> bool:
     """Trigger predicate for the chat loop. Compaction fires when
     `used_tokens >= threshold_pct * context_window`. A threshold of 0
     disables compaction; >=1 disables compaction too (the meter never
-    exceeds capacity by enough to matter before the model itself fails)."""
+    exceeds capacity by enough to matter before the model itself fails).
+
+    `reserve_tokens` is the generation budget the next request will ask
+    for; `safety_margin` is extra headroom. When compaction is enabled,
+    it also fires below the percentage threshold if the *effective*
+    request (`used + reserve + margin`) would overflow the window — the
+    percentage alone can sit under the line while prompt + max_tokens
+    spills over it, which is exactly the overflow harness-2epb hit. When
+    compaction is disabled (threshold 0 or >=1) this predicate stays
+    False — the request-time clamp in the adapter is the safety net
+    there, not surprise folding the user opted out of."""
     if context_window <= 0:
         return False
     if threshold_pct <= 0.0 or threshold_pct >= 1.0:
         return False
-    return used_tokens >= int(context_window * threshold_pct)
+    if used_tokens >= int(context_window * threshold_pct):
+        return True
+    return used_tokens + reserve_tokens + safety_margin > context_window
 
 
 def run_compaction(

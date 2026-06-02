@@ -66,6 +66,47 @@ def test_should_compact_handles_zero_context_window() -> None:
     assert not should_compact(used_tokens=100, context_window=0, threshold_pct=0.8)
 
 
+def test_should_compact_fires_below_threshold_when_request_would_overflow() -> None:
+    # 30721 prompt is 93.7% of a 32768 window — below an 0.8 threshold by
+    # token count would still fit, but with a 2048 generation budget the
+    # request (30721 + 2048 = 32769) overflows by one. The exact
+    # harness-2epb boundary: fold even though the percentage trigger sits
+    # under the line.
+    assert not should_compact(
+        used_tokens=30721, context_window=32768, threshold_pct=0.99
+    )  # percentage alone: 30721 < 0.99*32768 = 32440
+    assert should_compact(
+        used_tokens=30721,
+        context_window=32768,
+        threshold_pct=0.99,
+        reserve_tokens=2048,
+        safety_margin=32,
+    )
+
+
+def test_should_compact_reserve_does_not_fire_when_request_fits() -> None:
+    # Plenty of room: 10k prompt + 2048 reserve + margin well under 32768.
+    assert not should_compact(
+        used_tokens=10_000,
+        context_window=32768,
+        threshold_pct=0.8,
+        reserve_tokens=2048,
+        safety_margin=32,
+    )
+
+
+def test_should_compact_reserve_ignored_when_disabled() -> None:
+    # Compaction opted out (threshold 0): the request-time clamp is the
+    # safety net, not surprise folding. Reserve must not force a fold.
+    assert not should_compact(
+        used_tokens=32_000,
+        context_window=32768,
+        threshold_pct=0.0,
+        reserve_tokens=2048,
+        safety_margin=32,
+    )
+
+
 # ---------- build_summarizer_messages ----------
 
 

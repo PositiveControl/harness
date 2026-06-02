@@ -189,10 +189,16 @@ class ContextMeter:
         compact_keep_recent: int,
         thinking: object,
         ab_adapter: BeadsAdapter | None,
+        reserve_output_tokens: int = 2048,
     ) -> None:
         """Fire the compactor when the context meter crosses
-        `compact_at × context_window`. No-op when the store is
-        unconfigured or the threshold hasn't been reached."""
+        `compact_at × context_window`, or — below that threshold — when
+        the next request's `prompt + reserve_output_tokens` would overflow
+        the window (harness-2epb). `reserve_output_tokens` mirrors the
+        turn's generation budget (2048 for the tool loop + wrap-up). No-op
+        when the store is unconfigured or neither condition is met."""
+        from harness.model.adapter import DEFAULT_OUTPUT_SAFETY_MARGIN
+
         if self.compaction_store is None:
             return
         used = self.measure()
@@ -200,6 +206,8 @@ class ContextMeter:
             used_tokens=used,
             context_window=self.adapter.context_window,
             threshold_pct=compact_at,
+            reserve_tokens=reserve_output_tokens,
+            safety_margin=DEFAULT_OUTPUT_SAFETY_MARGIN,
         ):
             return
         self.console.print(

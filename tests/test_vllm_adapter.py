@@ -346,17 +346,14 @@ def test_vllm_stream_surfaces_http_error_body_not_response_not_read() -> None:
     httpx.ResponseNotRead that you get from touching .text on an
     un-consumed streaming response.
 
-    The historical failure was vLLM's context-length validator:
-        VLLMValidationError: maximum context length is 32768 tokens.
-        However, you requested 2048 output tokens and your prompt
-        contains at least 30721 input tokens ...
-    surfacing on the client as `ResponseNotRead` instead.
+    The historical failure surfaced on the client as `ResponseNotRead`
+    instead of the server's error body. (Context-length 4xx rejections
+    take the dedicated PromptBudgetError path — covered separately; this
+    test uses a generic 400 to pin the body-surfacing fix itself.)
     """
     detail = (
-        '{"error": {"message": "This model\'s maximum context length is '
-        "32768 tokens. However, you requested 2048 output tokens and your "
-        "prompt contains at least 30721 input tokens, for a total of at "
-        'least 32769 tokens.", "type": "validation_error", "code": 400}}'
+        '{"error": {"message": "malformed sampling parameters: temperature '
+        'must be >= 0", "type": "validation_error", "code": 400}}'
     )
 
     def handler(_request: httpx.Request) -> httpx.Response:
@@ -375,7 +372,7 @@ def test_vllm_stream_surfaces_http_error_body_not_response_not_read() -> None:
         list(adapter.stream([ChatMessage(role="user", content="x" * 10_000)]))
     msg = str(excinfo.value)
     assert "HTTP 400" in msg
-    assert "maximum context length is 32768" in msg
+    assert "malformed sampling parameters" in msg
     # The original symptom — make sure the new path doesn't regress to it.
     assert "ResponseNotRead" not in msg
 
@@ -1725,6 +1722,100 @@ def test_vllm_stream_logs_tool_bail_when_prose_only_reply(
     assert len(captured) == 1
     raw, _ = captured[0]
     assert "game.js" in raw
+
+
+# ---------- output-budget clamping (harness-2epb) ------------------------
+
+
+def test_vllm_complete_clamps_max_tokens_to_window() -> None:
+    """When prompt + requested max_tokens would overflow the served
+    window, the adapter clamps max_tokens before posting — vLLM never
+    sees an over-budget request."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return _json_response(
+            {"choices": [{"index": 0, "message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+
+    # Small window + a prompt whose heuristic count (len//4 + 4) is ~100.
+    adapter = VllmAdapter(model="m", context_window=200)
+    prompt = ChatMessage(role="user", content="x" * 384)  # 384//4 + 4 = 100 tokens
+    with patch("httpx.Client", _make_factory(handler)):
+        adapter.complete([prompt], max_tokens=512)
+    # available = 200 - 100 - DEFAULT_OUTPUT_SAFETY_MARGIN(32) = 68
+    assert captured["body"]["max_tokens"] == 68
+
+
+def test_vllm_complete_with_tools_clamps_max_tokens() -> None:
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return _json_response(
+            {"choices": [{"index": 0, "message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+
+    adapter = VllmAdapter(model="m", context_window=200)
+    prompt = ChatMessage(role="user", content="x" * 384)
+    with patch("httpx.Client", _make_factory(handler)):
+        adapter.complete_with_tools([prompt], max_tokens=512)
+    assert captured["body"]["max_tokens"] == 68
+
+
+def test_vllm_complete_does_not_clamp_when_request_fits() -> None:
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return _json_response(
+            {"choices": [{"index": 0, "message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+
+    adapter = VllmAdapter(model="m", context_window=32768)
+    with patch("httpx.Client", _make_factory(handler)):
+        adapter.complete([ChatMessage(role="user", content="hi")], max_tokens=2048)
+    assert captured["body"]["max_tokens"] == 2048
+
+
+def test_vllm_422_context_overflow_raises_prompt_budget_error() -> None:
+    """If a request still lands over-budget (heuristic undercount), the
+    vLLM 422 is translated into a clear PromptBudgetError rather than an
+    opaque RuntimeError."""
+    from harness.model.adapter import PromptBudgetError
+
+    detail = (
+        "This model's maximum context length is 32768 tokens. However, you "
+        "requested 2048 output tokens and your prompt contains at least 30721 "
+        "input tokens, for a total of at least 32769 tokens."
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={"object": "error", "message": detail})
+
+    adapter = VllmAdapter(model="m", context_window=32768)
+    with (
+        patch("httpx.Client", _make_factory(handler)),
+        pytest.raises(PromptBudgetError, match="over-budget"),
+    ):
+        adapter.complete([ChatMessage(role="user", content="hi")], max_tokens=2048)
+
+
+def test_vllm_other_4xx_still_raises_runtime_error() -> None:
+    """A non-overflow 4xx must NOT be misclassified as a budget error."""
+    from harness.model.adapter import PromptBudgetError
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"object": "error", "message": "malformed request"})
+
+    adapter = VllmAdapter(model="m", context_window=32768)
+    with (
+        patch("httpx.Client", _make_factory(handler)),
+        pytest.raises(RuntimeError) as excinfo,
+    ):
+        adapter.complete([ChatMessage(role="user", content="hi")], max_tokens=2048)
+    assert not isinstance(excinfo.value, PromptBudgetError)
 
 
 def test_vllm_adapter_does_not_import_vllm_sdk() -> None:
