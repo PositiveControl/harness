@@ -18,6 +18,7 @@ from harness.driver.workspace_guard import (
     list_workspace_files,
     restore_workspace,
     sweep_scratch,
+    workspace_changed,
 )
 
 _CAP = 100 * 1024 * 1024
@@ -211,3 +212,52 @@ def test_detect_regression_flags_deleted_index_html(tmp_path: Path) -> None:
     reason = detect_regression(ws, snap)
     assert reason is not None
     assert "index.html" in reason
+
+
+# --- workspace_changed (harness-82r1v) -------------------------------
+
+
+def test_workspace_changed_false_when_identical(tmp_path: Path) -> None:
+    # No edits since the snapshot → no work done this attempt.
+    ws = _ws(tmp_path)
+    (ws / "game.py").write_text("def main():\n    return 1\n")
+    snap = archive_workspace(ws, tmp_path / "g.tar.gz", size_cap_bytes=_CAP)
+    assert workspace_changed(ws, snap) is False
+
+
+def test_workspace_changed_true_when_source_content_differs(tmp_path: Path) -> None:
+    # The model edited a tracked source file → real work this attempt.
+    ws = _ws(tmp_path)
+    (ws / "game.py").write_text("def main():\n    return 1\n")
+    snap = archive_workspace(ws, tmp_path / "g.tar.gz", size_cap_bytes=_CAP)
+    (ws / "game.py").write_text("def main():\n    score = 0\n    return score\n")
+    assert workspace_changed(ws, snap) is True
+
+
+def test_workspace_changed_true_when_source_file_added(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    (ws / "game.py").write_text("def main():\n    return 1\n")
+    snap = archive_workspace(ws, tmp_path / "g.tar.gz", size_cap_bytes=_CAP)
+    (ws / "score.py").write_text("SCORE = 0\n")
+    assert workspace_changed(ws, snap) is True
+
+
+def test_workspace_changed_true_when_source_file_removed(tmp_path: Path) -> None:
+    ws = _ws(tmp_path)
+    (ws / "game.py").write_text("def main():\n    return 1\n")
+    (ws / "score.py").write_text("SCORE = 0\n")
+    snap = archive_workspace(ws, tmp_path / "g.tar.gz", size_cap_bytes=_CAP)
+    (ws / "score.py").unlink()
+    assert workspace_changed(ws, snap) is True
+
+
+def test_workspace_changed_ignores_non_source_files(tmp_path: Path) -> None:
+    # A scratch/data file changing is not issue work — only source
+    # suffixes count, matching detect_regression's scope.
+    ws = _ws(tmp_path)
+    (ws / "game.py").write_text("def main():\n    return 1\n")
+    (ws / "notes.txt").write_text("scratch\n")
+    snap = archive_workspace(ws, tmp_path / "g.tar.gz", size_cap_bytes=_CAP)
+    (ws / "notes.txt").write_text("different scratch\n")
+    (ws / "data.json").write_text("{}\n")
+    assert workspace_changed(ws, snap) is False

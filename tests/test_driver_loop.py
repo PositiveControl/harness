@@ -2464,6 +2464,114 @@ def test_run_loop_auto_close_on_claim_with_verify_pass(
     ]
 
 
+def test_run_loop_auto_closes_on_edits_without_claim(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-82r1v: a turn that edits issue-relevant source and leaves
+    the workspace verify-green must auto-close even when the final reply
+    carries NO claim phrase.
+
+    Run 29f4a974 / gta 6182c539 pattern: the model did the work (score
+    state + render, tests green) but a duplicate-read tripped
+    wrap_up_forced, truncating the reply to a non-claim stub. The b7m1
+    claim path missed it, the turn scored FAIL, and the inter-attempt
+    restore discarded the correct edits. The edits-vs-last-green signal
+    stands in for the missing claim so the work is recognized."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    # Source file present at run start → seeds the last-green baseline.
+    target = tmp_path / "game.py"
+    target.write_text("def main():\n    return 1\n")
+
+    call_count = [0]
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        call_count[0] += 1
+        # The model edits the deliverable but its reply is a non-claim
+        # stub (the wrap_up_forced shape) and it never runs `bd close`.
+        target.write_text("def main():\n    score = 0\n    return score\n")
+        return ToolLoopResult(
+            content="Let me read the file next.",
+            messages=[],
+            rounds=1,
+            events=[],
+        )
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    # One passing verify step so steps_ran > 0 (the second safety guard).
+    draft_path = tmp_path / "plan.yaml"
+    _write_draft_with_verify(draft_path, "implement foo", ["smoke.js"])
+    monkeypatch.setattr("harness.driver.loop._exec_verify_cmd", lambda _s, _w: (0, ""))
+
+    cfg = _config(tmp_path, plan_draft_path=draft_path, max_turns=3)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert result.exit_reason == "success"
+    assert result.closed == ["harness-a"]
+    # Single turn — the edits trigger let the verify gate auto-close
+    # instead of restoring last-green and burning more attempts.
+    assert call_count[0] == 1
+    assert bd.log.closes == [
+        (
+            "harness-a",
+            "auto-closed by drive: model claimed success + verify gate passed (harness-b7m1)",
+        )
+    ]
+
+
+def test_run_loop_no_auto_close_without_claim_or_edits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-82r1v false-close guard: a non-claim reply that made NO
+    edits must NOT auto-close — a no-op turn over an already-green
+    workspace has no work to corroborate, so closing it would be a
+    false close. The edits trigger is gated on real edits exactly to
+    prevent this."""
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a]],  # repeats — issue stays ready across retries
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+    target = tmp_path / "game.py"
+    target.write_text("def main():\n    return 1\n")
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, _registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        # Non-claim reply AND no edits — nothing changed vs last-green.
+        return ToolLoopResult(
+            content="Let me read the file next.",
+            messages=[],
+            rounds=1,
+            events=[],
+        )
+
+    monkeypatch.setattr("harness.driver.loop.run_tool_loop", fake_run_tool_loop)
+    draft_path = tmp_path / "plan.yaml"
+    _write_draft_with_verify(draft_path, "implement foo", ["smoke.js"])
+    monkeypatch.setattr("harness.driver.loop._exec_verify_cmd", lambda _s, _w: (0, ""))
+
+    cfg = _config(tmp_path, plan_draft_path=draft_path, max_turns=2)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    # Never closed — the gate stayed shut without edits or a claim.
+    assert bd.log.closes == []
+    assert "harness-a" not in result.closed
+
+
 def test_run_loop_default_verify_steps_recomputed_per_turn(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

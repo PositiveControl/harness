@@ -84,6 +84,7 @@ from harness.driver.workspace_guard import (
     list_workspace_files,
     restore_workspace,
     sweep_scratch,
+    workspace_changed,
 )
 from harness.driver.workspace_verify import (
     browser_smoke_skip_reason,
@@ -677,6 +678,22 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             #       prose detector alone missed (the strongest signal
             #       was in the shell cmd, not the reply text).
             #
+            #   (c) harness-82r1v — made_edits: the model edited
+            #       issue-relevant source files this attempt (workspace
+            #       differs from the last-green baseline) but produced no
+            #       claim phrase. The claim signal is only a hint; the
+            #       verify gate is the contract. In run 29f4a974 / gta
+            #       6182c539 a duplicate-read tripped wrap_up_forced,
+            #       truncating the reply to a non-claim stub AFTER the
+            #       work (score state + render, verify-green) was done —
+            #       (a)/(b) missed it, the turn scored FAIL, and the
+            #       correct edits were discarded on the inter-attempt
+            #       restore. Treating real edits as a trigger routes the
+            #       turn through the same verify gate. Gated on actual
+            #       edits so a no-op turn over an already-green workspace
+            #       can't false-close (steps_ran > 0 below is the second
+            #       guard: verify must have something to corroborate).
+            #
             # Outcomes (post-verify):
             #   - verify failed → reason gets the verify failure tail.
             #     Next handoff tells the model exactly what's broken.
@@ -690,10 +707,19 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             #     because verify had nothing to corroborate the claim.
             #   - auto-close subprocess itself failed → fall back to
             #     soft hint so the model can try again.
+            made_edits = (
+                last_green is not None
+                and config.regression_guard
+                and workspace_changed(config.workspace, last_green)
+            )
             if (
                 not success
                 and _is_still_open_reason(reason)
-                and (detect_claim_signal(turn_reply) or detect_claim_in_shell_call(turn_last_shell))
+                and (
+                    detect_claim_signal(turn_reply)
+                    or detect_claim_in_shell_call(turn_last_shell)
+                    or made_edits
+                )
             ):
                 verify_failure, steps_ran = _run_issue_verify(
                     verify_map,
@@ -728,9 +754,18 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     # Drive the close on the model's behalf; bypass the
                     # success branch's redundant verify by handling the
                     # close-and-continue here.
+                    trigger = (
+                        "claim"
+                        if (
+                            detect_claim_signal(turn_reply)
+                            or detect_claim_in_shell_call(turn_last_shell)
+                        )
+                        else "edits"
+                    )
                     log(
                         f"turn {state.turns_used}: {current.id} AUTO_CLOSED "
-                        f"(claim + verify passed, {steps_ran} step{'s' if steps_ran != 1 else ''})"
+                        f"({trigger} + verify passed, "
+                        f"{steps_ran} step{'s' if steps_ran != 1 else ''})"
                     )
                     _on_success(bd, state, current.id, log)
                     last_green = _post_close_housekeeping(

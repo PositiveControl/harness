@@ -282,6 +282,35 @@ def detect_regression(
     return None
 
 
+def workspace_changed(workspace: Path, snapshot: Path) -> bool:
+    """True iff any source file under ``workspace`` differs from the
+    last-green ``snapshot`` — content changed, a source file was added,
+    or one was removed.
+
+    Confirms an attempt actually produced edits before the driver
+    auto-closes a still-open issue on the model's behalf (harness-82r1v).
+    A green verify with no edits means no work was done this turn, so
+    closing would be a false close. Scoped to ``_SOURCE_SUFFIXES`` to
+    mirror :func:`detect_regression` — scratch/data files don't count as
+    issue work."""
+    before = _read_source_members(snapshot)
+    current: dict[str, str] = {}
+    for path in iter_workspace_files(workspace):
+        if not path.name.endswith(_SOURCE_SUFFIXES):
+            continue
+        try:
+            rel = path.relative_to(workspace).as_posix()
+        except ValueError:
+            continue
+        try:
+            current[rel] = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+    if set(before) != set(current):
+        return True
+    return any(before[rel] != current[rel] for rel in before)
+
+
 def is_scratch(rel_path: str, patterns: Sequence[str]) -> bool:
     """True iff the basename of ``rel_path`` matches any scratch glob."""
     name = Path(rel_path).name
@@ -330,4 +359,5 @@ __all__ = [
     "list_workspace_files",
     "restore_workspace",
     "sweep_scratch",
+    "workspace_changed",
 ]
