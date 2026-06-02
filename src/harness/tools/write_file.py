@@ -3,8 +3,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness.tools.base import ToolSpec
+from pydantic import BaseModel, ConfigDict, Field
+
+from harness.tools.base import ToolSpec, tool_schema_from_model
 from harness.tools.parse_check import parse_check
+
+
+class WriteFileArgs(BaseModel):
+    """Typed arguments for write_file (harness-5cjj9)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(description="Path relative to the workspace root")
+    content: str = Field(description="Full file content to write")
+    overwrite: bool = Field(
+        default=False,
+        description=(
+            "If true, replace an existing file's entire content with "
+            "`content`. Default false. Prefer edit_file for partial changes."
+        ),
+    )
 
 
 @dataclass
@@ -36,28 +54,8 @@ class WriteFileTool:
                 "scratch. Creates parent directories as needed. Path "
                 "is relative to the workspace root; cannot escape it."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path relative to the workspace root",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Full file content to write",
-                    },
-                    "overwrite": {
-                        "type": "boolean",
-                        "description": (
-                            "If true, replace an existing file's entire "
-                            "content with `content`. Default false. "
-                            "Prefer edit_file for partial changes."
-                        ),
-                    },
-                },
-                "required": ["path", "content"],
-            },
+            parameters=tool_schema_from_model(WriteFileArgs),
+            args_model=WriteFileArgs,
             tier="write",
             display_name="Write file",
         )

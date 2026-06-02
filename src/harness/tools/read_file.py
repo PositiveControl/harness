@@ -3,7 +3,43 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness.tools.base import ToolSpec
+from pydantic import BaseModel, ConfigDict, Field
+
+from harness.tools.base import ToolSpec, tool_schema_from_model
+
+
+class ReadFileArgs(BaseModel):
+    """Typed arguments for read_file (harness-5cjj9). Numeric strings
+    coerce to int by default in pydantic's lax mode, so `offset='20'`
+    still works (harness-296bh) without the hand-rolled coercion."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(description="Path relative to the workspace root")
+    offset: int | None = Field(
+        default=None,
+        description=(
+            "1-based line number to start reading from. Default 1 (start "
+            "of file). Values <1 are rejected."
+        ),
+    )
+    limit: int | None = Field(
+        default=None,
+        description=(
+            "Maximum number of lines to return starting at `offset`. "
+            "Default: read to end of file. Values <1 are rejected."
+        ),
+    )
+    symbol: str | None = Field(
+        default=None,
+        description=(
+            "Name of a function/class/method to read whole. Bare (`bar`) "
+            "or qualified (`Foo.bar`). Returns the entire enclosing span "
+            "plus a `[symbol NAME, lines X-Y of N]` marker. If the name is "
+            "ambiguous, the response lists the candidate qualified names "
+            "instead. Mutually exclusive with offset/limit."
+        ),
+    )
 
 
 def _coerce_line_arg(value: int | str | None, *, name: str) -> int | None:
@@ -60,43 +96,8 @@ class ReadFileTool:
                 "returns the entire enclosing span. `symbol` cannot be "
                 "combined with `offset`/`limit`."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path relative to the workspace root",
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "description": (
-                            "1-based line number to start reading from. "
-                            "Default 1 (start of file). Values <1 are rejected."
-                        ),
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": (
-                            "Maximum number of lines to return starting at "
-                            "`offset`. Default: read to end of file. Values "
-                            "<1 are rejected."
-                        ),
-                    },
-                    "symbol": {
-                        "type": "string",
-                        "description": (
-                            "Name of a function/class/method to read whole. "
-                            "Bare (`bar`) or qualified (`Foo.bar`). Returns "
-                            "the entire enclosing span plus a "
-                            "`[symbol NAME, lines X-Y of N]` marker. If the "
-                            "name is ambiguous, the response lists the "
-                            "candidate qualified names instead. Mutually "
-                            "exclusive with offset/limit."
-                        ),
-                    },
-                },
-                "required": ["path"],
-            },
+            parameters=tool_schema_from_model(ReadFileArgs),
+            args_model=ReadFileArgs,
             tier="read",
             display_name="Read file",
         )

@@ -50,8 +50,52 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
-from harness.tools.base import ToolSpec
+from pydantic import BaseModel, ConfigDict, Field
+
+from harness.tools.base import ToolSpec, tool_schema_from_model
+
+_VERBS: tuple[str, ...] = ("awk", "sed", "cut", "tr")
+
+
+class StreamEditArgs(BaseModel):
+    """Typed arguments for stream_edit (harness-5cjj9).
+
+    `coerce_numbers_to_str` makes a model that emits line numbers as
+    ints — `args=[290, 320]` — coerce to `['290', '320']` instead of
+    failing on a TypeError and burning a round (harness-ln7j); that
+    matches how a shell would interpret the same tokens."""
+
+    model_config = ConfigDict(extra="forbid", coerce_numbers_to_str=True)
+
+    # Literal mirrors _VERBS — keep them in sync (guarded at import below).
+    tool: Literal["awk", "sed", "cut", "tr"] = Field(description="Which Unix verb to invoke.")
+    args: list[str] = Field(
+        description="Argv tail as a list of strings; one element per argv slot. No shell parsing."
+    )
+    paths: list[str] | None = Field(
+        default=None,
+        description=(
+            "Files to read, relative to the workspace root. Mutually exclusive with `stdin`."
+        ),
+    )
+    stdin: str = Field(
+        default="",
+        description="Inline input. Mutually exclusive with `paths`. Capped at 256 KB.",
+    )
+    in_place: bool = Field(
+        default=False,
+        description=(
+            "When true, per-file overwrite with the tool's transformed "
+            "output. Requires `paths` to be non-empty; write-tier."
+        ),
+    )
+
+
+# Drift guard: the Literal above and the runtime verb set must agree.
+if set(StreamEditArgs.model_fields["tool"].annotation.__args__) != set(_VERBS):  # type: ignore[union-attr]
+    raise RuntimeError("StreamEditArgs.tool Literal is out of sync with _VERBS")
 
 # Shell-only metacharacters the chosen verbs never legitimately need.
 # `|` is awk's pipe-to-shell operator (the realistic escape); backticks
@@ -78,8 +122,6 @@ _MAX_STDIN_BYTES = 256 * 1024
 # sanity (≤ 32 elements).
 _MAX_ARG_BYTES = 4 * 1024
 _MAX_ARGV_LEN = 32
-
-_VERBS: tuple[str, ...] = ("awk", "sed", "cut", "tr")
 
 
 def _resolve_binary(name: str) -> str:
@@ -214,47 +256,8 @@ class StreamEditTool:
                 "this is a single-verb wrapper, not a shell. To chain, "
                 "make multiple calls."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "tool": {
-                        "type": "string",
-                        "enum": list(_VERBS),
-                        "description": "Which Unix verb to invoke.",
-                    },
-                    "args": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "Argv tail as a list of strings; one "
-                            "element per argv slot. No shell parsing."
-                        ),
-                    },
-                    "paths": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "Files to read, relative to the workspace "
-                            "root. Mutually exclusive with `stdin`."
-                        ),
-                    },
-                    "stdin": {
-                        "type": "string",
-                        "description": (
-                            "Inline input. Mutually exclusive with `paths`. Capped at 256 KB."
-                        ),
-                    },
-                    "in_place": {
-                        "type": "boolean",
-                        "description": (
-                            "When true, per-file overwrite with the "
-                            "tool's transformed output. Requires "
-                            "`paths` to be non-empty; write-tier."
-                        ),
-                    },
-                },
-                "required": ["tool", "args"],
-            },
+            parameters=tool_schema_from_model(StreamEditArgs),
+            args_model=StreamEditArgs,
             tier="read",  # common case; in_place=True escalates via write_when
             write_when=lambda args: bool(args.get("in_place")),
             display_name="Stream edit (awk/sed/cut/tr)",

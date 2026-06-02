@@ -190,19 +190,55 @@ def test_tool_result_top_score_returns_max_hit_score() -> None:
     assert r.top_score == 0.8
 
 
-def test_registry_typeerror_without_unknown_kwarg_falls_through(tmp_path: Path) -> None:
-    """A TypeError that ISN'T about unknown kwargs (shape mismatch,
-    missing required arg) flows through the generic error path so the
-    rewrite doesn't claim to know more than it does."""
+def test_registry_missing_required_arg_returns_validation_error(tmp_path: Path) -> None:
+    """read_file now declares a typed args_model (harness-5cjj9), so a
+    missing required arg is caught at the schema boundary with a
+    structured field error naming the field — not a post-hoc TypeError.
+    Better than the old generic path: the model knows exactly what to
+    add."""
     registry = ToolRegistry()
     registry.register(ReadFileTool(root=tmp_path))
 
-    # path is required; omitting it raises a different TypeError shape.
+    # path is required; omitting it fails validation, not dispatch.
     result = registry.call("read_file", {})
 
     assert not result.success
-    # Generic TypeError prefix from the catch-all path, NOT the
-    # unknown-kwarg rewrite.
+    assert "rejected unknown argument" not in result.output
+    assert (result.error or "") == "validation_error"
+    assert "path" in result.output
+
+
+def test_registry_typeerror_without_unknown_kwarg_falls_through() -> None:
+    """For a tool WITHOUT a typed args_model, a TypeError that isn't
+    about unknown kwargs (shape mismatch, missing required arg) still
+    flows through the generic error path so the rewrite doesn't claim to
+    know more than it does."""
+
+    @dataclass
+    class _NeedsTwo:
+        @property
+        def spec(self) -> ToolSpec:
+            return ToolSpec(
+                name="needs_two",
+                description="stub",
+                parameters={
+                    "type": "object",
+                    "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+                    "required": ["a", "b"],
+                },
+                tier="read",
+            )
+
+        def call(self, *, a: str, b: str) -> str:
+            return f"{a}{b}"
+
+    registry = ToolRegistry()
+    registry.register(_NeedsTwo())
+
+    # `b` missing — a non-unknown-kwarg TypeError shape.
+    result = registry.call("needs_two", {"a": "x"})
+
+    assert not result.success
     assert "rejected unknown argument" not in result.output
     assert (result.error or "").startswith("TypeError")
 

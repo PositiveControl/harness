@@ -5,8 +5,64 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from pydantic import BaseModel, ValidationError
+
 if TYPE_CHECKING:
     from harness.tools.catalog import ToolCatalog
+
+
+def tool_schema_from_model(model: type[BaseModel]) -> dict[str, Any]:
+    """Render a tool's `parameters` JSON Schema from a pydantic args
+    model (harness-5cjj9). Normalizes pydantic's `model_json_schema()`
+    output to the flat `{type, properties, required}` shape the rest of
+    the harness emits by hand: strips `title`/`default` noise and
+    collapses `int | None` style `anyOf:[T, null]` unions back to the
+    bare type `T` (optionality is already expressed by omission from
+    `required`), so a generated schema reads the same as the
+    hand-written ones the model and router already consume.
+
+    Pilot models are flat (no nested BaseModel / `$ref`); extend this if
+    a future tool nests models."""
+    raw = model.model_json_schema()
+    props = {name: _clean_schema_prop(sub) for name, sub in (raw.get("properties") or {}).items()}
+    return {
+        "type": "object",
+        "properties": props,
+        "required": list(raw.get("required", [])),
+    }
+
+
+def _clean_schema_prop(prop: dict[str, Any]) -> dict[str, Any]:
+    p = dict(prop)
+    description = p.get("description")
+    p.pop("title", None)
+    p.pop("default", None)
+    any_of = p.get("anyOf")
+    if any_of is not None:
+        variants = [v for v in any_of if v.get("type") != "null"]
+        if len(variants) == 1:
+            merged = {k: v for k, v in variants[0].items() if k != "title"}
+            if description is not None:
+                merged["description"] = description
+            return merged
+        p["anyOf"] = variants
+    return p
+
+
+def format_validation_error(tool_name: str, exc: ValidationError) -> str:
+    """Turn a pydantic ValidationError into a model-actionable message
+    that names each bad field, what was wrong, and the value supplied —
+    so the model can self-correct on the same round instead of repeating
+    the call (harness-5cjj9, harness-ln7j)."""
+    lines: list[str] = []
+    for err in exc.errors():
+        loc = ".".join(str(part) for part in err["loc"]) or "(root)"
+        line = f"  - {loc}: {err['msg']}"
+        if "input" in err:
+            line += f" (got {err['input']!r})"
+        lines.append(line)
+    body = "\n".join(lines) or "  - (no field detail)"
+    return f"tool {tool_name!r} rejected arguments:\n{body}\nFix the field(s) and retry."
 
 
 @dataclass(frozen=True)
@@ -38,6 +94,15 @@ class ToolSpec:
     # (including the router prelude, which only auto-executes read-tier
     # calls). None = the tier is fixed.
     write_when: Callable[[Mapping[str, Any]], bool] | None = None
+    # Optional typed argument model (harness-5cjj9). When set, the
+    # registry validates + coerces the raw argument dict through it
+    # before dispatch, returning a structured field error on mismatch
+    # instead of relying on a post-hoc Python TypeError. `parameters`
+    # is typically generated from the same model via
+    # `tool_schema_from_model`, so the model-visible schema and the
+    # runtime validation come from one source. None = legacy path
+    # (raw dict forwarded to call(), TypeError recovery).
+    args_model: type[BaseModel] | None = None
 
     @property
     def label(self) -> str:
@@ -320,6 +385,49 @@ class ToolRegistry:
                 error="unknown_tool",
             )
         tool = self._tools[name]
+        # Typed-argument validation (harness-5cjj9). When the tool
+        # declares an args_model, validate + coerce the raw dict through
+        # it before dispatch — a malformed call is rejected with a
+        # structured field error the model can act on, rather than
+        # reaching tool code and failing on a Python TypeError. Coercion
+        # also subsumes per-tool string→number / number→string fixups
+        # (e.g. stream_edit int args, harness-ln7j).
+        args_model = tool.spec.args_model
+        if args_model is not None:
+            try:
+                validated = args_model.model_validate(arguments)
+            except ValidationError as exc:
+                errors = exc.errors()
+                extras = [e for e in errors if e.get("type") == "extra_forbidden"]
+                if extras and len(extras) == len(errors):
+                    # Every error is an unknown argument — preserve the
+                    # harness-d7e hint (lists what the tool DOES accept,
+                    # keyed off the schema) so the model retries without
+                    # the offending field instead of repeating the call.
+                    unknown_field = str(extras[0]["loc"][-1])
+                    accepted = sorted((tool.spec.parameters.get("properties") or {}).keys())
+                    return ToolResult(
+                        tool_name=name,
+                        output=(
+                            f"tool {name!r} rejected unknown argument {unknown_field!r}. "
+                            f"Accepts: {', '.join(accepted) or '(none)'}. "
+                            "Retry without the unknown field."
+                        ),
+                        success=False,
+                        error=f"unknown_kwarg:{unknown_field}",
+                    )
+                return ToolResult(
+                    tool_name=name,
+                    output=format_validation_error(name, exc),
+                    success=False,
+                    error="validation_error",
+                )
+            # exclude_unset: forward only the arguments the caller
+            # actually supplied (coerced), never injected defaults — the
+            # dispatch shape stays identical to the legacy raw-dict path,
+            # so a tool whose call() omits an optional kwarg isn't handed
+            # an unexpected one.
+            arguments = validated.model_dump(exclude_unset=True)
         try:
             # Tool's `call` is not on the Protocol (see Tool docstring); each
             # concrete implementation supplies it with typed kwargs.
