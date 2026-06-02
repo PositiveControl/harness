@@ -80,6 +80,48 @@ def test_chat_rejects_empty_text(client: TestClient) -> None:
     assert resp.status_code == 422  # pydantic validation
 
 
+def test_chat_uses_grounded_turn_service_when_wired(character: Character, tmp_path: object) -> None:
+    """harness-fl313: when build_character_app is handed a TurnService,
+    /chat runs the grounded path (transcript persistence + audit) rather
+    than the bare system+complete primitive. Persisting the turn is the
+    observable proof the service ran."""
+    from pathlib import Path
+
+    from harness.cli import _RetrievalState
+    from harness.store.transcript import Transcript
+    from harness.turn import TurnContext, TurnService
+
+    assert isinstance(tmp_path, Path)
+    transcript = Transcript(tmp_path / "web.sqlite")
+    service = TurnService(
+        TurnContext(
+            character=character,
+            adapter=EchoAdapter(),
+            transcript=transcript,
+            load_history=lambda: (None, []),
+            speaker="web-user",
+            session="web-s1",
+            channel="web",
+            retrieval_state=_RetrievalState(),
+        )
+    )
+    app = build_character_app(character, EchoAdapter(), turn_service=service)
+    client = TestClient(app)
+
+    resp = client.post("/chat", json={"text": "hello over http"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body["reply"], str)
+    assert len(body["reply"]) > 0
+
+    # The grounded path persisted the turn — the bare path would not have.
+    rows = transcript.tail("web-s1", limit=10)
+    roles = [(r.role, r.speaker) for r in rows]
+    assert ("user", "web-user") in roles
+    assert ("assistant", character.name) in roles
+    assert any("hello over http" in r.content for r in rows)
+
+
 def test_capabilities_lists_base_endpoints(client: TestClient) -> None:
     resp = client.get("/capabilities")
     assert resp.status_code == 200

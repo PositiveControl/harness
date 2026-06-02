@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -31,15 +31,14 @@ from harness.cli_repl import (
 )
 from harness.compaction import CompactionStore
 from harness.config import settings
-from harness.model.adapter import ChatMessage, ModelAdapter
-from harness.orchestrator import ToolLoopEvent, run_tool_loop
+from harness.model.adapter import ModelAdapter
+from harness.orchestrator import ToolLoopEvent
 from harness.persona.banter import BanterStreakTracker, load_default_tracker
-from harness.persona.rewriter import build_rewriter_messages
 from harness.retrieval import VoiceRetriever
 from harness.retrieval.contract import StoreBundle
 from harness.router import GrammarRouter, ModelRouter, Router
 from harness.store import EpisodicStore, SemanticStore
-from harness.store.audit import AuditStore, record_turn_audit
+from harness.store.audit import AuditStore
 from harness.store.bd_adapter import BeadsAdapter
 from harness.store.transcript import Transcript
 from harness.tools import (
@@ -83,6 +82,7 @@ from harness.tools import (
     seed_builtins_into,
 )
 from harness.tools.ab_ops import build_resume_summary
+from harness.turn import TurnContext, TurnIO, TurnService
 
 if TYPE_CHECKING:
     from harness.cli import _RetrievalState, _StreamRenderer, _ThinkingSpinner
@@ -636,6 +636,10 @@ class ClassicChatSession:
     # state so smartass / empty-signal prompts deflect with a joke
     # instead of fabricating a rule chunk from thin retrieval.
     banter_tracker: BanterStreakTracker | None = None
+    # Lazily-built shared turn service (harness-fl313). Holds references
+    # to the live session objects above, so per-turn mutations
+    # (retrieval_state.muted, approved_tools) stay visible.
+    _turn_service: TurnService | None = field(default=None, init=False, repr=False)
 
     def tool_label(self, name: str) -> str:
         if self.registry is not None and name in self.registry:
@@ -674,204 +678,80 @@ class ClassicChatSession:
             tool_label=self.tool_label,
         )
 
-    def run_turn(self, user_input: str) -> None:
-        """Handle one user turn: retrieval → system prompt → model
-        (+ tool loop when active) → optional persona rewrite →
-        persist. All UI output goes through `self.console` / the
-        thinking spinner / stream renderer."""
-        from harness.cli import (
-            _build_tool_grounding_block,
-            _persist_tool_exchange,
-            _render_ab_memories_block,
-            _render_fact_block,
-            _render_memory_block,
-            _retrieve_turn_context,
-            _stream_or_complete,
+    def _turn_io(self) -> TurnIO:
+        """Bind this REPL session's console UI to the TurnService hooks.
+        `header` prints the reply banner just before the model call;
+        `model_done` tears down the spinner + stream renderer where the
+        old inline turn did (post-model, pre-persist); `announce` carries
+        the dim voice-pass notices."""
+
+        def announce(msg: str) -> None:
+            self.console.print(f"\n[dim]*— {msg} —*[/dim]")
+
+        def model_done() -> None:
+            self.thinking.stop()
+            self.stream_renderer.stop()
+
+        return TurnIO(
+            confirm=self.confirm_write_tool,
+            observe=self.render_tool_event,
+            stream_renderer=self.stream_renderer,
+            warn=self.warn_once,
+            header=lambda: self.console.print(f"[bold green]{self.character.name} ›[/bold green]"),
+            announce=announce,
+            model_done=model_done,
         )
 
-        self.transcript.append(
-            session=self.session,
-            channel=self.channel,
-            speaker=self.speaker,
-            role="user",
-            content=user_input,
-        )
+    def _service(self) -> TurnService:
+        if self._turn_service is None:
+            self._turn_service = TurnService(
+                TurnContext(
+                    character=self.character,
+                    adapter=self.adapter,
+                    transcript=self.transcript,
+                    load_history=self.ctx_meter.load_history,
+                    speaker=self.speaker,
+                    session=self.session,
+                    channel=self.channel,
+                    retrieval_state=self.retrieval_state,
+                    retriever=self.retriever,
+                    memory_store=self.memory_store,
+                    semantic_store=self.semantic_store,
+                    top_k=self.top_k,
+                    memories=self.memories,
+                    memories_threshold=self.memories_threshold,
+                    facts=self.facts,
+                    facts_threshold=self.facts_threshold,
+                    allowed_sessions=self.allowed_sessions,
+                    recency_ranks=self.recency_ranks,
+                    recency_weight=self.recency_weight,
+                    registry=self.registry,
+                    router=self.router,
+                    hooks=self.hooks,
+                    ab_adapter=self.ab_adapter,
+                    banter_tracker=self.banter_tracker,
+                    workspace_path=self.workspace_path,
+                    persona=self.persona,
+                    rewrite_on_tools=self.rewrite_on_tools,
+                    chain_rewrites=self.chain_rewrites,
+                    audit_store=self.audit_store,
+                )
+            )
+        return self._turn_service
+
+    def run_turn(self, user_input: str) -> None:
+        """Handle one user turn via the shared TurnService (harness-fl313):
+        retrieval → system prompt → model (+ tool loop when active) →
+        optional persona rewrite → persist → audit. This method owns only
+        the REPL-local UI: it starts the spinner, hands the service its
+        console-bound `TurnIO`, and prints the final reply when the model
+        didn't stream."""
         # Start the spinner immediately so the user sees acknowledgement
         # of their submission while retrieval warms up.
         self.thinking.start()
-
-        examples, recalled, known_facts = _retrieve_turn_context(
-            user_input=user_input,
-            speaker=self.speaker,
-            retriever=self.retriever,
-            memory_store=self.memory_store,
-            semantic_store=self.semantic_store,
-            top_k=self.top_k,
-            memories=self.memories,
-            memories_threshold=self.memories_threshold,
-            facts=self.facts,
-            facts_threshold=self.facts_threshold,
-            state=self.retrieval_state,
-            warn=self.warn_once,
-            allowed_sessions=self.allowed_sessions,
-            recency_ranks=self.recency_ranks,
-            recency_weight=self.recency_weight,
-        )
-
-        if examples:
-            system_content = self.character.system_prompt(
-                include_samples=examples, now=date.today()
-            )
-        else:
-            system_content = self.character.system_prompt(now=date.today())
-
-        if recalled:
-            system_content = f"{system_content}\n\n{_render_memory_block(recalled)}"
-
-        if self.ab_adapter is not None:
-            ab_mem_block = _render_ab_memories_block(self.ab_adapter)
-            if ab_mem_block is not None:
-                system_content = f"{system_content}\n\n{ab_mem_block}"
-
-        if self.registry is not None:
-            system_content = (
-                f"{system_content}\n\n"
-                f"{_build_tool_grounding_block(self.registry, self.workspace_path)}"
-            )
-
-        if known_facts:
-            system_content = f"{system_content}\n\n{_render_fact_block(known_facts)}"
-
-        # Topic-boundary signal (harness-eftf + harness-w3mo). Cheap
-        # (~25 tokens), fires when retrieval is muted (post-/clear)
-        # OR when --memory-scope is bounding retrieval to a session
-        # subset. Different wording per cause; the helper picks.
-        from harness.cli import _topic_boundary_suffix
-
-        system_content = (
-            f"{system_content}{_topic_boundary_suffix(self.retrieval_state, self.allowed_sessions)}"
-        )
-
-        system = ChatMessage(role="system", content=system_content)
-
-        summary_msg, history = self.ctx_meter.load_history()
-        history_messages: list[ChatMessage] = []
-        if summary_msg is not None:
-            history_messages.append(summary_msg)
-        history_messages.extend(history)
-
-        self.console.print(f"[bold green]{self.character.name} ›[/bold green]")
-        streamed = False
-        # Track the tool-loop result across both branches so the
-        # per-turn audit record (harness-ywp.2) can summarise the
-        # turn uniformly, whether tools ran or not.
-        loop_result: Any = None
-        if self.registry is not None:
-            initial_messages: list[ChatMessage] = [system, *history_messages]
-            loop_result = run_tool_loop(
-                self.adapter,  # type: ignore[arg-type]
-                initial_messages,
-                self.registry,
-                confirm=self.confirm_write_tool,
-                observe=self.render_tool_event,
-                router=self.router,
-                hooks=self.hooks,
-                memory_block_attached=bool(recalled),
-                force_search_memory=self.character.require_search_memory,
-                force_assemble_context=(
-                    self.character.default_contract_role
-                    if self.character.require_assemble_context
-                    else None
-                ),
-                banter_tracker=self.banter_tracker,
-                scope_redirect_template=self.character.scope_redirect_template,
-                scope_lexicon=self.character.scope_lexicon,
-            )
-            streamed = True
-            _persist_tool_exchange(
-                self.transcript,
-                session=self.session,
-                channel=self.channel,
-                character_name=self.character.name,
-                initial_count=len(initial_messages),
-                loop_messages=loop_result.messages,
-            )
-            draft = loop_result.content
-            # Small models (gemma4 8B) sometimes bail after a tool result —
-            # empty content AND no further tool calls. Nudge once before
-            # falling back to the sentinel.
-            if not draft.strip():
-                nudge_msgs = [
-                    *loop_result.messages,
-                    ChatMessage(
-                        role="user",
-                        content=(
-                            "Your last reply was empty. Give me a final answer "
-                            "based on what the tools already returned. Restate "
-                            "the key findings in prose. Do not return empty."
-                        ),
-                    ),
-                ]
-                retry = self.adapter.complete_with_tools(  # type: ignore[attr-defined]
-                    nudge_msgs,
-                    tools=self.registry.specs(),
-                    max_tokens=2048,
-                    temperature=0.3,
-                )
-                if retry.content.strip():
-                    draft = retry.content
-            # Skip the rewriter when (a) rewrite-on-tools is off (default) —
-            # rewriter compresses prose that summarize / investigate tasks
-            # need, or (b) the tool loop left no substantive draft.
-            if self.persona and self.rewrite_on_tools and draft.strip():
-                self.console.print("\n[dim]*— voice pass —*[/dim]")
-                rewrite_msgs = build_rewriter_messages(self.character, draft, focus="style")
-                reply, _ = _stream_or_complete(
-                    self.adapter,
-                    rewrite_msgs,
-                    stream_renderer=self.stream_renderer,
-                    temperature=0.2,
-                    max_tokens=2048,
-                )
-                if self.chain_rewrites and reply.strip():
-                    self.console.print("\n[dim]*— concrete pass —*[/dim]")
-                    concrete_msgs = build_rewriter_messages(self.character, reply, focus="concrete")
-                    reply, _ = _stream_or_complete(
-                        self.adapter,
-                        concrete_msgs,
-                        stream_renderer=self.stream_renderer,
-                        temperature=0.2,
-                        max_tokens=2048,
-                    )
-            else:
-                reply = draft or "(no reply — model returned empty text after tool calls)"
-        else:
-            reply, streamed = _stream_or_complete(
-                self.adapter,
-                [system, *history_messages],
-                stream_renderer=self.stream_renderer,
-            )
-
-        self.thinking.stop()
-        self.stream_renderer.stop()
-        self.transcript.append(
-            session=self.session,
-            channel=self.channel,
-            speaker=self.character.name,
-            role="assistant",
-            content=reply,
-        )
-        record_turn_audit(
-            self.audit_store,
-            session=self.session,
-            character=self.character.name,
-            user_id=self.speaker,
-            user_message=user_input,
-            model_reply=reply,
-            loop_result=loop_result,
-        )
-        if not streamed:
-            self.console.print(Markdown(reply))
+        result = self._service().run_turn(user_input, self._turn_io())
+        if not result.streamed:
+            self.console.print(Markdown(result.reply))
         self.console.print()
 
 

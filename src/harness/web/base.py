@@ -31,6 +31,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from harness.character import Character
+from harness.turn import TurnService
 
 from .base_router import build_base_router
 
@@ -47,6 +48,7 @@ def build_character_app(
     rate_limit: str = _DEFAULT_RATE_LIMIT,
     cors_allow_origins: list[str] | None = None,
     title_override: str | None = None,
+    turn_service: TurnService | None = None,
 ) -> FastAPI:
     """Build a FastAPI app exposing `character` over HTTP.
 
@@ -84,7 +86,14 @@ def build_character_app(
     app.add_middleware(SlowAPIMiddleware)
     app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 
-    app.include_router(build_base_router(character, adapter, started_at_unix=app.state.boot_unix))
+    app.include_router(
+        build_base_router(
+            character,
+            adapter,
+            started_at_unix=app.state.boot_unix,
+            turn_service=turn_service,
+        )
+    )
 
     extension_router = _discover_character_router(character, adapter)
     if extension_router is not None:

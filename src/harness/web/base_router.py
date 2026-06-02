@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from harness.character import Character
 from harness.model.adapter import ChatMessage
 from harness.persona import PersonaAdapter
+from harness.turn import TurnService
 
 from .logging import RequestDebugLog
 
@@ -55,10 +56,18 @@ def build_base_router(
     adapter: object,
     *,
     started_at_unix: float | None = None,
+    turn_service: TurnService | None = None,
 ) -> APIRouter:
     """Construct the base router. `adapter` is structurally typed —
     the router only requires `.id` and `.complete(messages, *,
-    max_tokens, temperature) -> str`."""
+    max_tokens, temperature) -> str`.
+
+    When `turn_service` is provided, `/chat` runs the same grounded,
+    tool-capable path as `harness chat` (retrieval, memory, tool loop,
+    persona rewrite, transcript persistence, audit) instead of the bare
+    system-prompt + complete primitive (harness-fl313). The service
+    carries its own session/speaker; `max_tokens`/`temperature` from the
+    request are honored only on the bare fallback path."""
     router = APIRouter()
     boot_ts = started_at_unix if started_at_unix is not None else time.time()
 
@@ -77,11 +86,23 @@ def build_base_router(
 
     @router.post("/chat", response_model=ChatResponse)
     def chat(body: ChatRequest) -> ChatResponse:
-        # Wrap the adapter in PersonaAdapter when the character ships
-        # one. Characters with voice_rewriter != "persona" (caveman or
-        # none) skip the wrap; their /chat is the bare-adapter reply.
-        # No tool loop, no forced contract prelude — see module
-        # docstring for the limitation.
+        # Grounded path (harness-fl313): when a TurnService is wired, run
+        # the full retrieval + tool-loop + persona + persist + audit turn
+        # — the same path `harness chat` uses.
+        if turn_service is not None:
+            with RequestDebugLog.start(character_name=character.name, endpoint="/chat") as log:
+                log.raw_input = {"text": body.text}
+                result = turn_service.run_turn(body.text)
+                log.raw_model_completion = result.reply
+            return ChatResponse(
+                reply=result.reply,
+                character=character.name,
+                model=getattr(adapter, "id", type(adapter).__name__),
+            )
+
+        # Bare fallback: wrap the adapter in PersonaAdapter when the
+        # character ships one. No tool loop, no forced contract prelude,
+        # no retrieval — see module docstring for the limitation.
         runtime_adapter: object = adapter
         if character.voice_rewriter == "persona":
             runtime_adapter = PersonaAdapter(adapter, character)  # type: ignore[arg-type]
