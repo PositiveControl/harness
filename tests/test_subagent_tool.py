@@ -213,12 +213,17 @@ def test_subagent_budget_exhaustion_reports_cleanly(tmp_path: Path) -> None:
     The legacy "didn't land cleanly" + "budget exhausted" + "loop
     returned empty content" clauses stay as defensive accepts in
     case a different terminal catcher fires through a different
-    pathology."""
-    (tmp_path / "a.txt").write_text("A\n")
+    pathology.
+
+    harness-estby: the spinner re-reads a NON-existent path, so each
+    call fails. A repeated FAILING call is thrashing and still burns
+    the work budget (only redundant re-reads of a SUCCESSFUL prior call
+    are exempted from budget), so the child still exhausts max_rounds
+    and reports cleanly — the property this test pins."""
     parent = _registry_with(ReadFileTool(root=tmp_path))
     looping_reply = ModelReply(
         content="",
-        tool_calls=(ToolCall(name="read_file", arguments={"path": "a.txt"}),),
+        tool_calls=(ToolCall(name="read_file", arguments={"path": "ghost.txt"}),),
     )
     adapter = _ScriptedAdapter(replies=[looping_reply] * 3)
     tool = SpawnSubagentTool(adapter=adapter, registry=parent, hooks=default_hook_pipeline())

@@ -3770,6 +3770,56 @@ def test_mixed_meta_and_content_in_same_round_counts_as_work(tmp_path: Path) -> 
     assert result.content == "done"
 
 
+def test_all_deduped_content_round_does_not_burn_work_budget(tmp_path: Path) -> None:
+    """harness-estby: a content round whose calls were ALL deduped
+    (exact duplicates — nothing executed) must not count as a work
+    round, so it can't tip work_rounds to max_rounds and force a
+    text-only wrap-up before the model finishes.
+
+    Run 29f4a974 / gta 6182c539 pattern: the model re-read the file it
+    had just edited; that duplicate read was the final round before the
+    cap, so the loop forced a wrap-up instead of letting the model run
+    its terminal action. Here: one real read (work) + one duplicate read
+    (deduped, must be free) + a final text reply. With the fix the model
+    reaches its 'done' reply; the old accounting would have wrapped up
+    after the duplicate-read round."""
+    (tmp_path / "hi.txt").write_text("contents")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+    adapter = _ScriptedAdapter(
+        replies=[
+            # Round 1: real read — counts as work (work_rounds -> 1).
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "hi.txt"}),),
+            ),
+            # Round 2: exact-duplicate read — deduped, nothing runs. Must
+            # be free; otherwise work_rounds hits max_rounds=2 here and
+            # the loop wraps up before the model can reply.
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "hi.txt"}),),
+            ),
+            # Round 3: the model's terminal reply — only reached if the
+            # duplicate round didn't burn the budget.
+            ModelReply(content="done"),
+        ]
+    )
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read the file")],
+        registry,
+        max_rounds=2,
+    )
+
+    # The deduped read was treated as a free (meta-like) round...
+    assert any(e.kind == "meta_round" for e in result.events)
+    # ...so the loop never force-wrapped, and the model reached its reply.
+    assert not any(e.kind == "wrap_up_forced" for e in result.events)
+    assert result.content == "done"
+
+
 # ---------- wrap-up round (harness-0gss) ----------
 
 

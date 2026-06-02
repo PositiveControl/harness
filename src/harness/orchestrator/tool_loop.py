@@ -1658,11 +1658,54 @@ def run_tool_loop(
         # tool_search round (before the catcher fires) or a successful
         # load_tool(new_name) round both produce no "loop detected" /
         # "DUPLICATE CALL" marker, so they stay free passes.
+        from harness.orchestrator.hooks import _DUPLICATE_CALL_PREFIX
         from harness.orchestrator.hooks import _call_key as _call_key_for_meta_check
 
-        has_content_call = any(call.name not in _META_TOOLS for call in last_reply.tool_calls)
+        # harness-estby: content calls this round that were rejected as
+        # exact duplicates of a SUCCESSFUL prior call. Those never
+        # executed and re-confirm work already done — a redundant re-read
+        # of a file the model already read cleanly, the "basically done"
+        # gesture. They made no progress, so they must not burn a work
+        # round. The dedup result rides the tool_call_deduped EVENT
+        # (prefixed output, prior success preserved); it is NOT written
+        # back to seen_calls (only real executions are), so the event
+        # stream is the source of truth.
+        #
+        # Scoped two ways on purpose: (1) the duplicate prefix — other
+        # Skip-emitting hooks (argument grounding) also surface as
+        # tool_call_deduped but aren't the re-read we exempt; (2)
+        # result.success — a repeated FAILING call is the model thrashing
+        # (it should keep counting so the spin stops promptly, the
+        # test_loop_respects_max_rounds contract), whereas a repeated
+        # SUCCESSFUL call is the redundant re-confirm we want to forgive.
+        dup_content_keys = {
+            _call_key_for_meta_check(e.call)
+            for e in events
+            if e.round_index == round_idx
+            and e.kind == "tool_call_deduped"
+            and e.call is not None
+            and e.call.name not in _META_TOOLS
+            and e.result is not None
+            and e.result.success
+            and (e.result.output or "").startswith(_DUPLICATE_CALL_PREFIX)
+        }
+        content_calls = [c for c in last_reply.tool_calls if c.name not in _META_TOOLS]
+        # A content round counts as work only if at least one content
+        # call actually executed. A round whose content calls were ALL
+        # duplicate-deduped (nothing ran) must not burn a work round. In
+        # run 29f4a974 / gta 6182c539 the final round before max_rounds
+        # was a duplicate read_file of the file the model had just
+        # edited; counting it tipped work_rounds to the cap and forced a
+        # text-only wrap-up BEFORE the model could run `bd close`,
+        # discarding the (correct, verify-green) work. Treating an
+        # all-deduped content round as free gives the model the round
+        # back to finish the close; the repeat-counter escalation +
+        # hard_ceiling still bound a model that only ever re-reads.
+        has_real_content_call = any(
+            _call_key_for_meta_check(c) not in dup_content_keys for c in content_calls
+        )
         blocked_meta_call = False
-        if not has_content_call and last_reply.tool_calls:
+        if not content_calls and last_reply.tool_calls:
             for call in last_reply.tool_calls:
                 result = seen_calls.get(_call_key_for_meta_check(call))
                 if result is None:
@@ -1674,7 +1717,7 @@ def run_tool_loop(
                 if "DUPLICATE CALL" in (result.output or ""):
                     blocked_meta_call = True
                     break
-        is_work_round = has_content_call or blocked_meta_call
+        is_work_round = has_real_content_call or blocked_meta_call
         if is_work_round:
             work_rounds += 1
         else:
