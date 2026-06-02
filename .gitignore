@@ -94,3 +94,6 @@ battista_comparison.md
 # bd credential key — per-machine secret, never commit (belt-and-suspenders
 # alongside .beads/.gitignore)
 .beads-credential-key
+
+# local agent sandbox scratch (snake-game eval workspace)
+snake/

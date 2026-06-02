@@ -16,21 +16,28 @@ Usage:
     uv run python scripts/jsonl_tail.py LOG --tail 50   # seed last 50 lines
     uv run python scripts/jsonl_tail.py LOG --all       # ingest whole file
 
-Keys: arrows/click to move + expand, ``e`` expand-all, ``c`` collapse-all,
-``f`` toggle follow (auto-scroll), ``q`` quit.
+Two views, toggled with ``v``:
+  * record — one collapsible node per round (the raw tail).
+  * drive  — rounds grouped issue → segment → round, reconstructing the
+    auto-iterate drive structure (attempts, re-feeds ↺, ✓close) live from the
+    records, no external map needed.
+
+Keys: ``v`` switch view, arrows/click to move + expand, ``e`` expand-all,
+``c`` collapse-all, ``f`` toggle follow (auto-scroll), ``q`` quit.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import sys
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 from typing import Any, ClassVar
 
 try:
     from textual.app import App, ComposeResult
-    from textual.binding import Binding
+    from textual.binding import Binding, BindingType
     from textual.widgets import Footer, Header, Tree
     from textual.widgets.tree import TreeNode
 except ImportError:  # pragma: no cover - depends on --extra tui
@@ -111,7 +118,7 @@ def _preview(value: Any) -> str:
     return ""
 
 
-def _add_value(node: TreeNode, key: str, value: Any) -> None:
+def _add_value(node: TreeNode[None], key: str, value: Any) -> None:
     """Attach ``key: value`` under ``node``, recursing into containers."""
     if isinstance(value, dict):
         child = node.add(f"[bold]{key}[/]  [dim]{_preview(value)}[/]")
@@ -126,10 +133,57 @@ def _add_value(node: TreeNode, key: str, value: Any) -> None:
         node.add_leaf(f"[bold]{key}[/]: {rendered}")
 
 
+# --- drive-view inference ----------------------------------------------------
+# A drive log is a flat stream of model rounds, but the run has structure: an
+# auto-iterate loop re-feeds the same bd issue until it closes (or gives up).
+# We reconstruct that structure live from the records themselves — no external
+# map needed. Signals: the handoff names the target issue (harness-XXXX); a
+# `bd close <id>` shell call marks a close; the same issue appearing in more
+# than one contiguous segment means it was re-fed (reopened / restored).
+
+_ID_RE = re.compile(r"harness-[a-z0-9]{4,}")
+_CLOSE_RE = re.compile(r"bd close\s+(harness-[a-z0-9]{4,})")
+# ids that appear only because the tool-rules system prompt cites them
+_RULE_IDS = frozenset({"harness-zcxw", "harness-k52f", "harness-lpsq"})
+
+
+def _record_messages(rec: dict[str, Any]) -> list[dict[str, Any]]:
+    return (rec.get("request") or {}).get("messages") or []
+
+
+def _target_issue(rec: dict[str, Any]) -> str | None:
+    """The bd issue this round is driving, read from the handoff text."""
+    for msg in _record_messages(rec):
+        if msg.get("role") not in {"user", "system"}:
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        for hit in _ID_RE.findall(content):
+            if hit not in _RULE_IDS:
+                return str(hit)
+    return None
+
+
+def _closed_ids(rec: dict[str, Any]) -> set[str]:
+    """Issue ids this round ran `bd close` on (real shell calls only)."""
+    out: set[str] = set()
+    for call in rec.get("parsed_calls") or []:
+        if call.get("name") == "shell":
+            cmd = str((call.get("arguments") or {}).get("cmd", ""))
+            out.update(_CLOSE_RE.findall(cmd))
+    return out
+
+
+def _call_names(rec: dict[str, Any]) -> list[str]:
+    return [c.get("name", "?") for c in rec.get("parsed_calls") or []]
+
+
 class JsonlTail(App[None]):
     CSS = "Tree { padding: 0 1; }"
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         Binding("q", "quit", "Quit"),
+        Binding("v", "toggle_view", "View: record/drive"),
         Binding("e", "expand_all", "Expand all"),
         Binding("c", "collapse_all", "Collapse all"),
         Binding("f", "toggle_follow", "Follow"),
@@ -141,8 +195,11 @@ class JsonlTail(App[None]):
         self.seed_tail = seed_tail
         self.ingest_all = ingest_all
         self.follow = True
+        self.view = "record"  # "record" (per-round) | "drive" (issue→segment)
         self._pos = 0  # byte offset read up to
-        self._count = 0
+        # parsed records retained so the drive view can be rebuilt on demand.
+        # each entry: (index, parsed_obj_or_None, raw_line)
+        self._records: list[tuple[int, Any, str]] = []
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -168,8 +225,8 @@ class JsonlTail(App[None]):
         lines = [ln for ln in text.splitlines() if ln.strip()]
         if not self.ingest_all:
             lines = list(deque(lines, maxlen=self.seed_tail))
-        for ln in lines:
-            self._add_record(ln)
+        new = self._store(lines)
+        self._render(new)
 
     def _poll(self) -> None:
         try:
@@ -184,36 +241,144 @@ class JsonlTail(App[None]):
             fh.seek(self._pos)
             chunk = fh.read()
             self._pos = fh.tell()
-        for ln in chunk.decode("utf-8", "replace").splitlines():
-            if ln.strip():
-                self._add_record(ln)
+        lines = [ln for ln in chunk.decode("utf-8", "replace").splitlines() if ln.strip()]
+        if not lines:
+            return
+        new = self._store(lines)
+        self._render(new)
         if self.follow and self._tree.last_line:
             self._tree.scroll_end(animate=False)
 
-    def _add_record(self, line: str) -> None:
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            self._tree.root.add_leaf(f"[red]✗ unparseable[/] {_elide(line, LABEL_MAX)}")
-            self._count += 1
-            return
-        if not isinstance(rec, dict):
-            node = self._tree.root.add(f"[cyan]#{self._count}[/]  {_preview(rec)}")
-            _add_value(node, "value", rec)
-            self._count += 1
-            return
+    def _store(self, lines: list[str]) -> list[tuple[int, Any, str]]:
+        """Parse + retain new records; return the batch just added."""
+        added: list[tuple[int, Any, str]] = []
+        for ln in lines:
+            try:
+                obj: Any = json.loads(ln)
+            except json.JSONDecodeError:
+                obj = None
+            entry = (len(self._records), obj, ln)
+            self._records.append(entry)
+            added.append(entry)
+        return added
+
+    # --- render dispatch ---------------------------------------------------
+    def _render(self, new: list[tuple[int, Any, str]]) -> None:
+        if self.view == "drive":
+            self._build_drive()  # cheap full rebuild; record count is bounded
+        else:
+            for idx, obj, raw in new:  # incremental append
+                self._record_node(self._tree.root, idx, obj, raw)
+        self._sync_follow_title()
+
+    def _record_node(self, parent: TreeNode[None], idx: int, obj: Any, raw: str) -> TreeNode[None]:
+        """Render one round as a collapsible node under ``parent``."""
+        if obj is None:
+            return parent.add_leaf(f"[red]✗ unparseable #{idx}[/] {_elide(raw, LABEL_MAX)}")
+        if not isinstance(obj, dict):
+            node = parent.add(f"[cyan]#{idx}[/]  {_preview(obj)}")
+            _add_value(node, "value", obj)
+            return node
         header = (
-            f"[dim]{_short_ts(rec.get('ts', ''))}[/]  "
-            f"[yellow]{rec.get('mode', '?')}[/]  "
-            f"[cyan]{rec.get('model', '')}[/]  "
-            f"{_summary(rec)}"
+            f"[dim]#{idx} {_short_ts(obj.get('ts', ''))}[/]  "
+            f"[yellow]{obj.get('mode', '?')}[/]  "
+            f"[cyan]{obj.get('model', '')}[/]  "
+            f"{_summary(obj)}"
         )
-        node = self._tree.root.add(header)
-        for k, v in rec.items():
+        node = parent.add(header)
+        for k, v in obj.items():
             _add_value(node, str(k), v)
-        self._count += 1
+        return node
+
+    # --- drive view --------------------------------------------------------
+    def _segments(self) -> list[tuple[str | None, list[tuple[int, Any, str]]]]:
+        """Group rounds into contiguous runs sharing a target issue.
+
+        None targets (rounds with no handoff id, e.g. finish_reason=null
+        continuations) carry forward the previous issue so an attempt stays one
+        segment instead of fragmenting.
+        """
+        segs: list[tuple[str | None, list[tuple[int, Any, str]]]] = []
+        carried: str | None = None
+        for entry in self._records:
+            obj = entry[1]
+            tgt = _target_issue(obj) if isinstance(obj, dict) else None
+            if tgt is None:
+                tgt = carried
+            else:
+                carried = tgt
+            if segs and segs[-1][0] == tgt:
+                segs[-1][1].append(entry)
+            else:
+                segs.append((tgt, [entry]))
+        return segs
+
+    def _build_drive(self) -> None:
+        self._tree.clear()
+        segs = self._segments()
+        # per-issue rollup: how many segments (attempts), rounds, closes
+        attempts: Counter[str] = Counter()
+        rounds: Counter[str] = Counter()
+        closes: Counter[str] = Counter()
+        order: list[str] = []
+        for tgt, entries in segs:
+            if not tgt:
+                continue
+            if tgt not in attempts:
+                order.append(tgt)
+            attempts[tgt] += 1
+            rounds[tgt] += len(entries)
+            for _, obj, _ in entries:
+                if isinstance(obj, dict):
+                    closes[tgt] += len(_closed_ids(obj) & {tgt})
+
+        issue_nodes: dict[str, TreeNode[None]] = {}
+        for tgt in order:
+            reopened = " [red]↺reopened[/]" if attempts[tgt] > 1 else ""
+            won = f" [green]✓{closes[tgt]}[/]" if closes[tgt] else ""
+            label = f"[bold cyan]{tgt}[/]  x{attempts[tgt]} seg · {rounds[tgt]}r{won}{reopened}"
+            issue_nodes[tgt] = self._tree.root.add(label)
+
+        # segments in stream order, each under its issue rollup (orphans → root)
+        attempt_seen: Counter[str] = Counter()
+        for tgt, entries in segs:
+            parent = issue_nodes.get(tgt) if tgt else None
+            if parent is None:
+                parent = self._tree.root
+            lo, hi = entries[0][0], entries[-1][0]
+            names = Counter(n for _, o, _ in entries if isinstance(o, dict) for n in _call_names(o))
+            fins = Counter(
+                o.get("finish_reason")
+                for _, o, _ in entries
+                if isinstance(o, dict) and o.get("finish_reason")
+            )
+            seg_closes = sum(
+                len(_closed_ids(o) & {tgt}) for _, o, _ in entries if isinstance(o, dict) and tgt
+            )
+            attempt_seen[tgt or "—"] += 1
+            calls = " ".join(f"{n}:{c}" for n, c in names.most_common())
+            fin = " ".join(f"{k}:{v}" for k, v in fins.most_common())
+            mark = " [green]✓close[/]" if seg_closes else ""
+            seg_label = (
+                f"[dim]rows {lo}-{hi}[/] [{len(entries)}r] "
+                f"#{attempt_seen[tgt or '—']}{mark}  "
+                f"[dim]calls[/] {calls or '—'}  [dim]fin[/] {fin or '—'}"
+            )
+            seg_node = parent.add(seg_label)
+            for idx, obj, raw in entries:
+                self._record_node(seg_node, idx, obj, raw)
 
     # --- actions -----------------------------------------------------------
+    def action_toggle_view(self) -> None:
+        self.view = "drive" if self.view == "record" else "record"
+        self._tree.clear()
+        if self.view == "drive":
+            self._build_drive()
+        else:
+            for idx, obj, raw in self._records:
+                self._record_node(self._tree.root, idx, obj, raw)
+        self._sync_follow_title()
+
     def action_expand_all(self) -> None:
         self._tree.root.expand_all()
 
@@ -227,7 +392,10 @@ class JsonlTail(App[None]):
 
     def _sync_follow_title(self) -> None:
         self.title = f"jsonl-tail · {self.path.name}"
-        self.sub_title = f"{self._count} records · follow {'on' if self.follow else 'off'}"
+        self.sub_title = (
+            f"{len(self._records)} records · {self.view} view · "
+            f"follow {'on' if self.follow else 'off'}"
+        )
 
 
 def main(
