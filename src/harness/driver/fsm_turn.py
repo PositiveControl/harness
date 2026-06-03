@@ -79,6 +79,7 @@ from harness.tools import (
     OutlineTool,
     ReadFileTool,
     ShellTool,
+    StreamEditTool,
     Tool,
     ToolCatalog,
     ToolRegistry,
@@ -156,14 +157,29 @@ def _read_only_tools(workspace: Path) -> dict[str, Tool]:
 
 
 def _write_tier_tools(workspace: Path) -> dict[str, Tool]:
-    """edit_file, write_file, shell — the file-mutating set
-    available in IMPLEMENT. The IMPLEMENT registry layers these on
-    top of `_read_only_tools`."""
-    return {
+    """edit_file, write_file, shell (+ stream_edit when available) — the
+    file-mutating set available in IMPLEMENT. The IMPLEMENT registry
+    layers these on top of `_read_only_tools`.
+
+    stream_edit (harness-bw27 file-ops bench) is the robust multi-edit /
+    in-place sed/awk path — it doesn't depend on the model reproducing an
+    exact `old_string`, which is where edit_file fails on large files
+    (loop_run=498a4d79 turn 5: old_string mismatch → edit_file_dedup_loop
+    spun out the attempt). StreamEditTool resolves awk/sed/cut/tr at
+    construction and raises if a verb is missing; guard it so a host
+    without one of those binaries degrades to the edit_file path instead
+    of breaking the whole IMPLEMENT registry."""
+    tools: dict[str, Tool] = {
         "edit_file": EditFileTool(root=workspace),
         "write_file": WriteFileTool(root=workspace),
         "shell": ShellTool(cwd=workspace),
     }
+    # A coreutils verb (awk/sed/cut/tr) missing from PATH makes
+    # StreamEditTool raise at construction — skip the tool rather than
+    # fail the whole IMPLEMENT registry; edit_file/write_file still work.
+    with contextlib.suppress(ValueError):
+        tools["stream_edit"] = StreamEditTool(root=workspace)
+    return tools
 
 
 def _build_phase_registry(

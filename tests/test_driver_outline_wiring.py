@@ -17,6 +17,7 @@ from pathlib import Path
 from harness.driver.fsm_turn import (
     _READ_STRATEGY_HINT,
     _read_only_tools,
+    _write_tier_tools,
     phase_instructions,
 )
 from harness.driver.loop import EXECUTOR_USER_MESSAGE, _build_executor_registry
@@ -69,3 +70,17 @@ def test_fsm_assess_and_implement_carry_read_strategy() -> None:
 def test_planner_prompt_steers_to_symbol_reads() -> None:
     assert "outline" in PLANNER_SYSTEM_PROMPT
     assert "symbol=" in PLANNER_SYSTEM_PROMPT
+
+
+# --- harness: stream_edit in the IMPLEMENT write-tier roster ---------
+
+
+def test_write_tier_tools_include_stream_edit(tmp_path: Path) -> None:
+    """IMPLEMENT's file-mutating roster carries stream_edit alongside
+    edit_file — the robust in-place sed/awk path that doesn't depend on
+    the model reproducing an exact old_string (the edit_file failure mode
+    that spun out loop_run=498a4d79 turn 5). edit_file/write_file/shell
+    stay registered too."""
+    tools = _write_tier_tools(tmp_path)
+    assert "stream_edit" in tools
+    assert {"edit_file", "write_file", "shell"} <= set(tools)
