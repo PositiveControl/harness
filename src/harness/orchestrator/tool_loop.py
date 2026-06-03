@@ -38,10 +38,8 @@ from harness.orchestrator.hooks import (
     looks_like_ab_fabrication,
 )
 from harness.orchestrator.no_write_streak import (
+    NoSubmitStreakDetector,
     NoWriteStreakDetector,
-)
-from harness.orchestrator.no_write_streak import (
-    build_nudge_text as build_no_write_nudge_text,
 )
 from harness.orchestrator.repeat_detector import RepeatCounter, build_nudge_text
 from harness.persona.banter import BanterStreakTracker, is_banter_prompt
@@ -84,6 +82,12 @@ def _catcher_enabled(name: str) -> bool:
 # these now, but tests + the CLI stream filter + ab_ops eval fixtures
 # import them through `harness.orchestrator.tool_loop` and
 # `harness.orchestrator`.
+# A stall detector armed by the driver per phase: NoWriteStreakDetector in
+# IMPLEMENT ("looking instead of writing"), NoSubmitStreakDetector in
+# ASSESS ("reading instead of deciding"). Both share observe()/nudge()/
+# event_kind, so the loop drives whichever one a phase passed in.
+_StallDetector = NoWriteStreakDetector | NoSubmitStreakDetector
+
 _DUPLICATE_CALL_NUDGE = DUPLICATE_CALL_NUDGE
 _EXHAUSTED_FABRICATION_FALLBACK = EXHAUSTED_FABRICATION_FALLBACK
 _TEASER_RE = TEASER_RE
@@ -918,7 +922,7 @@ def _execute_tool_calls(
     succeeded_tools: set[str],
     attempted_calls: dict[tuple[str, str], int] | None = None,
     repeat_counter: RepeatCounter | None = None,
-    no_write_streak: NoWriteStreakDetector | None = None,
+    no_write_streak: _StallDetector | None = None,
 ) -> bool:
     """Execute the round's tool calls: in-round dedup, duplicate-call
     hook (cross-round), write-tier confirm, dispatch, append tool-role
@@ -1076,10 +1080,10 @@ def _execute_tool_calls(
         # caused loop run 26c39558 to halt on harness-3jo1 with five
         # rounds spent reading and zero spent writing.
         if no_write_streak is not None and no_write_streak.observe(call, result):
-            pending_nudges.append(build_no_write_nudge_text(no_write_streak.streak))
+            pending_nudges.append(no_write_streak.nudge())
             emit(
                 ToolLoopEvent(
-                    kind="no_write_streak_detected",
+                    kind=no_write_streak.event_kind,
                     call=call,
                     round_index=round_idx,
                 )
@@ -1125,7 +1129,7 @@ def run_tool_loop(
     scope_lexicon: tuple[str, ...] = (),
     plan: Plan | None = None,
     inbox: Callable[[], list[ChatMessage]] | None = None,
-    no_write_streak: NoWriteStreakDetector | None = None,
+    no_write_streak: _StallDetector | None = None,
 ) -> ToolLoopResult:
     """Drive a model + tool registry until the model emits a text-only
     reply or `max_rounds` rounds are spent.

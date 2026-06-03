@@ -65,6 +65,7 @@ from harness.orchestrator import ToolLoopEvent, ToolLoopResult, run_tool_loop
 from harness.orchestrator.hooks import EXHAUSTED_FABRICATION_FALLBACK
 from harness.orchestrator.no_write_streak import (
     WRITE_TOOL_NAMES,
+    NoSubmitStreakDetector,
     NoWriteStreakDetector,
 )
 from harness.tools import (
@@ -448,12 +449,18 @@ def _run_one_phase(
         if original_observe is not None:
             original_observe(event)
 
-    # harness-41b3: arm the no-write-streak detector only for IMPLEMENT.
-    # Other phases (ASSESS / WRITE_TEST / VERIFY / CLOSE) legitimately
-    # do read-only work; nudging them toward edit_file would be wrong.
-    # Constructed fresh per phase invocation — the detector holds
-    # per-turn state and must not leak across phases.
-    no_write_streak = NoWriteStreakDetector() if phase is TurnPhase.IMPLEMENT else None
+    # Arm a per-phase stall detector. IMPLEMENT (harness-41b3): no-write
+    # streak — "looking instead of writing". ASSESS (loop_run=ad30d9ad
+    # parked hewc/cw1m on read-without-submitting): no-submit streak —
+    # "reading instead of deciding", nudging toward submit_assessment /
+    # flag_blocked before the round budget halts the phase. Constructed
+    # fresh per phase invocation; the detector holds per-turn state and
+    # must not leak across phases. WRITE_TEST / VERIFY / CLOSE get none.
+    no_write_streak: NoWriteStreakDetector | NoSubmitStreakDetector | None = None
+    if phase is TurnPhase.IMPLEMENT:
+        no_write_streak = NoWriteStreakDetector()
+    elif phase is TurnPhase.ASSESS:
+        no_write_streak = NoSubmitStreakDetector()
     result: ToolLoopResult = run_tool_loop(
         adapter,  # type: ignore[arg-type]  # ModelAdapter satisfies _ToolCapableAdapter at runtime
         messages,

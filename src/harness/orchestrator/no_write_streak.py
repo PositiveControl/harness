@@ -22,6 +22,7 @@ IMPLEMENT.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 from harness.tools.base import ToolCall, ToolResult
 
@@ -95,6 +96,14 @@ class NoWriteStreakDetector:
             return True
         return False
 
+    def nudge(self) -> str:
+        """The user-role nudge for this detector — paired interface with
+        NoSubmitStreakDetector so the tool loop can call `.nudge()` on
+        whichever stall detector a phase armed."""
+        return build_nudge_text(self._streak)
+
+    event_kind: ClassVar[str] = "no_write_streak_detected"
+
 
 # Phrasing mirrors `build_nudge_text` in repeat_detector.py: lead with a
 # bracketed condition, then a concrete (a)(b)(c) menu of escape hatches.
@@ -103,9 +112,13 @@ class NoWriteStreakDetector:
 # on the next round rather than another grep.
 _NUDGE_TEMPLATE = (
     "[NO-WRITE STREAK — {count} consecutive tool calls in IMPLEMENT "
-    "without a single write. The assessment already named what to "
-    "change. Your next reply MUST do one of:]\n"
-    "(a) Call `edit_file` or `write_file` to make the actual change.\n"
+    "without a single SUCCESSFUL write. The assessment already named what "
+    "to change. Your next reply MUST do one of:]\n"
+    "(a) Make the change. If `edit_file` keeps failing to match its "
+    "`old_string` (whitespace/format drift on a large file), switch tools: "
+    "use `stream_edit` (sed/awk, matches by pattern not exact text) or "
+    "`write_file` with the full new file content. Do NOT re-try the same "
+    "edit_file call.\n"
     "(b) Call `submit_implementation_complete` if the work is already "
     "done (run `read_file` first to confirm the file matches your "
     "intent).\n"
@@ -121,9 +134,80 @@ def build_nudge_text(streak: int) -> str:
     return _NUDGE_TEMPLATE.format(count=streak)
 
 
+# --- ASSESS analog: read-without-submitting (harness follow-on) ------
+#
+# loop_run=ad30d9ad parked hewc/cw1m on "assess->halted (no assessment)":
+# the model spent the whole ASSESS budget on outline/read/grep and never
+# called submit_assessment, so the phase halted with no assessment. This
+# is the ASSESS twin of the no-write streak — "looking instead of
+# deciding" — and gets the same mid-phase nudge treatment.
+
+# Tools that count as ASSESS progress: emitting the phase's decision.
+# Succeeding on either resets the streak.
+ASSESS_PROGRESS_TOOLS: frozenset[str] = frozenset({"submit_assessment", "flag_blocked"})
+
+DEFAULT_NO_SUBMIT_STREAK_THRESHOLD: int = 3
+
+_SUBMIT_NUDGE_TEMPLATE = (
+    "[NO-SUBMIT STREAK — {count} consecutive read-only calls in ASSESS "
+    "without submitting. You have enough context. Your next reply MUST "
+    "do one of:]\n"
+    "(a) Call `submit_assessment` with current_state / gap / approach — "
+    "you do not need to read more files to write a gap analysis.\n"
+    "(b) Call `flag_blocked` if the thing this bead asks you to verify or "
+    "fix does not exist in the workspace yet (name the missing artifact).\n"
+    "The phase halts when the round budget runs out, so submit now."
+)
+
+
+def build_submit_nudge_text(streak: int) -> str:
+    """Nudge appended when the model has read N times in ASSESS without
+    calling submit_assessment / flag_blocked."""
+    return _SUBMIT_NUDGE_TEMPLATE.format(count=streak)
+
+
+@dataclass
+class NoSubmitStreakDetector:
+    """ASSESS twin of NoWriteStreakDetector: counts tool calls that aren't
+    the phase's decision action (submit_assessment / flag_blocked) and
+    fires once when the streak crosses threshold. Same one-shot, same
+    fire-on-first-cross contract; `.nudge()` returns the submit-now text.
+
+    Constructed and armed only by the driver's ASSESS phase."""
+
+    threshold: int = DEFAULT_NO_SUBMIT_STREAK_THRESHOLD
+    _streak: int = 0
+    _fired: bool = False
+
+    @property
+    def streak(self) -> int:
+        return self._streak
+
+    def observe(self, call: ToolCall, result: ToolResult) -> bool:
+        if call.name in ASSESS_PROGRESS_TOOLS and result.success:
+            self._streak = 0
+            return False
+        if self._fired:
+            return False
+        self._streak += 1
+        if self._streak >= self.threshold:
+            self._fired = True
+            return True
+        return False
+
+    def nudge(self) -> str:
+        return build_submit_nudge_text(self._streak)
+
+    event_kind: ClassVar[str] = "no_submit_streak_detected"
+
+
 __all__ = [
+    "ASSESS_PROGRESS_TOOLS",
+    "DEFAULT_NO_SUBMIT_STREAK_THRESHOLD",
     "DEFAULT_NO_WRITE_STREAK_THRESHOLD",
     "WRITE_TOOL_NAMES",
+    "NoSubmitStreakDetector",
     "NoWriteStreakDetector",
     "build_nudge_text",
+    "build_submit_nudge_text",
 ]

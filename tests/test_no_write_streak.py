@@ -10,11 +10,20 @@ in test_tool_loop.py."""
 from __future__ import annotations
 
 from harness.orchestrator.no_write_streak import (
+    DEFAULT_NO_SUBMIT_STREAK_THRESHOLD,
     DEFAULT_NO_WRITE_STREAK_THRESHOLD,
+    NoSubmitStreakDetector,
     NoWriteStreakDetector,
     build_nudge_text,
 )
 from harness.tools.base import ToolCall, ToolResult
+
+
+def _submit(name: str = "submit_assessment") -> tuple[ToolCall, ToolResult]:
+    return (
+        ToolCall(name=name, arguments={}),
+        ToolResult(tool_name=name, output="recorded", success=True),
+    )
 
 
 def _read(path: str = "x.txt") -> tuple[ToolCall, ToolResult]:
@@ -191,3 +200,63 @@ def test_nudge_text_includes_count() -> None:
     assert "(c)" in text
     assert "edit_file" in text
     assert "submit_implementation_complete" in text
+
+
+# --- NoSubmitStreakDetector (ASSESS twin, loop_run=ad30d9ad) ----------
+
+
+def test_no_submit_default_threshold_is_three() -> None:
+    assert DEFAULT_NO_SUBMIT_STREAK_THRESHOLD == 3
+    assert NoSubmitStreakDetector().threshold == 3
+
+
+def test_no_submit_fires_at_threshold() -> None:
+    """Three read-only calls in ASSESS without submitting → fire once."""
+    det = NoSubmitStreakDetector()
+    read_call, read_result = _read("game.js")
+    assert det.observe(read_call, read_result) is False  # 1
+    assert det.observe(read_call, read_result) is False  # 2
+    assert det.observe(read_call, read_result) is True  # 3 → fire
+    # one-shot
+    assert det.observe(read_call, read_result) is False
+
+
+def test_no_submit_reset_by_submit_assessment() -> None:
+    """A successful submit_assessment is ASSESS progress — resets."""
+    det = NoSubmitStreakDetector()
+    read_call, read_result = _read("game.js")
+    det.observe(read_call, read_result)
+    det.observe(read_call, read_result)
+    assert det.streak == 2
+    det.observe(*_submit("submit_assessment"))
+    assert det.streak == 0
+
+
+def test_no_submit_reset_by_flag_blocked() -> None:
+    """flag_blocked is also ASSESS progress (premise-unmet decision)."""
+    det = NoSubmitStreakDetector()
+    read_call, read_result = _read("game.js")
+    det.observe(read_call, read_result)
+    det.observe(*_submit("flag_blocked"))
+    assert det.streak == 0
+
+
+def test_no_submit_nudge_text_and_event_kind() -> None:
+    """The nudge steers to submit_assessment / flag_blocked; event_kind
+    distinguishes it from the write streak in the drive log."""
+    det = NoSubmitStreakDetector()
+    text = det.nudge()
+    assert "submit_assessment" in text
+    assert "flag_blocked" in text
+    assert det.event_kind == "no_submit_streak_detected"
+
+
+def test_no_write_detector_exposes_nudge_and_event_kind() -> None:
+    """Paired interface: NoWriteStreakDetector.nudge() matches
+    build_nudge_text, event_kind is the write-streak marker, and the
+    nudge now points at stream_edit as the edit_file fallback."""
+    det = NoWriteStreakDetector()
+    det._streak = DEFAULT_NO_WRITE_STREAK_THRESHOLD
+    assert det.nudge() == build_nudge_text(DEFAULT_NO_WRITE_STREAK_THRESHOLD)
+    assert det.event_kind == "no_write_streak_detected"
+    assert "stream_edit" in det.nudge()
