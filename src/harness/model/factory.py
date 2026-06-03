@@ -28,3 +28,27 @@ def make_adapter(name: AdapterName) -> ModelAdapter:
 
         return VllmAdapter()
     raise ValueError(f"Unknown adapter: {name!r}")
+
+
+# Window of the gx10-served Qwen3-VL VLM (max_model_len). Smaller than the
+# VllmAdapter 32k default, so the budget clamp would otherwise over-promise.
+_VISION_CONTEXT_WINDOW = 16_384
+
+
+def make_vision_adapter(base_url: str | None) -> ModelAdapter | None:
+    """Resolve the advisory browser-QA vision adapter (harness-ke4hx).
+
+    A SEPARATE endpoint from the drive's reasoning model — a vLLM server
+    hosting a VLM (gx10 Qwen3-VL). Returns None when `base_url` is unset
+    (vision-QA disabled), so callers degrade gracefully without a vision
+    endpoint. Construction is lazy/network-free (VllmAdapter contract), so
+    an unreachable endpoint surfaces only on first use, where the caller
+    treats it as a skip rather than a drive failure.
+
+    `context_window` is pinned to the VLM's `max_model_len`, not the
+    adapter's 32k default, so the output-budget clamp stays honest."""
+    if not base_url:
+        return None
+    from harness.model.vllm import VllmAdapter
+
+    return VllmAdapter(base_url=base_url, context_window=_VISION_CONTEXT_WINDOW)

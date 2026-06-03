@@ -17,10 +17,26 @@ import pytest
 from harness.driver.smoke_runner import (
     _DEFAULT_SETTLE_MS,
     _blank_canvas_check_enabled,
+    _capture_screenshot,
     _read_assert,
+    _read_path_arg,
     _read_setup,
     _settle_ms,
 )
+
+
+class _FakePage:
+    """Stub playwright Page exposing just .screenshot(path=...)."""
+
+    def __init__(self, *, raises: bool = False) -> None:
+        self.raises = raises
+        self.shots: list[str] = []
+
+    def screenshot(self, *, path: str) -> None:
+        if self.raises:
+            raise RuntimeError("capture boom")
+        Path(path).write_bytes(b"\x89PNG fake")
+        self.shots.append(path)
 
 
 def test_settle_ms_default_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -127,3 +143,47 @@ def test_read_setup_missing_file_is_loud(tmp_path: Path) -> None:
     assert source is None
     assert error is not None
     assert "unreadable" in error
+
+
+# ---- harness-ke4hx.1: screenshot path arg + capture --------------------
+
+
+def test_read_path_arg_absent_returns_none() -> None:
+    assert _read_path_arg(["prog", "index.html"], "screenshot") is None
+
+
+def test_read_path_arg_absolute_passes_through() -> None:
+    p = _read_path_arg(["prog", "--screenshot=/srv/x/out.png"], "screenshot")
+    assert p == Path("/srv/x/out.png")
+
+
+def test_read_path_arg_relative_resolves_to_cwd() -> None:
+    p = _read_path_arg(["prog", "--screenshot=shots/out.png"], "screenshot")
+    assert p is not None
+    assert p.is_absolute()
+    assert p.name == "out.png"
+
+
+def test_capture_screenshot_none_path_is_noop() -> None:
+    page = _FakePage()
+    _capture_screenshot(page, None, "x")  # must not raise / not call page
+    assert page.shots == []
+
+
+def test_capture_screenshot_writes_and_makes_parent(tmp_path: Path) -> None:
+    page = _FakePage()
+    out = tmp_path / "nested" / "dir" / "shot.png"
+    _capture_screenshot(page, out, "after")
+    assert out.is_file()
+    assert page.shots == [str(out)]
+
+
+def test_capture_screenshot_swallows_errors(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A capture failure is best-effort — it logs a skip and must NOT
+    propagate (never turns a clean load red)."""
+    page = _FakePage(raises=True)
+    _capture_screenshot(page, tmp_path / "shot.png", "before")
+    err = capsys.readouterr().err
+    assert "screenshot (before) skipped" in err

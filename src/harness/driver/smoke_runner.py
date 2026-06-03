@@ -175,6 +175,31 @@ def _read_file_arg(argv: list[str], flag: str, label: str) -> tuple[str | None, 
         return None, f"smoke-execute: {label} script unreadable ({path}): {exc}"
 
 
+def _read_path_arg(argv: list[str], flag: str) -> Path | None:
+    """Resolve an optional ``--<flag>=<path>`` OUTPUT path. Unlike
+    ``_read_file_arg`` the target need not exist — we write it. Relative
+    paths resolve against CWD. harness-ke4hx.1 (vision-QA screenshots)."""
+    prefix = f"--{flag}="
+    arg = next((a for a in argv[1:] if a.startswith(prefix)), None)
+    if arg is None:
+        return None
+    p = Path(arg[len(prefix) :])
+    return p if p.is_absolute() else (Path.cwd() / p).resolve()
+
+
+def _capture_screenshot(page: Any, path: Path | None, label: str) -> None:
+    """Best-effort PNG capture to ``path``. A screenshot failure must
+    never turn a clean load red — mirrors the blank-canvas best-effort
+    policy. No-op when ``path`` is None (flag absent). harness-ke4hx.1."""
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(path))
+    except Exception as exc:
+        print(f"smoke-execute: screenshot ({label}) skipped: {exc}", file=sys.stderr)
+
+
 def _read_setup(argv: list[str]) -> tuple[str | None, str | None]:
     """Resolve the optional ``--setup=<file>`` scenario (run after load,
     before the settle window — drives conditionally-spawned entities and
@@ -206,11 +231,20 @@ def main(argv: list[str]) -> int:
     if assert_error is not None:
         print(assert_error, file=sys.stderr)
         return 1
+    # harness-ke4hx.1: opt-in screenshots for advisory vision-QA.
+    #   --screenshot=        post-settle final-state shot
+    #   --screenshot-before= after load, BEFORE setup drives input
+    #   --screenshot-after=  post-settle (alias of --screenshot; lets a
+    #                        before/after pair use symmetric names)
+    shot_path = _read_path_arg(argv, "screenshot")
+    shot_before = _read_path_arg(argv, "screenshot-before")
+    shot_after = _read_path_arg(argv, "screenshot-after")
     if not positionals:
         print(
             "usage: python -m harness.driver.smoke_runner "
             "[--no-blank-canvas] [--setup=<scenario.js>] "
-            "[--assert=<checks.js>] <index.html>",
+            "[--assert=<checks.js>] [--screenshot[-before|-after]=<out.png>] "
+            "<index.html>",
             file=sys.stderr,
         )
         return 1
@@ -250,6 +284,11 @@ def main(argv: list[str]) -> int:
                 page.on("console", _on_console)
                 page.on("pageerror", _on_pageerror)
                 page.goto(f"file://{index_path}", wait_until="load")
+                # harness-ke4hx.1: pre-interaction shot — captured after
+                # load but BEFORE setup drives input, so the advisory
+                # vision-QA can diff it against the post-settle shot to
+                # judge whether an interaction changed the visible state.
+                _capture_screenshot(page, shot_before, "before")
                 # harness-5vn6t: optional scenario. Exercises
                 # code paths that don't run on a bare load — conditionally
                 # spawned entities (cops, bullets, peds) whose render/init
@@ -265,6 +304,13 @@ def main(argv: list[str]) -> int:
                     except Exception as exc:  # surface any setup throw as a failure
                         errors.append(f"setup-scenario error: {exc}")
                 page.wait_for_timeout(_settle_ms())
+                # harness-ke4hx.1: post-settle final-state shots. Captured
+                # regardless of console/page errors so the advisory QA can
+                # see a broken state too. Best-effort — never fails the
+                # smoke. `--screenshot` and `--screenshot-after` are
+                # aliases (symmetric before/after naming).
+                _capture_screenshot(page, shot_path, "screenshot")
+                _capture_screenshot(page, shot_after, "after")
                 # harness-u1il5: behavioral assertions, post-settle. The
                 # setup scenario drove input (synthetic KeyboardEvents,
                 # state pokes) before the settle window; now the game loop

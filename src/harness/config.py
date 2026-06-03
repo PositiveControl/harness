@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     # pairing for the default Qwen2.5 family: mlx-community/Qwen2.5-
     # 0.5B-Instruct-4bit. None = disabled (MLX default).
     mlx_draft_model_repo: str | None = None
+    # Vision model endpoint for advisory browser-QA during drives
+    # (harness-ke4hx). A SEPARATE vLLM endpoint from the drive's
+    # reasoning model — points at the gx10 Qwen3-VL VLM. None = vision-QA
+    # disabled (the smoke gate runs exactly as before). Set via
+    # HARNESS_VISION_BASE_URL, e.g. http://gx10-5fb9:8001/v1. The served
+    # model's window is 16384, smaller than the adapter's 32k default, so
+    # make_vision_adapter pins context_window accordingly.
+    vision_base_url: str | None = None
     # ab (airton_b) data-plane isolation. ab wraps bd as its backing
     # store; its beads DB lives outside the repo so personal tasks
     # don't leak into the harness git history, get a different backup
