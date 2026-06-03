@@ -19,8 +19,11 @@ from pathlib import Path
 import yaml
 from adapters.aider import AiderAdapter
 from adapters.base import Adapter, Endpoint, RunArtifacts
+from adapters.goose import GooseAdapter
+from adapters.opencode import OpencodeAdapter
 from scorers.base import Scorer, Scores
 from scorers.builds import BuildsScorer
+from scorers.cost import CostScorer
 from scorers.feature_checklist import FeatureChecklistScorer
 from scorers.runs_headless import RunsHeadlessScorer
 from store import ResultsStore, RunRecord
@@ -30,11 +33,14 @@ ROOT = Path(__file__).resolve().parent
 # Registries. Add a framework / metric by adding a line here.
 ADAPTERS: dict[str, type[Adapter]] = {
     "aider": AiderAdapter,
+    "opencode": OpencodeAdapter,
+    "goose": GooseAdapter,
 }
 SCORERS: dict[str, type[Scorer]] = {
     "builds": BuildsScorer,
     "runs_headless": RunsHeadlessScorer,
     "feature_checklist": FeatureChecklistScorer,
+    "cost": CostScorer,
 }
 
 

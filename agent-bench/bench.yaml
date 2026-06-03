@@ -17,7 +17,7 @@ store_db: "results/bench.sqlite3"
 
 frameworks:
   - aider
+  - opencode
+  - goose
   # - openhands      # TODO
-  # - opencode       # TODO
-  # - goose          # TODO
   # - mini_swe       # TODO
