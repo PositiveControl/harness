@@ -17,6 +17,7 @@ from pathlib import Path
 from harness.driver.fsm_turn import (
     _READ_STRATEGY_HINT,
     _read_only_tools,
+    _resolve_assess_outcome,
     _write_tier_tools,
     phase_instructions,
 )
@@ -27,6 +28,7 @@ from harness.driver.planner import (
     _PlannerState,
 )
 from harness.driver.turn_fsm import TurnPhase
+from harness.tools.turn_phase_meta import FlagBlockedTool, SubmitAssessmentTool
 
 # --- rosters expose outline ---------------------------------------
 
@@ -84,3 +86,40 @@ def test_write_tier_tools_include_stream_edit(tmp_path: Path) -> None:
     tools = _write_tier_tools(tmp_path)
     assert "stream_edit" in tools
     assert {"edit_file", "write_file", "shell"} <= set(tools)
+
+
+# --- ASSESS premise-unmet precedence (harness-u1il5 follow-on) -------
+
+
+def test_assess_resolver_flag_blocked_wins_over_assessment() -> None:
+    """When BOTH flag_blocked and submit_assessment were called in
+    ASSESS, the premise-unmet signal takes precedence — the model
+    decided the bead's target doesn't exist, so we park rather than
+    drive IMPLEMENT against a false premise."""
+    assess = SubmitAssessmentTool()
+    assess.call(
+        current_state="game.js has a keydown listener for arrows only",
+        gap="bead wants fire (KeyJ) gated foot-only",
+        approach="add an edge-triggered KeyJ branch",
+    )
+    blocked = FlagBlockedTool()
+    blocked.call(
+        missing="fireWeapon()/KeyJ handler",
+        reason="no fire handler exists in game.js to gate",
+    )
+    outcome = _resolve_assess_outcome(assess, blocked)
+    assert outcome.kind == "premise_unmet"
+    assert outcome.payload["missing"] == "fireWeapon()/KeyJ handler"
+
+
+def test_assess_resolver_falls_through_to_assessment_when_not_blocked() -> None:
+    """No flag_blocked → normal assessment_submitted outcome (the escape
+    is opt-in; the common path is unaffected)."""
+    assess = SubmitAssessmentTool()
+    assess.call(
+        current_state="x" * 30,
+        gap="y" * 30,
+        approach="z" * 30,
+    )
+    outcome = _resolve_assess_outcome(assess, FlagBlockedTool())
+    assert outcome.kind == "assessment_submitted"

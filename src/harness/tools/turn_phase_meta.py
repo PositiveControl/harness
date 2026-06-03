@@ -177,6 +177,81 @@ class SubmitAssessmentTool:
 
 
 @dataclass
+class FlagBlockedTool:
+    """ASSESS escape hatch: the bead's PREMISE is unmet — the thing it
+    asks to verify/fix doesn't exist because an upstream dependency never
+    landed it (harness-u1il5 class). Calling this routes ASSESS straight
+    to a parked-and-flagged halt instead of burning the retry budget on a
+    futile premise.
+
+    Deliberately narrow so the model can't use it to dodge hard work:
+      - `missing` must name a CONCRETE, operator-checkable absent artifact
+        (a function / file / symbol / keycode the bead presupposes) — not
+        a vague "this is hard."
+      - `reason` explains why that absence blocks the bead.
+    The outcome is a PARK (operator review with the `blocked` flag), never
+    a close — so a wrong "blocked" costs only an operator glance, while a
+    right one saves three futile attempts."""
+
+    captured: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="flag_blocked",
+            description=(
+                "Use ONLY when this bead cannot be done because a concrete "
+                "precondition is absent — the function / file / symbol / "
+                "input handler the bead asks you to verify or fix does not "
+                "exist in the workspace yet (an upstream bead was supposed "
+                "to create it). This PARKS the bead for operator review; it "
+                "does NOT close it and is NOT a way to skip difficult work. "
+                "If the thing exists and is merely hard to change, do the "
+                "work instead. Name the missing artifact concretely."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "missing": {
+                        "type": "string",
+                        "description": (
+                            "The concrete absent precondition — a named "
+                            "function, file, symbol, or keycode the bead "
+                            "presupposes but that is NOT present in the "
+                            "workspace. Operator-checkable. "
+                            f"Min {_MIN_IDENTIFIER_CHARS} chars."
+                        ),
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": (
+                            "Why that absence blocks this bead — e.g. 'the "
+                            "bead verifies fire-key gating but no fire "
+                            "handler exists to gate'. "
+                            f"Min {_MIN_FIELD_CHARS} chars."
+                        ),
+                    },
+                },
+                "required": ["missing", "reason"],
+            },
+            tier="read",
+            display_name="Flag blocked (premise unmet)",
+        )
+
+    def call(self, *, missing: str, reason: str) -> str:
+        ms = _require_nonempty("missing", missing, min_chars=_MIN_IDENTIFIER_CHARS)
+        rs = _require_nonempty("reason", reason)
+        self.captured.append({"missing": ms, "reason": rs})
+        return f"flagged blocked: {ms}"
+
+    def latest(self) -> dict[str, str] | None:
+        """Most recent capture, or None when flag_blocked wasn't called
+        this phase. The driver checks this BEFORE submit_assessment so a
+        premise-unmet signal short-circuits the normal ASSESS exit."""
+        return self.captured[-1] if self.captured else None
+
+
+@dataclass
 class SkipTestPhaseTool:
     """Operator escape hatch from WRITE_TEST. Captures a non-empty
     reason for skipping the failing-test gate; the FSM transitions
@@ -339,6 +414,7 @@ class SubmitImplementationCompleteTool:
 
 
 __all__ = [
+    "FlagBlockedTool",
     "SkipTestPhaseTool",
     "SubmitAssessmentTool",
     "SubmitFailingTestTool",

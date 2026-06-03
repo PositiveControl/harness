@@ -13,6 +13,7 @@ import pytest
 
 from harness.driver.turn_fsm import (
     DEFAULT_PHASE_BUDGETS,
+    PREMISE_UNMET_REASON_PREFIX,
     PhaseOutcome,
     TurnPhase,
     assessment_skipped_tdd,
@@ -24,6 +25,7 @@ from harness.driver.turn_fsm import (
     green_test_outcome,
     implement_complete,
     phase_no_progress,
+    premise_unmet,
     verify_failed,
     verify_passed,
 )
@@ -131,6 +133,22 @@ def test_assess_no_progress_halts() -> None:
     )
     assert state == TurnPhase.HALTED
     assert "halted" in name
+    assert fsm.is_terminal()
+
+
+def test_premise_unmet_halts_from_assess() -> None:
+    """harness-u1il5 follow-on: ASSESS emits premise_unmet (flag_blocked
+    — the thing to verify/fix doesn't exist) → HALTED. The detail carries
+    the PREMISE_UNMET_REASON_PREFIX so the loop can park-without-retry."""
+    fsm = build_turn_fsm()
+    outcome = premise_unmet(
+        missing="fireWeapon() / KeyJ handler",
+        reason="bead verifies fire-key gating but no fire handler exists",
+    )
+    assert outcome.detail.startswith(PREMISE_UNMET_REASON_PREFIX)
+    state, name = fsm.handle(outcome)
+    assert state == TurnPhase.HALTED
+    assert "premise unmet" in name
     assert fsm.is_terminal()
 
 

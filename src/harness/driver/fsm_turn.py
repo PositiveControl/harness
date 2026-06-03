@@ -56,6 +56,7 @@ from harness.driver.turn_fsm import (
     green_test_outcome,
     implement_complete,
     phase_no_progress,
+    premise_unmet,
     verify_failed,
     verify_passed,
 )
@@ -91,6 +92,7 @@ from harness.tools import (
     seed_builtins_into,
 )
 from harness.tools.turn_phase_meta import (
+    FlagBlockedTool,
     SkipTestPhaseTool,
     SubmitAssessmentTool,
     SubmitFailingTestTool,
@@ -193,6 +195,7 @@ def _build_phase_registry(
     skip_test_phase: SkipTestPhaseTool,
     submit_failing_test: SubmitFailingTestTool,
     submit_implementation_complete: SubmitImplementationCompleteTool,
+    flag_blocked: FlagBlockedTool,
 ) -> ToolRegistry:
     """Construct the phase-scoped tool registry. Each phase has its
     own narrow roster — the model literally cannot call `edit_file`
@@ -215,8 +218,11 @@ def _build_phase_registry(
 
     if phase == TurnPhase.ASSESS:
         # Read-tier only + submit_assessment. No writes, no shell —
-        # ASSESS is a pure orient/decide phase.
+        # ASSESS is a pure orient/decide phase. flag_blocked is the
+        # escape hatch when the bead's premise is unmet (the thing to
+        # verify/fix doesn't exist) — checked before submit_assessment.
         phase_tools["submit_assessment"] = submit_assessment
+        phase_tools["flag_blocked"] = flag_blocked
     elif phase == TurnPhase.WRITE_TEST:
         # Allow write_file (for the test file) + shell (to run the
         # test and capture failure output). No edit_file — writing
@@ -286,7 +292,15 @@ _PHASE_INSTRUCTIONS: Mapping[TurnPhase, str] = {
         "  - gap: how that differs from the acceptance criteria\n"
         "  - approach: how you plan to close the gap\n"
         "Set tdd_applicable=false ONLY when the issue genuinely admits "
-        "no unit test (UI tweak, docs); justify in the approach field. "
+        "no unit test (UI tweak, docs); justify in the approach field.\n\n"
+        "BLOCKED ESCAPE: if this bead asks you to verify or fix something "
+        "that DOES NOT EXIST in the workspace yet — e.g. 'verify the fire-"
+        "key gating' when there is no fire handler at all because an "
+        "upstream bead never built it — call `flag_blocked(missing, reason)` "
+        "instead of submit_assessment. Name the concrete absent artifact "
+        "(function / file / symbol / keycode). This parks the bead for an "
+        "operator. Use it ONLY for a genuinely-absent precondition — if the "
+        "thing exists and is merely hard to change, do the work.\n\n"
         "Do NOT modify files in this phase — you don't have edit tools." + _READ_STRATEGY_HINT
     ),
     TurnPhase.WRITE_TEST: (
@@ -457,7 +471,14 @@ def _run_one_phase(
 
 def _resolve_assess_outcome(
     submit_assessment: SubmitAssessmentTool,
+    flag_blocked: FlagBlockedTool,
 ) -> PhaseOutcome:
+    # flag_blocked wins over submit_assessment: a premise-unmet signal
+    # short-circuits the normal ASSESS exit so the loop parks-and-flags
+    # rather than driving IMPLEMENT against a precondition that's absent.
+    blocked = flag_blocked.latest()
+    if blocked is not None:
+        return premise_unmet(missing=str(blocked["missing"]), reason=str(blocked["reason"]))
     latest = submit_assessment.latest()
     if latest is None:
         return phase_no_progress(TurnPhase.ASSESS, reason="no submit_assessment call")
@@ -658,6 +679,7 @@ def run_fsm_turn(
     skip_test_phase_tool = SkipTestPhaseTool()
     submit_failing_test = SubmitFailingTestTool()
     submit_implementation_complete = SubmitImplementationCompleteTool()
+    flag_blocked = FlagBlockedTool()
 
     fsm = build_turn_fsm(initial=initial_phase)
     last_reply = ""
@@ -668,6 +690,11 @@ def run_fsm_turn(
     last_shell_cmd: str | None = None
     captured_assessment: dict[str, Any] | None = prior_assessment
     captured_test_cmd: str | None = prior_test_cmd
+    # When ASSESS emits premise_unmet, stash its marked detail so the
+    # HALTED reason carries the PREMISE_UNMET_REASON_PREFIX (the trace-
+    # derived reason would only carry the transition name). The loop
+    # keys off that prefix to park-and-flag instead of retrying.
+    premise_unmet_reason: str | None = None
 
     while not fsm.is_terminal():
         phase = fsm.state
@@ -682,6 +709,7 @@ def run_fsm_turn(
             skip_test_phase=skip_test_phase_tool,
             submit_failing_test=submit_failing_test,
             submit_implementation_complete=submit_implementation_complete,
+            flag_blocked=flag_blocked,
         )
         handoff = handoff_builder(phase, captured_assessment, captured_test_cmd)
         user_prompt = _PHASE_USER_PROMPTS.get(phase, "Proceed with this phase.")
@@ -718,6 +746,7 @@ def run_fsm_turn(
             skip_test_phase=skip_test_phase_tool,
             submit_failing_test=submit_failing_test,
             submit_implementation_complete=submit_implementation_complete,
+            flag_blocked=flag_blocked,
             succeeded_tools=execution.succeeded_tools,
             bd=bd,
             issue_id=current_issue_id,
@@ -747,6 +776,8 @@ def run_fsm_turn(
             captured_assessment = dict(outcome.payload)
         if outcome.kind == "failing_test_submitted":
             captured_test_cmd = str(outcome.payload.get("test_cmd", ""))
+        if outcome.kind == "premise_unmet":
+            premise_unmet_reason = outcome.detail
 
         try:
             _new_state, _name = fsm.handle(outcome)
@@ -778,6 +809,10 @@ def run_fsm_turn(
     # outcome kind. The trace always has at least one entry once we've
     # entered the loop; force() also writes to it.
     reason = _halt_reason_from_trace(fsm.trace) or "halted (no transitions taken)"
+    if premise_unmet_reason is not None:
+        # Premise-unmet halt: carry the marked reason verbatim so the loop
+        # parks-and-flags rather than retrying (PREMISE_UNMET_REASON_PREFIX).
+        reason = premise_unmet_reason
     if last_reply.strip() == EXHAUSTED_FABRICATION_FALLBACK.strip():
         reason = f"fabrication_fallback fired during {fsm.state.value}"
     return FsmTurnResult(
@@ -799,6 +834,7 @@ def _resolve_phase_outcome(
     skip_test_phase: SkipTestPhaseTool,
     submit_failing_test: SubmitFailingTestTool,
     submit_implementation_complete: SubmitImplementationCompleteTool,
+    flag_blocked: FlagBlockedTool,
     succeeded_tools: set[str],
     bd: DriverBd,
     issue_id: str,
@@ -807,7 +843,7 @@ def _resolve_phase_outcome(
     workspace: Path,
 ) -> PhaseOutcome:
     if phase == TurnPhase.ASSESS:
-        return _resolve_assess_outcome(submit_assessment)
+        return _resolve_assess_outcome(submit_assessment, flag_blocked)
     if phase == TurnPhase.WRITE_TEST:
         return _resolve_write_test_outcome(
             submit_failing_test, skip_test_phase, workspace=workspace

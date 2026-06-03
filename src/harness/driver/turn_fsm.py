@@ -189,6 +189,31 @@ def phase_no_progress(phase: TurnPhase, *, reason: str) -> PhaseOutcome:
     )
 
 
+# Marker prefix on a halt reason that signals the bead's PREMISE is unmet
+# — the thing the bead asks to verify/fix doesn't exist yet because an
+# upstream dependency never landed it. The loop keys off this prefix to
+# PARK the issue immediately (with the `blocked` flag) instead of burning
+# the full retry budget on attempts that face the identical false premise
+# every time (loop_run=498a4d79: §15a-iii gating parked after 3 attempts
+# trying to gate fire/walk/weapon inputs that §9b-i/§10 closed blind).
+PREMISE_UNMET_REASON_PREFIX = "premise unmet:"
+
+
+def premise_unmet(*, missing: str, reason: str) -> PhaseOutcome:
+    """ASSESS determined the bead can't be done because a concrete
+    precondition is absent (a named function/file/symbol the bead's work
+    presupposes). Routes ASSESS straight to HALTED with a marked reason so
+    the loop parks-and-flags instead of retrying a futile premise.
+
+    `missing` is the concrete absent artifact (operator-checkable);
+    `reason` is the one-line explanation of why that blocks the bead."""
+    return PhaseOutcome(
+        kind="premise_unmet",
+        detail=f"{PREMISE_UNMET_REASON_PREFIX} {missing} — {reason[:140]}",
+        payload={"missing": missing, "reason": reason},
+    )
+
+
 def verify_passed(*, verify_summary: str = "") -> PhaseOutcome:
     return PhaseOutcome(
         kind="verify_passed",
@@ -251,6 +276,12 @@ def _default_transitions() -> tuple[Transition[TurnPhase, PhaseOutcome], ...]:
             TurnPhase.HALTED,
             guard=_kind("phase_no_progress"),
             name="assess->halted (no assessment)",
+        ),
+        Transition(
+            TurnPhase.ASSESS,
+            TurnPhase.HALTED,
+            guard=_kind("premise_unmet"),
+            name="assess->halted (premise unmet)",
         ),
         # WRITE_TEST exits
         Transition(
@@ -349,6 +380,7 @@ def build_turn_fsm(
 
 __all__ = [
     "DEFAULT_PHASE_BUDGETS",
+    "PREMISE_UNMET_REASON_PREFIX",
     "_TERMINAL_PHASES",
     "PhaseOutcome",
     "TurnPhase",
@@ -361,6 +393,7 @@ __all__ = [
     "green_test_outcome",
     "implement_complete",
     "phase_no_progress",
+    "premise_unmet",
     "verify_failed",
     "verify_passed",
 ]

@@ -76,6 +76,7 @@ from harness.driver.precommit_verify_hook import (
     make_pre_close_verify_hook,
 )
 from harness.driver.state import LoopRunState
+from harness.driver.turn_fsm import PREMISE_UNMET_REASON_PREFIX
 from harness.driver.workspace_guard import (
     DEFAULT_SCRATCH_PATTERNS,
     WorkspaceTooBigError,
@@ -890,6 +891,39 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 reason = f"{reason}; reopened unverified model-close"
 
             log(f"turn {state.turns_used}: {current.id} attempt={attempt} FAIL ({reason})")
+
+            # harness-u1il5 follow-on: a premise-unmet halt (ASSESS called
+            # flag_blocked — the thing the bead asks to verify/fix doesn't
+            # exist because an upstream dependency never landed it) is not
+            # retryable: every attempt faces the identical false premise.
+            # Park-and-flag immediately instead of burning the retry budget
+            # (loop_run=498a4d79: §15a-iii gating parked after 3 futile
+            # attempts trying to gate inputs that §9b-i/§10 closed blind).
+            if reason.startswith(PREMISE_UNMET_REASON_PREFIX):
+                log(
+                    f"turn {state.turns_used}: {current.id} PREMISE_UNMET — "
+                    f"parking without retry ({reason})"
+                )
+                if config.skip_on_max_attempts:
+                    _park_issue(bd, state, current_id=current.id, reason=reason, log=log)
+                    _post_park_housekeeping(
+                        config,
+                        state,
+                        issue_start_files.pop(current.id, set()),
+                        last_green,
+                        default_verify_steps,
+                        log,
+                    )
+                    _save_state(state, config.workspace)
+                    continue
+                return _exit_halted(
+                    bd,
+                    state,
+                    current_id=current.id,
+                    reason=reason,
+                    workspace=config.workspace,
+                    log=log,
+                )
 
             if attempt < config.max_attempts_per_issue:
                 state.last_failure[current.id] = reason

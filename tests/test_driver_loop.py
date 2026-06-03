@@ -1098,6 +1098,58 @@ def test_run_loop_halts_after_max_attempts_default_is_three(
     assert result.turns_used == 3, "default cap should have allowed 3 attempts"
 
 
+def test_run_loop_parks_premise_unmet_without_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-u1il5 follow-on: a premise-unmet halt (ASSESS flag_blocked
+    — the bead's target doesn't exist) is not retryable. The loop must
+    park it on the FIRST attempt instead of burning the full 3-attempt
+    budget on an identical false premise each time. Pins turns_used == 1
+    (not 3) and the parked-with-reason flag."""
+    from harness.driver.turn_fsm import PREMISE_UNMET_REASON_PREFIX
+
+    issue_a = _issue("harness-a", title="A", status="open")
+    issue_b = _issue("harness-b", title="B", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a, issue_b], [issue_a, issue_b], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-b": issue_b,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    premise_reason = f"{PREMISE_UNMET_REASON_PREFIX} fireWeapon()/KeyJ handler — no fire handler"
+    calls: list[str] = []
+
+    def fake_fsm_turn(*, current_issue: Any, **_kwargs: Any) -> tuple[bool, str, str, None]:
+        calls.append(current_issue.id)
+        if current_issue.id == "harness-a":
+            return False, premise_reason, "", None
+        bd.flip_closed("harness-b")
+        return True, "", "done", None
+
+    monkeypatch.setattr("harness.driver.loop._run_fsm_turn_via_driver", fake_fsm_turn)
+
+    # max_attempts_per_issue defaults to 3 — the premise-unmet park must
+    # fire on attempt 1, so A is driven exactly once before rotating to B.
+    result = run_loop(
+        _FakeAdapter(),  # type: ignore[arg-type]
+        bd,  # type: ignore[arg-type]
+        _config(tmp_path, max_turns=10, use_fsm=True),
+    )
+
+    assert result.exit_reason == "partial"
+    assert result.parked_issues == ["harness-a"]
+    assert result.closed == ["harness-b"]
+    # A driven once (parked without retry), B driven once (closed).
+    assert calls == ["harness-a", "harness-b"]
+    flagged = [r for (i, r) in bd.log.human_flags if i == "harness-a"]
+    assert len(flagged) == 1
+    assert flagged[0].startswith("drive parked after max attempts")
+
+
 # --- exhaustion -----------------------------------------------------
 
 

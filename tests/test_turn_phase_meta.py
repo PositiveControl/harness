@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from harness.tools.turn_phase_meta import (
+    FlagBlockedTool,
     SkipTestPhaseTool,
     SubmitAssessmentTool,
     SubmitFailingTestTool,
@@ -192,3 +193,48 @@ def test_all_meta_tool_specs_have_required_fields() -> None:
     ):
         required = set(tool.spec.parameters.get("required", []))
         assert required == mandatory, f"{tool.spec.name} required={required} expected={mandatory}"
+
+
+# --- flag_blocked (premise-unmet escape, harness-u1il5 follow-on) ----
+
+
+def test_flag_blocked_captures_missing_and_reason() -> None:
+    """A valid flag_blocked lands missing + reason in `captured` and
+    latest() returns them — the driver reads this to emit premise_unmet."""
+    tool = FlagBlockedTool()
+    result = tool.call(
+        missing="fireWeapon() / KeyJ handler",
+        reason="bead verifies fire-key gating but no fire handler exists to gate",
+    )
+    assert "flagged blocked" in result
+    assert tool.latest() == {
+        "missing": "fireWeapon() / KeyJ handler",
+        "reason": "bead verifies fire-key gating but no fire handler exists to gate",
+    }
+
+
+def test_flag_blocked_latest_none_before_call() -> None:
+    """latest() is None until flag_blocked is called — the driver treats
+    None as 'no premise-unmet signal' and falls through to assessment."""
+    assert FlagBlockedTool().latest() is None
+
+
+def test_flag_blocked_rejects_empty_missing() -> None:
+    """An empty `missing` is rejected — the escape requires a concrete,
+    operator-checkable absent artifact, not a blank claim."""
+    tool = FlagBlockedTool()
+    with pytest.raises(ValueError, match="missing"):
+        tool.call(missing="", reason="x" * 40)
+
+
+def test_flag_blocked_rejects_vague_reason() -> None:
+    """A too-short reason is rejected — 'hard' / 'no' don't justify a
+    park."""
+    tool = FlagBlockedTool()
+    with pytest.raises(ValueError, match="too short"):
+        tool.call(missing="fireWeapon()", reason="no")
+
+
+def test_flag_blocked_advertises_read_tier() -> None:
+    """flag_blocked is read-tier — it records intent, mutates nothing."""
+    assert FlagBlockedTool().spec.tier == "read"
