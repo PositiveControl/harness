@@ -6,5 +6,5 @@ metrics:
   - runs_headless       # boots under SDL dummy driver without an immediate crash
   - feature_checklist   # static probe of milestones M1..M7
   - cost                # prompt/completion tokens, wall-clock, tokens/s, optional $ (env-priced)
-  # - process           # TODO: turns, tool calls, files touched, diff LOC, retries
+  - process             # files touched/created, diff LOC, turns, tool calls, tracebacks
   # - quality_judge     # TODO: LLM-judge (0-5) code quality + playability

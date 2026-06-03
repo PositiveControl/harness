@@ -25,6 +25,7 @@ from scorers.base import Scorer, Scores
 from scorers.builds import BuildsScorer
 from scorers.cost import CostScorer
 from scorers.feature_checklist import FeatureChecklistScorer
+from scorers.process import ProcessScorer
 from scorers.runs_headless import RunsHeadlessScorer
 from store import ResultsStore, RunRecord
 
@@ -41,6 +42,7 @@ SCORERS: dict[str, type[Scorer]] = {
     "runs_headless": RunsHeadlessScorer,
     "feature_checklist": FeatureChecklistScorer,
     "cost": CostScorer,
+    "process": ProcessScorer,
 }
 
 
