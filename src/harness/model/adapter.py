@@ -1,13 +1,61 @@
 from __future__ import annotations
 
+import base64
+import mimetypes
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from harness.tools.base import ToolCall
 
 Role = Literal["system", "user", "assistant", "tool"]
+
+ImageDetail = Literal["auto", "low", "high"]
+
+
+@dataclass(frozen=True)
+class ImageRef:
+    """A single image attached to a ChatMessage (vision spike, harness
+    vision boundary).
+
+    `url` is either a remote http(s) URL or a `data:` URI carrying inline
+    base64 bytes. Either form is accepted by the OpenAI-compatible
+    image_url content-part shape that vLLM serves for VLMs.
+
+    This is the universal, runtime-neutral representation: a vision-capable
+    adapter renders it into its wire format; text-only adapters (echo, the
+    text path of any adapter) ignore `ChatMessage.images` entirely. Keeping
+    the bytes behind a `data:` URI here means the adapter boundary never has
+    to know whether an image came from disk, a URL, or a frame grab.
+
+    `detail` maps to OpenAI's image fidelity hint; servers that don't honor
+    it ignore it harmlessly."""
+
+    url: str
+    detail: ImageDetail = "auto"
+
+
+def image_from_path(path: str | Path, *, detail: ImageDetail = "auto") -> ImageRef:
+    """Read a local image file into a base64 `data:` URI ImageRef.
+
+    Mime type is sniffed from the suffix; falls back to image/png when the
+    suffix is unknown (vLLM's image loader keys off the decoded bytes, not
+    the declared mime, so a wrong-but-plausible type is harmless)."""
+    p = Path(path)
+    mime, _ = mimetypes.guess_type(p.name)
+    if mime is None or not mime.startswith("image/"):
+        mime = "image/png"
+    b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+    return ImageRef(url=f"data:{mime};base64,{b64}", detail=detail)
+
+
+def image_from_url(url: str, *, detail: ImageDetail = "auto") -> ImageRef:
+    """Wrap a remote image URL. vLLM fetches it server-side at inference
+    time, so the URL must be reachable from the serving host, not the
+    client."""
+    return ImageRef(url=url, detail=detail)
 
 
 @dataclass(frozen=True)
@@ -20,6 +68,10 @@ class ChatMessage:
     tool_calls: tuple[ToolCall, ...] = field(default_factory=tuple)
     # Populated on tool-role messages (the result of a specific call).
     tool_call_id: str | None = None
+    # Vision spike: images attached to this message. Empty on text turns.
+    # A vision-capable adapter renders these alongside `content` as
+    # multimodal content parts; text-only adapters ignore them.
+    images: tuple[ImageRef, ...] = field(default_factory=tuple)
 
 
 @runtime_checkable

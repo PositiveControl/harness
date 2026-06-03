@@ -95,6 +95,25 @@ def _synth_tool_call_id(idx: int, name: str) -> str:
     return f"call_{idx}_{name}"
 
 
+def _render_content(m: ChatMessage) -> str | list[dict[str, Any]]:
+    """Render a ChatMessage body for the OpenAI /v1/chat/completions wire.
+
+    Text-only messages (no `images`) render as a plain content string —
+    byte-identical to the original text-only adapter, so existing requests
+    are unchanged. Messages carrying images render as a multimodal
+    content-parts list: the text part first (omitted when content is
+    empty), then one `image_url` part per ImageRef. That list shape is what
+    vLLM expects to feed a VLM through the OpenAI-compatible API."""
+    if not m.images:
+        return m.content
+    parts: list[dict[str, Any]] = []
+    if m.content:
+        parts.append({"type": "text", "text": m.content})
+    for img in m.images:
+        parts.append({"type": "image_url", "image_url": {"url": img.url, "detail": img.detail}})
+    return parts
+
+
 def _messages_for_openai(messages: Iterable[ChatMessage]) -> list[dict[str, Any]]:
     """Render ChatMessage records into the OpenAI /v1/chat/completions
     message shape. Assistant turns expose tool_calls; tool-role turns
@@ -104,7 +123,7 @@ def _messages_for_openai(messages: Iterable[ChatMessage]) -> list[dict[str, Any]
     not a dict. vLLM's stricter parsers reject the dict form."""
     out: list[dict[str, Any]] = []
     for m in messages:
-        d: dict[str, Any] = {"role": m.role, "content": m.content}
+        d: dict[str, Any] = {"role": m.role, "content": _render_content(m)}
         if m.tool_calls:
             d["tool_calls"] = [
                 {
@@ -462,7 +481,7 @@ class VllmAdapter:
         materialized = list(messages)
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": [{"role": m.role, "content": m.content} for m in materialized],
+            "messages": [{"role": m.role, "content": _render_content(m)} for m in materialized],
             "stream": False,
             "temperature": temperature,
             "max_tokens": self._budgeted_max_tokens(materialized, max_tokens),
@@ -500,7 +519,7 @@ class VllmAdapter:
         materialized = list(messages)
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": [{"role": m.role, "content": m.content} for m in materialized],
+            "messages": [{"role": m.role, "content": _render_content(m)} for m in materialized],
             "stream": True,
             "temperature": temperature,
             "max_tokens": self._budgeted_max_tokens(materialized, max_tokens),
