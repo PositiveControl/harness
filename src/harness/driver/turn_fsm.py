@@ -66,8 +66,14 @@ class TurnPhase(Enum):
 # ~8-12 rounds total for an end-to-end pass, matching the existing
 # `executor_max_rounds=12` (which we keep as the IMPLEMENT budget
 # floor since that's where the work actually happens).
+# ASSESS at 6 (was 3): a weak model reads several files — outline +
+# game.js + the smoke probe — before it submits, and a 3-round budget
+# left no round to call submit_assessment, halting the turn with
+# "no assessment" (loop_run=1292dcc5 parked cw1m/76pi/hewc this way —
+# the model spent all 3 rounds on outline + 2 reads). Read-only rounds
+# are cheap; give it room to orient and still submit.
 DEFAULT_PHASE_BUDGETS: dict[TurnPhase, int] = {
-    TurnPhase.ASSESS: 3,
+    TurnPhase.ASSESS: 6,
     TurnPhase.WRITE_TEST: 4,
     TurnPhase.IMPLEMENT: 8,
     TurnPhase.VERIFY: 2,
