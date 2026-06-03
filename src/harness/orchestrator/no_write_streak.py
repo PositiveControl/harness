@@ -33,10 +33,14 @@ from harness.tools.base import ToolCall, ToolResult
 DEFAULT_NO_WRITE_STREAK_THRESHOLD: int = 4
 
 # Tools that count as a write. Succeeding on any of these resets the
-# streak. Mirrors `fsm_turn._resolve_implement_outcome`'s write-tool
-# set so what the detector counts and what the phase outcome checks
-# stay in lock-step.
-_WRITE_TOOL_NAMES: frozenset[str] = frozenset({"edit_file", "write_file"})
+# streak. `fsm_turn._resolve_implement_outcome` imports this same set so
+# what the detector counts and what the phase outcome checks stay in
+# lock-step. stream_edit is here because the driver's IMPLEMENT roster
+# offers it as an in-place edit path (awk/sed/cut/tr) — a productive
+# stream_edit is real progress and must reset the streak, not trip it.
+WRITE_TOOL_NAMES: frozenset[str] = frozenset({"edit_file", "write_file", "stream_edit"})
+# Back-compat alias for the original private name.
+_WRITE_TOOL_NAMES = WRITE_TOOL_NAMES
 
 
 @dataclass
@@ -119,6 +123,7 @@ def build_nudge_text(streak: int) -> str:
 
 __all__ = [
     "DEFAULT_NO_WRITE_STREAK_THRESHOLD",
+    "WRITE_TOOL_NAMES",
     "NoWriteStreakDetector",
     "build_nudge_text",
 ]

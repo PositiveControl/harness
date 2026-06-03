@@ -62,7 +62,10 @@ from harness.driver.turn_fsm import (
 from harness.model.adapter import ChatMessage, ModelAdapter
 from harness.orchestrator import ToolLoopEvent, ToolLoopResult, run_tool_loop
 from harness.orchestrator.hooks import EXHAUSTED_FABRICATION_FALLBACK
-from harness.orchestrator.no_write_streak import NoWriteStreakDetector
+from harness.orchestrator.no_write_streak import (
+    WRITE_TOOL_NAMES,
+    NoWriteStreakDetector,
+)
 from harness.tools import (
     CalcTool,
     DateMathTool,
@@ -518,7 +521,9 @@ def _resolve_implement_outcome(
     # No explicit completion call. If ANY write tool succeeded this
     # phase, treat it as implicit progress and transition to VERIFY
     # (rather than halting outright) — verify will pick up the slack.
-    if {"edit_file", "write_file"} & succeeded_tools:
+    # WRITE_TOOL_NAMES (incl. stream_edit) is shared with the no-write
+    # streak detector so "what counts as a write" stays in lock-step.
+    if WRITE_TOOL_NAMES & succeeded_tools:
         return PhaseOutcome(
             kind="implement_some_writes",
             detail="writes landed without explicit complete signal",

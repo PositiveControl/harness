@@ -147,6 +147,25 @@ def test_write_file_also_counts_as_write() -> None:
     assert detector.streak == 0
 
 
+def test_stream_edit_counts_as_a_write() -> None:
+    """`stream_edit` is the driver IMPLEMENT roster's in-place edit path
+    (awk/sed/cut/tr). A productive stream_edit is real progress and must
+    reset the streak — otherwise the model gets falsely nudged for doing
+    the right thing. Mirrors WRITE_TOOL_NAMES shared with
+    fsm_turn._resolve_implement_outcome."""
+    detector = NoWriteStreakDetector()
+    read_call, read_result = _read()
+    stream_call = ToolCall(name="stream_edit", arguments={"tool": "sed", "args": ["s/a/b/"]})
+    stream_result = ToolResult(tool_name="stream_edit", output="edited", success=True)
+
+    detector.observe(read_call, read_result)
+    detector.observe(read_call, read_result)
+    assert detector.streak == 2
+
+    detector.observe(stream_call, stream_result)
+    assert detector.streak == 0
+
+
 def test_custom_threshold_lower_for_tight_test() -> None:
     """`threshold` is constructor-configurable so callers (today: the
     driver, tomorrow: bench scripts measuring sensitivity) can tune
