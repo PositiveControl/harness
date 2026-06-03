@@ -535,6 +535,17 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 and last_green is not None
                 and not workspace_changed(config.workspace, last_green)
             )
+            if prior_made_no_edits:
+                # Log the nudge injection so the investigation-loop break
+                # is attributable in the run log (it was previously a
+                # silent prompt-only signal — loop_run=498a4d79 fired it on
+                # every retry with no trace, so its effect couldn't be
+                # measured).
+                log(
+                    f"loop_run={state.loop_run_id} no-edit-nudge injected for "
+                    f"{current.id} (attempt {attempt}: prior attempt left the "
+                    f"workspace byte-identical to last-green)"
+                )
             # harness-lefw: signal targeted-fix mode when the loop has
             # already touched this issue OR the operator left a
             # "REGRESSION" marker in notes (their convention when
