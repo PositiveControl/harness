@@ -10,11 +10,15 @@ in test_workspace_verify.py behind the _requires_playwright skip.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from harness.driver.smoke_runner import (
     _DEFAULT_SETTLE_MS,
     _blank_canvas_check_enabled,
+    _read_assert,
+    _read_setup,
     _settle_ms,
 )
 
@@ -80,3 +84,46 @@ def test_blank_canvas_cli_flag_absent_keeps_env_behavior(
 ) -> None:
     monkeypatch.delenv("HARNESS_SMOKE_BLANK_CANVAS", raising=False)
     assert _blank_canvas_check_enabled(cli_disabled=False) is True
+
+
+# --- harness-u1il5: --setup / --assert script-arg resolution ---------
+
+
+def test_read_setup_absent_returns_none() -> None:
+    """No --setup flag → (None, None): the scenario is optional."""
+    assert _read_setup(["prog", "index.html"]) == (None, None)
+
+
+def test_read_assert_absent_returns_none() -> None:
+    """No --assert flag → (None, None): the behavioral check is optional."""
+    assert _read_assert(["prog", "index.html"]) == (None, None)
+
+
+def test_read_assert_reads_file_contents(tmp_path: Path) -> None:
+    """--assert=<file> → the file body is returned verbatim for eval."""
+    probe = tmp_path / "smoke_assert.js"
+    probe.write_text("return window.fired ? [] : ['fire did not trigger'];\n")
+    source, error = _read_assert(["prog", f"--assert={probe}", "index.html"])
+    assert error is None
+    assert source is not None
+    assert "fire did not trigger" in source
+
+
+def test_read_assert_missing_file_is_loud(tmp_path: Path) -> None:
+    """--assert pointing at a missing file → an error string, NOT a
+    silent skip — a misconfigured probe must fail the gate, not pass it."""
+    missing = tmp_path / "nope.js"
+    source, error = _read_assert(["prog", f"--assert={missing}", "index.html"])
+    assert source is None
+    assert error is not None
+    assert "unreadable" in error
+
+
+def test_read_setup_missing_file_is_loud(tmp_path: Path) -> None:
+    """Same loud-skip contract for --setup (regression guard for the
+    shared _read_file_arg helper)."""
+    missing = tmp_path / "nope.js"
+    source, error = _read_setup(["prog", f"--setup={missing}", "index.html"])
+    assert source is None
+    assert error is not None
+    assert "unreadable" in error

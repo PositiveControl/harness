@@ -155,24 +155,43 @@ def _format_page_error(err: Any) -> str:
     return f"pageerror: {err}"
 
 
-def _read_setup(argv: list[str]) -> tuple[str | None, str | None]:
-    """Resolve the optional ``--setup=<file>`` scenario.
+def _read_file_arg(argv: list[str], flag: str, label: str) -> tuple[str | None, str | None]:
+    """Resolve an optional ``--<flag>=<file>`` script argument.
 
-    Returns ``(source, error)``: ``source`` is the JS to evaluate in the
-    page after load (None when no --setup given), ``error`` is a
-    one-line failure string when --setup was given but the file is
-    missing/unreadable (so a misconfigured scenario fails loud rather
-    than silently skipping the exercise)."""
-    setup_arg = next((a for a in argv[1:] if a.startswith("--setup=")), None)
-    if setup_arg is None:
+    Returns ``(source, error)``: ``source`` is the file contents (None
+    when the flag is absent), ``error`` is a one-line failure string when
+    the flag was given but the file is missing/unreadable (so a
+    misconfigured scenario fails loud rather than silently skipping)."""
+    prefix = f"--{flag}="
+    arg = next((a for a in argv[1:] if a.startswith(prefix)), None)
+    if arg is None:
         return None, None
-    path = Path(setup_arg[len("--setup=") :])
+    path = Path(arg[len(prefix) :])
     if not path.is_absolute():
         path = (Path.cwd() / path).resolve()
     try:
         return path.read_text(encoding="utf-8"), None
     except OSError as exc:
-        return None, f"smoke-execute: setup script unreadable ({path}): {exc}"
+        return None, f"smoke-execute: {label} script unreadable ({path}): {exc}"
+
+
+def _read_setup(argv: list[str]) -> tuple[str | None, str | None]:
+    """Resolve the optional ``--setup=<file>`` scenario (run after load,
+    before the settle window — drives conditionally-spawned entities and
+    synthetic input so their code paths execute during the smoke)."""
+    return _read_file_arg(argv, "setup", "setup")
+
+
+def _read_assert(argv: list[str]) -> tuple[str | None, str | None]:
+    """Resolve the optional ``--assert=<file>`` behavioral check (run
+    AFTER the settle window — harness-u1il5). The script body is wrapped
+    in an arrow function and must RETURN an array of failure strings
+    (empty = pass); a throw or a non-empty array fails the smoke. Pairs
+    with ``--setup`` (setup drives the input; assert checks the effect
+    once the game loop has had frames to process it). Closes the
+    render-only blind spot where input handlers no draw check exercises
+    can close blind."""
+    return _read_file_arg(argv, "assert", "assert")
 
 
 def main(argv: list[str]) -> int:
@@ -183,10 +202,15 @@ def main(argv: list[str]) -> int:
     if setup_error is not None:
         print(setup_error, file=sys.stderr)
         return 1
+    assert_source, assert_error = _read_assert(argv)
+    if assert_error is not None:
+        print(assert_error, file=sys.stderr)
+        return 1
     if not positionals:
         print(
             "usage: python -m harness.driver.smoke_runner "
-            "[--no-blank-canvas] [--setup=<scenario.js>] <index.html>",
+            "[--no-blank-canvas] [--setup=<scenario.js>] "
+            "[--assert=<checks.js>] <index.html>",
             file=sys.stderr,
         )
         return 1
@@ -241,6 +265,29 @@ def main(argv: list[str]) -> int:
                     except Exception as exc:  # surface any setup throw as a failure
                         errors.append(f"setup-scenario error: {exc}")
                 page.wait_for_timeout(_settle_ms())
+                # harness-u1il5: behavioral assertions, post-settle. The
+                # setup scenario drove input (synthetic KeyboardEvents,
+                # state pokes) before the settle window; now the game loop
+                # has had frames to process it, so the assert script can
+                # check the resulting state. The body is wrapped in an
+                # arrow fn and must RETURN an array of failure strings —
+                # empty/falsy passes, a non-empty array or a throw fails.
+                # Runs only on an otherwise-clean load (a page that threw
+                # has a more actionable error than a cascaded assert miss)
+                # and BEFORE the blank-canvas check so a behavioral failure
+                # outranks the coarser "canvas is one color" signal.
+                if assert_source is not None and not errors:
+                    try:
+                        verdict = page.evaluate(f"() => {{ {assert_source} }}")
+                        if isinstance(verdict, list):
+                            errors.extend(f"assert failure: {item}" for item in verdict)
+                        elif verdict:
+                            errors.append(
+                                f"assert script returned a non-list truthy value "
+                                f"({verdict!r}); expected an array of failure strings"
+                            )
+                    except Exception as exc:  # surface any assert throw as a failure
+                        errors.append(f"assert-scenario error: {exc}")
                 # Blank-canvas check runs only if the load was otherwise
                 # clean — a page that already threw has a more actionable
                 # error to report than "your canvas is one color."

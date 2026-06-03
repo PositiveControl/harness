@@ -343,6 +343,37 @@ def test_smoke_step_suppresses_blank_canvas_when_disabled(tmp_path: Path) -> Non
     assert "--no-blank-canvas" in smoke.cmd
 
 
+def test_smoke_step_adds_assert_flag_when_probe_present(tmp_path: Path) -> None:
+    """harness-u1il5: a .harness/smoke_assert.js probe → the smoke cmd
+    threads --assert=<resolved path> so the runner enforces the
+    behavioral check."""
+    (tmp_path / "index.html").write_text(
+        '<html><body><script src="game.js"></script></body></html>',
+    )
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    harness_dir = tmp_path / ".harness"
+    harness_dir.mkdir()
+    probe = harness_dir / "smoke_assert.js"
+    probe.write_text("return [];\n")
+    with patch("harness.driver.workspace_verify._playwright_available", return_value=True):
+        steps = default_workspace_verify_steps(tmp_path)
+    smoke = next(s for s in steps if "smoke_runner" in s.cmd)
+    assert f"--assert={probe.resolve()}" in smoke.cmd
+
+
+def test_smoke_step_no_assert_flag_when_probe_absent(tmp_path: Path) -> None:
+    """No .harness/smoke_assert.js → no --assert flag (the behavioral
+    check is opt-in per workspace)."""
+    (tmp_path / "index.html").write_text(
+        '<html><body><script src="game.js"></script></body></html>',
+    )
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    with patch("harness.driver.workspace_verify._playwright_available", return_value=True):
+        steps = default_workspace_verify_steps(tmp_path)
+    smoke = next(s for s in steps if "smoke_runner" in s.cmd)
+    assert "--assert=" not in smoke.cmd
+
+
 def test_smoke_step_index_absolute_with_relative_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -506,6 +537,97 @@ def test_smoke_step_fails_on_blank_canvas(tmp_path: Path) -> None:
     exit_code, tail = _exec_test_cmd(smoke_step.cmd, tmp_path, shell_mode=smoke_step.shell)
     assert exit_code != 0
     assert "blank" in tail.lower() or "one color" in tail.lower()
+
+
+_BEHAVIORAL_INDEX = (
+    "<!DOCTYPE html><html><body>"
+    '<canvas id="game" width="100" height="100"></canvas>'
+    '<script src="game.js"></script>'
+    "</body></html>"
+)
+
+# A game that renders two colors (so the blank-canvas check passes) and
+# — in the working version — wires a keydown listener that flips a flag
+# on KeyJ (the §9b-i "firing trigger" shape). The render proves the page
+# is otherwise clean so the behavioral assert is the only variable.
+_GAME_WITH_FIRE = (
+    "const canvas = document.getElementById('game');\n"
+    "const ctx = canvas.getContext('2d');\n"
+    "ctx.fillStyle = '#3a3a3a'; ctx.fillRect(0, 0, 100, 100);\n"
+    "ctx.fillStyle = '#1e6fd9'; ctx.fillRect(40, 40, 20, 20);\n"
+    "document.addEventListener('keydown', (e) => {\n"
+    "  if (e.code === 'KeyJ') { window.fired = true; }\n"
+    "});\n"
+)
+# Same render, but the fire handler was never wired (the §9b-i blind
+# spot — bullets/projectile exist, nothing triggers a shot).
+_GAME_WITHOUT_FIRE = (
+    "const canvas = document.getElementById('game');\n"
+    "const ctx = canvas.getContext('2d');\n"
+    "ctx.fillStyle = '#3a3a3a'; ctx.fillRect(0, 0, 100, 100);\n"
+    "ctx.fillStyle = '#1e6fd9'; ctx.fillRect(40, 40, 20, 20);\n"
+)
+# Setup drives the input; assert checks the effect post-settle.
+_SETUP_PRESS_FIRE = "document.dispatchEvent(new KeyboardEvent('keydown', {code: 'KeyJ'}));\n"
+_ASSERT_FIRE_WORKED = "return window.fired ? [] : ['fire (KeyJ) did not set window.fired'];\n"
+
+
+@_requires_playwright
+def test_smoke_step_fails_when_behavioral_assert_fails(tmp_path: Path) -> None:
+    """harness-u1il5 core: a game that loads clean and renders (passes
+    the render + blank-canvas gates) but whose fire handler is missing
+    must FAIL the smoke once a behavioral probe drives KeyJ and asserts
+    the effect. This is the input-handler-closes-blind class the
+    render-only gate let through."""
+    (tmp_path / "index.html").write_text(_BEHAVIORAL_INDEX)
+    (tmp_path / "game.js").write_text(_GAME_WITHOUT_FIRE)
+    harness_dir = tmp_path / ".harness"
+    harness_dir.mkdir()
+    (harness_dir / "smoke_setup.js").write_text(_SETUP_PRESS_FIRE)
+    (harness_dir / "smoke_assert.js").write_text(_ASSERT_FIRE_WORKED)
+    steps = default_workspace_verify_steps(tmp_path)
+    smoke = next(s for s in steps if "smoke_runner" in s.cmd)
+    exit_code, tail = _exec_test_cmd(smoke.cmd, tmp_path, shell_mode=smoke.shell)
+    assert exit_code != 0
+    assert "assert failure" in tail.lower()
+    assert "fire" in tail.lower()
+
+
+@_requires_playwright
+def test_smoke_step_passes_when_behavioral_assert_passes(tmp_path: Path) -> None:
+    """The working version (fire handler wired) — same setup + assert —
+    passes: the probe drives KeyJ, the listener flips the flag, the
+    assert returns an empty failure array, smoke exits 0."""
+    (tmp_path / "index.html").write_text(_BEHAVIORAL_INDEX)
+    (tmp_path / "game.js").write_text(_GAME_WITH_FIRE)
+    harness_dir = tmp_path / ".harness"
+    harness_dir.mkdir()
+    (harness_dir / "smoke_setup.js").write_text(_SETUP_PRESS_FIRE)
+    (harness_dir / "smoke_assert.js").write_text(_ASSERT_FIRE_WORKED)
+    steps = default_workspace_verify_steps(tmp_path)
+    smoke = next(s for s in steps if "smoke_runner" in s.cmd)
+    exit_code, _tail = _exec_test_cmd(smoke.cmd, tmp_path, shell_mode=smoke.shell)
+    assert exit_code == 0
+
+
+@_requires_playwright
+def test_smoke_step_fails_when_assert_throws(tmp_path: Path) -> None:
+    """A probe that throws (references an undefined global, bad assertion
+    code) fails loud rather than silently passing — a broken probe must
+    not green-light a close."""
+    (tmp_path / "index.html").write_text(_BEHAVIORAL_INDEX)
+    (tmp_path / "game.js").write_text(_GAME_WITH_FIRE)
+    harness_dir = tmp_path / ".harness"
+    harness_dir.mkdir()
+    (harness_dir / "smoke_assert.js").write_text("return nonexistentGlobal.value;\n")
+    steps = default_workspace_verify_steps(tmp_path)
+    smoke = next(s for s in steps if "smoke_runner" in s.cmd)
+    exit_code, tail = _exec_test_cmd(smoke.cmd, tmp_path, shell_mode=smoke.shell)
+    # A throwing probe fails loud (non-zero) and the JS error surfaces in
+    # the tail — the prefix line may be pushed out of the tail window by
+    # the stack trace, so assert on the stable error content.
+    assert exit_code != 0
+    assert "not defined" in tail.lower()
 
 
 @_requires_playwright

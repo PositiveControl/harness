@@ -248,9 +248,20 @@ def _smoke_execute_step(
     flag = "" if enforce_blank_canvas else " --no-blank-canvas"
     setup = workspace / ".harness" / "smoke_setup.js"
     setup_flag = f" --setup={shlex.quote(str(setup.resolve()))}" if setup.is_file() else ""
+    # harness-u1il5: optional behavioral assertions. When
+    # ``.harness/smoke_assert.js`` exists it runs after the settle window
+    # and fails the smoke on a non-empty failure array — closing the
+    # render-only blind spot where input handlers (fire/walk/weapon) that
+    # no draw check exercises could close blind. ``.harness`` is excluded
+    # from the file census / regression guard, so the probe never counts
+    # as a deliverable edit (mirrors smoke_setup.js).
+    assert_js = workspace / ".harness" / "smoke_assert.js"
+    assert_flag = (
+        f" --assert={shlex.quote(str(assert_js.resolve()))}" if assert_js.is_file() else ""
+    )
     cmd = (
         f"{shlex.quote(sys.executable)} -m harness.driver.smoke_runner"
-        f"{flag}{setup_flag} {shlex.quote(str(index.resolve()))}"
+        f"{flag}{setup_flag}{assert_flag} {shlex.quote(str(index.resolve()))}"
     )
     # S604: ``shell=True`` here is a VerifyStep dataclass field, NOT a
     # subprocess kwarg (mirrors _js_verify_step / _py_verify_step
