@@ -1860,15 +1860,19 @@ def _exit_halted(
     # the halt), not the stale pre-halt values — otherwise the operator
     # gets one retry instead of the expected budget after reopen.
     _save_state(state, workspace)
-    with contextlib.suppress(DriverBdError):
+    try:
         bd.flag_human(current_id, reason=f"loop halted: {reason}")
-    with contextlib.suppress(DriverBdError):
+    except DriverBdError as exc:
+        log(f"loop_run={state.loop_run_id} WARN flag_human({current_id}) failed: {exc}")
+    try:
         bd.write_session_state(
             loop_run_id=state.loop_run_id,
             current_issue_id=current_id,
             status="halted",
             body=reason,
         )
+    except DriverBdError as exc:
+        log(f"loop_run={state.loop_run_id} WARN session_state({current_id}) failed: {exc}")
     return LoopResult(
         loop_run_id=state.loop_run_id,
         epic_id=state.epic_id,
@@ -1926,15 +1930,21 @@ def _park_issue(
     log(f"loop_run={state.loop_run_id} PARKED {current_id}: {reason}")
     if current_id not in state.parked_issues:
         state.parked_issues.append(current_id)
-    with contextlib.suppress(DriverBdError):
+    try:
         bd.flag_human(current_id, reason=f"drive parked after max attempts: {reason}")
-    with contextlib.suppress(DriverBdError):
+    except DriverBdError as exc:
+        # Best-effort, but log the failure — a silent suppress here hid a
+        # bd-CLI drift that left `bd human list` empty after every park.
+        log(f"loop_run={state.loop_run_id} WARN flag_human({current_id}) failed: {exc}")
+    try:
         bd.write_session_state(
             loop_run_id=state.loop_run_id,
             current_issue_id=current_id,
             status="parked",
             body=reason,
         )
+    except DriverBdError as exc:
+        log(f"loop_run={state.loop_run_id} WARN session_state({current_id}) failed: {exc}")
 
 
 def _on_success(bd: DriverBd, state: LoopRunState, current_id: str, log: _LogWriter) -> None:

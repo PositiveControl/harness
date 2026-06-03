@@ -336,10 +336,12 @@ def test_dep_add(monkeypatch: pytest.MonkeyPatch, bd: DriverBd) -> None:
 
 
 def test_flag_human(monkeypatch: pytest.MonkeyPatch, bd: DriverBd) -> None:
-    spy = _RunSpy([_FakeProc()])
+    spy = _RunSpy([_FakeProc(), _FakeProc()])
     _install_run(monkeypatch, spy)
     bd.flag_human("harness-x", reason="halted after 2 attempts")
-    assert spy.calls[0][0] == ("human", "harness-x", "--reason=halted after 2 attempts")
+    # human-needed queue is keyed on the `human` label; reason rides as a note.
+    assert spy.calls[0][0] == ("label", "add", "harness-x", "human")
+    assert spy.calls[1][0] == ("note", "harness-x", "halted after 2 attempts")
 
 
 def test_reopen_sets_status_open(monkeypatch: pytest.MonkeyPatch, bd: DriverBd) -> None:

@@ -17,7 +17,7 @@ loop driver needs:
   * `create_with_labels(...)`     bd create + --label flags
   * `close(issue_id, reason=...)` bd close
   * `dep_add(blocker, blocked)`   bd dep add
-  * `flag_human(issue_id, reason)` bd human <id>
+  * `flag_human(issue_id, reason)` bd label add <id> human (+ note)
   * `write_thought(...)`          create-then-close a thought:* bead in one call
   * `write_session_state(...)`    convenience wrapper over write_thought
   * `thoughts_in_loop_run(id)`    bd search by loop-run-<id> label across thought:* types
@@ -260,10 +260,17 @@ class DriverBd:
         self._run(["dep", "add", blocked, blocker])
 
     def flag_human(self, issue_id: str, *, reason: str) -> None:
-        """`bd human <id>` with a reason. Surfaces the issue to the
-        operator's `bd human` queue; the loop exits after this and
-        the operator decides how to recover."""
-        self._run(["human", issue_id, f"--reason={reason}"])
+        """Surface the issue to the operator's `bd human list` queue.
+
+        bd's human-needed queue is keyed on the `human` label (added via
+        `bd label add <id> human`); the older `bd human <id> --reason=`
+        create form was removed when `bd human` became a parent command
+        (`list`/`respond`/`dismiss`/`stats`). The label is the
+        load-bearing flag — `reason` rides as a note so the operator sees
+        the park context inline on the bead. The label add runs first so a
+        note hiccup can't strip the flag."""
+        self._run(["label", "add", issue_id, "human"])
+        self._run(["note", issue_id, reason])
 
     def write_thought(
         self,

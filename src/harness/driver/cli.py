@@ -910,7 +910,7 @@ def _print_result(result: LoopResult) -> None:
     elif result.exit_reason == "halted":
         typer.echo(
             f"HALTED on {result.halted_on} — flagged via `bd human`. "
-            f"Inspect with `bd show {result.halted_on}` and `bd human-list`.",
+            f"Inspect with `bd show {result.halted_on}` and `bd human list`.",
             err=True,
         )
     elif result.exit_reason == "interrupted":
@@ -930,7 +930,7 @@ def _print_result(result: LoopResult) -> None:
             f"PARTIAL — ready queue drained but {len(result.parked_issues)} "
             f"issue(s) parked for operator pickup: {parked}. These (and "
             f"anything depending on them) are NOT done. Inspect with "
-            f"`bd human-list`; clear a park to resume.",
+            f"`bd human list`; clear a park to resume.",
             err=True,
         )
 
