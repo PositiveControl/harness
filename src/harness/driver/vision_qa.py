@@ -13,14 +13,18 @@ model SDK and no HTTP client. The adapter is resolved by
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from harness.model.adapter import ChatMessage, image_from_path
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from harness.model.adapter import ModelAdapter
 
 Verdict = Literal["pass", "fail", "unknown"]
@@ -100,3 +104,90 @@ def run_vision_qa(
     )
     raw = adapter.complete([message], max_tokens=max_tokens, temperature=0.0)
     return parse_verdict(raw)
+
+
+def build_rubric(title: str, body: str = "") -> str:
+    """Compose a QA rubric from a bead's title + (optional) body. Title
+    is the headline acceptance signal; body adds detail when present."""
+    rubric = title.strip()
+    detail = (body or "").strip()
+    if detail:
+        rubric = f"{rubric}\n\n{detail}"
+    return rubric or "(no rubric provided)"
+
+
+def _append_jsonl(path: Path, record: dict[str, object], log: Callable[[str], None]) -> None:
+    """Append one JSONL record. Best-effort — a write failure logs and is
+    swallowed (the audit log is diagnostic, not a drive contract)."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log(f"vision-qa: audit-log write failed ({path}): {exc}")
+
+
+def run_advisory_qa(
+    adapter: ModelAdapter | None,
+    shot_path: Path | str,
+    rubric: str,
+    *,
+    gate_passed: bool,
+    issue_id: str,
+    jsonl_path: Path | str | None = None,
+    log: Callable[[str], None] = print,
+    max_tokens: int = 64,
+) -> QaVerdict | None:
+    """Run advisory vision-QA around a completed verify (harness-ke4hx.4).
+
+    ADVISORY CONTRACT — this function NEVER raises and NEVER gates. It
+    returns the verdict (for the caller to log) or None when QA could not
+    run. The drive's pass/fail is whatever the caller already decided;
+    nothing here changes it.
+
+    Graceful degradation covers every "vision unavailable" path:
+      - `adapter is None` (vision_base_url unset) → skip, return None
+      - screenshot missing (smoke didn't capture, or capture failed) →
+        skip, return None
+      - the VLM call raised (endpoint down, timeout, bad response) →
+        skip, return None
+
+    On success it logs a one-line verdict and, when `jsonl_path` is set,
+    appends an audit record carrying `gate_passed` + `agree` (whether the
+    VLM verdict matched the real gate). That `agree` column is the
+    precision/recall fuel for the Phase-2 gating decision (harness-ke4hx.5)."""
+    if adapter is None:
+        log("vision-qa: skipped (no vision adapter configured)")
+        return None
+    shot = Path(shot_path)
+    if not shot.is_file():
+        log(f"vision-qa: skipped (no screenshot at {shot})")
+        return None
+    try:
+        verdict = run_vision_qa(adapter, shot, rubric, max_tokens=max_tokens)
+    except Exception as exc:
+        log(f"vision-qa: skipped (vision call failed: {exc})")
+        return None
+
+    agree = (verdict.verdict == "pass") == gate_passed
+    gate_label = "pass" if gate_passed else "fail"
+    log(
+        f"vision-qa [{issue_id}]: {verdict.verdict.upper()} "
+        f"(gate={gate_label}, agree={agree}) — {verdict.reason}"
+    )
+    if jsonl_path is not None:
+        _append_jsonl(
+            Path(jsonl_path),
+            {
+                "ts": datetime.now(UTC).isoformat(),
+                "issue_id": issue_id,
+                "shot": str(shot),
+                "rubric": rubric,
+                "verdict": verdict.verdict,
+                "reason": verdict.reason,
+                "gate_passed": gate_passed,
+                "agree": agree,
+            },
+            log,
+        )
+    return verdict

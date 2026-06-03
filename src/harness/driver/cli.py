@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from harness.driver.auto_iterate import AutoIterateResult
 
 from harness.character import load_character
+from harness.config import settings
 from harness.driver.bd import DriverBd, DriverBdError
 from harness.driver.loop import LoopConfig, LoopResult, run_loop
 from harness.driver.plan_linter import score_bead
@@ -553,6 +554,7 @@ def loop_command(
         auto_close_on_claim=auto_close_on_claim,
         skip_on_max_attempts=skip_on_max_attempts,
         render_milestone_id=render_milestone,
+        vision_base_url=settings.vision_base_url,
     )
     result = run_loop(adapter, bd, config)
     _print_result(result)
@@ -675,6 +677,7 @@ def auto_iterate_command(
         auto_close_on_claim=auto_close_on_claim,
         skip_on_max_attempts=skip_on_max_attempts,
         render_milestone_id=render_milestone,
+        vision_base_url=settings.vision_base_url,
     )
     config = AutoIterateConfig(
         loop_config=loop_config,

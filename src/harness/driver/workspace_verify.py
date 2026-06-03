@@ -204,7 +204,11 @@ def _playwright_available() -> bool:
 
 
 def _smoke_execute_step(
-    index: Path, *, workspace: Path, enforce_blank_canvas: bool = True
+    index: Path,
+    *,
+    workspace: Path,
+    enforce_blank_canvas: bool = True,
+    capture_shot: Path | None = None,
 ) -> VerifyStep:
     """Smoke-execute verify step (harness-4b8v).
 
@@ -259,9 +263,14 @@ def _smoke_execute_step(
     assert_flag = (
         f" --assert={shlex.quote(str(assert_js.resolve()))}" if assert_js.is_file() else ""
     )
+    # harness-ke4hx.4: when advisory vision-QA is on, ask the runner to
+    # write a post-settle screenshot. The flag is harmless to the gate
+    # itself — the smoke still passes/fails on errors + blank-canvas; the
+    # screenshot is consumed out-of-band by the loop's advisory QA pass.
+    shot_flag = f" --screenshot={shlex.quote(str(capture_shot.resolve()))}" if capture_shot else ""
     cmd = (
         f"{shlex.quote(sys.executable)} -m harness.driver.smoke_runner"
-        f"{flag}{setup_flag}{assert_flag} {shlex.quote(str(index.resolve()))}"
+        f"{flag}{setup_flag}{assert_flag}{shot_flag} {shlex.quote(str(index.resolve()))}"
     )
     # S604: ``shell=True`` here is a VerifyStep dataclass field, NOT a
     # subprocess kwarg (mirrors _js_verify_step / _py_verify_step
@@ -391,7 +400,10 @@ def extract_smoke_symptom(reason: str | None) -> str | None:
 
 
 def default_workspace_verify_steps(
-    workspace: Path, *, enforce_blank_canvas: bool = True
+    workspace: Path,
+    *,
+    enforce_blank_canvas: bool = True,
+    capture_shot: Path | None = None,
 ) -> tuple[VerifyStep, ...]:
     """Synthesize the baseline VerifyStep tuple for a workspace.
 
@@ -425,7 +437,10 @@ def default_workspace_verify_steps(
         if index is not None:
             steps.append(
                 _smoke_execute_step(
-                    index, workspace=workspace, enforce_blank_canvas=enforce_blank_canvas
+                    index,
+                    workspace=workspace,
+                    enforce_blank_canvas=enforce_blank_canvas,
+                    capture_shot=capture_shot,
                 )
             )
     return tuple(steps)
