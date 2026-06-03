@@ -1,0 +1,10 @@
+# The adjustable surface. Runner runs ONLY the scorers listed here, in order.
+# Add a metric: drop scorers/<name>.py, register it in runner.SCORERS, add its
+# name below. Remove a metric: delete its line. Historical rows keep their keys.
+metrics:
+  - builds              # generated project compiles (py_compile over all .py)
+  - runs_headless       # boots under SDL dummy driver without an immediate crash
+  - feature_checklist   # static probe of milestones M1..M7
+  # - cost              # TODO: prompt/completion tokens, wall-clock, gx10 GPU-seconds
+  # - process           # TODO: turns, tool calls, files touched, diff LOC, retries
+  # - quality_judge     # TODO: LLM-judge (0-5) code quality + playability

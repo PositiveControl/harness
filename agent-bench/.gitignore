@@ -1,0 +1,3 @@
+# Per-run artifacts + results store are generated, not tracked.
+results/
+__pycache__/
