@@ -12,7 +12,7 @@ from ._proc import TIMEOUT_RC, init_repo, run, snapshot_diff, transcript_of
 from .base import Endpoint, RunArtifacts
 
 # Pin and record. Bump deliberately; the value lands in every result row's manifest.
-AIDER_VERSION = "0.86.1"
+AIDER_VERSION = "0.86.2"
 
 
 class AiderAdapter:

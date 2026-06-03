@@ -1,7 +1,7 @@
 # agent-bench run config. One gx10 endpoint for every framework so the only
 # variable under test is the framework itself.
 gx10:
-  base_url: "http://gx10:8000/v1"          # vLLM OpenAI-compatible endpoint over Tailscale
+  base_url: "http://gx10-5fb9:8000/v1"     # vLLM OpenAI-compatible endpoint over Tailscale
   model: "Qwen/Qwen3-Coder-30B-A3B-Instruct"  # pinned; runner aborts if /v1/models disagrees
   api_key: "gx10"                            # dummy; vLLM ignores but OpenAI clients require one
   temperature: 0.0                           # max determinism (loops still vary -> N runs)

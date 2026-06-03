@@ -1,9 +1,9 @@
-"""`feature_checklist` — static probe of milestones M1..M7.
+"""`feature_checklist` — static probe of web-game milestones M1..M8.
 
-Cheap, honest heuristic: scan generated source for signals that each milestone
-was attempted. This is a *static* approximation — it detects presence of the
-relevant APIs/patterns, not that they work. Runtime probes (driving the game and
-asserting behavior) are a TODO; see the plan's quality section.
+Cheap heuristic: scan index.html + every .js for signals that each milestone
+was attempted. Static approximation — detects the relevant canvas/JS patterns,
+not that they work. Runtime behavior is graded by `runs_headless` (headless
+browser). All-patterns-must-match per milestone, so it stays conservative.
 """
 
 from __future__ import annotations
@@ -15,15 +15,16 @@ from adapters.base import RunArtifacts
 
 from scorers.base import Scores
 
-# milestone -> regex signals (any match -> attempted). Deliberately conservative.
+# milestone -> regex signals (all must match -> attempted). Conservative.
 MILESTONES: dict[str, list[str]] = {
-    "m1_window_loop": [r"set_mode", r"pygame\.event\.get", r"while .*:"],
-    "m2_player_car": [r"K_(UP|DOWN|LEFT|RIGHT|w|a|s|d)\b", r"get_pressed"],
-    "m3_world": [r"camera|offset|scroll", r"blit"],
-    "m4_physics": [r"accel|velocity|friction|momentum"],
-    "m5_npc": [r"npc|traffic|enemy|ai_", r"class .*(Car|Vehicle|NPC)"],
-    "m6_collision": [r"colliderect|collide|Rect\(", r"collision"],
-    "m7_objective": [r"score|mission|waypoint|wanted|objective", r"render.*font|HUD|hud"],
+    "m1_loop": [r"requestAnimationFrame", r"addEventListener\(\s*['\"]key(down|up)"],
+    "m2_world": [r"getContext\(\s*['\"]2d", r"drawTile|tile|grid"],
+    "m3_player": [r"player\s*=\s*\{", r"\b(translate|rotate)\b", r"\bangle\b"],
+    "m4_driving": [r"\bspeed\b", r"Math\.(floor|cos|sin)", r"collision|collide|revert|bounce"],
+    "m5_camera": [r"camera", r"translate\(\s*-"],
+    "m6_peds": [r"ped|pedestrian", r"\bscore\b"],
+    "m7_hud": [r"fillText", r"setTransform\(\s*1\s*,\s*0\s*,\s*0\s*,\s*1"],
+    "m8_police": [r"police|cop", r"wanted"],
 }
 
 
@@ -31,9 +32,13 @@ class FeatureChecklistScorer:
     name = "feature_checklist"
 
     def score(self, workspace: Path, artifacts: RunArtifacts) -> Scores:
-        src = "\n".join(
-            p.read_text(errors="replace") for p in workspace.rglob("*.py") if ".git" not in p.parts
-        )
+        sources = [
+            p
+            for p in workspace.rglob("*")
+            if p.suffix in {".js", ".html"} and ".git" not in p.parts
+        ]
+        src = "\n".join(p.read_text(errors="replace") for p in sources)
+
         scores: Scores = {}
         reached = 0
         for milestone, patterns in MILESTONES.items():

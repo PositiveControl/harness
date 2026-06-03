@@ -45,9 +45,26 @@ def init_repo(workspace: Path) -> None:
     git(workspace, "commit", "-q", "--allow-empty", "-m", "bench: empty baseline")
 
 
+# Framework scratch + bench-injected files that are NOT model build output.
+# Excluded from the snapshot so diff-based metrics (files, LOC) measure the game,
+# not aider's chat history / cache or the opencode provider config we write in.
+_DIFF_EXCLUDES = (
+    ".aider*",
+    ".opencode*",
+    "opencode.json",  # written by the opencode adapter, not the model
+    ".gitignore",  # aider auto-creates this
+    "node_modules",
+    "*.lock",
+    "bun.lock",
+)
+
+
 def snapshot_diff(workspace: Path) -> str:
-    git(workspace, "add", "-A")
-    return run(["git", "diff", "--cached"], cwd=workspace, timeout_s=60).stdout
+    excludes = [f":(exclude){pat}" for pat in _DIFF_EXCLUDES]
+    git(workspace, "add", "-A", "--", ".", *excludes)
+    return run(
+        ["git", "diff", "--cached", "--", ".", *excludes], cwd=workspace, timeout_s=60
+    ).stdout
 
 
 def transcript_of(cmd: list[str], proc: subprocess.CompletedProcess[str]) -> str:
