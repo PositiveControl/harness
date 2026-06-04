@@ -7,7 +7,7 @@ when you actually need the type."""
 
 from harness.model.adapter import ChatMessage, ModelAdapter
 from harness.model.echo import EchoAdapter
-from harness.model.factory import AdapterName, make_adapter
+from harness.model.factory import AdapterName, make_adapter, make_vision_adapter
 
 __all__ = [
     "AdapterName",
@@ -15,4 +15,5 @@ __all__ = [
     "EchoAdapter",
     "ModelAdapter",
     "make_adapter",
+    "make_vision_adapter",
 ]

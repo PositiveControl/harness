@@ -2732,7 +2732,10 @@ def test_run_loop_default_verify_steps_recomputed_per_turn(
     compute_calls = [0]
 
     def fake_default_steps(
-        _workspace: Any, *, enforce_blank_canvas: bool = True
+        _workspace: Any,
+        *,
+        enforce_blank_canvas: bool = True,
+        capture_shot: Path | None = None,
     ) -> tuple[VerifyStep, ...]:
         compute_calls[0] += 1
         if compute_calls[0] == 1:

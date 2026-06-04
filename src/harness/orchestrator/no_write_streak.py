@@ -201,13 +201,96 @@ class NoSubmitStreakDetector:
     event_kind: ClassVar[str] = "no_submit_streak_detected"
 
 
+# --- WRITE_TEST analog: testing-without-submitting (loop_run=3a0f6368) -
+#
+# loop_run=3a0f6368 turn 2 (vision-test-bun): the model wrote a genuine
+# failing test (write_file + shell, exit=1, red output captured) and then
+# burned the rest of the WRITE_TEST budget chasing edit_file instead of
+# calling submit_failing_test — `write_test->halted (no test)` discarded
+# real progress. Same stall shape as ASSESS's read-without-deciding, so
+# it gets the same mid-phase nudge treatment.
+
+# Tools that count as WRITE_TEST progress: emitting the phase's decision.
+WRITE_TEST_PROGRESS_TOOLS: frozenset[str] = frozenset({"submit_failing_test", "skip_test_phase"})
+
+# Lower than the IMPLEMENT threshold (4): the WRITE_TEST round budget is
+# the tightest of the working phases (DEFAULT_PHASE_BUDGETS: 4), so the
+# nudge must land while there are still rounds left to act on it. The
+# legitimate pre-submit shape is write_file + shell (2 calls); a third
+# non-submit call is already drift.
+DEFAULT_NO_TEST_SUBMIT_STREAK_THRESHOLD: int = 3
+
+_TEST_SUBMIT_NUDGE_TEMPLATE = (
+    "[NO-SUBMIT STREAK — {count} consecutive tool calls in WRITE_TEST "
+    "without submitting. Your next reply MUST do one of:]\n"
+    "(a) If you already wrote a test and ran it red, call "
+    "`submit_failing_test` with test_path, test_cmd, and the captured "
+    "failure_output — that red output is this phase's deliverable.\n"
+    "(b) If you cannot write a test for this issue, call "
+    "`skip_test_phase` with a concrete reason.\n"
+    "(c) If you are trying to modify source files: STOP — that is "
+    "IMPLEMENT-phase work and those tools unlock only after you submit. "
+    "The phase halts when the round budget runs out, so submit now."
+)
+
+
+def build_test_submit_nudge_text(streak: int) -> str:
+    """Nudge appended when the model has worked N rounds in WRITE_TEST
+    without calling submit_failing_test / skip_test_phase."""
+    return _TEST_SUBMIT_NUDGE_TEMPLATE.format(count=streak)
+
+
+@dataclass
+class NoTestSubmitStreakDetector:
+    """WRITE_TEST twin of NoSubmitStreakDetector: counts tool calls that
+    aren't the phase's decision action (submit_failing_test /
+    skip_test_phase) and fires once when the streak crosses threshold.
+    Same one-shot, fire-on-first-cross contract.
+
+    write_file / shell do NOT reset the streak — they're the expected
+    pre-submit work, but the deliverable is the submit call, and the
+    observed failure mode (loop_run=3a0f6368) had productive writes
+    followed by a stall.
+
+    Constructed and armed only by the driver's WRITE_TEST phase."""
+
+    threshold: int = DEFAULT_NO_TEST_SUBMIT_STREAK_THRESHOLD
+    _streak: int = 0
+    _fired: bool = False
+
+    @property
+    def streak(self) -> int:
+        return self._streak
+
+    def observe(self, call: ToolCall, result: ToolResult) -> bool:
+        if call.name in WRITE_TEST_PROGRESS_TOOLS and result.success:
+            self._streak = 0
+            return False
+        if self._fired:
+            return False
+        self._streak += 1
+        if self._streak >= self.threshold:
+            self._fired = True
+            return True
+        return False
+
+    def nudge(self) -> str:
+        return build_test_submit_nudge_text(self._streak)
+
+    event_kind: ClassVar[str] = "no_test_submit_streak_detected"
+
+
 __all__ = [
     "ASSESS_PROGRESS_TOOLS",
     "DEFAULT_NO_SUBMIT_STREAK_THRESHOLD",
+    "DEFAULT_NO_TEST_SUBMIT_STREAK_THRESHOLD",
     "DEFAULT_NO_WRITE_STREAK_THRESHOLD",
+    "WRITE_TEST_PROGRESS_TOOLS",
     "WRITE_TOOL_NAMES",
     "NoSubmitStreakDetector",
+    "NoTestSubmitStreakDetector",
     "NoWriteStreakDetector",
     "build_nudge_text",
     "build_submit_nudge_text",
+    "build_test_submit_nudge_text",
 ]

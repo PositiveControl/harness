@@ -11,8 +11,10 @@ from __future__ import annotations
 
 from harness.orchestrator.no_write_streak import (
     DEFAULT_NO_SUBMIT_STREAK_THRESHOLD,
+    DEFAULT_NO_TEST_SUBMIT_STREAK_THRESHOLD,
     DEFAULT_NO_WRITE_STREAK_THRESHOLD,
     NoSubmitStreakDetector,
+    NoTestSubmitStreakDetector,
     NoWriteStreakDetector,
     build_nudge_text,
 )
@@ -260,3 +262,68 @@ def test_no_write_detector_exposes_nudge_and_event_kind() -> None:
     assert det.nudge() == build_nudge_text(DEFAULT_NO_WRITE_STREAK_THRESHOLD)
     assert det.event_kind == "no_write_streak_detected"
     assert "stream_edit" in det.nudge()
+
+
+# --- NoTestSubmitStreakDetector (WRITE_TEST twin, loop_run=3a0f6368) --
+
+
+def test_no_test_submit_default_threshold_is_three() -> None:
+    """Pin the constant: WRITE_TEST's round budget is the tightest of
+    the working phases (4), so the nudge must fire by call 3 to leave
+    rounds for the model to act on it."""
+    assert DEFAULT_NO_TEST_SUBMIT_STREAK_THRESHOLD == 3
+    assert NoTestSubmitStreakDetector().threshold == 3
+
+
+def test_no_test_submit_fires_at_threshold() -> None:
+    det = NoTestSubmitStreakDetector()
+    read_call, read_result = _read("game.js")
+    assert det.observe(read_call, read_result) is False  # 1
+    assert det.observe(read_call, read_result) is False  # 2
+    assert det.observe(read_call, read_result) is True  # 3 → fire
+    # one-shot
+    assert det.observe(read_call, read_result) is False
+
+
+def test_no_test_submit_write_file_does_not_reset() -> None:
+    """write_file + shell are the expected pre-submit work in
+    WRITE_TEST, but the phase's deliverable is the submit call — the
+    observed stall (loop_run=3a0f6368 turn 2) wrote and ran a genuine
+    red test, then never submitted. They count toward the streak."""
+    det = NoTestSubmitStreakDetector()
+    wf_call = ToolCall(name="write_file", arguments={"path": "tests/t.js", "content": "x"})
+    wf_result = ToolResult(tool_name="write_file", output="wrote", success=True)
+    sh_call = ToolCall(name="shell", arguments={"cmd": "node tests/t.js"})
+    sh_result = ToolResult(tool_name="shell", output="exit=1 FAIL", success=True)
+    assert det.observe(wf_call, wf_result) is False  # 1
+    assert det.observe(sh_call, sh_result) is False  # 2
+    assert det.streak == 2
+    read_call, read_result = _read("game.js")
+    assert det.observe(read_call, read_result) is True  # 3 → fire
+
+
+def test_no_test_submit_reset_by_submit_failing_test() -> None:
+    det = NoTestSubmitStreakDetector()
+    read_call, read_result = _read("game.js")
+    det.observe(read_call, read_result)
+    det.observe(*_submit("submit_failing_test"))
+    assert det.streak == 0
+
+
+def test_no_test_submit_reset_by_skip_test_phase() -> None:
+    det = NoTestSubmitStreakDetector()
+    read_call, read_result = _read("game.js")
+    det.observe(read_call, read_result)
+    det.observe(*_submit("skip_test_phase"))
+    assert det.streak == 0
+
+
+def test_no_test_submit_nudge_text_and_event_kind() -> None:
+    """The nudge steers to submit_failing_test / skip_test_phase and
+    names the IMPLEMENT-phase trap (trying to edit source mid-phase)."""
+    det = NoTestSubmitStreakDetector()
+    text = det.nudge()
+    assert "submit_failing_test" in text
+    assert "skip_test_phase" in text
+    assert "IMPLEMENT" in text
+    assert det.event_kind == "no_test_submit_streak_detected"

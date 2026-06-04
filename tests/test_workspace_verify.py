@@ -374,6 +374,33 @@ def test_smoke_step_no_assert_flag_when_probe_absent(tmp_path: Path) -> None:
     assert "--assert=" not in smoke.cmd
 
 
+def test_smoke_step_adds_screenshot_flag_when_capture_shot_set(tmp_path: Path) -> None:
+    """harness-ke4hx.4: capture_shot threads --screenshot=<resolved path>
+    into the smoke cmd so the runner writes a shot for advisory vision-QA."""
+    (tmp_path / "index.html").write_text(
+        '<html><body><script src="game.js"></script></body></html>',
+    )
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    shot = tmp_path / ".harness" / "vision_shot.png"
+    with patch("harness.driver.workspace_verify._playwright_available", return_value=True):
+        steps = default_workspace_verify_steps(tmp_path, capture_shot=shot)
+    smoke = next(s for s in steps if "smoke_runner" in s.cmd)
+    assert f"--screenshot={shot.resolve()}" in smoke.cmd
+
+
+def test_smoke_step_no_screenshot_flag_by_default(tmp_path: Path) -> None:
+    """No capture_shot → no --screenshot flag (vision-QA is opt-in; the
+    smoke gate is byte-identical to its pre-vision form)."""
+    (tmp_path / "index.html").write_text(
+        '<html><body><script src="game.js"></script></body></html>',
+    )
+    (tmp_path / "game.js").write_text("const x = 1;\n")
+    with patch("harness.driver.workspace_verify._playwright_available", return_value=True):
+        steps = default_workspace_verify_steps(tmp_path)
+    smoke = next(s for s in steps if "smoke_runner" in s.cmd)
+    assert "--screenshot=" not in smoke.cmd
+
+
 def test_smoke_step_index_absolute_with_relative_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

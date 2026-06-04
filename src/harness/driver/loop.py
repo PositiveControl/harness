@@ -77,6 +77,7 @@ from harness.driver.precommit_verify_hook import (
 )
 from harness.driver.state import LoopRunState
 from harness.driver.turn_fsm import PREMISE_UNMET_REASON_PREFIX
+from harness.driver.vision_qa import build_rubric, run_advisory_qa
 from harness.driver.workspace_guard import (
     DEFAULT_SCRATCH_PATTERNS,
     WorkspaceTooBigError,
@@ -91,6 +92,7 @@ from harness.driver.workspace_verify import (
     browser_smoke_skip_reason,
     default_workspace_verify_steps,
 )
+from harness.model import make_vision_adapter
 from harness.model.adapter import ChatMessage, ModelAdapter
 from harness.orchestrator import ToolLoopEvent, ToolLoopResult, run_tool_loop
 from harness.orchestrator.hook_wiring import make_write_file_redirect_hook
@@ -314,6 +316,13 @@ class LoopConfig:
     # so a parked issue faces the identical workspace next pass and would
     # park again; skipping it is correct. Empty for standalone run_loop.
     skip_issue_ids: frozenset[str] = frozenset()
+    # harness-ke4hx.4: advisory VLM browser-QA endpoint. When set, the
+    # smoke step captures a post-settle screenshot and, after each turn's
+    # verify resolves, a VLM judges it against the bead's acceptance
+    # rubric — logged + appended to .harness/vision_qa.jsonl, NEVER gating
+    # (Phase 1 is signal-collection only). None = off; the smoke gate runs
+    # exactly as before. CLI wires this from settings.vision_base_url.
+    vision_base_url: str | None = None
 
 
 @dataclass
@@ -407,9 +416,19 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
     # for non-FSM turns; the legacy path recomputes per-turn (post-write)
     # so empty workspaces still pick up the model's freshly-created files
     # when the gate runs.
+    # harness-ke4hx.4: advisory VLM browser-QA. Resolved once per run —
+    # None when vision_base_url is unset (feature dormant; smoke gate
+    # unchanged). The screenshot the smoke step captures and the JSONL
+    # audit both live under .harness so they ride the run's lifecycle.
+    vision_adapter = make_vision_adapter(config.vision_base_url)
+    vision_shot = config.workspace / ".harness" / "vision_shot.png" if vision_adapter else None
+    vision_qa_log = config.workspace / ".harness" / "vision_qa.jsonl"
+    if vision_adapter is not None:
+        log(f"advisory vision-QA active: {vision_adapter.id} (non-gating)")
+
     enforce_blank = _blank_canvas_enforced(bd, config.render_milestone_id)
     default_verify_steps = default_workspace_verify_steps(
-        config.workspace, enforce_blank_canvas=enforce_blank
+        config.workspace, enforce_blank_canvas=enforce_blank, capture_shot=vision_shot
     )
     if default_verify_steps:
         log(f"workspace-typed verify defaults active: {len(default_verify_steps)} step(s)")
@@ -661,6 +680,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             default_verify_steps = default_workspace_verify_steps(
                 config.workspace,
                 enforce_blank_canvas=_blank_canvas_enforced(bd, config.render_milestone_id),
+                capture_shot=vision_shot,
             )
 
             success, reason, forbidden_warnings = _classify_post_turn(
@@ -672,6 +692,22 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 started_at=state.started_at,
                 forbidden_patterns=config.forbidden_patterns,
             )
+
+            # harness-ke4hx.4: advisory vision-QA. Judges the smoke
+            # screenshot against this bead's rubric AFTER the gate outcome
+            # (`success`) is already decided — it logs + records, and NEVER
+            # changes pass/fail. Degrades to a logged skip when the
+            # adapter, screenshot, or endpoint is unavailable.
+            if vision_adapter is not None and vision_shot is not None:
+                run_advisory_qa(
+                    vision_adapter,
+                    vision_shot,
+                    build_rubric(current.title, str(current.raw.get("description", ""))),
+                    gate_passed=success,
+                    issue_id=current.id,
+                    jsonl_path=vision_qa_log,
+                    log=log,
+                )
 
             # harness-oh8e: forbidden_patterns is warn-only. Surface the
             # violations to the progress log so the operator sees them

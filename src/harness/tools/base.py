@@ -273,12 +273,30 @@ class ToolRegistry:
         # tool_search. Registries built without a catalog keep the
         # legacy single-shape error.
         self._catalog: ToolCatalog | None = catalog
+        # Per-name unavailable hints (loop_run=3a0f6368). When a caller
+        # deliberately withholds a catalog-known tool (the driver's
+        # phase-scoped rosters), the default catalog hint ("call
+        # load_tool, then retry") is actively wrong — load_tool can't
+        # activate it either, and the model ping-pongs between the two
+        # messages until the round budget dies. A hint registered here
+        # wins over the catalog hint and explains the real recovery
+        # path (e.g. "edit_file unlocks in IMPLEMENT; call
+        # submit_failing_test to get there").
+        self._unavailable_hints: dict[str, str] = {}
 
     def set_catalog(self, catalog: ToolCatalog | None) -> None:
         """Wire (or unwire) a ToolCatalog for unknown-tool
         disambiguation. Optional — registries without a catalog use
         the legacy 'not found, here's the active list' error."""
         self._catalog = catalog
+
+    def set_unavailable_hint(self, name: str, hint: str) -> None:
+        """Register a caller-supplied message for calls to `name` while
+        it is deliberately unregistered. Overrides the catalog-derived
+        'call load_tool first' hint, which assumes the tool CAN be
+        loaded — wrong when the caller scoped it out on purpose
+        (driver phase rosters, loop_run=3a0f6368)."""
+        self._unavailable_hints[name] = hint
 
     def register(self, tool: Tool) -> None:
         name = tool.spec.name
@@ -359,7 +377,13 @@ class ToolRegistry:
         valid kwargs, so the model has no way to know what to drop."""
         if name not in self._tools:
             active = list(self.active_names())
-            if self._catalog is not None and self._catalog.get(name) is not None:
+            hint = self._unavailable_hints.get(name)
+            if hint is not None:
+                # Caller-scoped unavailability: the tool was withheld on
+                # purpose, so the catalog's load_tool-recovery hint
+                # would be a dead end. Surface the caller's hint.
+                msg = f"unknown tool: {name!r}. {hint} Currently active: {active}."
+            elif self._catalog is not None and self._catalog.get(name) is not None:
                 # Catalog-known but not active this session: the model
                 # called a tool whose schema it hadn't yet pulled in.
                 # Hand back a load_tool-recovery hint instead of the

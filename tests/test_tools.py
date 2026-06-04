@@ -71,6 +71,29 @@ def test_registry_unknown_tool_returns_failed_result() -> None:
     assert result.error == "unknown_tool"
 
 
+def test_registry_unavailable_hint_overrides_catalog_recovery(tmp_path: Path) -> None:
+    """loop_run=3a0f6368: a catalog-known tool the caller deliberately
+    withheld (driver phase rosters) must NOT get the 'call load_tool,
+    then retry' hint — load_tool can't activate it either, and the
+    contradictory pair burned six turns. A registered unavailable hint
+    wins over the catalog hint."""
+    from harness.tools.catalog import ToolCatalog, ToolCatalogEntry
+
+    catalog = ToolCatalog()
+    catalog.register(ToolCatalogEntry(name="edit_file", family="filesystem", origin="builtin"))
+    registry = ToolRegistry(catalog=catalog)
+    registry.register(ReadFileTool(root=tmp_path))
+    registry.set_unavailable_hint(
+        "edit_file", "Editing unlocks in the IMPLEMENT phase; call submit_failing_test first."
+    )
+
+    result = registry.call("edit_file", {"path": "a.js"})
+    assert not result.success
+    assert result.error == "unknown_tool"
+    assert "IMPLEMENT" in result.output
+    assert "load_tool" not in result.output
+
+
 def test_registry_catches_tool_exceptions(tmp_path: Path) -> None:
     registry = ToolRegistry()
     registry.register(ReadFileTool(root=tmp_path))

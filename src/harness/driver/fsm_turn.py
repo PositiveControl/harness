@@ -66,6 +66,7 @@ from harness.orchestrator.hooks import EXHAUSTED_FABRICATION_FALLBACK
 from harness.orchestrator.no_write_streak import (
     WRITE_TOOL_NAMES,
     NoSubmitStreakDetector,
+    NoTestSubmitStreakDetector,
     NoWriteStreakDetector,
 )
 from harness.tools import (
@@ -249,12 +250,75 @@ def _build_phase_registry(
     for tool in phase_tools.values():
         registry.register(tool)
 
+    # Phase-aware unavailable-tool messaging (loop_run=3a0f6368). The
+    # catalog is seeded with every builtin so tool_search stays useful,
+    # but that means a withheld tool gets the generic "call load_tool,
+    # then retry" error while load_tool (builders={}) answers "restart
+    # the session" — two contradictory dead ends the model ping-pongs
+    # between until the round budget dies. Register a per-phase hint on
+    # both surfaces so calls to a deliberately-withheld tool explain the
+    # real recovery path: finish this phase via its meta-tool.
+    hints = _phase_unavailable_hints(phase)
+    for tool_name, hint in hints.items():
+        registry.set_unavailable_hint(tool_name, hint)
+
     # tool_search / load_tool are bookkeeping; available everywhere
     # so the model can introspect the schema if needed. Cheap; no
     # meaningful security surface here.
     registry.register(ToolSearchTool(catalog=catalog, registry=registry))
-    registry.register(LoadToolTool(catalog=catalog, registry=registry, builders={}))
+    registry.register(
+        LoadToolTool(catalog=catalog, registry=registry, builders={}, unavailable_hints=hints)
+    )
     return registry
+
+
+# Write-tier tool names a phase may withhold. shell is listed separately
+# because WRITE_TEST / VERIFY / CLOSE keep it while dropping the editors.
+_EDITOR_TOOL_NAMES: tuple[str, ...] = ("edit_file", "write_file", "stream_edit")
+
+
+def _phase_unavailable_hints(phase: TurnPhase) -> dict[str, str]:
+    """Per-phase messages for tools the phase deliberately withholds.
+
+    Keyed by tool name; applied to both the registry's unknown-tool
+    error and load_tool's catalog-hit-no-builder branch so the two
+    surfaces agree. Only covers the write tier — the observed failure
+    mode (loop_run=3a0f6368: six turns burned chasing edit_file in
+    ASSESS/WRITE_TEST) is models reaching for editors before the FSM
+    grants them."""
+    no_load = "Do NOT call load_tool — tools cannot be activated mid-phase."
+    if phase == TurnPhase.ASSESS:
+        hint = (
+            "File edits and shell are not available in ASSESS — it is a "
+            "read-only phase. Editing happens later, in the IMPLEMENT "
+            "phase. Finish ASSESS by calling `submit_assessment` (or "
+            f"`flag_blocked` if the premise is unmet). {no_load}"
+        )
+        return dict.fromkeys((*_EDITOR_TOOL_NAMES, "shell"), hint)
+    if phase == TurnPhase.WRITE_TEST:
+        hint = (
+            "Source-file editing is not available in WRITE_TEST. This "
+            "phase only creates NEW test files (`write_file`) and runs "
+            "them (`shell`). Editing unlocks in the IMPLEMENT phase, "
+            "which starts after you call `submit_failing_test` with the "
+            f"red test output (or `skip_test_phase`). {no_load}"
+        )
+        return dict.fromkeys(("edit_file", "stream_edit"), hint)
+    if phase == TurnPhase.VERIFY:
+        hint = (
+            "File mutations are not available in VERIFY — the driver "
+            "re-runs the verify steps automatically. Produce a brief "
+            f"'verify run' reply; fixes happen on the next turn. {no_load}"
+        )
+        return dict.fromkeys(_EDITOR_TOOL_NAMES, hint)
+    if phase == TurnPhase.CLOSE:
+        hint = (
+            "Only `shell` is available in CLOSE. Run `bd close "
+            f"<issue-id>` to finish the turn. {no_load}"
+        )
+        return dict.fromkeys(_EDITOR_TOOL_NAMES, hint)
+    # IMPLEMENT has the full write tier; nothing to hint.
+    return {}
 
 
 # --- per-phase user messages --------------------------------------
@@ -453,14 +517,21 @@ def _run_one_phase(
     # streak — "looking instead of writing". ASSESS (loop_run=ad30d9ad
     # parked hewc/cw1m on read-without-submitting): no-submit streak —
     # "reading instead of deciding", nudging toward submit_assessment /
-    # flag_blocked before the round budget halts the phase. Constructed
-    # fresh per phase invocation; the detector holds per-turn state and
-    # must not leak across phases. WRITE_TEST / VERIFY / CLOSE get none.
-    no_write_streak: NoWriteStreakDetector | NoSubmitStreakDetector | None = None
+    # flag_blocked before the round budget halts the phase. WRITE_TEST
+    # (loop_run=3a0f6368 turn 2: genuine red test written + run, then the
+    # budget burned without submit_failing_test): no-test-submit streak —
+    # "testing instead of submitting". Constructed fresh per phase
+    # invocation; the detector holds per-turn state and must not leak
+    # across phases. VERIFY / CLOSE get none.
+    no_write_streak: (
+        NoWriteStreakDetector | NoSubmitStreakDetector | NoTestSubmitStreakDetector | None
+    ) = None
     if phase is TurnPhase.IMPLEMENT:
         no_write_streak = NoWriteStreakDetector()
     elif phase is TurnPhase.ASSESS:
         no_write_streak = NoSubmitStreakDetector()
+    elif phase is TurnPhase.WRITE_TEST:
+        no_write_streak = NoTestSubmitStreakDetector()
     result: ToolLoopResult = run_tool_loop(
         adapter,  # type: ignore[arg-type]  # ModelAdapter satisfies _ToolCapableAdapter at runtime
         messages,
@@ -820,8 +891,13 @@ def run_fsm_turn(
         # Premise-unmet halt: carry the marked reason verbatim so the loop
         # parks-and-flags rather than retrying (PREMISE_UNMET_REASON_PREFIX).
         reason = premise_unmet_reason
-    if last_reply.strip() == EXHAUSTED_FABRICATION_FALLBACK.strip():
-        reason = f"fabrication_fallback fired during {fsm.state.value}"
+    elif last_reply.strip() == EXHAUSTED_FABRICATION_FALLBACK.strip():
+        # Annotate, don't overwrite (loop_run=3a0f6368): the fallback
+        # firing is a symptom of the phase stalling out, and replacing
+        # the trace-derived reason ("write_test->halted (no test)") with
+        # the catcher name erased the actual halt cause from
+        # state.last_failure + the retry handoff for all six turns.
+        reason = f"{reason}; fabrication_fallback fired"
     return FsmTurnResult(
         final_phase=TurnPhase.HALTED,
         succeeded=False,
