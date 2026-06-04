@@ -39,6 +39,7 @@ from harness.orchestrator.hooks import (
 )
 from harness.orchestrator.no_write_streak import (
     NoSubmitStreakDetector,
+    NoTestSubmitStreakDetector,
     NoWriteStreakDetector,
 )
 from harness.orchestrator.repeat_detector import RepeatCounter, build_nudge_text
@@ -84,9 +85,10 @@ def _catcher_enabled(name: str) -> bool:
 # `harness.orchestrator`.
 # A stall detector armed by the driver per phase: NoWriteStreakDetector in
 # IMPLEMENT ("looking instead of writing"), NoSubmitStreakDetector in
-# ASSESS ("reading instead of deciding"). Both share observe()/nudge()/
-# event_kind, so the loop drives whichever one a phase passed in.
-_StallDetector = NoWriteStreakDetector | NoSubmitStreakDetector
+# ASSESS ("reading instead of deciding"), NoTestSubmitStreakDetector in
+# WRITE_TEST ("testing instead of submitting"). All share observe()/
+# nudge()/event_kind, so the loop drives whichever one a phase passed in.
+_StallDetector = NoWriteStreakDetector | NoSubmitStreakDetector | NoTestSubmitStreakDetector
 
 _DUPLICATE_CALL_NUDGE = DUPLICATE_CALL_NUDGE
 _EXHAUSTED_FABRICATION_FALLBACK = EXHAUSTED_FABRICATION_FALLBACK

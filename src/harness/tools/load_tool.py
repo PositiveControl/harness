@@ -96,6 +96,14 @@ class LoadToolTool:
     # constructs the profile's initial tools is reused for on-demand
     # construction. Without it, load_tool keeps its v0 'restart' hint.
     builders: dict[str, Callable[[], Tool | None]] = field(default_factory=dict)
+    # Per-name unavailable hints (loop_run=3a0f6368). When the caller
+    # deliberately withholds a tool (driver phase rosters pass
+    # builders={}), the 'restart with --tools-add' hint is a dead end —
+    # there is no session to restart mid-FSM-turn, and the registry's
+    # unknown-tool error simultaneously tells the model to call
+    # load_tool, producing a contradiction loop. A hint here explains
+    # the real recovery path instead.
+    unavailable_hints: dict[str, str] = field(default_factory=dict)
 
     @property
     def spec(self) -> ToolSpec:
@@ -140,6 +148,12 @@ class LoadToolTool:
         # 2. In catalog but not in registry: try to build it on demand
         #    (the cm4v path), else fall back to a 'restart' hint.
         if name not in self.registry:
+            # Caller-scoped unavailability wins over every recovery
+            # hint: the tool was withheld on purpose (driver phase
+            # rosters), so neither a builder nor a restart applies.
+            scoped_hint = self.unavailable_hints.get(name)
+            if scoped_hint is not None:
+                return f"load_tool: {name!r} cannot be loaded right now. {scoped_hint}"
             # entry is non-None here because we returned above otherwise.
             assert entry is not None  # for type narrowing
             if entry.origin == "synthesized":

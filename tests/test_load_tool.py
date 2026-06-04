@@ -261,6 +261,29 @@ def test_load_tool_without_builders_keeps_old_restart_hint() -> None:
     assert "--tools-add not_built" in out
 
 
+def test_load_tool_unavailable_hint_overrides_restart_hint() -> None:
+    """loop_run=3a0f6368: the driver's phase registries pass builders={}
+    AND withhold tools on purpose, so 'restart with --tools-add' is a
+    dead end mid-FSM-turn (no session to restart) — worse, it
+    contradicts the registry's 'call load_tool first' error. A scoped
+    unavailable hint replaces the restart advice with the real recovery
+    path."""
+    catalog = ToolCatalog()
+    catalog.register(ToolCatalogEntry(name="edit_file", family="filesystem", origin="builtin"))
+    tool = LoadToolTool(
+        catalog=catalog,
+        registry=ToolRegistry(),
+        builders={},
+        unavailable_hints={
+            "edit_file": "Editing unlocks in the IMPLEMENT phase; submit_failing_test first."
+        },
+    )
+    out = tool.call(name="edit_file")
+    assert "cannot be loaded right now" in out
+    assert "IMPLEMENT" in out
+    assert "--tools-add" not in out
+
+
 # --- harness-h6ve: companion auto-load ----------------------------------
 
 
