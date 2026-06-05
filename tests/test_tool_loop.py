@@ -3820,6 +3820,112 @@ def test_all_deduped_content_round_does_not_burn_work_budget(tmp_path: Path) -> 
     assert result.content == "done"
 
 
+def test_unknown_tool_round_does_not_burn_work_budget(tmp_path: Path) -> None:
+    """loop_run=4d11ea3f: the model reached for edit_file in the
+    driver's read-only ASSESS phase every turn. The registry's
+    unknown-tool rejection executed nothing — yet the round burned
+    work budget, tipping tight phase budgets toward the cliff. An
+    unknown-tool-only round must be free (like all-deduped rounds,
+    harness-estby): the corrective error needs a round to act on."""
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+    (tmp_path / "hi.txt").write_text("contents")
+    adapter = _ScriptedAdapter(
+        replies=[
+            # Round 1: call a tool the registry doesn't have — rejected
+            # with error="unknown_tool", nothing executes. Must be free.
+            ModelReply(
+                content="",
+                tool_calls=(
+                    ToolCall(name="edit_file", arguments={"path": "x.js", "content": "y"}),
+                ),
+            ),
+            # Round 2: only reached if round 1 didn't burn max_rounds=1.
+            ModelReply(content="redirected — submitting assessment instead"),
+        ]
+    )
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="assess the file")],
+        registry,
+        max_rounds=1,
+    )
+
+    # The rejection fired as a failed call with the unknown_tool marker...
+    failed = [
+        e
+        for e in result.events
+        if e.kind == "tool_call_failed"
+        and e.result is not None
+        and e.result.error == "unknown_tool"
+    ]
+    assert len(failed) == 1
+    # ...the round was free (meta-like), so the model got its next round.
+    assert any(e.kind == "meta_round" for e in result.events)
+    assert result.content == "redirected — submitting assessment instead"
+
+
+def test_unknown_tool_plus_real_call_still_burns_work_round(tmp_path: Path) -> None:
+    """The exemption is per-round-of-no-progress, not per-call: a round
+    that mixes an unknown-tool rejection with a successful content call
+    made real progress and must count as work."""
+    (tmp_path / "hi.txt").write_text("contents")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(
+                    ToolCall(name="edit_file", arguments={"path": "x.js", "content": "y"}),
+                    ToolCall(name="read_file", arguments={"path": "hi.txt"}),
+                ),
+            ),
+            # Wrap-up reply (max_rounds=1 burned by the mixed round).
+            ModelReply(content="wrapped"),
+        ]
+    )
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="do work")],
+        registry,
+        max_rounds=1,
+    )
+
+    # The mixed round counted as work — budget hit, wrap-up forced.
+    assert not any(e.kind == "meta_round" for e in result.events)
+    assert any(e.kind == "wrap_up_forced" for e in result.events)
+    assert result.content == "wrapped"
+
+
+def test_repeated_unknown_tool_call_burns_budget(tmp_path: Path) -> None:
+    """Free unknown-tool rounds must not be infinite: the SECOND
+    identical unknown-tool call is caught by DuplicateCallHook (the
+    re-issued failure is not in the unknown-tool exemption set), so a
+    model thrashing on the same nonexistent tool still burns rounds
+    and the loop terminates promptly."""
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+    (tmp_path / "hi.txt").write_text("contents")
+    same_call = ToolCall(name="edit_file", arguments={"path": "x.js", "content": "y"})
+    adapter = _ScriptedAdapter(
+        replies=[ModelReply(content="", tool_calls=(same_call,)) for _ in range(6)]
+        + [ModelReply(content="giving up")]
+    )
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="edit the file")],
+        registry,
+        max_rounds=2,
+    )
+
+    # Bounded: well under the scripted 6 repeats + hard ceiling.
+    assert result.rounds <= 5
+
+
 # ---------- wrap-up round (harness-0gss) ----------
 
 

@@ -1725,6 +1725,26 @@ def run_tool_loop(
             and e.result.success
             and (e.result.output or "").startswith(_DUPLICATE_CALL_PREFIX)
         }
+        # Unknown-tool rejections this round (loop_run=4d11ea3f). A call
+        # to a tool the registry doesn't have — e.g. the model reaching
+        # for edit_file in the driver's read-only ASSESS phase, or a
+        # hallucinated tool name in chat — executes nothing and makes no
+        # progress; the result is a corrective error the model needs a
+        # round to act on. Charging it tips tight phase budgets the same
+        # way the all-deduped round did (harness-estby). The hard ceiling
+        # (2 * max_rounds) still bounds a model that only ever calls
+        # nonexistent tools, and DuplicateCallHook catches exact repeats
+        # (re-issued failures DO burn rounds — that's thrashing).
+        unknown_tool_keys = {
+            _call_key_for_meta_check(e.call)
+            for e in events
+            if e.round_index == round_idx
+            and e.kind == "tool_call_failed"
+            and e.call is not None
+            and e.call.name not in _META_TOOLS
+            and e.result is not None
+            and e.result.error == "unknown_tool"
+        }
         content_calls = [c for c in last_reply.tool_calls if c.name not in _META_TOOLS]
         # A content round counts as work only if at least one content
         # call actually executed. A round whose content calls were ALL
@@ -1737,8 +1757,11 @@ def run_tool_loop(
         # all-deduped content round as free gives the model the round
         # back to finish the close; the repeat-counter escalation +
         # hard_ceiling still bound a model that only ever re-reads.
+        # Unknown-tool rejections ride the same exemption — see above.
         has_real_content_call = any(
-            _call_key_for_meta_check(c) not in dup_content_keys for c in content_calls
+            _call_key_for_meta_check(c) not in dup_content_keys
+            and _call_key_for_meta_check(c) not in unknown_tool_keys
+            for c in content_calls
         )
         blocked_meta_call = False
         if not content_calls and last_reply.tool_calls:
