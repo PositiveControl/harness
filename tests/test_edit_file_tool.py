@@ -164,3 +164,81 @@ def test_both_empty_strings_rejected(tmp_path: Path) -> None:
     (tmp_path / "f.txt").write_text("contents")
     with pytest.raises(ValueError, match="nothing to do"):
         _tool(tmp_path).call(path="f.txt", old_string="", new_string="")
+
+
+# --- typed-args boundary (harness-4fa0m) ----------------------------
+#
+# Run d45fd2f7: the model repeatedly emitted edit_file with args={} and
+# got back a raw `TypeError: EditFileTool.call() missing 3 required
+# keyword-only arguments` — no field names it could act on, so it
+# re-emitted the same malformed call for rounds. edit_file was the one
+# file-op tool left off the harness-5cjj9 typed-args pass; these tests
+# pin the args_model boundary.
+
+
+def test_registry_empty_args_returns_structured_validation_error(tmp_path: Path) -> None:
+    from harness.tools.base import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register(_tool(tmp_path))
+
+    result = registry.call("edit_file", {})
+
+    assert not result.success
+    assert (result.error or "") == "validation_error"
+    # The d45fd2f7 failure shape must be gone…
+    assert "TypeError" not in (result.error or "")
+    assert "keyword-only" not in result.output
+    # …replaced by every missing field named for the model to act on.
+    for field in ("path", "old_string", "new_string"):
+        assert field in result.output
+
+
+def test_registry_unknown_arg_keeps_harness_d7e_hint(tmp_path: Path) -> None:
+    """extra_forbidden still routes through the unknown-kwarg rewrite
+    that lists accepted fields."""
+    from harness.tools.base import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register(_tool(tmp_path))
+    (tmp_path / "f.txt").write_text("hello world")
+
+    result = registry.call(
+        "edit_file",
+        {"path": "f.txt", "old_string": "hello", "new_string": "hi", "mode": "fast"},
+    )
+
+    assert not result.success
+    assert (result.error or "").startswith("unknown_kwarg:mode")
+    assert "replace_all" in result.output
+
+
+def test_registry_valid_call_still_dispatches(tmp_path: Path) -> None:
+    """The args_model is transparent for well-formed calls."""
+    from harness.tools.base import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register(_tool(tmp_path))
+    (tmp_path / "f.txt").write_text("hello world")
+
+    result = registry.call(
+        "edit_file", {"path": "f.txt", "old_string": "world", "new_string": "harness"}
+    )
+
+    assert result.success
+    assert (tmp_path / "f.txt").read_text() == "hello harness"
+
+
+def test_schema_shape_unchanged_by_args_model() -> None:
+    """tool_schema_from_model output must keep the same required set +
+    property names the hand-written schema had — the drive prompts and
+    router fixtures key off them."""
+    spec = EditFileTool(root=Path(".")).spec
+    assert set(spec.parameters["required"]) == {"path", "old_string", "new_string"}
+    assert set(spec.parameters["properties"].keys()) == {
+        "path",
+        "old_string",
+        "new_string",
+        "replace_all",
+    }
+    assert spec.parameters["properties"]["replace_all"]["type"] == "boolean"

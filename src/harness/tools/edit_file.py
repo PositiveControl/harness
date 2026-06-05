@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness.tools.base import ToolSpec
+from pydantic import BaseModel, ConfigDict, Field
+
+from harness.tools.base import ToolSpec, tool_schema_from_model
 from harness.tools.parse_check import parse_check
 
 # 4 KB cap on inlined file contents in error messages. Tightened from
@@ -126,6 +128,36 @@ def _enforce_parse_check(target: Path, path: str) -> None:
     )
 
 
+class EditFileArgs(BaseModel):
+    """Typed arguments for edit_file (harness-4fa0m). edit_file was the
+    one file-op tool left off the harness-5cjj9 typed-args pass, so a
+    malformed call (run d45fd2f7: `args={}`) skipped validation and
+    surfaced a raw `TypeError: ... missing 3 required keyword-only
+    arguments` the model had no path to correct. Routing through an
+    args_model produces the structured field-by-field error instead."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(description="Path relative to the workspace root")
+    old_string: str = Field(
+        description=(
+            "Exact text to replace (including whitespace). "
+            "Empty string = append `new_string` to end of file."
+        ),
+    )
+    new_string: str = Field(
+        description=("Replacement or appended text. Must differ from old_string when replacing."),
+    )
+    replace_all: bool = Field(
+        default=False,
+        description=(
+            "If true, replace every occurrence. Default false — "
+            "requires old_string to be unique in the file. "
+            "Ignored when old_string is empty (append mode)."
+        ),
+    )
+
+
 @dataclass
 class EditFileTool:
     """Edit an existing workspace file: either replace an exact-string
@@ -169,38 +201,8 @@ class EditFileTool:
                 "when the literal target repeats.\n\n"
                 "Returns a summary of what changed."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path relative to the workspace root",
-                    },
-                    "old_string": {
-                        "type": "string",
-                        "description": (
-                            "Exact text to replace (including whitespace). "
-                            "Empty string = append `new_string` to end of file."
-                        ),
-                    },
-                    "new_string": {
-                        "type": "string",
-                        "description": (
-                            "Replacement or appended text. Must differ from "
-                            "old_string when replacing."
-                        ),
-                    },
-                    "replace_all": {
-                        "type": "boolean",
-                        "description": (
-                            "If true, replace every occurrence. Default false — "
-                            "requires old_string to be unique in the file. "
-                            "Ignored when old_string is empty (append mode)."
-                        ),
-                    },
-                },
-                "required": ["path", "old_string", "new_string"],
-            },
+            parameters=tool_schema_from_model(EditFileArgs),
+            args_model=EditFileArgs,
             tier="write",
             display_name="Edit file",
         )
