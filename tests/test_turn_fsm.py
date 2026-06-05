@@ -243,6 +243,15 @@ def test_default_budgets_cover_every_non_terminal_phase() -> None:
         assert budget >= 1
 
 
+def test_write_test_budget_covers_full_tdd_sequence() -> None:
+    """loop_run=dfc38c5f: the minimum honest WRITE_TEST sequence is
+    read → write_file → shell run → submit_failing_test, and the model
+    reliably spends 1-2 extra rounds re-reading context. A budget of 4
+    exhausted exactly at the shell run, so the submit never happened
+    and all 6 turns halted 'no test'. Pin ≥ 6."""
+    assert DEFAULT_PHASE_BUDGETS[TurnPhase.WRITE_TEST] >= 6
+
+
 def test_phase_outcome_str_is_bounded() -> None:
     """PhaseOutcome.__str__ is the source for NoMatchingTransitionError
     summaries — must be bounded. detail field is truncated to 80

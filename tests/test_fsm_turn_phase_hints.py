@@ -257,6 +257,54 @@ def test_fsm_turn_arms_write_detector_in_implement(
     assert isinstance(detectors[2], NoWriteStreakDetector)
 
 
+def test_fsm_turn_passes_phase_exit_tools_to_wrap_up(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """loop_run=dfc38c5f: each phase's run_tool_loop call must whitelist
+    that phase's exit tools for the wrap-up round, so a model that
+    exhausts its budget one call short of the exit signal can still
+    emit it. ASSESS → WRITE_TEST via submit_assessment, then stall."""
+    wrap_up_tool_sets: list[Any] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, registry: Any, **kwargs: Any
+    ) -> ToolLoopResult:
+        wrap_up_tool_sets.append(kwargs.get("wrap_up_tools"))
+        if "submit_assessment" in registry.names():
+            registry.call(
+                "submit_assessment",
+                {
+                    "current_state": "c" * 30,
+                    "gap": "g" * 30,
+                    "approach": "a" * 30,
+                },
+            )
+            content = "assessment recorded."
+        else:
+            content = "stalling."
+        return ToolLoopResult(
+            content=content,
+            messages=[ChatMessage(role="assistant", content=content)],
+            rounds=1,
+            events=[],
+        )
+
+    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+
+    result = run_fsm_turn(
+        adapter=None,  # type: ignore[arg-type]  # never reached; run_tool_loop is stubbed
+        character=_FakeCharacter(),  # type: ignore[arg-type]
+        bd=_FakeBd(),  # type: ignore[arg-type]
+        handoff_builder=_handoff,
+        workspace=tmp_path,
+        current_issue_id="harness-x",
+    )
+
+    assert not result.succeeded
+    assert wrap_up_tool_sets[0] == frozenset({"submit_assessment", "flag_blocked"})
+    assert wrap_up_tool_sets[1] == frozenset({"submit_failing_test", "skip_test_phase"})
+
+
 def test_halt_reason_keeps_fsm_cause_when_fallback_fired(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

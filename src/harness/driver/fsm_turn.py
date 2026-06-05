@@ -412,6 +412,19 @@ def phase_instructions(phase: TurnPhase) -> str:
     return _PHASE_INSTRUCTIONS.get(phase, "")
 
 
+# Phase-exit capture tools allowed in the forced wrap-up round
+# (loop_run=dfc38c5f). When a phase's round budget exhausts one call
+# short of the exit signal — the dfc38c5f shape: red test written and
+# run, budget gone before submit_failing_test — the wrap-up round may
+# still emit the exit call instead of having it stripped. These are
+# zero-side-effect capture tools; executing them late is always safe.
+_PHASE_EXIT_TOOLS: Mapping[TurnPhase, frozenset[str]] = {
+    TurnPhase.ASSESS: frozenset({"submit_assessment", "flag_blocked"}),
+    TurnPhase.WRITE_TEST: frozenset({"submit_failing_test", "skip_test_phase"}),
+    TurnPhase.IMPLEMENT: frozenset({"submit_implementation_complete"}),
+}
+
+
 _PHASE_USER_PROMPTS: Mapping[TurnPhase, str] = {
     TurnPhase.ASSESS: (
         "Read the file(s) referenced in the session handoff, then "
@@ -540,6 +553,9 @@ def _run_one_phase(
         observe=relay,
         max_rounds=max_rounds,
         no_write_streak=no_write_streak,
+        # loop_run=dfc38c5f: let the forced wrap-up round still emit
+        # this phase's exit-signal call instead of stripping it.
+        wrap_up_tools=_PHASE_EXIT_TOOLS.get(phase, frozenset()),
     )
     return _PhaseExecutionResult(tool_loop_result=result, succeeded_tools=succeeded_tools)
 

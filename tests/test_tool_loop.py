@@ -3911,6 +3911,111 @@ def test_wrap_up_strips_tool_calls_from_wrap_up_reply(tmp_path: Path) -> None:
     assert len(tool_msgs) == 1
 
 
+def test_wrap_up_executes_whitelisted_exit_tool(tmp_path: Path) -> None:
+    """loop_run=dfc38c5f: the driver's WRITE_TEST phase exhausted its
+    round budget on the test run itself; the wrap-up round then stripped
+    the model's submit_failing_test call, halting the phase 'no test'
+    despite a genuine red test. With `wrap_up_tools` naming the phase's
+    exit tools, the wrap-up call executes and the capture lands."""
+    from harness.tools.turn_phase_meta import SubmitFailingTestTool
+
+    (tmp_path / "hi.txt").write_text("contents")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+    submit = SubmitFailingTestTool()
+    registry.register(submit)
+
+    last_round_tool_call = ModelReply(
+        content="",
+        tool_calls=(ToolCall(name="read_file", arguments={"path": "hi.txt"}),),
+    )
+    wrap_up_submit = ModelReply(
+        content="",
+        tool_calls=(
+            ToolCall(
+                name="submit_failing_test",
+                arguments={
+                    "test_path": "tests/fps_test.js",
+                    "test_cmd": "node tests/fps_test.js",
+                    "failure_output": "FPS counter test FAILED: not implemented",
+                },
+            ),
+        ),
+    )
+    adapter = _ScriptedAdapter(replies=[last_round_tool_call, wrap_up_submit])
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="write a failing test")],
+        registry,
+        max_rounds=1,
+        wrap_up_tools=frozenset({"submit_failing_test", "skip_test_phase"}),
+    )
+
+    # The exit call executed: capture landed and a tool_call_end fired.
+    captured = submit.latest()
+    assert captured is not None
+    assert captured["test_cmd"] == "node tests/fps_test.js"
+    submit_events = [
+        e
+        for e in result.events
+        if e.kind == "tool_call_end" and e.call is not None and e.call.name == "submit_failing_test"
+    ]
+    assert len(submit_events) == 1
+    # And the wrap-up nudge named the allowed exit tools instead of
+    # the blanket "do NOT call another tool" copy.
+    nudges = [m for m in result.messages if m.role == "user" and "final round" in m.content]
+    assert any("submit_failing_test" in m.content for m in nudges)
+
+
+def test_wrap_up_still_strips_non_whitelisted_calls(tmp_path: Path) -> None:
+    """The exit-tool exemption is a whitelist, not a floodgate: a
+    wrap-up reply mixing an exit call with a content call executes
+    only the exit call."""
+    from harness.tools.turn_phase_meta import SubmitFailingTestTool
+
+    (tmp_path / "hi.txt").write_text("contents")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+    submit = SubmitFailingTestTool()
+    registry.register(submit)
+
+    last_round_tool_call = ModelReply(
+        content="",
+        tool_calls=(ToolCall(name="read_file", arguments={"path": "hi.txt"}),),
+    )
+    wrap_up_mixed = ModelReply(
+        content="submitting now",
+        tool_calls=(
+            ToolCall(name="read_file", arguments={"path": "hi.txt"}),
+            ToolCall(
+                name="submit_failing_test",
+                arguments={
+                    "test_path": "tests/t.js",
+                    "test_cmd": "node tests/t.js",
+                    "failure_output": "assertion failed: score not implemented",
+                },
+            ),
+        ),
+    )
+    adapter = _ScriptedAdapter(replies=[last_round_tool_call, wrap_up_mixed])
+
+    result = run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="write a failing test")],
+        registry,
+        max_rounds=1,
+        wrap_up_tools=frozenset({"submit_failing_test"}),
+    )
+
+    assert submit.latest() is not None
+    # Tool messages: 1 read_file from the work round + 1 submit from
+    # the wrap-up. The wrap-up's read_file was stripped, never ran.
+    tool_msgs = [m for m in result.messages if m.role == "tool"]
+    assert len(tool_msgs) == 2
+    assert [m.name for m in tool_msgs] == ["read_file", "submit_failing_test"]
+
+
 def test_wrap_up_empty_reply_substitutes_fabrication_fallback(tmp_path: Path) -> None:
     """If the wrap-up reply has neither text nor a usable tool call,
     EmptyReplyAfterToolsHook (harness-uk34) fires Nudge in the

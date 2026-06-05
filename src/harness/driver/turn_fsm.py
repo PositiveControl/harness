@@ -74,7 +74,12 @@ class TurnPhase(Enum):
 # are cheap; give it room to orient and still submit.
 DEFAULT_PHASE_BUDGETS: dict[TurnPhase, int] = {
     TurnPhase.ASSESS: 6,
-    TurnPhase.WRITE_TEST: 4,
+    # WRITE_TEST 4 → 6 (loop_run=dfc38c5f): the minimum honest TDD
+    # sequence is read → write_file test → shell run → submit_failing_test
+    # (4 rounds), but the model reliably spends 1-2 extra rounds
+    # re-reading context, so 4 exhausted exactly at the shell run and
+    # the submit never happened — all 6 turns halted "no test".
+    TurnPhase.WRITE_TEST: 6,
     TurnPhase.IMPLEMENT: 8,
     TurnPhase.VERIFY: 2,
     TurnPhase.CLOSE: 1,

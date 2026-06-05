@@ -645,6 +645,20 @@ _WRAP_UP_NUDGE = (
     "no more budget."
 )
 
+# Variant used when the caller whitelisted phase-exit tools for the
+# wrap-up round (loop_run=dfc38c5f). The driver's FSM phases exit via
+# zero-side-effect capture tools (submit_failing_test etc.); a model
+# that did the work but ran out of rounds one call short of the exit
+# signal should be told to emit it NOW, not to narrate.
+_WRAP_UP_EXIT_TOOLS_NUDGE = (
+    "You have used your tool-call budget for this turn. This is your "
+    "final round. The ONLY tools you may still call are: {names}. "
+    "If you completed this phase's work, call the matching phase-exit "
+    "tool NOW with the evidence you already gathered — do not call any "
+    "other tool. If you cannot exit the phase, say plainly what is "
+    "missing. Do not promise more work — there is no more budget."
+)
+
 
 def _forced_assemble_context_prelude(
     working: list[ChatMessage],
@@ -1132,6 +1146,7 @@ def run_tool_loop(
     plan: Plan | None = None,
     inbox: Callable[[], list[ChatMessage]] | None = None,
     no_write_streak: _StallDetector | None = None,
+    wrap_up_tools: frozenset[str] = frozenset(),
 ) -> ToolLoopResult:
     """Drive a model + tool registry until the model emits a text-only
     reply or `max_rounds` rounds are spent.
@@ -1209,7 +1224,14 @@ def run_tool_loop(
     with a 0-round result — no tokens spent on a hallucinated rule
     chunk for 'this page intentionally left blank'. On a real (non-
     banter) prompt the tracker is reset so the next banter prompt
-    starts fresh with a joke."""
+    starts fresh with a joke.
+
+    `wrap_up_tools`, when non-empty, names tools the model may still
+    call in the forced wrap-up round (loop_run=dfc38c5f). Intended for
+    the driver's zero-side-effect phase-exit capture tools
+    (submit_failing_test, submit_assessment, …) — the exit signal the
+    FSM resolves on. Calls to these names execute normally in the
+    wrap-up; all other wrap-up tool calls are stripped as before."""
     pipeline = hooks if hooks is not None else _DEFAULT_PIPELINE
     working: list[ChatMessage] = list(messages)
     # Inject the active-plan block as a system-role message before
@@ -1759,7 +1781,11 @@ def run_tool_loop(
     )
     if wrap_up_eligible:
         emit(ToolLoopEvent(kind="wrap_up_forced", round_index=total_iterations))
-        working.append(ChatMessage(role="user", content=_WRAP_UP_NUDGE))
+        if wrap_up_tools:
+            nudge = _WRAP_UP_EXIT_TOOLS_NUDGE.format(names=", ".join(sorted(wrap_up_tools)))
+        else:
+            nudge = _WRAP_UP_NUDGE
+        working.append(ChatMessage(role="user", content=nudge))
         wrap_up_reply = _run_model_round(
             adapter,
             working,
@@ -1772,7 +1798,41 @@ def run_tool_loop(
         )
         wrap_up_round_idx = total_iterations
         total_iterations += 1
-        # Strip any tool_calls — wrap-up is synthesis only. If the model
+        # Phase-exit exemption (loop_run=dfc38c5f). When the caller
+        # whitelisted exit tools, execute those calls even in the
+        # wrap-up round — they are zero-side-effect capture tools whose
+        # invocation IS the phase's exit signal. Without this, a model
+        # that wrote and ran a genuinely-red test but spent its last
+        # work round on the test run had no way to submit_failing_test:
+        # the wrap-up stripped the call and the phase halted "no test"
+        # despite the work being done (all 6 turns of dfc38c5f).
+        allowed_calls = tuple(c for c in wrap_up_reply.tool_calls if c.name in wrap_up_tools)
+        if allowed_calls:
+            working.append(
+                ChatMessage(
+                    role="assistant",
+                    content=wrap_up_reply.content,
+                    tool_calls=allowed_calls,
+                )
+            )
+            wrap_exec_success = _execute_tool_calls(
+                allowed_calls,
+                registry,
+                working,
+                seen_calls,
+                confirm=confirm,
+                emit=emit,
+                round_idx=wrap_up_round_idx,
+                hooks=pipeline,
+                user_message=turn_user_message,
+                succeeded_tools=succeeded_tools,
+                attempted_calls=attempted_calls,
+                repeat_counter=repeat_counter,
+                no_write_streak=no_write_streak,
+            )
+            any_tool_succeeded = any_tool_succeeded or wrap_exec_success
+        # Strip any remaining tool_calls — beyond the exit-tool
+        # exemption above, wrap-up is synthesis only. If the model
         # emitted text + tool_call, keep the text; if tool_call only,
         # content stays empty and the canned fallback below covers it.
         last_reply = ModelReply(
