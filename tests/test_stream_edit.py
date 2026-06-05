@@ -61,14 +61,14 @@ def test_constructor_rejects_incomplete_binaries(workspace: Path) -> None:
     "args",
     [
         ["1 | xargs cat"],
-        ["`whoami`"],
         ["{print} | sort"],
         ['{print | "sort"}'],
     ],
 )
 def test_metachars_rejected(tool: StreamEditTool, workspace: Path, args: list[str]) -> None:
-    """Only `|` and backticks are blocked — the rest of the shell-ish
-    chars (`;`, `&`, `$`, `>`, `<`) are core awk/sed syntax."""
+    """Only `|` is blocked — the rest of the shell-ish chars
+    (`;`, `&`, `$`, `>`, `<`, backtick) are core awk/sed syntax or
+    inert replacement data."""
     (workspace / "in.txt").write_text("hello\n")
     with pytest.raises(ValueError, match="disallowed shell metachars"):
         tool.call(tool="awk", args=args, paths=["in.txt"])
@@ -81,6 +81,7 @@ def test_metachars_rejected(tool: StreamEditTool, workspace: Path, args: list[st
         ("awk", ["{print $1; print $2}"]),  # `;` is awk statement separator
         ("sed", ["s/foo/&/g"]),  # `&` is sed back-reference
         ("awk", ['{print > "out.txt"}']),  # `>` is awk redirect to a sandboxed file
+        ("awk", ["{print `x`}"]),  # backtick is inert with shell=False (4d11ea3f)
     ],
 )
 def test_awk_sed_syntax_passes_metachar_filter(
@@ -90,6 +91,25 @@ def test_awk_sed_syntax_passes_metachar_filter(
     Pairs with ``test_metachars_rejected`` to lock the boundary."""
     (workspace / "in.txt").write_text("a b c\n")
     tool.call(tool=verb, args=args, paths=["in.txt"])
+
+
+def test_backtick_template_literal_replacement_passes(
+    tool: StreamEditTool, workspace: Path
+) -> None:
+    """loop_run=4d11ea3f: a sed substitution writing a JS template
+    literal — backticks + `${score}` in the REPLACEMENT — was rejected
+    by the metachar gate, knocking the model off its edit path. With
+    shell=False the backtick is an inert byte; the substitution must
+    run and land the literal in the file."""
+    (workspace / "game.js").write_text('ctx.fillText("Score: 0", 10, 20);\n')
+    result = tool.call(
+        tool="sed",
+        args=['s/ctx\\.fillText("Score: 0", 10, 20);/ctx.fillText(`Score: ${score}`, 10, 20);/'],
+        paths=["game.js"],
+        in_place=True,
+    )
+    assert "rewrote 1 file(s)" in result
+    assert (workspace / "game.js").read_text() == "ctx.fillText(`Score: ${score}`, 10, 20);\n"
 
 
 def test_empty_args_rejected(tool: StreamEditTool, workspace: Path) -> None:

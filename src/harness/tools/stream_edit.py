@@ -19,19 +19,20 @@ are LEGITIMATE awk/sed syntax in this context (``$1`` is a field,
 file in the sandboxed cwd) — blocking them would gut the wrapper. The
 realistic remaining escape is awk's ``system("cmd")`` and sed's GNU
 ``e`` flag, which the language itself spawns shells for. We block
-``|`` (awk's pipe-to-shell operator) and backticks (no awk/sed dialect
-uses them) and call it good; the model has no reason to call
-``system()`` unless asked to, and the worst it can do is run a command
-in the workspace cwd, which is Mark's own machine.
+``|`` (awk's pipe-to-shell operator) and call it good; the model has
+no reason to call ``system()`` unless asked to, and the worst it can
+do is run a command in the workspace cwd, which is Mark's own machine.
+Backticks are NOT blocked: with ``shell=False`` they're inert bytes in
+every supported verb, and JS template literals make them legitimate
+replacement text (loop_run=4d11ea3f).
 
 Boundaries the tool actually enforces:
 
   1. ``shutil.which`` is resolved once at construction; the absolute
      path lives on the instance. No PATH lookup at call time.
-  2. ``expr`` is rejected for ``|`` and backticks, oversized scripts,
-     and unbalanced quoting. ``shlex.split`` with ``posix=True`` is the
-     only argv tokeniser; ``shell=False`` is the only way the
-     subprocess runs.
+  2. ``expr`` is rejected for ``|``, oversized scripts, and unbalanced
+     quoting. ``shlex.split`` with ``posix=True`` is the only argv
+     tokeniser; ``shell=False`` is the only way the subprocess runs.
   3. Every ``paths`` entry must resolve inside the workspace root.
      ``in_place`` writes go through ``Path.write_text`` after we've
      captured the child's stdout — never via the tool itself, so the
@@ -98,11 +99,16 @@ if set(StreamEditArgs.model_fields["tool"].annotation.__args__) != set(_VERBS): 
     raise RuntimeError("StreamEditArgs.tool Literal is out of sync with _VERBS")
 
 # Shell-only metacharacters the chosen verbs never legitimately need.
-# `|` is awk's pipe-to-shell operator (the realistic escape); backticks
-# are pure shell syntax. Everything else (``$``, ``;``, ``&``, ``>``,
-# ``<``) is part of awk or sed itself and must pass through — see the
-# module docstring for the rationale.
-_DISALLOWED_METACHARS: frozenset[str] = frozenset("|`")
+# `|` is awk's pipe-to-shell operator (the realistic escape). Everything
+# else (``$``, ``;``, ``&``, ``>``, ``<``) is part of awk or sed itself
+# and must pass through — see the module docstring for the rationale.
+# Backticks were originally blocked as "pure shell syntax", but with
+# shell=False nothing ever interprets them — and they're routine
+# REPLACEMENT DATA in JS workspaces (template literals): loop_run=
+# 4d11ea3f rejected `s/.../ctx.fillText(\`Score: ${score}\`...)/` on a
+# legitimate sed substitution. Blocking an inert byte added zero safety
+# and real false positives, so only `|` remains.
+_DISALLOWED_METACHARS: frozenset[str] = frozenset("|")
 
 # Default cap on captured stdout returned to the model. Anything past
 # this is truncated with a marker so the model knows output was cut.
