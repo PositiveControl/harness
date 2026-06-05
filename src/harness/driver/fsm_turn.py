@@ -103,6 +103,28 @@ from harness.tools.turn_phase_meta import (
 
 ExecutorObserver = Callable[[ToolLoopEvent], None]
 
+# harness-hs50i: turn-level ceilings the per-phase budgets can't bypass.
+# Run d45fd2f7 turn 3 ran 2h50m without terminating: every IMPLEMENT
+# pass landed ≥1 successful write, so `implement_some_writes` routed to
+# VERIFY, verify failed, and `verify->implement (retry)` looped — 114
+# wrap_up_forced events, 1,179 rounds, one turn. The per-phase round
+# budgets bound each tool loop but nothing bounded the IMPLEMENT↔VERIFY
+# cycle itself.
+#
+# _MAX_VERIFY_RETRIES caps the verify_failed → IMPLEMENT transitions per
+# turn. Three retries is the same per-issue patience as the loop's
+# default --max-attempts; a model that hasn't gone green after three
+# full IMPLEMENT passes inside one turn isn't converging — halt the turn
+# and let the loop's attempt/park machinery decide what's next.
+_MAX_VERIFY_RETRIES = 3
+# _MAX_PHASE_EXECUTIONS bounds total phase runs per turn regardless of
+# transition shape, so any future cycle in the table (or a guard bug)
+# degrades to a halted turn instead of an unbounded one. The longest
+# legitimate walk is 5 linear phases + _MAX_VERIFY_RETRIES extra
+# IMPLEMENT+VERIFY pairs = 11; 16 leaves headroom without permitting a
+# runaway.
+_MAX_PHASE_EXECUTIONS = 16
+
 
 @dataclass
 class FsmTurnResult:
@@ -789,9 +811,23 @@ def run_fsm_turn(
     # derived reason would only carry the transition name). The loop
     # keys off that prefix to park-and-flag instead of retrying.
     premise_unmet_reason: str | None = None
+    # harness-hs50i counters — see _MAX_VERIFY_RETRIES /
+    # _MAX_PHASE_EXECUTIONS above.
+    verify_retries = 0
+    phase_executions = 0
 
     while not fsm.is_terminal():
         phase = fsm.state
+        phase_executions += 1
+        if phase_executions > _MAX_PHASE_EXECUTIONS:
+            fsm.force(
+                TurnPhase.HALTED,
+                reason=(
+                    f"phase-execution ceiling: {_MAX_PHASE_EXECUTIONS} phase runs "
+                    f"in one turn without reaching a terminal state (harness-hs50i)"
+                ),
+            )
+            break
         # Build phase-scoped registry. Meta-tool dataclasses persist
         # across phases (they accumulate captures) but only the
         # phase-relevant ones are registered — the model can't call
@@ -872,6 +908,22 @@ def run_fsm_turn(
             captured_test_cmd = str(outcome.payload.get("test_cmd", ""))
         if outcome.kind == "premise_unmet":
             premise_unmet_reason = outcome.detail
+
+        # harness-hs50i: bound the IMPLEMENT↔VERIFY cycle. Counted on
+        # the outcome (pre-handle) so the cap halts BEFORE re-entering
+        # IMPLEMENT for a pass the budget would just burn.
+        if phase == TurnPhase.VERIFY and outcome.kind == "verify_failed":
+            verify_retries += 1
+            if verify_retries >= _MAX_VERIFY_RETRIES:
+                fsm.force(
+                    TurnPhase.HALTED,
+                    reason=(
+                        f"verify-retry ceiling: {_MAX_VERIFY_RETRIES} failed "
+                        f"verify passes in one turn (harness-hs50i); "
+                        f"last failure: {outcome.detail[:200]}"
+                    ),
+                )
+                break
 
         try:
             _new_state, _name = fsm.handle(outcome)
