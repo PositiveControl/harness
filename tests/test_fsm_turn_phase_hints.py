@@ -91,9 +91,13 @@ def test_assess_load_tool_refuses_with_phase_hint(tmp_path: Path) -> None:
     assert "--tools-add" not in result.output
 
 
-def test_write_test_edit_file_error_points_at_submit_failing_test(tmp_path: Path) -> None:
+def test_write_test_stream_edit_error_points_at_submit_failing_test(tmp_path: Path) -> None:
+    # edit_file is granted in WRITE_TEST now (append-to-existing-test);
+    # stream_edit is the withheld editor, and its hint must name the real
+    # recovery path (finish via submit_failing_test, IMPLEMENT unlocks
+    # bulk edits) rather than the load_tool dead end.
     registry = _registry_for(TurnPhase.WRITE_TEST, tmp_path)
-    result = registry.call("edit_file", {"path": "game.js", "content": "x"})
+    result = registry.call("stream_edit", {"path": "game.js", "edits": []})
     assert not result.success
     assert "submit_failing_test" in result.output
     assert "IMPLEMENT" in result.output
@@ -109,6 +113,35 @@ def test_write_test_keeps_write_file_and_shell(tmp_path: Path) -> None:
     assert result.success
 
 
+def test_write_test_grants_edit_file_for_appending(tmp_path: Path) -> None:
+    """WRITE_TEST now grants edit_file so a new case can be appended to an
+    existing test file instead of spawning one test_<bead>.py per bead.
+    edit_file must be available and NOT shadowed by an unavailable hint."""
+    registry = _registry_for(TurnPhase.WRITE_TEST, tmp_path)
+    assert "edit_file" in registry.names()
+    assert "edit_file" not in _phase_unavailable_hints(TurnPhase.WRITE_TEST)
+    # It genuinely dispatches: append to an existing test file.
+    (tmp_path / "test_feature.py").write_text("def test_a():\n    assert True\n")
+    result = registry.call(
+        "edit_file",
+        {
+            "path": "test_feature.py",
+            "old_string": "    assert True\n",
+            "new_string": "    assert True\n\n\ndef test_b():\n    assert False\n",
+        },
+    )
+    assert result.success
+
+
+def test_write_test_still_withholds_stream_edit() -> None:
+    """stream_edit (bulk source edits) stays an IMPLEMENT-only shape; the
+    hint points at the test-authoring tools instead of load_tool."""
+    hints = _phase_unavailable_hints(TurnPhase.WRITE_TEST)
+    assert "stream_edit" in hints
+    assert "load_tool" in hints["stream_edit"]
+    assert "edit_file" in hints["stream_edit"]  # steers toward the append path
+
+
 def test_implement_has_no_editor_hints(tmp_path: Path) -> None:
     """IMPLEMENT grants the full write tier — no hints to register."""
     assert _phase_unavailable_hints(TurnPhase.IMPLEMENT) == {}
@@ -117,10 +150,11 @@ def test_implement_has_no_editor_hints(tmp_path: Path) -> None:
     assert "write_file" in registry.names()
 
 
-def test_every_non_implement_phase_hints_the_editors() -> None:
-    """The hint map covers each phase that withholds editors, and every
-    hint forbids the load_tool detour."""
-    for phase in (TurnPhase.ASSESS, TurnPhase.WRITE_TEST, TurnPhase.VERIFY, TurnPhase.CLOSE):
+def test_editor_withholding_phases_hint_the_editors() -> None:
+    """Each phase that withholds edit_file covers it in the hint map and
+    forbids the load_tool detour. WRITE_TEST is excluded — it now grants
+    edit_file (append-to-existing-test) and only withholds stream_edit."""
+    for phase in (TurnPhase.ASSESS, TurnPhase.VERIFY, TurnPhase.CLOSE):
         hints = _phase_unavailable_hints(phase)
         assert "edit_file" in hints, phase
         assert "load_tool" in hints["edit_file"], phase

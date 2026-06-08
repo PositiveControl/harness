@@ -248,11 +248,14 @@ def _build_phase_registry(
         phase_tools["submit_assessment"] = submit_assessment
         phase_tools["flag_blocked"] = flag_blocked
     elif phase == TurnPhase.WRITE_TEST:
-        # Allow write_file (for the test file) + shell (to run the
-        # test and capture failure output). No edit_file — writing
-        # a new test file is the expected shape, not editing an
-        # existing one.
+        # Allow write_file (a new test file when none fits) + edit_file
+        # (APPEND a case to an existing test file whose subject matches —
+        # the drive otherwise litters the workspace with one
+        # test_<issue>.py per bead) + shell (run the test, capture red
+        # output). stream_edit stays withheld: bulk multi-file edits are
+        # an IMPLEMENT-phase shape, not test authoring.
         phase_tools["write_file"] = _write_tier_tools(workspace)["write_file"]
+        phase_tools["edit_file"] = _write_tier_tools(workspace)["edit_file"]
         phase_tools["shell"] = _write_tier_tools(workspace)["shell"]
         phase_tools["submit_failing_test"] = submit_failing_test
         phase_tools["skip_test_phase"] = skip_test_phase
@@ -319,13 +322,14 @@ def _phase_unavailable_hints(phase: TurnPhase) -> dict[str, str]:
         return dict.fromkeys((*_EDITOR_TOOL_NAMES, "shell"), hint)
     if phase == TurnPhase.WRITE_TEST:
         hint = (
-            "Source-file editing is not available in WRITE_TEST. This "
-            "phase only creates NEW test files (`write_file`) and runs "
-            "them (`shell`). Editing unlocks in the IMPLEMENT phase, "
-            "which starts after you call `submit_failing_test` with the "
-            f"red test output (or `skip_test_phase`). {no_load}"
+            "`stream_edit` is not available in WRITE_TEST — it is for "
+            "bulk source edits in IMPLEMENT. This phase authors tests: "
+            "`write_file` for a new test file, or `edit_file` to APPEND a "
+            "case to an existing test file whose subject matches. Editing "
+            "source unlocks in IMPLEMENT, after `submit_failing_test` "
+            f"(or `skip_test_phase`). {no_load}"
         )
-        return dict.fromkeys(("edit_file", "stream_edit"), hint)
+        return dict.fromkeys(("stream_edit",), hint)
     if phase == TurnPhase.VERIFY:
         hint = (
             "File mutations are not available in VERIFY — the driver "
@@ -396,7 +400,15 @@ _PHASE_INSTRUCTIONS: Mapping[TurnPhase, str] = {
         "call `submit_failing_test` with the test_path, the test_cmd "
         "that runs it, and the captured failure_output. The same "
         "test_cmd will be run again in VERIFY to prove the implementation "
-        "makes the test pass.\n"
+        "makes the test pass.\n\n"
+        "PREFER EXTENDING AN EXISTING TEST FILE. Before creating a new "
+        "file, `glob` for existing tests (e.g. 'test_*.py', '*_test.py', "
+        "'**/*.test.js') and check whether one already covers this "
+        "subject area (same module/feature). If so, `edit_file` to APPEND "
+        "your new case to it. Only `write_file` a NEW test file when no "
+        "existing file is a sensible home — one test_<feature>.py per "
+        "feature, NOT one per bead. Keep the new test minimal: a single "
+        "focused case that proves THIS gap, not a broad suite.\n"
         "If you genuinely cannot write a test for this issue (no test "
         "runner available, opaque side effect, etc.) call "
         "`skip_test_phase` with a concrete reason. Use sparingly."
