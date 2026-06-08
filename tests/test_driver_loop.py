@@ -26,11 +26,13 @@ from harness.driver.loop import (
     LoopConfig,
     LoopResult,
     _blank_canvas_enforced,
+    _is_context_overflow,
     _on_success,
     _open_log,
     run_loop,
 )
 from harness.driver.state import LoopRunState
+from harness.model.adapter import PromptBudgetError
 from harness.orchestrator import ToolLoopResult
 from harness.orchestrator.hooks import EXHAUSTED_FABRICATION_FALLBACK
 from harness.store._bd_types import BeadsIssue, _issue_from_json
@@ -3712,3 +3714,22 @@ def test_run_loop_auto_close_blocked_when_smoke_gate_degraded(
     assert bd.log.closes == []
     assert "harness-a" not in result.closed
     assert bd.show("harness-a").status == "open"
+
+
+def test_is_context_overflow_recognizes_prompt_budget_error() -> None:
+    # harness driver tear-down bug: a grep that slurped a .harness trace
+    # into the prompt raised PromptBudgetError, whose message says
+    # "…window remain for generation…" — none of the string heuristics
+    # matched, so the run crashed instead of failing one turn. The type
+    # check is the unambiguous fix.
+    exc = PromptBudgetError(
+        "prompt is 162112 tokens; with a 32-token safety margin only 0 of the "
+        "65536-token window remain for generation (need >= 16)."
+    )
+    assert _is_context_overflow(exc) is True
+
+
+def test_is_context_overflow_still_matches_server_wording() -> None:
+    assert _is_context_overflow(RuntimeError("maximum context length is 32768 tokens")) is True
+    assert _is_context_overflow(ValueError("context window exceeded")) is True
+    assert _is_context_overflow(ValueError("unrelated failure")) is False

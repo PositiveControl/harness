@@ -21,6 +21,10 @@ _DEFAULT_SKIP: frozenset[str] = frozenset(
         ".idea",
         ".vscode",
         ".claude",
+        # harness driver artifacts (traces, workspace tarballs, logs) —
+        # never source the model should match. See grep.py for the
+        # self-referential-trace overflow this guards against.
+        ".harness",
     }
 )
 

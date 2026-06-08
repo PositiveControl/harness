@@ -84,6 +84,42 @@ def test_spec_is_read_tier(tmp_path: Path) -> None:
     assert GrepTool(root=tmp_path).spec.tier == "read"
 
 
+def test_skips_dot_harness_driver_artifacts(tmp_path: Path) -> None:
+    # The driver's own .harness/loop_runs traces embed entire prior
+    # prompts; a workspace-root grep that walked them slurped a
+    # 162k-token line into the next prompt and crashed the run.
+    (tmp_path / "game.js").write_text("needle in source\n")
+    runs = tmp_path / ".harness" / "loop_runs"
+    runs.mkdir(parents=True)
+    (runs / "abc.vllm_trace.jsonl").write_text('{"prompt": "needle in a trace record"}\n')
+    out = GrepTool(root=tmp_path).call(pattern="needle")
+    assert "game.js:1:needle in source" in out
+    assert ".harness" not in out
+
+
+def test_clamps_runaway_matched_line(tmp_path: Path) -> None:
+    # A single matched line (minified JS, a JSONL record) must not
+    # dominate the result. Clamp it to max_line_chars.
+    (tmp_path / "min.js").write_text("needle" + "x" * 50_000 + "\n")
+    tool = GrepTool(root=tmp_path, max_line_chars=100)
+    out = tool.call(pattern="needle")
+    assert "line truncated" in out
+    # The emitted hit line is bounded — not the full 50k.
+    assert len(out) < 1_000
+
+
+def test_total_output_byte_cap(tmp_path: Path) -> None:
+    # 1000 matched lines of ~200 chars each would be ~200KB; the
+    # total-char ceiling stops the result well before that, even
+    # though the match-count cap (100) hasn't been reached per file.
+    lines = "\n".join(f"needle line {i} " + "y" * 180 for i in range(1000))
+    (tmp_path / "big.txt").write_text(lines)
+    tool = GrepTool(root=tmp_path, max_total_chars=5_000, default_max_results=10_000)
+    out = tool.call(pattern="needle")
+    assert "truncated" in out
+    assert len(out) < 6_000
+
+
 def test_grep_accepts_single_file_path(tmp_path: Path) -> None:
     """harness-373e: when `path` resolves to a file, grep that single
     file instead of raising NotADirectoryError. Models routinely reach

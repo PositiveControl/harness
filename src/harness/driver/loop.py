@@ -93,7 +93,7 @@ from harness.driver.workspace_verify import (
     default_workspace_verify_steps,
 )
 from harness.model import make_vision_adapter
-from harness.model.adapter import ChatMessage, ModelAdapter
+from harness.model.adapter import ChatMessage, ModelAdapter, PromptBudgetError
 from harness.orchestrator import ToolLoopEvent, ToolLoopResult, run_tool_loop
 from harness.orchestrator.hook_wiring import make_write_file_redirect_hook
 from harness.orchestrator.hooks import (
@@ -1288,6 +1288,14 @@ def _is_context_overflow(exc: BaseException) -> bool:
     Used by `_run_executor_turn` so a single turn's context blow-up
     becomes a turn failure (which the loop's retry budget handles)
     instead of an unhandled exception that tears down the run."""
+    # PromptBudgetError is the harness's OWN pre-flight / 422-backstop
+    # budget rejection (harness.model.adapter). It's an unambiguous typed
+    # signal — match it by type, not by message. Its wording ("…window
+    # remain for generation…") contains none of the string heuristics
+    # below, so a grep that slurped a .harness trace into the prompt was
+    # tearing the whole run down instead of failing one turn.
+    if isinstance(exc, PromptBudgetError):
+        return True
     msg = str(exc).lower()
     return "maximum context length" in msg or (
         "context" in msg and ("exceed" in msg or "too long" in msg)

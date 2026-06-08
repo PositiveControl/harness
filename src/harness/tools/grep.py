@@ -25,6 +25,12 @@ _DEFAULT_SKIP: frozenset[str] = frozenset(
         ".idea",
         ".vscode",
         ".claude",
+        # harness driver artifacts. .harness/loop_runs/*.vllm_trace.jsonl
+        # embed entire prior prompts (spec + full source) one-per-line; a
+        # workspace-root grep matched them and slurped a 162k-token line
+        # into the next prompt, overflowing the window. The driver's own
+        # scratch is never something the model should search.
+        ".harness",
     }
 )
 
@@ -41,6 +47,16 @@ class GrepTool:
     skip_dirs: frozenset[str] = field(default_factory=lambda: _DEFAULT_SKIP)
     default_max_results: int = 100
     max_file_bytes: int = 1_000_000
+    # Byte ceilings on the RESULT (not the file). The match cap is by
+    # line count; a single matched line of minified JS or a JSONL trace
+    # record can itself be hundreds of KB, so a 100-line cap is no
+    # protection against output that overflows the model's context
+    # window. A workspace-root grep over a .harness trace did exactly
+    # this — one matched line was a whole serialized prior prompt.
+    # Clamp each emitted line, and stop once total output crosses the
+    # ceiling, regardless of how many matches remain.
+    max_line_chars: int = 1_000
+    max_total_chars: int = 20_000
 
     @property
     def spec(self) -> ToolSpec:
@@ -121,6 +137,7 @@ class GrepTool:
         cap = max_results if max_results is not None else self.default_max_results
         hits: list[str] = []
         truncated = False
+        total_chars = 0
 
         # harness-373e: when `path` resolves to a single file, grep just
         # that file. Matches the Unix `grep` and `ripgrep` convention
@@ -156,8 +173,15 @@ class GrepTool:
             rel = p.relative_to(root).as_posix()
             for lineno, line in enumerate(text.splitlines(), start=1):
                 if regex.search(line):
-                    hits.append(f"{rel}:{lineno}:{line.rstrip()}")
-                    if len(hits) >= cap:
+                    stripped = line.rstrip()
+                    if len(stripped) > self.max_line_chars:
+                        # Clamp a single runaway line (minified JS, a JSONL
+                        # record) so one match can't dominate the result.
+                        stripped = stripped[: self.max_line_chars] + " … [line truncated]"
+                    hit = f"{rel}:{lineno}:{stripped}"
+                    hits.append(hit)
+                    total_chars += len(hit) + 1  # +1 for the join newline
+                    if len(hits) >= cap or total_chars >= self.max_total_chars:
                         truncated = True
                         break
             if truncated:
@@ -167,5 +191,10 @@ class GrepTool:
             return f"(no matches for {pattern!r})"
         body = "\n".join(hits)
         if truncated:
-            body += f"\n… [truncated at {cap} matches]"
+            reason = (
+                f"{cap} matches"
+                if len(hits) >= cap
+                else f"{self.max_total_chars}-char output ceiling"
+            )
+            body += f"\n… [truncated at {reason}]"
         return body
