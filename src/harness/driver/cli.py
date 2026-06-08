@@ -712,7 +712,8 @@ def _print_auto_iterate_result(result: AutoIterateResult) -> None:
             typer.echo(f"  - {bid}")
     for i, dr in enumerate(result.drive_results, start=1):
         typer.echo(
-            f"  pass {i}: drive={dr.exit_reason} closed={len(dr.closed)} turns={dr.turns_used}"
+            f"  pass {i}: loop_run={dr.loop_run_id} drive={dr.exit_reason} "
+            f"closed={len(dr.closed)} turns={dr.turns_used}"
         )
 
 

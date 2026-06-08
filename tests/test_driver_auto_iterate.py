@@ -782,3 +782,6 @@ def test_print_auto_iterate_result_explains_no_work(
     out = capsys.readouterr().out
     assert "exit=no_work" in out
     assert "no ready work" in out
+    # Per-pass line must surface the drive's loop_run_id so the operator can
+    # find the .harness/loop_runs/<id>.json artifact straight from the summary.
+    assert "loop_run=run01" in out
