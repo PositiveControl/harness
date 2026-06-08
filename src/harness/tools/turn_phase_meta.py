@@ -178,17 +178,23 @@ class SubmitAssessmentTool:
 
 @dataclass
 class FlagBlockedTool:
-    """ASSESS escape hatch: the bead's PREMISE is unmet — the thing it
-    asks to verify/fix doesn't exist because an upstream dependency never
-    landed it (harness-u1il5 class). Calling this routes ASSESS straight
-    to a parked-and-flagged halt instead of burning the retry budget on a
+    """ASSESS escape hatch: the bead's PREMISE is unmet — a precondition
+    that a DIFFERENT, upstream bead was supposed to land never arrived
+    (harness-u1il5 class). Calling this routes ASSESS straight to a
+    parked-and-flagged halt instead of burning the retry budget on a
     futile premise.
+
+    The trap this guards against (harness-pmz3i): a build/create bead's
+    own deliverable never exists before the bead runs — that absence IS
+    the task, not a block. flag_blocked is ONLY for an absent UPSTREAM
+    precondition, never for the artifact THIS bead is asked to produce.
 
     Deliberately narrow so the model can't use it to dodge hard work:
       - `missing` must name a CONCRETE, operator-checkable absent artifact
-        (a function / file / symbol / keycode the bead presupposes) — not
-        a vague "this is hard."
-      - `reason` explains why that absence blocks the bead.
+        (a function / file / symbol / keycode the bead presupposes) that
+        another bead owns — not this bead's own deliverable, not a vague
+        "this is hard."
+      - `reason` explains why that upstream absence blocks the bead.
     The outcome is a PARK (operator review with the `blocked` flag), never
     a close — so a wrong "blocked" costs only an operator glance, while a
     right one saves three futile attempts."""
@@ -201,13 +207,15 @@ class FlagBlockedTool:
             name="flag_blocked",
             description=(
                 "Use ONLY when this bead cannot be done because a concrete "
-                "precondition is absent — the function / file / symbol / "
-                "input handler the bead asks you to verify or fix does not "
-                "exist in the workspace yet (an upstream bead was supposed "
-                "to create it). This PARKS the bead for operator review; it "
-                "does NOT close it and is NOT a way to skip difficult work. "
-                "If the thing exists and is merely hard to change, do the "
-                "work instead. Name the missing artifact concretely."
+                "UPSTREAM precondition is absent — a function / file / "
+                "symbol / input handler that a DIFFERENT, earlier bead was "
+                "supposed to create, but didn't. This PARKS the bead for "
+                "operator review; it does NOT close it and is NOT a way to "
+                "skip difficult work. Do NOT flag when the absent thing is "
+                "what THIS bead is asked to build/create — that absence is "
+                "your task; implement it. Do NOT flag when the thing exists "
+                "and is merely hard to change — do the work. Name the "
+                "missing upstream artifact concretely."
             ),
             parameters={
                 "type": "object",
@@ -215,10 +223,11 @@ class FlagBlockedTool:
                     "missing": {
                         "type": "string",
                         "description": (
-                            "The concrete absent precondition — a named "
-                            "function, file, symbol, or keycode the bead "
-                            "presupposes but that is NOT present in the "
-                            "workspace. Operator-checkable. "
+                            "The concrete absent UPSTREAM precondition — a "
+                            "named function, file, symbol, or keycode the "
+                            "bead presupposes, owned by an earlier bead, NOT "
+                            "present in the workspace. Must NOT be this "
+                            "bead's own deliverable. Operator-checkable. "
                             f"Min {_MIN_IDENTIFIER_CHARS} chars."
                         ),
                     },

@@ -238,3 +238,20 @@ def test_flag_blocked_rejects_vague_reason() -> None:
 def test_flag_blocked_advertises_read_tier() -> None:
     """flag_blocked is read-tier — it records intent, mutates nothing."""
     assert FlagBlockedTool().spec.tier == "read"
+
+
+def test_flag_blocked_copy_distinguishes_upstream_from_deliverable() -> None:
+    """harness-pmz3i: the description must steer the model away from
+    flagging a build/create bead's own absent deliverable as a block.
+    The old copy ('the symbol the bead asks you to fix does not exist')
+    trapped create-tasks — the deliverable never exists pre-implementation.
+    Guard the distinguishing guidance so it can't silently regress."""
+    desc = FlagBlockedTool().spec.description.lower()
+    # Names the legit case: an upstream-owned precondition.
+    assert "upstream" in desc
+    # Explicitly forbids the trap: flagging this bead's own deliverable.
+    assert "this bead" in desc
+    assert "build" in desc
+    # The `missing` param echoes the same constraint.
+    missing_desc = FlagBlockedTool().spec.parameters["properties"]["missing"]["description"]
+    assert "deliverable" in missing_desc.lower()
