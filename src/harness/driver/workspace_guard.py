@@ -214,16 +214,29 @@ def extract_symbols(text: str) -> set[str]:
 
 def _read_source_members(snapshot: Path) -> dict[str, str]:
     """Map of relative-path -> text for every source-suffixed file in the
-    snapshot tar (best-effort UTF-8)."""
+    snapshot tar (best-effort UTF-8).
+
+    Returns an empty map when the snapshot is missing or unreadable. The
+    regression-guard contract is that a missing last-green disables
+    rollback for the rest of the run — it must never *crash* it. The
+    snapshot lives under ``.harness/loop_runs/`` and an operator `rm` of
+    that dir mid-run (or a tmpreaper / disk eviction) had `tarfile.open`
+    raise FileNotFoundError straight up the call stack, tearing the run
+    down. An empty baseline degrades the callers gracefully:
+    :func:`workspace_changed` reads "everything looks changed" and
+    :func:`detect_regression` reads "no prior symbols to lose"."""
     out: dict[str, str] = {}
-    with tarfile.open(snapshot, "r:gz") as tf:
-        for m in tf.getmembers():
-            if not m.isfile() or not m.name.endswith(_SOURCE_SUFFIXES):
-                continue
-            f = tf.extractfile(m)
-            if f is None:
-                continue
-            out[m.name] = f.read().decode("utf-8", errors="replace")
+    try:
+        with tarfile.open(snapshot, "r:gz") as tf:
+            for m in tf.getmembers():
+                if not m.isfile() or not m.name.endswith(_SOURCE_SUFFIXES):
+                    continue
+                f = tf.extractfile(m)
+                if f is None:
+                    continue
+                out[m.name] = f.read().decode("utf-8", errors="replace")
+    except (OSError, tarfile.TarError):
+        return {}
     return out
 
 

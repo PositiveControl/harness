@@ -27,6 +27,7 @@ from harness.driver.loop import (
     LoopResult,
     _blank_canvas_enforced,
     _is_context_overflow,
+    _last_green_if_present,
     _on_success,
     _open_log,
     run_loop,
@@ -3733,3 +3734,28 @@ def test_is_context_overflow_still_matches_server_wording() -> None:
     assert _is_context_overflow(RuntimeError("maximum context length is 32768 tokens")) is True
     assert _is_context_overflow(ValueError("context window exceeded")) is True
     assert _is_context_overflow(ValueError("unrelated failure")) is False
+
+
+def test_last_green_if_present_clears_vanished_snapshot(tmp_path: Path) -> None:
+    # An operator `rm` of .harness/loop_runs mid-run made workspace_changed
+    # crash on the gone tar. _last_green_if_present nulls a stale path so
+    # the rest of the loop degrades to rollback-disabled (the documented
+    # _refresh_last_green contract) instead of tearing the run down.
+    log = _open_log(tmp_path / "loop.log")
+    gone = tmp_path / "6fd91efc_lastgreen.tar.gz"
+    assert _last_green_if_present(gone, log) is None
+    assert "vanished" in log.path.read_text()
+
+
+def test_last_green_if_present_passthrough_when_file_exists(tmp_path: Path) -> None:
+    present = tmp_path / "snap.tar.gz"
+    present.write_bytes(b"stub")
+    log = _open_log(tmp_path / "loop.log")
+    assert _last_green_if_present(present, log) is present
+    assert not log.path.exists()
+
+
+def test_last_green_if_present_none_is_noop(tmp_path: Path) -> None:
+    log = _open_log(tmp_path / "loop.log")
+    assert _last_green_if_present(None, log) is None
+    assert not log.path.exists()

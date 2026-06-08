@@ -148,6 +148,25 @@ def test_detect_regression_flags_dramatic_shrink(tmp_path: Path) -> None:
     assert "shrank" in reason
 
 
+def test_workspace_changed_tolerates_vanished_snapshot(tmp_path: Path) -> None:
+    # The snapshot lives under .harness/loop_runs inside the workspace; an
+    # operator `rm` of that dir mid-run had tarfile.open raise straight up
+    # and tear the run down. A gone snapshot must degrade, not crash —
+    # "everything looks changed" is the safe reading.
+    ws = _ws(tmp_path)
+    (ws / "game.js").write_text("function a(){}\n")
+    gone = tmp_path / "never_written.tar.gz"
+    assert workspace_changed(ws, gone) is True
+
+
+def test_detect_regression_none_on_vanished_snapshot(tmp_path: Path) -> None:
+    # No prior baseline to compare → no provable regression, no crash.
+    ws = _ws(tmp_path)
+    (ws / "game.js").write_text("function a(){}\n")
+    gone = tmp_path / "never_written.tar.gz"
+    assert detect_regression(ws, gone) is None
+
+
 def test_detect_regression_ignores_small_file_trim(tmp_path: Path) -> None:
     ws = _ws(tmp_path)
     (ws / "tiny.js").write_text("// a\n// b\n// c\n")  # 3 lines < min_lines

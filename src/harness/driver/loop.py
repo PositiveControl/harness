@@ -549,6 +549,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             # repeat-counter resets each attempt, so the loop is invisible
             # to it. Surface it in the handoff as a "stop reading, edit
             # now" directive. Reuses Fix A's workspace_changed signal.
+            last_green = _last_green_if_present(last_green, log)
             prior_made_no_edits = (
                 attempt > 1
                 and config.regression_guard
@@ -771,6 +772,11 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             #     because verify had nothing to corroborate the claim.
             #   - auto-close subprocess itself failed → fall back to
             #     soft hint so the model can try again.
+            # The snapshot can vanish mid-run (operator cleanup of
+            # .harness/loop_runs, tmpreaper, disk eviction); drop a stale
+            # path so the guard degrades to rollback-disabled instead of
+            # crashing on the gone tar.
+            last_green = _last_green_if_present(last_green, log)
             made_edits = (
                 last_green is not None
                 and config.regression_guard
@@ -2207,6 +2213,28 @@ def _baseline_is_green(default_steps: Sequence[VerifyStep], workspace: Path) -> 
         if exit_code != 0:
             return False
     return True
+
+
+def _last_green_if_present(last_green: Path | None, log: _LogWriter) -> Path | None:
+    """Return ``last_green`` if its snapshot file is still on disk; else
+    log once and return None.
+
+    The snapshot lives under ``.harness/loop_runs/`` inside the workspace,
+    so it can disappear out from under a live run — an operator cleaning
+    the dir mid-run (the observed case), a tmpreaper, disk eviction. The
+    regression-guard contract is that a missing last-green disables
+    rollback for the remainder of the run; it never fails the run. Nulling
+    it here keeps every downstream check (`workspace_changed`,
+    `detect_regression`, restore, park) consistently in the
+    rollback-disabled state instead of some guarding `.is_file()` and the
+    two raw `workspace_changed` calls crashing on the gone tar."""
+    if last_green is not None and not last_green.is_file():
+        log(
+            f"regression guard: last-green snapshot {last_green.name} vanished; "
+            "rollback disabled for the remainder of this run"
+        )
+        return None
+    return last_green
 
 
 def _refresh_last_green(config: LoopConfig, state: LoopRunState, log: _LogWriter) -> Path | None:
