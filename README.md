@@ -69,8 +69,8 @@ Each character's data lives under `character/<name>/` — `core.yaml`, `constitu
 Requirements: macOS (Apple Silicon for MLX), Python 3.11+, [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-# 1. Install dependencies (grammar + tui extras are optional — see below)
-uv sync --extra dev --extra mlx --extra retrieval --extra grammar --extra tui
+# 1. Install dependencies (grammar + tui + code extras are optional — see below)
+uv sync --extra dev --extra mlx --extra retrieval --extra grammar --extra tui --extra code
 
 # 2. Pull the default MLX model (~4 GB, 4-bit quantized Qwen 2.5 7B Instruct)
 uv run hf download mlx-community/Qwen2.5-7B-Instruct-4bit
@@ -87,6 +87,7 @@ Optional extras:
 
 - `--extra grammar` — pulls `outlines` + `datasets`. Required for `--router-mode grammar` (JSON-schema-constrained router decoding).
 - `--extra tui` — pulls `textual`. Required for `--tui` chat.
+- `--extra code` — pulls `tree-sitter` + `tree-sitter-language-pack`. Powers the `outline` tool and symbol-addressed reads (`read_file symbol=Foo.bar`); without it those degrade to line-based reads.
 
 Both can be omitted for a smaller headless install.
 
