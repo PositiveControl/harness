@@ -628,6 +628,7 @@ def _resolve_write_test_outcome(
     skip_test_phase: SkipTestPhaseTool,
     *,
     workspace: Path,
+    prior_test_cmd: str | None = None,
 ) -> PhaseOutcome:
     skip = skip_test_phase.latest()
     if skip is not None:
@@ -638,6 +639,28 @@ def _resolve_write_test_outcome(
         )
     latest = submit_failing_test.latest()
     if latest is None:
+        # harness-axjt8: this attempt's WRITE_TEST captured neither a
+        # submit nor a skip. Before halting "no test" (and burning the
+        # attempt), reuse a test a PRIOR attempt already established —
+        # carried forward as prior_test_cmd. A re-attempt shouldn't have
+        # to re-discover a test it has; the model oscillates submit/skip/
+        # nothing across attempts and any barren one would otherwise park
+        # the bead (loop_run=783a4e30: b65f2 / y2gqc). Mirrors gmu9f's
+        # IMPLEMENT re-attempt idempotence, opposite phase.
+        if prior_test_cmd:
+            exit_code, _tail = _exec_test_cmd(prior_test_cmd, workspace)
+            if exit_code == 0:
+                # Carried test now passes — the implementation already
+                # landed; short-circuit to CLOSE rather than re-driving.
+                return green_test_outcome(
+                    test_path="(carried from prior attempt)",
+                    test_cmd=prior_test_cmd,
+                )
+            return failing_test_submitted(
+                test_path="(carried from prior attempt)",
+                test_cmd=prior_test_cmd,
+                failure_output="reused failing test carried from a prior attempt (still red)",
+            )
         return phase_no_progress(
             TurnPhase.WRITE_TEST,
             reason="no submit_failing_test or skip_test_phase call",
@@ -1026,8 +1049,12 @@ def _resolve_phase_outcome(
     if phase == TurnPhase.ASSESS:
         return _resolve_assess_outcome(submit_assessment, flag_blocked)
     if phase == TurnPhase.WRITE_TEST:
+        # harness-axjt8: test_cmd here is captured_test_cmd — a test
+        # carried forward from a prior attempt (None on the first). The
+        # resolver reuses it instead of halting "no test" on a barren
+        # re-attempt.
         return _resolve_write_test_outcome(
-            submit_failing_test, skip_test_phase, workspace=workspace
+            submit_failing_test, skip_test_phase, workspace=workspace, prior_test_cmd=test_cmd
         )
     if phase == TurnPhase.IMPLEMENT:
         return _resolve_implement_outcome(
