@@ -1023,15 +1023,47 @@ def _make_turn_observer(
 
     Best-effort IO: log write failures don't crash the turn. Observer
     failures in `extra` are suppressed for the same reason (matches
-    the planner's _compose_observers contract)."""
+    the planner's _compose_observers contract).
 
-    def emit(event: ToolLoopEvent) -> None:
-        line = f"turn {turn_index} | {_format_executor_event(event)}"
+    Streaming `token_delta` events are coalesced (harness): each streamed
+    chunk was a separate log line — hundreds per model call, each a few
+    characters — which buried the readable events and reopened the file
+    per fragment. They're buffered instead and flushed as a single
+    `model_output | chars=N preview=…` line at `model_call_end`. Raw
+    deltas are still forwarded to `extra` so live streaming (CLI --verbose
+    / TUI) is unaffected."""
+
+    delta_buffer: list[str] = []
+
+    def write_line(line: str) -> None:
         try:
             with log_path.open("a", encoding="utf-8") as f:
                 f.write(line + "\n")
         except OSError:
             pass
+
+    def emit(event: ToolLoopEvent) -> None:
+        if event.kind == "token_delta":
+            # Buffer the chunk; don't write a per-fragment line. Still
+            # forward so live consumers see the stream in real time.
+            if event.delta:
+                delta_buffer.append(event.delta)
+            if extra is not None:
+                with contextlib.suppress(Exception):
+                    extra(event)
+            return
+        # Flush the coalesced stream as one summary line at the call
+        # boundary, before the model_call_end line itself.
+        if event.kind == "model_call_end" and delta_buffer:
+            streamed = "".join(delta_buffer)
+            delta_buffer.clear()
+            ts = datetime.now(UTC).isoformat(timespec="seconds")
+            preview = streamed.replace("\n", " ")[:200]
+            write_line(
+                f"turn {turn_index} | {ts} | model_output | "
+                f"chars={len(streamed)} preview={preview!r}"
+            )
+        write_line(f"turn {turn_index} | {_format_executor_event(event)}")
         if extra is not None:
             with contextlib.suppress(Exception):
                 extra(event)

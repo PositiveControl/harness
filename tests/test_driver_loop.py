@@ -3759,3 +3759,36 @@ def test_last_green_if_present_none_is_noop(tmp_path: Path) -> None:
     log = _open_log(tmp_path / "loop.log")
     assert _last_green_if_present(None, log) is None
     assert not log.path.exists()
+
+
+def test_turn_observer_coalesces_token_deltas(tmp_path: Path) -> None:
+    # Streaming chunks were one log line each — hundreds per call. They're
+    # now buffered and flushed as a single model_output summary at
+    # model_call_end; raw deltas still reach `extra` for live streaming.
+    from harness.driver.loop import _make_turn_observer
+    from harness.orchestrator import ToolLoopEvent
+
+    log_path = tmp_path / "loop.log"
+    forwarded: list[str] = []
+    obs = _make_turn_observer(log_path, turn_index=3, extra=lambda e: forwarded.append(e.kind))
+
+    obs(ToolLoopEvent(kind="model_call_start"))
+    for chunk in ("hel", "lo ", "world"):
+        obs(ToolLoopEvent(kind="token_delta", delta=chunk))
+    obs(ToolLoopEvent(kind="model_call_end"))
+
+    text = log_path.read_text()
+    # No per-fragment delta lines.
+    assert "token_delta" not in text
+    assert "delta=" not in text
+    # One coalesced summary carrying the assembled stream + length.
+    assert "model_output | chars=11 preview='hello world'" in text
+    assert "turn 3 |" in text
+    # Live streaming untouched: every raw event still forwarded.
+    assert forwarded == [
+        "model_call_start",
+        "token_delta",
+        "token_delta",
+        "token_delta",
+        "model_call_end",
+    ]
