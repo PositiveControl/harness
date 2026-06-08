@@ -480,6 +480,12 @@ class _PhaseExecutionResult:
 
     tool_loop_result: ToolLoopResult
     succeeded_tools: set[str]
+    # harness-gmu9f: write-tier tools CALLED this phase regardless of
+    # success — lets IMPLEMENT distinguish "tried to write, every edit was
+    # a no-op/identical/dedup (change likely already present)" from "never
+    # attempted a write" (pure read-thrash). The former routes to VERIFY;
+    # only the latter halts no-progress.
+    attempted_write_tools: set[str]
 
 
 def _run_one_phase(
@@ -533,18 +539,19 @@ def _run_one_phase(
         targeted_fix=handoff.targeted_fix,
     )
     succeeded_tools: set[str] = set()
+    # harness-gmu9f: write-tier tools CALLED this phase regardless of
+    # outcome — a no-op/identical/dedup-rejected edit still lands here.
+    attempted_write_tools: set[str] = set()
     # Wrap observe to also sniff succeeded tool names — needed for
     # IMPLEMENT's "did any write succeed" outcome.
     original_observe = observe
 
     def relay(event: ToolLoopEvent) -> None:
-        if (
-            event.kind == "tool_call_end"
-            and event.call is not None
-            and event.result is not None
-            and event.result.success
-        ):
-            succeeded_tools.add(event.call.name)
+        if event.kind == "tool_call_end" and event.call is not None and event.result is not None:
+            if event.call.name in WRITE_TOOL_NAMES:
+                attempted_write_tools.add(event.call.name)
+            if event.result.success:
+                succeeded_tools.add(event.call.name)
         if original_observe is not None:
             original_observe(event)
 
@@ -579,7 +586,11 @@ def _run_one_phase(
         # this phase's exit-signal call instead of stripping it.
         wrap_up_tools=_PHASE_EXIT_TOOLS.get(phase, frozenset()),
     )
-    return _PhaseExecutionResult(tool_loop_result=result, succeeded_tools=succeeded_tools)
+    return _PhaseExecutionResult(
+        tool_loop_result=result,
+        succeeded_tools=succeeded_tools,
+        attempted_write_tools=attempted_write_tools,
+    )
 
 
 # --- per-phase outcome resolvers ----------------------------------
@@ -651,6 +662,7 @@ def _resolve_write_test_outcome(
 def _resolve_implement_outcome(
     submit_implementation_complete: SubmitImplementationCompleteTool,
     succeeded_tools: set[str],
+    attempted_write_tools: set[str],
 ) -> PhaseOutcome:
     latest = submit_implementation_complete.latest()
     if latest is not None:
@@ -666,9 +678,25 @@ def _resolve_implement_outcome(
             detail="writes landed without explicit complete signal",
             payload={"succeeded_tools": sorted(succeeded_tools)},
         )
+    # harness-gmu9f: no write SUCCEEDED, but writes were ATTEMPTED — every
+    # edit was a no-op / identical / dedup-rejected. On a re-attempt of a
+    # bead whose prior attempt already landed the change, that's exactly
+    # what the model produces (it re-reads, finds its edit present, can
+    # only emit idempotent no-ops). Halting "no writes" here is misleading
+    # and burns the attempt without even running verify. Route to VERIFY
+    # and let it arbitrate the artifact: if the change is present + the
+    # bead's checks pass, it closes; if not, verify_failed retries. Only a
+    # phase with ZERO write attempts (pure read-thrash) still halts
+    # no-progress below.
+    if WRITE_TOOL_NAMES & attempted_write_tools:
+        return PhaseOutcome(
+            kind="implement_writes_attempted",
+            detail="writes attempted but none landed (no-op/identical/dedup); verify arbitrates",
+            payload={"attempted_write_tools": sorted(attempted_write_tools)},
+        )
     return phase_no_progress(
         TurnPhase.IMPLEMENT,
-        reason="no submit_implementation_complete + no successful writes",
+        reason="no submit_implementation_complete + no write attempts",
     )
 
 
@@ -878,6 +906,7 @@ def run_fsm_turn(
             submit_implementation_complete=submit_implementation_complete,
             flag_blocked=flag_blocked,
             succeeded_tools=execution.succeeded_tools,
+            attempted_write_tools=execution.attempted_write_tools,
             bd=bd,
             issue_id=current_issue_id,
             verify_steps=verify_steps,
@@ -987,6 +1016,7 @@ def _resolve_phase_outcome(
     submit_implementation_complete: SubmitImplementationCompleteTool,
     flag_blocked: FlagBlockedTool,
     succeeded_tools: set[str],
+    attempted_write_tools: set[str],
     bd: DriverBd,
     issue_id: str,
     verify_steps: Sequence[VerifyStep],
@@ -1000,7 +1030,9 @@ def _resolve_phase_outcome(
             submit_failing_test, skip_test_phase, workspace=workspace
         )
     if phase == TurnPhase.IMPLEMENT:
-        return _resolve_implement_outcome(submit_implementation_complete, succeeded_tools)
+        return _resolve_implement_outcome(
+            submit_implementation_complete, succeeded_tools, attempted_write_tools
+        )
     if phase == TurnPhase.VERIFY:
         return _resolve_verify_outcome(
             verify_steps=verify_steps, test_cmd=test_cmd, workspace=workspace

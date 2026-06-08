@@ -99,6 +99,7 @@ class PhaseOutcome:
         "test_phase_skipped"            — skip_test_phase invoked
         "implement_complete"            — submit_implementation_complete
         "implement_some_writes"         — IMPLEMENT rounds exhausted with ≥1 successful write
+        "implement_writes_attempted"    — writes attempted, none landed; verify arbitrates
         "verify_passed"                 — all verify steps exit 0 (or no verify steps)
         "verify_failed"                 — at least one verify step exit != 0
         "close_succeeded"               — bd close returned ok
@@ -331,6 +332,17 @@ def _default_transitions() -> tuple[Transition[TurnPhase, PhaseOutcome], ...]:
             TurnPhase.VERIFY,
             guard=_kind("implement_some_writes"),
             name="implement->verify (budget+writes)",
+        ),
+        # harness-gmu9f: writes were ATTEMPTED but none succeeded (every
+        # edit was a no-op / identical / dedup-rejected — the intended
+        # change is likely already present from a prior attempt). Let
+        # VERIFY arbitrate the artifact instead of halting "no writes" and
+        # burning the attempt on a misleading signal.
+        Transition(
+            TurnPhase.IMPLEMENT,
+            TurnPhase.VERIFY,
+            guard=_kind("implement_writes_attempted"),
+            name="implement->verify (writes attempted, none landed)",
         ),
         Transition(
             TurnPhase.IMPLEMENT,
