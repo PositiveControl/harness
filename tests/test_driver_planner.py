@@ -686,3 +686,27 @@ def test_issue_from_json_imported() -> None:
     # actually use _issue_from_json in planner tests, just confirming
     # nothing accidental.
     assert _issue_from_json is not None
+
+
+def test_open_event_log_coalesces_token_deltas(tmp_path: Path) -> None:
+    # Streaming chunks were one log line each — hundreds per model call.
+    # They're buffered and flushed as a single model_output summary at
+    # model_call_end. Synthetic lifecycle markers (delta-carrying) still
+    # log, since coalescing keys on the token_delta kind only.
+    from harness.driver.planner import _open_event_log, _synthetic_event
+    from harness.orchestrator import ToolLoopEvent
+
+    log_path = tmp_path / "plan.log"
+    obs = _open_event_log(log_path)
+
+    obs(_synthetic_event("start", extra="planning epic harness-x"))
+    obs(ToolLoopEvent(kind="model_call_start"))
+    for chunk in ("plan ", "the ", "work"):
+        obs(ToolLoopEvent(kind="token_delta", delta=chunk))
+    obs(ToolLoopEvent(kind="model_call_end"))
+
+    text = log_path.read_text()
+    assert "token_delta" not in text
+    assert "model_output | chars=13 preview='plan the work'" in text
+    # Synthetic lifecycle delta still logged.
+    assert "delta=planning epic harness-x" in text

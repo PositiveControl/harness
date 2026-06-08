@@ -537,11 +537,19 @@ def _planner_log_path(workspace: Path) -> Path:
 def _open_event_log(path: Path) -> PlannerObserver:
     """Return an observer that appends one line per event to `path`.
     Best-effort: IO errors don't crash the planner. Lazily creates the
-    parent dir on first write."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    parent dir on first write.
 
-    def emit(event: ToolLoopEvent) -> None:
-        line = _format_event(event)
+    Streaming `token_delta` events are coalesced (harness): each chunk was
+    its own log line — hundreds per model call — burying the readable
+    events. They're buffered and flushed as a single
+    `model_output | chars=N preview=…` line at `model_call_end`. Synthetic
+    lifecycle markers (start / iteration_start / finish / summary) carry
+    their text in `delta` too, so the coalescing keys on the `token_delta`
+    kind specifically — their `delta=` lines still log."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    delta_buffer: list[str] = []
+
+    def write_line(line: str) -> None:
         try:
             with path.open("a", encoding="utf-8") as f:
                 f.write(line + "\n")
@@ -549,6 +557,19 @@ def _open_event_log(path: Path) -> PlannerObserver:
             # Logging failure is non-fatal — the in-memory state still
             # carries the work.
             pass
+
+    def emit(event: ToolLoopEvent) -> None:
+        if event.kind == "token_delta":
+            if event.delta:
+                delta_buffer.append(event.delta)
+            return
+        if event.kind == "model_call_end" and delta_buffer:
+            streamed = "".join(delta_buffer)
+            delta_buffer.clear()
+            ts = datetime.now(UTC).isoformat(timespec="seconds")
+            preview = streamed.replace("\n", " ")[:200]
+            write_line(f"{ts} | model_output | chars={len(streamed)} preview={preview!r}")
+        write_line(_format_event(event))
 
     return emit
 
