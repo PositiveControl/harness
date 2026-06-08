@@ -236,8 +236,19 @@ def _smoke_execute_step(
     ``--no-blank-canvas`` so the runner skips the all-one-color check.
     The driver passes False during the early phase of an incremental
     from-scratch build, where a skeleton legitimately renders nothing
-    until a later render milestone closes. Console / page-error checks
-    stay active regardless — those are unconditional bugs.
+    until a later render milestone closes.
+
+    harness-wngfm: that same render-milestone-open window also appends
+    ``--tolerate-undefined-refs`` — a pre-render bead's scaffold may call
+    the entry symbol (``render`` / ``drawTile``) the milestone will
+    define, which throws ``ReferenceError: X is not defined`` on load.
+    While the milestone is open that absence is expected, so the runner
+    downgrades those to advisory; every OTHER runtime error (TypeError,
+    SyntaxError, a real console.error) still gates. Without this, a
+    pre-render bead is structurally un-closable — its verify fails on a
+    symbol it doesn't own (loop_run=48afe079: harness-o6jig). Once the
+    milestone closes, ``enforce_blank_canvas`` flips back to True and full
+    page-error gating resumes.
 
     harness-5vn6t: when ``<workspace>/.harness/smoke_setup.js``
     exists, pass it via ``--setup=`` so the runner exercises it after
@@ -249,7 +260,7 @@ def _smoke_execute_step(
     the file census / regression guard, so the scenario never counts as
     a deliverable edit.
     """
-    flag = "" if enforce_blank_canvas else " --no-blank-canvas"
+    flag = "" if enforce_blank_canvas else " --no-blank-canvas --tolerate-undefined-refs"
     setup = workspace / ".harness" / "smoke_setup.js"
     setup_flag = f" --setup={shlex.quote(str(setup.resolve()))}" if setup.is_file() else ""
     # harness-u1il5: optional behavioral assertions. When

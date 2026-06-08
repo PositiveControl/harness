@@ -18,6 +18,8 @@ from harness.driver.smoke_runner import (
     _DEFAULT_SETTLE_MS,
     _blank_canvas_check_enabled,
     _capture_screenshot,
+    _is_undefined_ref_error,
+    _partition_tolerated_errors,
     _read_assert,
     _read_path_arg,
     _read_setup,
@@ -187,3 +189,38 @@ def test_capture_screenshot_swallows_errors(
     _capture_screenshot(page, tmp_path / "shot.png", "before")
     err = capsys.readouterr().err
     assert "screenshot (before) skipped" in err
+
+
+# --- harness-wngfm: render-milestone undefined-ref tolerance ---------
+
+
+def test_is_undefined_ref_error_matches_reference_error() -> None:
+    """A JS ReferenceError for a not-yet-defined symbol is the tolerable
+    class while a render milestone is open."""
+    assert _is_undefined_ref_error("pageerror: ReferenceError: render is not defined")
+    assert _is_undefined_ref_error("pageerror: drawTile is not defined")
+
+
+def test_is_undefined_ref_error_rejects_real_errors() -> None:
+    """Other runtime errors must NOT be tolerated — they're real bugs
+    regardless of milestone state."""
+    assert not _is_undefined_ref_error("pageerror: TypeError: x.foo is not a function")
+    assert not _is_undefined_ref_error("console.error /game.js:9 SyntaxError: bad token")
+    assert not _is_undefined_ref_error("setup-scenario error: boom")
+
+
+def test_partition_tolerates_undefined_only_when_flagged() -> None:
+    """With the flag off (no milestone open) nothing is tolerated; with
+    it on, only undefined-ref errors move to advisory."""
+    errs = [
+        "pageerror: ReferenceError: render is not defined",
+        "pageerror: TypeError: ctx.fillRct is not a function",
+    ]
+    # Flag off: everything gates.
+    gating, tolerated = _partition_tolerated_errors(list(errs), tolerate_undefined_refs=False)
+    assert gating == errs
+    assert tolerated == []
+    # Flag on: the ReferenceError is advisory, the TypeError still gates.
+    gating, tolerated = _partition_tolerated_errors(list(errs), tolerate_undefined_refs=True)
+    assert gating == ["pageerror: TypeError: ctx.fillRct is not a function"]
+    assert tolerated == ["pageerror: ReferenceError: render is not defined"]

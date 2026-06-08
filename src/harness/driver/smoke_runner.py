@@ -155,6 +155,36 @@ def _format_page_error(err: Any) -> str:
     return f"pageerror: {err}"
 
 
+def _is_undefined_ref_error(err: str) -> bool:
+    """True for a runtime error caused by a not-yet-defined identifier —
+    a JS ``ReferenceError: X is not defined`` (harness-wngfm).
+
+    While a render milestone is still open, the entry symbol it will
+    define (``render`` / ``drawTile`` …) legitimately doesn't exist yet,
+    so a pre-milestone bead's scaffold that references it throws this on
+    load. That absence is expected, not a regression — the caller passes
+    ``--tolerate-undefined-refs`` during that window so these downgrade to
+    advisory while every other runtime error (TypeError, SyntaxError, a
+    real console.error) still gates."""
+    return "is not defined" in err.lower()
+
+
+def _partition_tolerated_errors(
+    errors: list[str], *, tolerate_undefined_refs: bool
+) -> tuple[list[str], list[str]]:
+    """Split collected runtime errors into ``(gating, tolerated)``.
+
+    When ``tolerate_undefined_refs`` is False (the default — no render
+    milestone open), nothing is tolerated and every error gates. When
+    True (harness-wngfm), ``ReferenceError: X is not defined`` errors move
+    to the tolerated list (advisory) while all others still gate."""
+    if not tolerate_undefined_refs:
+        return errors, []
+    gating = [e for e in errors if not _is_undefined_ref_error(e)]
+    tolerated = [e for e in errors if _is_undefined_ref_error(e)]
+    return gating, tolerated
+
+
 def _read_file_arg(argv: list[str], flag: str, label: str) -> tuple[str | None, str | None]:
     """Resolve an optional ``--<flag>=<file>`` script argument.
 
@@ -223,6 +253,11 @@ def main(argv: list[str]) -> int:
     flags = {a for a in argv[1:] if a.startswith("--") and "=" not in a}
     positionals = [a for a in argv[1:] if not a.startswith("--")]
     no_blank_canvas = "--no-blank-canvas" in flags
+    # harness-wngfm: while a render milestone is open, tolerate
+    # "X is not defined" ReferenceErrors (the entry symbol the milestone
+    # will define doesn't exist yet) — downgrade them to advisory instead
+    # of gating. Other runtime errors still fail the smoke.
+    tolerate_undefined_refs = "--tolerate-undefined-refs" in flags
     setup_source, setup_error = _read_setup(argv)
     if setup_error is not None:
         print(setup_error, file=sys.stderr)
@@ -242,7 +277,8 @@ def main(argv: list[str]) -> int:
     if not positionals:
         print(
             "usage: python -m harness.driver.smoke_runner "
-            "[--no-blank-canvas] [--setup=<scenario.js>] "
+            "[--no-blank-canvas] [--tolerate-undefined-refs] "
+            "[--setup=<scenario.js>] "
             "[--assert=<checks.js>] [--screenshot[-before|-after]=<out.png>] "
             "<index.html>",
             file=sys.stderr,
@@ -367,6 +403,18 @@ def main(argv: list[str]) -> int:
         print(f"smoke-execute: Playwright error: {exc}", file=sys.stderr)
         return 1
 
+    # harness-wngfm: while a render milestone is open, the not-yet-defined
+    # entry symbol throws a ReferenceError that's expected, not a
+    # regression — split those off as advisory so a pre-render bead isn't
+    # structurally un-closable. Every other runtime error still gates.
+    errors, tolerated = _partition_tolerated_errors(
+        errors, tolerate_undefined_refs=tolerate_undefined_refs
+    )
+    for err in tolerated:
+        print(
+            f"smoke-execute: tolerated (render milestone open) — {err}",
+            file=sys.stderr,
+        )
     if errors:
         print("smoke-execute: runtime errors detected on load:", file=sys.stderr)
         for err in errors:

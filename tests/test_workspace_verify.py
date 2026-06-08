@@ -791,6 +791,28 @@ def test_smoke_step_no_setup_flag_when_scenario_absent(tmp_path: Path) -> None:
     assert "--setup=" not in step.cmd
 
 
+def test_smoke_step_tolerates_undefined_refs_only_while_milestone_open(tmp_path: Path) -> None:
+    """harness-wngfm: render-milestone-open (enforce_blank_canvas=False)
+    must also pass --tolerate-undefined-refs so a pre-render bead's
+    ReferenceError on the not-yet-defined entry symbol doesn't gate its
+    verify. Once the milestone closes (enforce_blank_canvas=True), full
+    page-error gating resumes — the flag must be absent."""
+    from harness.driver.workspace_verify import _smoke_execute_step
+
+    (tmp_path / "index.html").write_text("<canvas></canvas>")
+    open_step = _smoke_execute_step(
+        tmp_path / "index.html", workspace=tmp_path, enforce_blank_canvas=False
+    )
+    assert "--tolerate-undefined-refs" in open_step.cmd
+    assert "--no-blank-canvas" in open_step.cmd
+
+    closed_step = _smoke_execute_step(
+        tmp_path / "index.html", workspace=tmp_path, enforce_blank_canvas=True
+    )
+    assert "--tolerate-undefined-refs" not in closed_step.cmd
+    assert "--no-blank-canvas" not in closed_step.cmd
+
+
 def test_read_setup_returns_source_when_present(tmp_path: Path) -> None:
     from harness.driver.smoke_runner import _read_setup
 
