@@ -158,23 +158,55 @@ def _tool_spec_for_openai(spec: ToolSpec) -> dict[str, Any]:
     }
 
 
-def _parse_openai_tool_calls(raw_calls: list[dict[str, Any]]) -> list[ToolCall]:
+def _parse_tool_args(args_raw: str) -> tuple[dict[str, Any], bool]:
+    """Parse a tool-call arguments string (streamed-and-reassembled or
+    OpenAI-serialized). Returns ``(arguments, truncated)``.
+
+    A NON-EMPTY ``args_raw`` that won't parse as JSON is treated as a
+    TRUNCATED call rather than coerced to ``{}``. The stream was cut
+    mid-arguments: vLLM blows the ``max_tokens`` budget while emitting a
+    large call (e.g. a full-file-rewrite ``edit_file`` whose
+    old_string + new_string each mirror the file) and mislabels
+    ``finish_reason`` as ``"tool_calls"`` instead of ``"length"``, so the
+    truncation is otherwise invisible. Coercing to ``{}`` here surfaces as
+    a phantom empty-args call → ``"<field>: Field required (got {})"``
+    validation error → the model retries the SAME too-big edit at the
+    SAME budget forever (loop_run=36a67106: harness-o6jig parked after 8
+    IMPLEMENT rounds, every round `edit_file args={}`). Signalling
+    truncation lets the orchestrator's ``on_truncated()`` double the
+    budget and retry with room to finish the call."""
+    if not args_raw:
+        return {}, False
+    try:
+        parsed = json.loads(args_raw)
+    except json.JSONDecodeError:
+        return {}, True
+    return (parsed, False) if isinstance(parsed, dict) else ({}, False)
+
+
+def _parse_openai_tool_calls(raw_calls: list[dict[str, Any]]) -> tuple[list[ToolCall], bool]:
     """Extract ToolCall records from OpenAI/vLLM tool_calls arrays.
     OpenAI/vLLM serializes arguments as a JSON-encoded STRING (per spec).
-    Some Qwen finetunes occasionally emit a dict — tolerate both."""
+    Some Qwen finetunes occasionally emit a dict — tolerate both.
+
+    Returns ``(calls, truncated)``; ``truncated`` is True when any call's
+    serialized arguments were cut off mid-stream (see ``_parse_tool_args``).
+    A truncated call is dropped from ``calls`` — re-emitted on the
+    wider-budget retry the truncation signal triggers."""
     parsed: list[ToolCall] = []
+    truncated = False
     for raw in raw_calls:
         fn = raw.get("function", {}) or {}
         name = fn.get("name")
         arguments: Any = fn.get("arguments", {})
         if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments) if arguments else {}
-            except json.JSONDecodeError:
-                arguments = {}
+            arguments, was_trunc = _parse_tool_args(arguments)
+            if was_trunc:
+                truncated = True
+                continue
         if isinstance(name, str) and isinstance(arguments, dict):
             parsed.append(ToolCall(name=name, arguments=arguments))
-    return parsed
+    return parsed, truncated
 
 
 # Maximum number of `}` chars the lenient fallback will append when
@@ -582,7 +614,7 @@ class VllmAdapter:
         raw_calls = msg.get("tool_calls") or []
         if not isinstance(raw_calls, list):
             raw_calls = []
-        parsed = _parse_openai_tool_calls(raw_calls)
+        parsed, args_truncated = _parse_openai_tool_calls(raw_calls)
         # Fallback ladder: vLLM's --tool-call-parser is advisory and
         # sometimes the model bypasses the wrapping format entirely.
         # When `tools` was sent in the request and the response carries
@@ -616,7 +648,7 @@ class VllmAdapter:
         return ModelReply(
             content=content,
             tool_calls=tuple(parsed),
-            was_truncated=choices[0].get("finish_reason") == "length",
+            was_truncated=choices[0].get("finish_reason") == "length" or args_truncated,
             had_unparseable_call=False,
         )
 
@@ -711,14 +743,17 @@ class VllmAdapter:
             yield StreamText(text=tail)
 
         parsed: list[ToolCall] = []
+        args_truncated = False
         for _, slot in sorted(tc_acc.items()):
             name = slot["name"]
-            args_raw = slot["arguments"]
-            try:
-                args = json.loads(args_raw) if args_raw else {}
-            except json.JSONDecodeError:
-                args = {}
-            if name and isinstance(args, dict):
+            args, was_trunc = _parse_tool_args(slot["arguments"])
+            if was_trunc:
+                # Stream cut mid-arguments — drop the partial call and
+                # flag truncation so on_truncated() widens the budget and
+                # retries instead of dispatching a phantom empty-args call.
+                args_truncated = True
+                continue
+            if name:
                 parsed.append(ToolCall(name=name, arguments=args))
 
         full_content = "".join(raw_parts)
@@ -778,7 +813,7 @@ class VllmAdapter:
             reply=ModelReply(
                 content=full_content,
                 tool_calls=tuple(parsed),
-                was_truncated=finish_reason == "length",
+                was_truncated=finish_reason == "length" or args_truncated,
                 had_unparseable_call=False,
             )
         )

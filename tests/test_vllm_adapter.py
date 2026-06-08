@@ -444,6 +444,63 @@ def test_vllm_stream_with_tools_accumulates_tool_call_deltas() -> None:
     assert reply.was_truncated is False
 
 
+def test_vllm_stream_with_tools_treats_truncated_args_as_truncation() -> None:
+    """A tool call whose arguments stream is cut off mid-JSON must NOT be
+    coerced to an empty-args call. vLLM blows the max_tokens budget during
+    a large call and mislabels finish_reason as 'tool_calls' (not 'length'),
+    so the only truncation signal is the unparseable arguments string. The
+    adapter drops the partial call and marks the reply truncated so the
+    orchestrator widens the budget and retries — instead of dispatching
+    `edit_file args={}`, which surfaces as 'Field required (got {})' and
+    loops the model on the same too-big edit (loop_run=36a67106)."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]},
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "type": "function",
+                                        "function": {
+                                            "name": "weather",
+                                            # Cut off mid-arguments — never closed.
+                                            "arguments": '{"city":"San Franc',
+                                        },
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                },
+                # vLLM mislabels a budget-cut tool call as 'tool_calls'.
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+                "[DONE]",
+            ]
+        )
+
+    adapter = VllmAdapter(model="m")
+    with patch("httpx.Client", _make_factory(handler)):
+        chunks = list(
+            adapter.stream_with_tools(
+                [ChatMessage(role="user", content="weather?")],
+                tools=[_weather_spec()],
+            )
+        )
+
+    assert isinstance(chunks[-1], StreamComplete)
+    reply = chunks[-1].reply
+    # No phantom empty-args call dispatched...
+    assert reply.tool_calls == ()
+    # ...and the truncation signal fires so on_truncated() widens + retries.
+    assert reply.was_truncated is True
+
+
 def test_vllm_stream_with_tools_yields_text_for_normal_reply() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return _sse_response(
