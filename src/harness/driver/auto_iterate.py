@@ -30,6 +30,7 @@ wrapper doesn't mistake it for a finish.
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
@@ -44,6 +45,7 @@ from harness.driver.critic import (
     critic_char_budget,
     run_critic,
 )
+from harness.driver.fsm_turn import _test_cmd_script
 from harness.driver.loop import LoopConfig, LoopResult, ambient_vllm_trace, run_loop
 from harness.model.adapter import ModelAdapter
 
@@ -293,6 +295,60 @@ def _file_critic_finding(
     return new_id
 
 
+def _gate_fingerprint(workspace: Path, test_cmd: str | None) -> str | None:
+    """Content fingerprint of the gate file a parked issue was stuck on
+    (harness-s0el9).
+
+    Resolves the script path out of `test_cmd` (the same extraction the FSM
+    uses to tell a real gate from a no-op) and hashes its bytes. Returns None
+    when there is no resolvable gate file — no test_cmd, an unparseable /
+    runner-only command, or the script is absent from the workspace. None is
+    "no fingerprint", deliberately distinct from any real hash: a None->hash
+    transition (a gate that appeared) reads as a change, same as hash->hash'.
+    """
+    if not test_cmd:
+        return None
+    script = _test_cmd_script(test_cmd)
+    if script is None:
+        return None
+    path = workspace / script
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _revive_repaired_gates(
+    workspace: Path,
+    carried_skip: set[str],
+    skip_gate_fp: dict[str, str | None],
+    skip_gate_cmd: dict[str, str],
+) -> list[str]:
+    """Drop carried-skip ids whose gate file changed since they parked
+    (harness-s0el9), so the next pass re-drives them once.
+
+    Mutates `carried_skip`, `skip_gate_fp`, and `skip_gate_cmd` in place: an
+    id whose current gate fingerprint differs from the one captured at park
+    time is removed from all three and returned. Ids with a None baseline (no
+    resolvable gate at park) are never revived — there's nothing to detect a
+    repair against, so leaving them skipped is the conservative default
+    (preserves harness-6y2dc's no-wheel-spin guarantee). If a revived issue
+    re-parks, its fresh park re-snapshots the fingerprint, so an
+    unchanged-but-still-red gate is only re-driven once, not every pass."""
+    revived: list[str] = []
+    for issue_id in sorted(carried_skip):
+        baseline = skip_gate_fp.get(issue_id)
+        if baseline is None:
+            continue
+        if _gate_fingerprint(workspace, skip_gate_cmd.get(issue_id)) != baseline:
+            revived.append(issue_id)
+    for issue_id in revived:
+        carried_skip.discard(issue_id)
+        skip_gate_fp.pop(issue_id, None)
+        skip_gate_cmd.pop(issue_id, None)
+    return revived
+
+
 def run_auto_iterate(
     adapter: ModelAdapter, bd: DriverBd, config: AutoIterateConfig
 ) -> AutoIterateResult:
@@ -324,6 +380,16 @@ def run_auto_iterate(
     # exit fast (partial) instead of burning its whole budget
     # re-discovering the same issues can't close.
     carried_skip: set[str] = set()
+    # harness-s0el9: per-carried-id gate fingerprint + the cmd that produced
+    # it, captured when the issue parked. A bugged gate (loop_run=e7644fa7:
+    # gate grepped a literal token the correct idiomatic code never emits)
+    # parks an issue that a between-pass gate repair would unblock — but
+    # carried_skip alone strands it forever and the epic exits `stuck` on a
+    # now-passing gate. Re-fingerprinting before each pass lets a changed gate
+    # revive the issue for one re-attempt.
+    skip_gate_fp: dict[str, str | None] = {}
+    skip_gate_cmd: dict[str, str] = {}
+    workspace = config.loop_config.workspace
     spec_text = _resolve_spec(config, bd)
     spec_resolved = spec_text is not None
     if not spec_resolved:
@@ -345,13 +411,33 @@ def run_auto_iterate(
         # state file. (run_loop's own state machine handles fresh runs
         # cleanly when resume_from is None.)
         loop_config = config.loop_config if pass_index == 0 else _clear_resume(config.loop_config)
+        # harness-s0el9: before re-applying the skip-list, revive any carried
+        # id whose gate file changed since it parked — a repaired gate must
+        # un-strand the issue instead of carrying it skipped forever.
+        for revived_id in _revive_repaired_gates(
+            workspace, carried_skip, skip_gate_fp, skip_gate_cmd
+        ):
+            print(
+                f"auto-iterate: gate for {revived_id} changed since it parked — "
+                "re-driving once (harness-s0el9)",
+                file=sys.stderr,
+            )
         # harness-6y2dc: feed prior passes' parked ids forward so this
         # pass skips them instead of re-driving from cold.
         if carried_skip:
             loop_config = replace(loop_config, skip_issue_ids=frozenset(carried_skip))
         drive_result = run_loop(adapter, bd, loop_config)
         drive_results.append(drive_result)
-        carried_skip.update(drive_result.parked_issues)
+        # harness-s0el9: carry newly-parked ids forward AND snapshot each
+        # one's gate fingerprint, so a between-pass gate repair can revive it
+        # next pass. Re-parked revived issues re-snapshot here, bounding the
+        # re-drive to once per actual gate change.
+        for pid in drive_result.parked_issues:
+            carried_skip.add(pid)
+            gate_cmd = drive_result.parked_test_cmds.get(pid)
+            skip_gate_fp[pid] = _gate_fingerprint(workspace, gate_cmd)
+            if gate_cmd is not None:
+                skip_gate_cmd[pid] = gate_cmd
 
         if drive_result.exit_reason in {"halted", "interrupted"}:
             return AutoIterateResult(

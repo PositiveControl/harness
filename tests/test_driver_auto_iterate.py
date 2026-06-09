@@ -135,6 +135,7 @@ def _loop_result(
     loop_run_id: str = "run01",
     turns_used: int = 1,
     parked_issues: Sequence[str] = (),
+    parked_test_cmds: dict[str, str] | None = None,
 ) -> LoopResult:
     return LoopResult(
         loop_run_id=loop_run_id,
@@ -144,6 +145,7 @@ def _loop_result(
         turns_used=turns_used,
         exit_reason=exit_reason,  # type: ignore[arg-type]
         parked_issues=list(parked_issues),
+        parked_test_cmds=dict(parked_test_cmds or {}),
     )
 
 
@@ -388,6 +390,81 @@ def test_run_auto_iterate_carries_parked_into_next_pass_skip(
     run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
 
     # Pass 1 saw no carry; pass 2 carries the parked A.
+    assert seen_skip[0] == frozenset()
+    assert seen_skip[1] == frozenset({"harness-a"})
+
+
+def test_run_auto_iterate_revives_parked_issue_when_gate_changed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-s0el9: an issue parked on a bugged gate is carried skipped,
+    but if the gate FILE changes between passes (operator/critic repaired it)
+    the next pass must drop it from the skip-list and re-drive it once.
+    Pins the un-strand that turns a `stuck` exit on a now-passing gate back
+    into forward progress (loop_run=e7644fa7, harness-470)."""
+    gate = tmp_path / "gate.py"
+    gate.write_text("# v1: literal-token grep, never goes green\n")
+    bd = _FakeBd(issues={"harness-epic": _issue("harness-epic", title="GTAII")})
+    cfg = _config(tmp_path, max_passes=3, convergence_streak=2)
+
+    seen_skip: list[frozenset[str]] = []
+
+    def run_loop_spy(_a: Any, _b: Any, loop_config: LoopConfig) -> LoopResult:
+        seen_skip.append(loop_config.skip_issue_ids)
+        if len(seen_skip) == 1:
+            return _loop_result(
+                closed=["harness-b"],
+                exit_reason="partial",
+                parked_issues=["harness-a"],
+                parked_test_cmds={"harness-a": "python gate.py"},
+            )
+        return _loop_result(closed=[], exit_reason="partial", turns_used=0)
+
+    def critic_repairs_gate(**_: Any) -> list[Any]:
+        # Operator/critic repairs the gate between passes.
+        gate.write_text("# v2: idiom-tolerant, now passes\n")
+        return []
+
+    monkeypatch.setattr("harness.driver.auto_iterate.run_loop", run_loop_spy)
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", critic_repairs_gate)
+
+    run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    # Pass 1: no carry. Pass 2: gate changed since A parked -> A revived,
+    # NOT carried in the skip-list.
+    assert seen_skip[0] == frozenset()
+    assert seen_skip[1] == frozenset()
+
+
+def test_run_auto_iterate_keeps_parked_issue_when_gate_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-s0el9 companion: an unchanged gate must NOT revive the issue —
+    that would reintroduce the harness-6y2dc wheel-spin (re-driving work that
+    still can't close every pass)."""
+    gate = tmp_path / "gate.py"
+    gate.write_text("# stable gate\n")
+    bd = _FakeBd(issues={"harness-epic": _issue("harness-epic", title="GTAII")})
+    cfg = _config(tmp_path, max_passes=3, convergence_streak=2)
+
+    seen_skip: list[frozenset[str]] = []
+
+    def run_loop_spy(_a: Any, _b: Any, loop_config: LoopConfig) -> LoopResult:
+        seen_skip.append(loop_config.skip_issue_ids)
+        if len(seen_skip) == 1:
+            return _loop_result(
+                closed=["harness-b"],
+                exit_reason="partial",
+                parked_issues=["harness-a"],
+                parked_test_cmds={"harness-a": "python gate.py"},
+            )
+        return _loop_result(closed=[], exit_reason="partial", turns_used=0)
+
+    monkeypatch.setattr("harness.driver.auto_iterate.run_loop", run_loop_spy)
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", lambda **_: [])
+
+    run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
     assert seen_skip[0] == frozenset()
     assert seen_skip[1] == frozenset({"harness-a"})
 

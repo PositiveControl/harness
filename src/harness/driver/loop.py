@@ -203,7 +203,7 @@ class LoopConfig:
     # ~50% more headroom while keeping each turn bounded (12 rounds *
     # ~10s/round ≈ 2 min upper bound on M4 Pro).
     executor_max_rounds: int = 12
-    # harness-15eeq: sampling temperature for the executor's inner
+    # harness-s0el9: sampling temperature for the executor's inner
     # run_tool_loop. Lower than `harness chat`'s 0.5 default because the
     # drive is autonomous code editing, where determinism curbs the wild
     # destructive edits a higher temperature invites (drive loop_run=
@@ -368,6 +368,11 @@ class LoopResult:
     exit_reason: Literal["success", "partial", "halted", "exhausted", "interrupted", "dry_run"]
     handoffs: list[Handoff] = field(default_factory=list)
     parked_issues: list[str] = field(default_factory=list)
+    # harness-s0el9: per-parked-issue gate test command (from
+    # `state.last_test_cmd`). Lets an outer auto-iterate pass fingerprint
+    # the gate file a parked issue was stuck on, so a between-pass gate
+    # repair can un-strand it instead of carrying it skipped forever.
+    parked_test_cmds: dict[str, str] = field(default_factory=dict)
 
 
 def _blank_canvas_enforced(bd: DriverBd, milestone_id: str | None) -> bool:
@@ -1930,6 +1935,15 @@ class _LogWriter:
 # --- exit paths --------------------------------------------------
 
 
+def _parked_test_cmds(state: LoopRunState) -> dict[str, str]:
+    """Gate test command for each parked issue (harness-s0el9). Only ids
+    that reached a WRITE_TEST phase have a `last_test_cmd` entry; the rest
+    map to nothing and the outer pass treats them as "no resolvable gate"."""
+    return {
+        pid: state.last_test_cmd[pid] for pid in state.parked_issues if pid in state.last_test_cmd
+    }
+
+
 def _exit_success(state: LoopRunState, workspace: Path, log: _LogWriter) -> LoopResult:
     # harness-iljv: reached only when the ready queue emptied with
     # nothing parked, so the epic is genuinely complete. A run that
@@ -1944,6 +1958,7 @@ def _exit_success(state: LoopRunState, workspace: Path, log: _LogWriter) -> Loop
         turns_used=state.turns_used,
         exit_reason="success",
         parked_issues=list(state.parked_issues),
+        parked_test_cmds=_parked_test_cmds(state),
     )
 
 
@@ -1981,6 +1996,7 @@ def _exit_partial(
         turns_used=state.turns_used,
         exit_reason="partial",
         parked_issues=list(state.parked_issues),
+        parked_test_cmds=_parked_test_cmds(state),
     )
 
 
@@ -1998,6 +2014,7 @@ def _exit_exhausted(state: LoopRunState, workspace: Path, log: _LogWriter) -> Lo
         turns_used=state.turns_used,
         exit_reason="exhausted",
         parked_issues=list(state.parked_issues),
+        parked_test_cmds=_parked_test_cmds(state),
     )
 
 
@@ -2037,6 +2054,7 @@ def _exit_halted(
         turns_used=state.turns_used,
         exit_reason="halted",
         parked_issues=list(state.parked_issues),
+        parked_test_cmds=_parked_test_cmds(state),
     )
 
 
@@ -2060,6 +2078,7 @@ def _exit_interrupted(
         turns_used=state.turns_used,
         exit_reason="interrupted",
         parked_issues=list(state.parked_issues),
+        parked_test_cmds=_parked_test_cmds(state),
     )
 
 
@@ -2412,7 +2431,7 @@ def _inter_attempt_restore(
                 f"loop_run={state.loop_run_id} cleared carried test_cmd for {issue_id}: "
                 f"gate script removed by restore — WRITE_TEST will re-author next attempt"
             )
-    # harness-15eeq: a REGRESSED restore (not merely red) means the failed
+    # harness-s0el9: a REGRESSED restore (not merely red) means the failed
     # attempt's net effect was to DELETE working code — the destructive-edit
     # pattern (sed range-delete on game.js) the 30B falls into instead of
     # adding. The restore undoes the damage, but the next attempt will repeat
