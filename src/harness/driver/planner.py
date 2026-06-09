@@ -416,6 +416,18 @@ Granularity rules:
     feature, or one test fixture.
   - If a section is too large for one item, split it into multiple
     sub-items with explicit depends_on relationships.
+  - Every `acceptance` MUST be expressible as ONE failing test. Prefer a
+    code-presence assertion: name the literal tokens, colors, constants,
+    function names, or guards the implementation must contain (e.g.
+    "game.js contains `ped.alive = false` and `score += 100 * multiplier`,
+    and a `dist < 12` guard"). These go red->green cleanly.
+  - If an acceptance can only be stated as runtime BEHAVIOR or TIMING
+    ("spawns within 5s", "tracks the wanted level each frame", "camera
+    follows", "walking physics", "animation"), the executor cannot author
+    a single failing test and will stall at WRITE_TEST. Split it into the
+    code-shape units that implement the behavior — the state declaration,
+    the guard/condition, the draw call — each with its own code-presence
+    acceptance. A behavioral umbrella becomes 2-4 assertable children.
   - Do NOT add items that aren't in the spec. The spec_quote is your
     contract; the validator rejects items whose quotes don't appear
     in the source.
@@ -781,7 +793,152 @@ def _build_planner_registry(workspace: Path, state: _PlannerState) -> ToolRegist
     return registry
 
 
+# --- bead-scoped auto-decompose (harness-tcta3) ----------------------
+
+AUTO_DECOMPOSE_SYSTEM_PROMPT = """\
+You are a planner performing a FOCUSED decomposition. An executor parked
+on ONE bead because its acceptance could not be reduced to a single
+failing test (behavioral/temporal wording — "spawns within 5s", "tracks
+X", "camera follows", "physics"). Split that one bead into 2-4 child
+beads, each of which an executor CAN drive to closure with one
+code-presence test.
+
+CRITICAL: every reply MUST be a tool call until you call `plan_finish`.
+Do NOT respond with prose.
+
+Process:
+  1. Read the spec section the bead implements (`read_file` / `grep` on
+     the spec path you are given) so your children quote it verbatim.
+  2. For each child, call `plan_add(...)` with:
+     - title: short; echo the parent (e.g. "<parent §> — <unit>").
+     - description: full body INCLUDING a '> ' blockquote of the spec.
+     - spec_quote: the verbatim spec text the description blockquotes.
+     - acceptance: a CODE-PRESENCE assertion ONLY — name the literal
+       tokens, constants, colors, function names, or guards the code must
+       contain (e.g. "game.js contains `ped.alive = false` and a
+       `dist < 12` guard"). NEVER restate the behavior/timing.
+     - depends_on: sibling titles that must close first (e.g. a
+       state-declaration child before logic that uses it).
+  3. Call `plan_finish` when the children together COVER the parent.
+
+Rules:
+  - Children must cover the parent and add NO scope it didn't have.
+  - Each child is ONE additive code unit: a declaration, a guard, a draw
+    call. Keep them small and independently testable.
+  - Every spec_quote MUST appear verbatim in the spec; quotes that don't
+    are dropped.
+"""
+
+
+def decompose_bead(
+    adapter: ModelAdapter,
+    bd: DriverBd,
+    *,
+    parent_id: str,
+    epic_id: str,
+    spec_path: Path,
+    workspace: Path,
+    max_turns: int = 3,
+    observe: PlannerObserver | None = None,
+) -> list[str]:
+    """Split a parked bead into code-presence-assertable children, wired
+    as DIRECT children of `epic_id` (harness-tcta3).
+
+    Runs a one-bead planner session, validates each child's spec_quote
+    against `spec_path`, then materializes the survivors: each child
+    blocks the epic (so `ready_under_epic` surfaces it) AND blocks the
+    parent (so the parent closes only after its children). Intra-child
+    `depends_on` edges are wired last. The parent is labeled
+    `auto-decomposed` so the park path never re-decomposes it.
+
+    Returns the new child bd ids (empty when the planner emitted nothing
+    usable — the caller then parks the bead as before). Best-effort: a
+    bd write failure mid-materialize surfaces as a PlannerError; callers
+    should suppress it and fall back to a plain park.
+    """
+    parent = bd.show(parent_id)
+    description = str(parent.raw.get("description") or "")
+    acceptance = str(parent.raw.get("acceptance_criteria") or "")
+
+    state = _PlannerState()
+    registry = _build_planner_registry(workspace, state)
+    user_message = (
+        f"Parent bead {parent.id}: {parent.title}\n\n"
+        f"Description:\n{description or '(none)'}\n\n"
+        f"Acceptance (could NOT be reduced to one failing test):\n"
+        f"{acceptance or '(none)'}\n\n"
+        f"The spec is at '{spec_path}'. Read the relevant section, then emit "
+        f"`plan_add` calls splitting THIS bead into code-presence-assertable "
+        f"children, then `plan_finish`. Every reply must be a tool call."
+    )
+    messages = [
+        ChatMessage(role="system", content=AUTO_DECOMPOSE_SYSTEM_PROMPT),
+        ChatMessage(role="user", content=user_message),
+    ]
+    log_path = _planner_log_path(workspace)
+    composite = _compose_observers(_open_event_log(log_path), observe)
+    for _turn in range(max_turns):
+        run_tool_loop(
+            adapter,  # type: ignore[arg-type]  # narrower _ToolCapableAdapter, checked at runtime
+            messages,
+            registry,
+            observe=composite,
+        )
+        if state.finished:
+            break
+        messages.append(
+            ChatMessage(
+                role="user",
+                content=(
+                    "Continue. Add any remaining children with `plan_add`, then "
+                    "call `plan_finish`. Every reply must be a tool call."
+                ),
+            )
+        )
+    if not state.items:
+        return []
+
+    spec_text_normalized = _WHITESPACE_RE.sub(" ", spec_path.read_text())
+    valid = [
+        item
+        for item in state.items
+        if _WHITESPACE_RE.sub(" ", item.spec_quote).strip() in spec_text_normalized
+    ]
+    if not valid:
+        return []
+
+    child_label = f"plan-source:{spec_path.name}"
+    title_to_id: dict[str, str] = {}
+    new_ids: list[str] = []
+    for item in valid:
+        child_id = bd.create_with_labels(
+            title=item.title,
+            description=item.description,
+            issue_type=item.issue_type,
+            priority=item.priority,
+            labels=[child_label, "auto-decomposed-child"],
+            acceptance=item.acceptance or None,
+        )
+        title_to_id[item.title] = child_id
+        new_ids.append(child_id)
+        # Direct epic child (ready_under_epic is one-level-deep) + the
+        # parent depends on the child so it closes only after them.
+        bd.dep_add(blocked=epic_id, blocker=child_id)
+        bd.dep_add(blocked=parent_id, blocker=child_id)
+
+    # Intra-child ordering — wired after all children exist so titles resolve.
+    for item in valid:
+        for dep_title in item.depends_on:
+            blocker_id = title_to_id.get(dep_title)
+            if blocker_id is not None:
+                bd.dep_add(blocked=title_to_id[item.title], blocker=blocker_id)
+
+    bd.add_label(parent_id, "auto-decomposed")
+    return new_ids
+
+
 __all__ = [
+    "AUTO_DECOMPOSE_SYSTEM_PROMPT",
     "PLANNER_SYSTEM_PROMPT",
     "PlanAddTool",
     "PlanDraft",
@@ -791,6 +948,7 @@ __all__ = [
     "PlannerError",
     "VerifyStep",
     "commit_plan",
+    "decompose_bead",
     "run_planner",
     "write_draft",
 ]

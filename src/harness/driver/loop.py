@@ -331,6 +331,19 @@ class LoopConfig:
     # (Phase 1 is signal-collection only). None = off; the smoke gate runs
     # exactly as before. CLI wires this from settings.vision_base_url.
     vision_base_url: str | None = None
+    # harness-tcta3: when an issue is about to park because the executor
+    # could not author a failing test (write_test->halted) or made no
+    # writes (implement->halted) — the behavioral-bead failure mode — run
+    # a one-bead planner session to split it into code-presence-assertable
+    # children wired as direct epic children, instead of stranding it for
+    # an operator to hand-decompose. Requires `spec_path` (children must
+    # quote the spec). Off by default: it spends model budget and mutates
+    # bd mid-run; opt in via --auto-decompose-on-park.
+    auto_decompose_on_park: bool = False
+    # Spec file the planner grounds auto-decompose children against. None
+    # disables auto-decompose regardless of the flag. CLI wires this from
+    # --spec (auto-iterate) or the epic's plan-source label.
+    spec_path: Path | None = None
 
 
 @dataclass
@@ -904,7 +917,15 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 if attempt >= config.max_attempts_per_issue:
                     fail_reason = f"verify_failed: {verify_failure}"
                     if config.skip_on_max_attempts:
-                        _park_issue(bd, state, current_id=current.id, reason=fail_reason, log=log)
+                        _park_issue(
+                            bd,
+                            state,
+                            current_id=current.id,
+                            reason=fail_reason,
+                            log=log,
+                            adapter=adapter,
+                            config=config,
+                        )
                         _post_park_housekeeping(
                             config,
                             state,
@@ -963,7 +984,15 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     f"parking without retry ({reason})"
                 )
                 if config.skip_on_max_attempts:
-                    _park_issue(bd, state, current_id=current.id, reason=reason, log=log)
+                    _park_issue(
+                        bd,
+                        state,
+                        current_id=current.id,
+                        reason=reason,
+                        log=log,
+                        adapter=adapter,
+                        config=config,
+                    )
                     _post_park_housekeeping(
                         config,
                         state,
@@ -1002,7 +1031,15 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             # Final consecutive failure (harness-d8e3 + zcrd): park
             # under skip-on (the new default), halt under skip-off.
             if config.skip_on_max_attempts:
-                _park_issue(bd, state, current_id=current.id, reason=reason, log=log)
+                _park_issue(
+                    bd,
+                    state,
+                    current_id=current.id,
+                    reason=reason,
+                    log=log,
+                    adapter=adapter,
+                    config=config,
+                )
                 _post_park_housekeeping(
                     config,
                     state,
@@ -2082,6 +2119,68 @@ def _exit_interrupted(
     )
 
 
+def _is_decomposable_park(reason: str) -> bool:
+    """harness-tcta3: True when a park reason is the behavioral-bead
+    failure mode — the executor couldn't author a failing test
+    (write_test->halted) or made no writes (implement->halted). These are
+    the parks an auto-decompose can rescue by splitting the bead into
+    code-presence-assertable children. A verify-retry-ceiling park (a
+    bugged gate) is NOT decomposable — that's the harness-s0el9 gate-
+    revive path, not this one."""
+    low = reason.lower()
+    return "write_test->halted" in low or "implement->halted" in low
+
+
+def _try_auto_decompose(
+    bd: DriverBd,
+    state: LoopRunState,
+    adapter: ModelAdapter,
+    config: LoopConfig,
+    *,
+    current_id: str,
+    log: _LogWriter,
+) -> None:
+    """harness-tcta3: split a parking bead into assertable epic-children
+    via a one-bead planner session. Best-effort + idempotent: an issue
+    already labeled `auto-decomposed` is skipped (never re-split), and any
+    bd/planner failure is logged and swallowed so the park proceeds. The
+    umbrella still parks — its new children are separate ready beads that
+    the drive picks up; the umbrella closes on a later pass once they do."""
+    if config.spec_path is None:
+        return
+    try:
+        issue = bd.show(current_id)
+    except DriverBdError:
+        return
+    if "auto-decomposed" in issue.labels:
+        log(f"loop_run={state.loop_run_id} auto-decompose skip {current_id}: already decomposed")
+        return
+    from harness.driver.planner import PlannerError, decompose_bead
+
+    try:
+        children = decompose_bead(
+            adapter,
+            bd,
+            parent_id=current_id,
+            epic_id=state.epic_id,
+            spec_path=config.spec_path,
+            workspace=config.workspace,
+        )
+    except (DriverBdError, PlannerError) as exc:
+        log(f"loop_run={state.loop_run_id} WARN auto-decompose({current_id}) failed: {exc}")
+        return
+    if children:
+        log(
+            f"loop_run={state.loop_run_id} auto-decomposed {current_id} -> "
+            f"{len(children)} child(ren): {', '.join(children)}"
+        )
+    else:
+        log(
+            f"loop_run={state.loop_run_id} auto-decompose {current_id}: "
+            "planner produced no usable children"
+        )
+
+
 def _park_issue(
     bd: DriverBd,
     state: LoopRunState,
@@ -2089,6 +2188,8 @@ def _park_issue(
     current_id: str,
     reason: str,
     log: _LogWriter,
+    adapter: ModelAdapter | None = None,
+    config: LoopConfig | None = None,
 ) -> None:
     """harness-zcrd: park an issue after max-attempts exhaustion.
 
@@ -2098,10 +2199,23 @@ def _park_issue(
     bead, and logs a PARKED line. Does NOT return — the caller
     `continue`s the loop to pick up the next ready issue.
 
+    harness-tcta3: when `config.auto_decompose_on_park` is set and the
+    park reason is the behavioral-bead failure mode, first try to split
+    the bead into assertable epic-children (`adapter` + `config` carry
+    the planner inputs). The umbrella still parks; its children become
+    fresh ready work.
+
     `bd flag_human` and session-state writes are best-effort: a bd
     hiccup here doesn't break the drive's forward motion. The
     in-memory `state.parked_issues` is the load-bearing filter; the
     bd flag is operator-facing signal."""
+    if (
+        adapter is not None
+        and config is not None
+        and config.auto_decompose_on_park
+        and _is_decomposable_park(reason)
+    ):
+        _try_auto_decompose(bd, state, adapter, config, current_id=current_id, log=log)
     log(f"loop_run={state.loop_run_id} PARKED {current_id}: {reason}")
     if current_id not in state.parked_issues:
         state.parked_issues.append(current_id)

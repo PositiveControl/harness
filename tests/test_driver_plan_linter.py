@@ -88,11 +88,49 @@ def test_bullet_heavy_short_subsection_flags_on_bullets() -> None:
     assert any("bullet" in r for r in c.reasons)
 
 
+# ---- harness-pnkvp: behavioral-acceptance (assertability) signal -------
+
+
+def test_behavioral_acceptance_flags_otherwise_rightsized_bead() -> None:
+    """A single-subsection, short, low-clause bead — every SIZE signal
+    quiet — still flags when its acceptance is runtime behavior the
+    executor can't reduce to one failing test (§7a/lsna2 shape)."""
+    c = score_bead(
+        "harness-lsna2",
+        "§7a Police spawn-by-wanted",
+        "Spawn police as the wanted level rises.",
+        "A police car spawns within 5s of wanted hitting 1; the count tracks wanted.",
+    )
+    assert c.behavioral_acceptance is True
+    assert c.flagged is True
+    assert any("one failing test" in r for r in c.reasons)
+
+
+def test_code_presence_acceptance_not_behavioral() -> None:
+    """The assertable sub-bead form (literal tokens/constants) must NOT
+    trip the behavioral signal — that's the target granularity."""
+    c = score_bead(
+        "harness-4po",
+        "§7a-i Police state decl",
+        "Declare the police array and a spawn factory.",
+        "game.js declares a police array and a spawnPoliceCar() whose object "
+        "carries maxSpeed 200, acceleration 160, turnRate 2.0.",
+    )
+    assert c.behavioral_acceptance is False
+    assert c.flagged is False
+
+
+def test_behavioral_signal_falls_back_to_description_when_no_acceptance() -> None:
+    c = score_bead("z", "t", "The camera follows the foot pose each frame.")
+    assert c.behavioral_acceptance is True
+
+
 def test_returns_beadcomplexity_shape() -> None:
     c = score_bead("harness-abc", "title", "body")
     assert isinstance(c, BeadComplexity)
     assert c.bead_id == "harness-abc"
     assert c.title == "title"
+    assert c.behavioral_acceptance is False
 
 
 # ---- harness-yzg8: wrap-long-function heuristic ------------------------

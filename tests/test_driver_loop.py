@@ -3945,3 +3945,105 @@ def test_turn_observer_coalesces_token_deltas(tmp_path: Path) -> None:
         "token_delta",
         "model_call_end",
     ]
+
+
+# --- harness-tcta3: auto-decompose-on-park gating --------------------
+
+
+def test_is_decomposable_park_truth_table() -> None:
+    from harness.driver.loop import _is_decomposable_park
+
+    assert _is_decomposable_park("write_test->halted (no test)") is True
+    assert _is_decomposable_park("implement->halted (no writes)") is True
+    # A bugged-gate park (harness-s0el9 path) is NOT decomposable.
+    assert _is_decomposable_park("[forced] verify-retry ceiling: 3 failed") is False
+    assert _is_decomposable_park("premise unmet: edit_file ...") is False
+
+
+class _LabelBd:
+    """Minimal bd fake for _try_auto_decompose: serves one issue with a
+    configurable label set."""
+
+    def __init__(self, *, labels: tuple[str, ...]) -> None:
+        self._labels = labels
+
+    def show(self, issue_id: str) -> BeadsIssue:
+        return _issue(issue_id, title="umbrella", labels=self._labels)
+
+
+class _CaptureLog:
+    """Stand-in for the file-backed _LogWriter — captures lines in memory."""
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def __call__(self, msg: str) -> None:
+        self.lines.append(msg)
+
+
+def _decompose_config(tmp_path: Path) -> LoopConfig:
+    spec = tmp_path / "spec.md"
+    spec.write_text("spec body")
+    return LoopConfig(
+        epic_id="harness-epic",
+        workspace=tmp_path,
+        character=object(),  # type: ignore[arg-type]
+        max_turns=5,
+        auto_decompose_on_park=True,
+        spec_path=spec,
+    )
+
+
+def test_try_auto_decompose_skips_already_decomposed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from harness.driver import loop as loop_mod
+
+    calls: list[str] = []
+
+    def _record(*_a: Any, **_k: Any) -> list[str]:
+        calls.append("called")
+        return []
+
+    monkeypatch.setattr("harness.driver.planner.decompose_bead", _record)
+    state = LoopRunState.fresh(epic_id="harness-epic", max_turns=5, started_at_sha="0" * 7)
+    bd = _LabelBd(labels=("auto-decomposed",))
+    log = _CaptureLog()
+    loop_mod._try_auto_decompose(
+        bd,  # type: ignore[arg-type]
+        state,
+        object(),  # type: ignore[arg-type]  # adapter unused before the skip
+        _decompose_config(tmp_path),
+        current_id="harness-umb",
+        log=log,  # type: ignore[arg-type]
+    )
+    assert calls == []  # decompose never invoked
+    assert any("already decomposed" in line for line in log.lines)
+
+
+def test_try_auto_decompose_invokes_planner_when_not_labeled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from harness.driver import loop as loop_mod
+
+    seen: dict[str, Any] = {}
+
+    def fake_decompose(adapter: Any, bd: Any, **kwargs: Any) -> list[str]:
+        seen.update(kwargs)
+        return ["harness-c1", "harness-c2"]
+
+    monkeypatch.setattr("harness.driver.planner.decompose_bead", fake_decompose)
+    state = LoopRunState.fresh(epic_id="harness-epic", max_turns=5, started_at_sha="0" * 7)
+    bd = _LabelBd(labels=())
+    log = _CaptureLog()
+    loop_mod._try_auto_decompose(
+        bd,  # type: ignore[arg-type]
+        state,
+        object(),  # type: ignore[arg-type]
+        _decompose_config(tmp_path),
+        current_id="harness-umb",
+        log=log,  # type: ignore[arg-type]
+    )
+    assert seen["parent_id"] == "harness-umb"
+    assert seen["epic_id"] == "harness-epic"
+    assert any("auto-decomposed harness-umb -> 2 child" in line for line in log.lines)

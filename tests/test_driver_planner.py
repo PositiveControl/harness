@@ -20,11 +20,12 @@ from harness.driver.planner import (
     _description_has_blockquote,
     _PlannerState,
     commit_plan,
+    decompose_bead,
     run_planner,
     write_draft,
 )
 from harness.orchestrator import ToolLoopResult
-from harness.store._bd_types import _issue_from_json
+from harness.store._bd_types import BeadsIssue, _issue_from_json
 
 # --- bd fake ---------------------------------------------------------
 
@@ -710,3 +711,166 @@ def test_open_event_log_coalesces_token_deltas(tmp_path: Path) -> None:
     assert "model_output | chars=13 preview='plan the work'" in text
     # Synthetic lifecycle delta still logged.
     assert "delta=planning epic harness-x" in text
+
+
+# --- decompose_bead (harness-tcta3) ----------------------------------
+
+
+class _DecomposeBd:
+    """Bd fake for decompose_bead: serves one parent via show(), records
+    creates / deps / label-adds."""
+
+    def __init__(self, parent: BeadsIssue) -> None:
+        self._parent = parent
+        self.creates: list[dict[str, Any]] = []
+        self.deps: list[tuple[str, str]] = []
+        self.labels_added: list[tuple[str, str]] = []
+        self._n = 0
+
+    def show(self, _issue_id: str) -> BeadsIssue:
+        return self._parent
+
+    def create_with_labels(
+        self,
+        *,
+        title: str,
+        description: str,
+        issue_type: str = "task",
+        priority: int = 2,
+        labels: Sequence[str] = (),
+        acceptance: str | None = None,
+    ) -> str:
+        self._n += 1
+        cid = f"harness-child-{self._n:02d}"
+        self.creates.append({"id": cid, "title": title, "labels": list(labels)})
+        return cid
+
+    def dep_add(self, *, blocked: str, blocker: str) -> None:
+        self.deps.append((blocked, blocker))
+
+    def add_label(self, issue_id: str, label: str) -> None:
+        self.labels_added.append((issue_id, label))
+
+
+def _parent_bead(bead_id: str = "harness-lsna2") -> BeadsIssue:
+    return BeadsIssue(
+        id=bead_id,
+        title="§7a Police spawn-by-wanted",
+        status="open",
+        priority=2,
+        issue_type="task",
+        labels=(),
+        raw={"description": "spawn police", "acceptance_criteria": "spawns within 5s"},
+    )
+
+
+_SPEC_TEXT = "§7a police spawn rule details here for the verbatim quote."
+
+
+def test_decompose_bead_materializes_assertable_children(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Children are wired as DIRECT epic children (blocks:epic) AND
+    umbrella deps (blocks:parent), intra-child order preserved, parent
+    labeled auto-decomposed."""
+    spec = tmp_path / "spec.md"
+    spec.write_text(_SPEC_TEXT)
+    bd = _DecomposeBd(_parent_bead())
+
+    def fake_loop(_a: Any, _m: Any, registry: Any, **_k: Any) -> ToolLoopResult:
+        pa = registry.get("plan_add")
+        pf = registry.get("plan_finish")
+        pa.call(
+            title="§7a-i state decl",
+            description="> police spawn rule details",
+            spec_quote="police spawn rule details",
+            acceptance="game.js declares a police array",
+        )
+        pa.call(
+            title="§7a-ii placement",
+            description="> police spawn rule details",
+            spec_quote="police spawn rule details",
+            acceptance="a dist >= 200 guard in spawnPoliceCar",
+            depends_on=["§7a-i state decl"],
+        )
+        pf.call()
+        return ToolLoopResult(content="", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.planner.run_tool_loop", fake_loop)
+    ids = decompose_bead(
+        None,  # type: ignore[arg-type]
+        bd,  # type: ignore[arg-type]
+        parent_id="harness-lsna2",
+        epic_id="harness-epic",
+        spec_path=spec,
+        workspace=tmp_path,
+    )
+
+    assert len(ids) == 2
+    for cid in ids:
+        assert ("harness-epic", cid) in bd.deps  # direct epic child
+        assert ("harness-lsna2", cid) in bd.deps  # umbrella depends on child
+    # intra-child ordering: ii (ids[1]) depends on i (ids[0])
+    assert (ids[1], ids[0]) in bd.deps
+    assert all("auto-decomposed-child" in c["labels"] for c in bd.creates)
+    assert all("plan-source:spec.md" in c["labels"] for c in bd.creates)
+    assert ("harness-lsna2", "auto-decomposed") in bd.labels_added
+
+
+def test_decompose_bead_drops_children_with_unverified_quote(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A child whose spec_quote isn't in the spec is dropped; with none
+    surviving, nothing is created and the parent is NOT labeled."""
+    spec = tmp_path / "spec.md"
+    spec.write_text(_SPEC_TEXT)
+    bd = _DecomposeBd(_parent_bead())
+
+    def fake_loop(_a: Any, _m: Any, registry: Any, **_k: Any) -> ToolLoopResult:
+        pa = registry.get("plan_add")
+        pf = registry.get("plan_finish")
+        pa.call(
+            title="hallucinated unit",
+            description="> this quote is not in the spec at all",
+            spec_quote="this quote is not in the spec at all",
+            acceptance="game.js contains foo",
+        )
+        pf.call()
+        return ToolLoopResult(content="", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.planner.run_tool_loop", fake_loop)
+    ids = decompose_bead(
+        None,  # type: ignore[arg-type]
+        bd,  # type: ignore[arg-type]
+        parent_id="harness-lsna2",
+        epic_id="harness-epic",
+        spec_path=spec,
+        workspace=tmp_path,
+    )
+    assert ids == []
+    assert bd.creates == []
+    assert bd.labels_added == []
+
+
+def test_decompose_bead_returns_empty_when_planner_adds_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    spec = tmp_path / "spec.md"
+    spec.write_text(_SPEC_TEXT)
+    bd = _DecomposeBd(_parent_bead())
+
+    def fake_loop(_a: Any, _m: Any, registry: Any, **_k: Any) -> ToolLoopResult:
+        registry.get("plan_finish").call()
+        return ToolLoopResult(content="", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.planner.run_tool_loop", fake_loop)
+    ids = decompose_bead(
+        None,  # type: ignore[arg-type]
+        bd,  # type: ignore[arg-type]
+        parent_id="harness-lsna2",
+        epic_id="harness-epic",
+        spec_path=spec,
+        workspace=tmp_path,
+    )
+    assert ids == []
+    assert bd.labels_added == []

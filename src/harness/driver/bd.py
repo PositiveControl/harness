@@ -272,6 +272,12 @@ class DriverBd:
         self._run(["label", "add", issue_id, "human"])
         self._run(["note", issue_id, reason])
 
+    def add_label(self, issue_id: str, label: str) -> None:
+        """`bd label add <id> <label>`. Used to mark an issue with a
+        process flag (e.g. `auto-decomposed` so the park path never
+        re-decomposes the same umbrella)."""
+        self._run(["label", "add", issue_id, label])
+
     def write_thought(
         self,
         *,

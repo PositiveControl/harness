@@ -257,8 +257,10 @@ def lint_epic_command(
             for r in c.reasons:
                 typer.echo(f"    - {r}")
         typer.echo(
-            "\nConsider splitting these into per-sub-section beads before driving "
-            "(each one is a wall that costs ~5+ turns to discover mid-drive)."
+            "\nSplit these before driving. Over-scoped beads wall the coder "
+            "mid-implement (~5+ wasted turns); behavioral-acceptance beads "
+            "stall at WRITE_TEST (no failing test the model can author) — "
+            "split those into code-presence-assertable units or drive --no-tdd."
         )
         raise typer.Exit(code=1)
 
@@ -504,6 +506,20 @@ def loop_command(
             "already-built game)."
         ),
     ),
+    spec: Path | None = typer.Option(
+        None,
+        "--spec",
+        help="Spec file used to ground --auto-decompose-on-park children. "
+        "No effect unless that flag is also set.",
+    ),
+    auto_decompose_on_park: bool = typer.Option(
+        False,
+        "--auto-decompose-on-park/--no-auto-decompose-on-park",
+        help="When a bead parks because the executor couldn't author a failing "
+        "test (write_test->halted) or made no writes (implement->halted), split "
+        "it into code-presence-assertable epic children via a one-bead planner "
+        "session instead of stranding it (harness-tcta3). Requires --spec.",
+    ),
 ) -> None:
     """Drive a bd epic to closure across multiple turns."""
     if list_runs:
@@ -565,6 +581,8 @@ def loop_command(
         skip_on_max_attempts=skip_on_max_attempts,
         render_milestone_id=render_milestone,
         vision_base_url=settings.vision_base_url,
+        auto_decompose_on_park=auto_decompose_on_park,
+        spec_path=spec,
     )
     result = run_loop(adapter, bd, config)
     _print_result(result)
@@ -649,6 +667,14 @@ def auto_iterate_command(
         True, "--skip-on-max-attempts/--no-skip-on-max-attempts"
     ),
     render_milestone: str | None = typer.Option(None, "--render-milestone"),
+    auto_decompose_on_park: bool = typer.Option(
+        False,
+        "--auto-decompose-on-park/--no-auto-decompose-on-park",
+        help="When a bead parks because the executor couldn't author a failing "
+        "test (write_test->halted) or made no writes (implement->halted), run a "
+        "one-bead planner session to split it into code-presence-assertable epic "
+        "children instead of stranding it (harness-tcta3). Requires --spec.",
+    ),
 ) -> None:
     """Drive + critic until convergence: drains the epic, asks the model
     to propose follow-up bugs grounded in the spec, files them as
@@ -696,6 +722,8 @@ def auto_iterate_command(
         skip_on_max_attempts=skip_on_max_attempts,
         render_milestone_id=render_milestone,
         vision_base_url=settings.vision_base_url,
+        auto_decompose_on_park=auto_decompose_on_park,
+        spec_path=spec,
     )
     config = AutoIterateConfig(
         loop_config=loop_config,

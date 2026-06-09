@@ -32,6 +32,28 @@ _SECTION_RE = re.compile(r"§\s*(\d+[a-z]?)(?!\s*\.\d)")
 # List items: "- ", "* ", "• ", "1. ", "2) " — a proxy for distinct
 # concerns bundled into one bead.
 _BULLET_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
+# harness-pnkvp: behavioral/temporal acceptance language. This is a
+# DIFFERENT axis from the size signals above. An acceptance built on
+# runtime timing, animation, or continuous tracking ("spawns within 5s",
+# "tracks the wanted level each frame", "camera follows", "walking
+# physics") can't be reduced to ONE failing test the way a code-presence
+# assertion can — the executor stalls at the WRITE_TEST phase trying to
+# author a red test and parks (loop_run=c05525c5: §7a/lsna2 parked 4x,
+# §10b/1ttpl 3x at write_test->halted, both single-subsection + short so
+# every SIZE signal stayed quiet). When this fires, the fix is to split
+# the bead into the code-shape units that implement the behavior — each
+# with a code-presence acceptance — or drive it without TDD.
+_BEHAVIORAL_ACCEPTANCE_RE = re.compile(
+    r"\b(?:within|after)\s+~?\d+\s*s(?:ec|econds?)?\b"
+    r"|\b(?:each|every|per)\s+frame\b"
+    r"|\bover\s+time\b"
+    r"|\btracks?\b|\bfollows?\b"
+    r"|\banimat(?:e|es|ed|ion)\b"
+    r"|\bphysics\b|\bcooldown\b"
+    r"|\bspin(?:s|ning)?\b|\bdecay(?:s|ing)?\b"
+    r"|\binterpolat\w*|\bgradually\b|\bsmoothly\b|\bramp(?:s|ing)?\b",
+    re.IGNORECASE,
+)
 
 # Thresholds (calibrated from §7/§11/§9b vs §4/§10). Any one trips the
 # flag; the reason names which. Tunable — bump precision by raising, or
@@ -88,6 +110,10 @@ class BeadComplexity:
     acceptance_clauses: int
     description_chars: int
     bullets: int
+    # harness-pnkvp: True when the acceptance reads as runtime behavior /
+    # timing rather than a code-presence assertion — the assertability
+    # axis, orthogonal to the size signals.
+    behavioral_acceptance: bool
     flagged: bool
     reasons: tuple[str, ...]
 
@@ -259,6 +285,21 @@ def score_bead(
     if bullets >= BULLET_THRESHOLD:
         reasons.append(f"{bullets} bullet items (>= {BULLET_THRESHOLD}) — many bundled concerns")
 
+    # harness-pnkvp: assertability signal. Score the acceptance (the text
+    # that becomes the test); fall back to the description when bd didn't
+    # surface acceptance separately. Behavioral/temporal wording means the
+    # executor can't author one failing test -> WRITE_TEST stall + park.
+    accept_text = acceptance.strip() or description
+    behavioral_acceptance = _BEHAVIORAL_ACCEPTANCE_RE.search(accept_text) is not None
+    if behavioral_acceptance:
+        reasons.append(
+            "acceptance reads as runtime behavior/timing, not a code-presence "
+            "assertion — the executor can't reduce it to one failing test "
+            "(WRITE_TEST stall). Split into code-shape units (state decl, the "
+            "guard, the draw call), each asserted on literal tokens/constants, "
+            "or drive without TDD"
+        )
+
     # harness-yzg8: structural-wrap detection. Only fires when wrap-
     # pattern wording AND a referenced function in the workspace is
     # large. Both signals required — wrap-language alone is too noisy.
@@ -281,6 +322,7 @@ def score_bead(
         acceptance_clauses=acceptance_clauses,
         description_chars=description_chars,
         bullets=bullets,
+        behavioral_acceptance=behavioral_acceptance,
         flagged=bool(reasons),
         reasons=tuple(reasons),
     )
