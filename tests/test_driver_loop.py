@@ -612,6 +612,45 @@ def test_inter_attempt_restore_keeps_carried_test_cmd_when_gate_survives(
     assert state.last_test_cmd.get("harness-x") == cmd  # kept
 
 
+def test_inter_attempt_restore_appends_additive_nudge_on_regression(
+    tmp_path: Path,
+) -> None:
+    """harness-15eeq lever #4: when the restore fires because the attempt
+    REGRESSED (deleted working code), append an additive directive to the
+    carried failure reason so the next handoff steers the model to build
+    forward instead of repeating the destructive edit."""
+    from harness.driver.loop import (
+        _inter_attempt_restore,
+        _open_log,
+        _snapshot_workspace,
+    )
+
+    game = tmp_path / "game.py"
+    game.write_text("def a():\n    pass\n\n\ndef b():\n    pass\n")
+    last_green = _snapshot_workspace(tmp_path, "cafed00d")
+    game.write_text("def a():\n    pass\n")  # regression: dropped def b
+
+    state = LoopRunState.fresh("harness-e9oq", 5, "sha0")
+    state.last_failure["harness-x"] = "verify_failed: something"
+    config = _config(tmp_path)
+    log = _open_log(tmp_path / "x.log")
+
+    _inter_attempt_restore(
+        config, state, last_green, issue_id="harness-x", default_steps=(), log=log
+    )
+
+    nudged = state.last_failure["harness-x"]
+    assert "verify_failed: something" in nudged  # original preserved
+    assert "REMOVED working code" in nudged
+    assert "do NOT delete" in nudged
+
+
+def test_loop_config_executor_temperature_default_is_low(tmp_path: Path) -> None:
+    """harness-15eeq lever #3: the drive default is lower than chat's 0.5 to
+    curb high-variance destructive edits on autonomous code work."""
+    assert _config(tmp_path).executor_temperature == 0.2
+
+
 def test_run_loop_inter_attempt_restore_skipped_when_workspace_green(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -3495,6 +3534,34 @@ def test_run_loop_fsm_persists_phase_and_assessment_to_state(
     assert reloaded.last_turn_phase["harness-a"] == "done"
     assert "current state value" in reloaded.last_assessment["harness-a"]["current_state"]
     assert reloaded.last_test_cmd["harness-a"] == "pytest tests/test_foo.py -v"
+
+
+def test_run_loop_fsm_threads_executor_temperature_to_tool_loop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-15eeq lever #3: LoopConfig.executor_temperature reaches the
+    executor's run_tool_loop call (FSM path)."""
+    issue_a = _issue("harness-a", title="A", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], []],
+        issues={"harness-a": issue_a, "harness-e9oq": _issue("harness-e9oq", title="epic")},
+    )
+    _stub_git_head(monkeypatch)
+    temps: list[float | None] = []
+
+    def fake_run_tool_loop(_adapter: Any, _messages: Any, _registry: Any, **kwargs: Any) -> Any:
+        temps.append(kwargs.get("temperature"))
+        # Empty reply → no meta-tool call → phase_no_progress → turn halts.
+        # We only need run_tool_loop to have been called with the temperature.
+        return ToolLoopResult(content="", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+
+    cfg = _config(tmp_path, use_fsm=True, max_turns=2, executor_temperature=0.07)
+    run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert temps, "run_tool_loop was never called"
+    assert all(t == 0.07 for t in temps), temps
 
 
 # --- harness-6dsn: phase-aware blank-canvas enforcement -----------

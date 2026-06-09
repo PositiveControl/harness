@@ -203,6 +203,14 @@ class LoopConfig:
     # ~50% more headroom while keeping each turn bounded (12 rounds *
     # ~10s/round ≈ 2 min upper bound on M4 Pro).
     executor_max_rounds: int = 12
+    # harness-15eeq: sampling temperature for the executor's inner
+    # run_tool_loop. Lower than `harness chat`'s 0.5 default because the
+    # drive is autonomous code editing, where determinism curbs the wild
+    # destructive edits a higher temperature invites (drive loop_run=
+    # 9a1e7970 harness-rxtpz: a high-variance sed deleted the run-over
+    # block instead of adding it). 0.2 matches the critic's generate temp.
+    # Override per run with `--executor-temperature`.
+    executor_temperature: float = 0.2
     # harness-d8e3: max attempts per bd issue before the driver halts +
     # flags for human review. Was hard-coded at 2 (halt on the second
     # consecutive failure); bumped to 3 because the forbidden-pattern
@@ -663,6 +671,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     workspace=config.workspace,
                     observe=turn_observer,
                     max_rounds=config.executor_max_rounds,
+                    executor_temperature=config.executor_temperature,
                     summarize_tool_results=config.summarize_tool_results,
                     pre_close_verify=pre_close_verify,
                 )
@@ -1189,6 +1198,7 @@ def _run_fsm_turn_via_driver(
             verify_steps=verify_steps,
             tdd_required=config.tdd_required,
             observe=observe,
+            executor_temperature=config.executor_temperature,
             summarize_tool_results=config.summarize_tool_results,
             pre_close_verify=pre_close_verify,
         )
@@ -1350,6 +1360,7 @@ def _run_executor_turn(
     workspace: Path,
     observe: ExecutorObserver | None = None,
     max_rounds: int = 12,
+    executor_temperature: float = 0.5,
     summarize_tool_results: bool = True,
     pre_close_verify: PreCloseVerifyHook | None = None,
 ) -> tuple[bool, str, str, str | None]:
@@ -1418,6 +1429,7 @@ def _run_executor_turn(
             hooks=hooks,
             observe=observe,
             max_rounds=max_rounds,
+            temperature=executor_temperature,
         )
     except Exception as exc:
         # harness-tu4o: a context-window rejection inside the inner
@@ -2400,6 +2412,22 @@ def _inter_attempt_restore(
                 f"loop_run={state.loop_run_id} cleared carried test_cmd for {issue_id}: "
                 f"gate script removed by restore — WRITE_TEST will re-author next attempt"
             )
+    # harness-15eeq: a REGRESSED restore (not merely red) means the failed
+    # attempt's net effect was to DELETE working code — the destructive-edit
+    # pattern (sed range-delete on game.js) the 30B falls into instead of
+    # adding. The restore undoes the damage, but the next attempt will repeat
+    # it unless told. Append an explicit additive directive to the carried
+    # failure reason so the next handoff's [PRIOR ATTEMPT FAILED] block steers
+    # the model to build forward (loop_run=9a1e7970, harness-rxtpz turn 3).
+    if regressed and not red:
+        nudge = (
+            "your previous edit REMOVED working code (regressed vs last-green — "
+            "lost symbols), so it was rolled back. This bead asks you to ADD "
+            "behavior: make additive edits, do NOT delete or range-delete "
+            "existing functions/blocks."
+        )
+        prior = state.last_failure.get(issue_id, "")
+        state.last_failure[issue_id] = f"{prior} | NOTE: {nudge}" if prior else nudge
 
 
 def _post_park_housekeeping(

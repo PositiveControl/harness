@@ -520,6 +520,7 @@ def _run_one_phase(
     user_prompt: str,
     max_rounds: int,
     observe: ExecutorObserver | None,
+    executor_temperature: float = 0.5,
     summarize_tool_results: bool = True,
     pre_close_verify: PreCloseVerifyHook | None = None,
 ) -> _PhaseExecutionResult:
@@ -603,6 +604,7 @@ def _run_one_phase(
         observe=relay,
         max_rounds=max_rounds,
         no_write_streak=no_write_streak,
+        temperature=executor_temperature,
         # loop_run=dfc38c5f: let the forced wrap-up round still emit
         # this phase's exit-signal call instead of stripping it.
         wrap_up_tools=_PHASE_EXIT_TOOLS.get(phase, frozenset()),
@@ -1020,6 +1022,7 @@ def run_fsm_turn(
     phase_budgets: Mapping[TurnPhase, int] | None = None,
     tdd_required: bool = True,
     observe: ExecutorObserver | None = None,
+    executor_temperature: float = 0.5,
     summarize_tool_results: bool = True,
     pre_close_verify: PreCloseVerifyHook | None = None,
 ) -> FsmTurnResult:
@@ -1104,6 +1107,7 @@ def run_fsm_turn(
             user_prompt=user_prompt,
             max_rounds=max_rounds,
             observe=observe,
+            executor_temperature=executor_temperature,
             summarize_tool_results=summarize_tool_results,
             pre_close_verify=pre_close_verify,
         )

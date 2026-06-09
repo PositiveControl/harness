@@ -366,6 +366,15 @@ def loop_command(
             "(orchestrator's default 8 is too tight for multi-edit work)."
         ),
     ),
+    executor_temperature: float = typer.Option(
+        0.2,
+        "--executor-temperature",
+        help=(
+            "Sampling temperature for the executor's tool loop. Lower (0.2 "
+            "default) curbs wild destructive edits on autonomous code work "
+            "(harness-15eeq); raise toward 0.5 for more exploratory behavior."
+        ),
+    ),
     max_attempts: int = typer.Option(
         3,
         "--max-attempts",
@@ -543,6 +552,7 @@ def loop_command(
         extra_observer=_stderr_observer if verbose else None,
         forbidden_patterns=() if no_verify else ("TODO", "FIXME", "XXX", "HACK"),
         executor_max_rounds=executor_max_rounds,
+        executor_temperature=executor_temperature,
         max_attempts_per_issue=max_attempts,
         regression_guard=regression_guard,
         scratch_sweep=scratch_sweep,
@@ -618,6 +628,13 @@ def auto_iterate_command(
     allow_dirty: bool = typer.Option(False, "--allow-dirty"),
     allow_missing_smoke: bool = typer.Option(False, "--allow-missing-smoke"),
     executor_max_rounds: int = typer.Option(12, "--executor-max-rounds"),
+    executor_temperature: float = typer.Option(
+        0.2,
+        "--executor-temperature",
+        help="Sampling temperature for the executor's tool loop. Lower (0.2 default) "
+        "curbs the wild destructive edits a higher temp invites on autonomous code "
+        "work; raise toward 0.5 for more exploratory behavior (harness-15eeq).",
+    ),
     max_attempts: int = typer.Option(3, "--max-attempts"),
     regression_guard: bool = typer.Option(True, "--regression-guard/--no-regression-guard"),
     use_fsm: bool = typer.Option(False, "--fsm/--no-fsm"),
@@ -669,6 +686,7 @@ def auto_iterate_command(
         character=character,
         max_turns=max_turns,
         executor_max_rounds=executor_max_rounds,
+        executor_temperature=executor_temperature,
         max_attempts_per_issue=max_attempts,
         regression_guard=regression_guard,
         use_fsm=use_fsm,
