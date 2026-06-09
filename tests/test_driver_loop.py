@@ -533,6 +533,85 @@ def test_run_loop_inter_attempt_restore_fires_when_attempt_regressed(
     assert "def b()" in game.read_text()
 
 
+def test_inter_attempt_restore_clears_carried_test_cmd_when_gate_removed(
+    tmp_path: Path,
+) -> None:
+    """harness-75tto: the restore reverts to a last-green snapshot taken
+    BEFORE this issue's WRITE_TEST file existed, so it deletes that file.
+    The carried test_cmd still points at it — left in place, the next
+    attempt's VERIFY runs a deleted test forever (exit 2 'can't open file'
+    -> verify-retry ceiling -> park; loop_run=9a1e7970, harness-rxtpz).
+    `_inter_attempt_restore` must clear the carried test_cmd so WRITE_TEST
+    re-authors next attempt."""
+    from harness.driver.loop import (
+        _inter_attempt_restore,
+        _open_log,
+        _snapshot_workspace,
+    )
+
+    # Baseline: game.py with two symbols. Snapshot it as last-green BEFORE
+    # the test file exists (mirrors the real timeline).
+    game = tmp_path / "game.py"
+    game.write_text("def a():\n    pass\n\n\ndef b():\n    pass\n")
+    last_green = _snapshot_workspace(tmp_path, "deadbeef")
+
+    # Now: the model wrote a WRITE_TEST gate file, and the failed attempt
+    # regressed game.py (dropped symbol b) -> restore will fire and delete
+    # the un-snapshotted test file.
+    test_file = tmp_path / "test_runover_gap.py"
+    test_file.write_text("import sys; print('FAIL'); sys.exit(1)\n")
+    game.write_text("def a():\n    pass\n")  # regression: lost def b
+
+    state = LoopRunState.fresh("harness-e9oq", 5, "sha0")
+    state.last_test_cmd["harness-x"] = f"cd {tmp_path} && python test_runover_gap.py"
+    config = _config(tmp_path)
+    log = _open_log(tmp_path / "x.log")
+
+    _inter_attempt_restore(
+        config, state, last_green, issue_id="harness-x", default_steps=(), log=log
+    )
+
+    # Restore fired (regression) and removed the un-snapshotted gate file...
+    assert not test_file.exists()
+    assert "def b()" in game.read_text()  # baseline came back
+    # ...and the now-dangling carried test_cmd was cleared.
+    assert "harness-x" not in state.last_test_cmd
+    assert "cleared carried test_cmd for harness-x" in (tmp_path / "x.log").read_text()
+
+
+def test_inter_attempt_restore_keeps_carried_test_cmd_when_gate_survives(
+    tmp_path: Path,
+) -> None:
+    """The clear is scoped: when the gate file is part of last-green (so it
+    survives the restore), the carried test_cmd is kept."""
+    from harness.driver.loop import (
+        _inter_attempt_restore,
+        _open_log,
+        _snapshot_workspace,
+    )
+
+    game = tmp_path / "game.py"
+    game.write_text("def a():\n    pass\n\n\ndef b():\n    pass\n")
+    # Gate file exists BEFORE the snapshot -> survives restore.
+    test_file = tmp_path / "test_keep.py"
+    test_file.write_text("import sys; sys.exit(1)\n")
+    last_green = _snapshot_workspace(tmp_path, "feedface")
+    game.write_text("def a():\n    pass\n")  # regression -> restore fires
+
+    state = LoopRunState.fresh("harness-e9oq", 5, "sha0")
+    cmd = f"cd {tmp_path} && python test_keep.py"
+    state.last_test_cmd["harness-x"] = cmd
+    config = _config(tmp_path)
+    log = _open_log(tmp_path / "x.log")
+
+    _inter_attempt_restore(
+        config, state, last_green, issue_id="harness-x", default_steps=(), log=log
+    )
+
+    assert test_file.exists()  # gate was in last-green
+    assert state.last_test_cmd.get("harness-x") == cmd  # kept
+
+
 def test_run_loop_inter_attempt_restore_skipped_when_workspace_green(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

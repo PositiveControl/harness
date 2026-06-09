@@ -2381,6 +2381,25 @@ def _inter_attempt_restore(
         f"loop_run={state.loop_run_id} RESTORED before retry of {issue_id}: "
         f"baseline {why}; last-green ({restored} files, removed {len(removed)} issue-added)"
     )
+    # harness-75tto: the restore reverts to a last-green snapshot taken
+    # BEFORE this issue's WRITE_TEST file existed, so it deletes that file
+    # (one of the "removed issue-added" above). The carried test_cmd still
+    # points at it — the next attempt's VERIFY would run a deleted test
+    # forever (exit 2 "can't open file" -> verify-retry ceiling -> park;
+    # loop_run=9a1e7970, harness-rxtpz). Drop the carried test_cmd when its
+    # script was removed, so the next attempt re-enters WRITE_TEST and
+    # re-authors a real gate against the restored baseline instead of
+    # reusing a phantom.
+    carried = state.last_test_cmd.get(issue_id)
+    if carried is not None:
+        from harness.driver.fsm_turn import _test_cmd_file_missing
+
+        if _test_cmd_file_missing(carried, config.workspace):
+            state.last_test_cmd.pop(issue_id, None)
+            log(
+                f"loop_run={state.loop_run_id} cleared carried test_cmd for {issue_id}: "
+                f"gate script removed by restore — WRITE_TEST will re-author next attempt"
+            )
 
 
 def _post_park_housekeeping(

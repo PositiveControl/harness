@@ -12,7 +12,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from harness.driver.fsm_turn import _is_degenerate_test_cmd, _resolve_write_test_outcome
+from harness.driver.fsm_turn import (
+    _is_degenerate_test_cmd,
+    _is_unrunnable_test_output,
+    _resolve_write_test_outcome,
+    _test_cmd_file_missing,
+    _test_cmd_script,
+)
 from harness.tools.turn_phase_meta import SkipTestPhaseTool, SubmitFailingTestTool
 
 # Non-degenerate test doubles: they invoke an interpreter (python3), so the
@@ -130,3 +136,94 @@ def test_is_degenerate_test_cmd_classification() -> None:
     # Empty / whitespace is not degenerate (no segment to run).
     assert not _is_degenerate_test_cmd("")
     assert not _is_degenerate_test_cmd("   ")
+
+
+# --- missing test-script gate (harness-75tto) ---------------------
+
+
+def test_submitted_gate_with_missing_script_halts(tmp_path: Path) -> None:
+    """harness-75tto: a submitted gate whose test script is absent from the
+    workspace is red only because the file can't be opened (exit 2), not a
+    real failure. Reject -> phase_no_progress so VERIFY doesn't burn its
+    retry budget on a phantom test (drive loop_run=9a1e7970, harness-rxtpz)."""
+    submit = SubmitFailingTestTool()
+    submit.call(
+        test_path="test_runover_gap.py",
+        test_cmd=f"cd {tmp_path} && python3 test_runover_gap.py",
+        failure_output="FAIL: run-over detection missing",
+    )
+    outcome = _resolve_write_test_outcome(
+        submit, SkipTestPhaseTool(), workspace=tmp_path, prior_test_cmd=None
+    )
+    assert outcome.kind == "phase_no_progress"
+    assert "could not run the test" in outcome.detail
+
+
+def test_submitted_gate_with_present_script_is_accepted(tmp_path: Path) -> None:
+    """The guard must not reject a real gate: when the script exists, the
+    normal red-check path runs (here the script exits 1 -> failing_test)."""
+    script = tmp_path / "test_real_gap.py"
+    script.write_text("import sys; print('FAIL'); sys.exit(1)\n")
+    submit = SubmitFailingTestTool()
+    submit.call(
+        test_path="test_real_gap.py",
+        test_cmd=f"cd {tmp_path} && python3 test_real_gap.py",
+        failure_output="FAIL: real assertion failed, gap exists",
+    )
+    outcome = _resolve_write_test_outcome(
+        submit, SkipTestPhaseTool(), workspace=tmp_path, prior_test_cmd=None
+    )
+    assert outcome.kind == "failing_test_submitted"
+
+
+def test_carried_gate_with_missing_script_not_reused(tmp_path: Path) -> None:
+    """A carried test_cmd whose script the inter-attempt restore deleted
+    must NOT be reused — fall through to the 'no test' halt so WRITE_TEST
+    re-authors instead of running a phantom."""
+    outcome = _resolve_write_test_outcome(
+        SubmitFailingTestTool(),
+        SkipTestPhaseTool(),
+        workspace=tmp_path,
+        prior_test_cmd=f"cd {tmp_path} && python3 test_gone.py",
+    )
+    assert outcome.kind == "phase_no_progress"
+
+
+def test_test_cmd_script_extraction() -> None:
+    """`_test_cmd_script` pulls the runnable script path; None when none."""
+    assert _test_cmd_script("cd /ws && python test_x.py") == "test_x.py"
+    assert _test_cmd_script("python3 path/to/test_y.py") == "path/to/test_y.py"
+    assert _test_cmd_script("pytest tests/test_z.py::test_case -v") == "tests/test_z.py"
+    assert _test_cmd_script("node game.test.js") == "game.test.js"
+    # No script path -> None (don't false-positive into "missing").
+    assert _test_cmd_script('python3 -c "import sys; sys.exit(1)"') is None
+    assert _test_cmd_script("pytest") is None
+    assert _test_cmd_script("echo hi && exit 1") is None
+
+
+def test_test_cmd_file_missing_conservative_on_unparseable(tmp_path: Path) -> None:
+    """A cmd with no determinable script is treated as present (False),
+    never a false drop — only a parsed-but-absent script is missing."""
+    # No script path -> not "missing".
+    assert not _test_cmd_file_missing('python3 -c "import sys; sys.exit(1)"', tmp_path)
+    # Parsed script, absent -> missing.
+    assert _test_cmd_file_missing(f"cd {tmp_path} && python test_absent.py", tmp_path)
+    # Parsed script, present -> not missing.
+    (tmp_path / "test_here.py").write_text("pass\n")
+    assert not _test_cmd_file_missing(f"cd {tmp_path} && python test_here.py", tmp_path)
+
+
+def test_is_unrunnable_test_output_classification() -> None:
+    """Distinguish 'runner couldn't load the test' from a genuine red."""
+    # exit 0 is never unrunnable.
+    assert not _is_unrunnable_test_output(0, "anything")
+    # Load/collection failures -> unrunnable.
+    assert _is_unrunnable_test_output(2, "python: can't open file '/x/test_y.py'")
+    assert _is_unrunnable_test_output(2, "No such file or directory")
+    assert _is_unrunnable_test_output(1, "ModuleNotFoundError: No module named 'game'")
+    assert _is_unrunnable_test_output(1, "  File ...\n    SyntaxError: invalid syntax")
+    assert _is_unrunnable_test_output(4, "ERROR: file or directory not found: test_z.py")
+    assert _is_unrunnable_test_output(127, "python3: command not found")
+    # A genuine assertion failure is a REAL red, not unrunnable.
+    assert not _is_unrunnable_test_output(1, "AssertionError: expected 8 got 7")
+    assert not _is_unrunnable_test_output(1, "FAIL: Run-over detection logic not found")

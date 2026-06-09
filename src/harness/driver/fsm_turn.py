@@ -696,6 +696,89 @@ def _is_degenerate_test_cmd(cmd: str) -> bool:
     return saw_segment
 
 
+# harness-75tto: file extensions a runnable test script carries. Used to pull
+# the script path out of a verify command so we can check it still exists.
+_TEST_SCRIPT_EXTS: tuple[str, ...] = (".py", ".js", ".mjs", ".cjs", ".ts")
+_TEST_RUNNER_WORDS: frozenset[str] = frozenset(
+    {"python", "python3", "pytest", "node", "deno", "bun", "ruby", "py.test"}
+)
+
+
+def _test_cmd_script(cmd: str) -> str | None:
+    """Best-effort extract the test-script path a verify command runs.
+
+    Returns the first token that looks like a runnable test file (carries a
+    known script extension), with any pytest `::node` selector stripped.
+    Returns None when no script path is determinable — callers must treat
+    None as "can't tell", never as "missing", so a parse miss can't drop a
+    real gate. Handles the common shapes the driver sees: `cd <dir> && python
+    test_x.py`, `pytest path/test_x.py::t`, `node game.test.js`."""
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        return None
+    saw_runner = False
+    for tok in tokens:
+        base = tok.split("::", 1)[0]
+        if tok in _TEST_RUNNER_WORDS or tok.endswith("/pytest"):
+            saw_runner = True
+        if base.endswith(_TEST_SCRIPT_EXTS):
+            return base
+    # A runner with no file arg (e.g. bare `pytest`) is determinable-but-no-path.
+    _ = saw_runner
+    return None
+
+
+# harness-75tto: substrings in a test runner's output that mean it could not
+# RUN the test at all (vs. ran it and saw a failing assertion). A non-zero
+# exit for one of these reasons is decoupled from the code under change — the
+# gate is red no matter what the implementation does — so it must not be
+# accepted or reused as a WRITE_TEST gate, the same trap as the degenerate
+# gate. Matched case-insensitively against the re-exec tail.
+_UNRUNNABLE_TEST_SIGNATURES: tuple[str, ...] = (
+    "can't open file",  # python <missing>.py -> exit 2
+    "no such file or directory",
+    "no module named",  # ModuleNotFoundError on the test module itself
+    "modulenotfounderror",
+    "importerror",
+    "syntaxerror",  # the test file itself won't parse
+    "file or directory not found",  # pytest collection
+    "errors during collection",
+    "command not found",  # wrong interpreter
+)
+
+
+def _is_unrunnable_test_output(exit_code: int, tail: str) -> bool:
+    """True when a non-zero `exit_code` came from the runner failing to LOAD
+    the test (missing file, bad import, syntax error, collection error) rather
+    than from a genuine assertion failure (harness-75tto). Such a red can
+    never go green by editing the code under test, so it's not a valid gate.
+    Operates on the re-exec result so it shares the seam tests stub."""
+    if exit_code == 0:
+        return False
+    low = tail.lower()
+    return any(sig in low for sig in _UNRUNNABLE_TEST_SIGNATURES)
+
+
+def _test_cmd_file_missing(cmd: str, workspace: Path) -> bool:
+    """True iff `cmd` names a test script that does NOT exist in the
+    workspace (harness-75tto). A command whose script is absent exits
+    non-zero for a reason decoupled from the code (`python foo.py` on a
+    missing foo.py -> exit 2, "can't open file"), so it is red forever and
+    must not be accepted or reused as the gate — the sibling of the
+    degenerate-gate trap. The drive failure: an inter-attempt regression
+    restore deleted the WRITE_TEST file, but the carried test_cmd still
+    pointed at it, so VERIFY ran a phantom test to the retry ceiling and
+    parked (loop_run=9a1e7970, harness-rxtpz). Conservative: a script we
+    can't parse out returns False (treated as present), never a false drop."""
+    script = _test_cmd_script(cmd)
+    if script is None:
+        return False
+    candidate = Path(script)
+    resolved = candidate if candidate.is_absolute() else workspace / candidate
+    return not resolved.exists()
+
+
 def _resolve_write_test_outcome(
     submit_failing_test: SubmitFailingTestTool,
     skip_test_phase: SkipTestPhaseTool,
@@ -721,7 +804,7 @@ def _resolve_write_test_outcome(
         # the bead (loop_run=783a4e30: b65f2 / y2gqc). Mirrors gmu9f's
         # IMPLEMENT re-attempt idempotence, opposite phase.
         if prior_test_cmd and not _is_degenerate_test_cmd(prior_test_cmd):
-            exit_code, _tail = _exec_test_cmd(prior_test_cmd, workspace)
+            exit_code, tail = _exec_test_cmd(prior_test_cmd, workspace)
             if exit_code == 0:
                 # Carried test now passes — the implementation already
                 # landed; short-circuit to CLOSE rather than re-driving.
@@ -729,11 +812,16 @@ def _resolve_write_test_outcome(
                     test_path="(carried from prior attempt)",
                     test_cmd=prior_test_cmd,
                 )
-            return failing_test_submitted(
-                test_path="(carried from prior attempt)",
-                test_cmd=prior_test_cmd,
-                failure_output="reused failing test carried from a prior attempt (still red)",
-            )
+            # harness-75tto: don't reuse a carried gate that can't even RUN
+            # (its script was deleted by an inter-attempt restore, bad
+            # import, etc.) — that red is a phantom, not a real failure.
+            # Fall through to the 'no test' halt so WRITE_TEST re-authors.
+            if not _is_unrunnable_test_output(exit_code, tail):
+                return failing_test_submitted(
+                    test_path="(carried from prior attempt)",
+                    test_cmd=prior_test_cmd,
+                    failure_output="reused failing test carried from a prior attempt (still red)",
+                )
         return phase_no_progress(
             TurnPhase.WRITE_TEST,
             reason="no submit_failing_test or skip_test_phase call",
@@ -755,11 +843,22 @@ def _resolve_write_test_outcome(
     # the model claimed a failing test that isn't actually failing.
     # Re-route through green_test_outcome so the FSM short-circuits
     # to CLOSE rather than continuing into IMPLEMENT on a fake red.
-    exit_code, _tail = _exec_test_cmd(latest["test_cmd"], workspace)
+    exit_code, tail = _exec_test_cmd(latest["test_cmd"], workspace)
     if exit_code == 0:
         return green_test_outcome(
             test_path=latest["test_path"],
             test_cmd=latest["test_cmd"],
+        )
+    # harness-75tto: a non-zero exit that means the runner couldn't LOAD the
+    # test (missing script, bad import, syntax/collection error) is not a
+    # real failing test — it's red regardless of the code, so VERIFY would
+    # burn its retry budget on a phantom. Halt WRITE_TEST to re-author.
+    if _is_unrunnable_test_output(exit_code, tail):
+        return phase_no_progress(
+            TurnPhase.WRITE_TEST,
+            reason=(
+                f"verify gate could not run the test (not a real failure): {tail.strip()[:120]}"
+            ),
         )
     return failing_test_submitted(
         test_path=latest["test_path"],
