@@ -1015,6 +1015,13 @@ def test_run_loop_skip_issue_ids_filters_carried_park(
     # A was stranded (carried-park still open), so this is partial, not
     # success — the epic isn't done, A is pending operator pickup.
     assert result.exit_reason == "partial"
+    # harness-q1uci: the PARTIAL log must NAME the stranded carried-park
+    # (harness-a) even though state.parked_issues is empty this pass —
+    # otherwise the line reads "0 parked" and an exit=stuck is opaque.
+    log_text = (LoopRunState.state_dir(tmp_path) / f"{result.loop_run_id}.log").read_text()
+    assert "PARTIAL" in log_text
+    assert "0 parked: (none)" in log_text
+    assert "1 stranded: harness-a" in log_text
 
 
 def test_run_loop_skip_issue_ids_absent_from_ready_is_success(

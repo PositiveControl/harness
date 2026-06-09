@@ -529,7 +529,9 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                 # skipped id was actually present in this pass's ready
                 # (carried-parked work still open), not merely configured.
                 if state.parked_issues or stranded_now:
-                    return _exit_partial(state, config.workspace, log)
+                    return _exit_partial(
+                        state, config.workspace, log, stranded=sorted(stranded_now)
+                    )
                 return _exit_success(state, config.workspace, log)
 
             current = ready[0]
@@ -1933,15 +1935,30 @@ def _exit_success(state: LoopRunState, workspace: Path, log: _LogWriter) -> Loop
     )
 
 
-def _exit_partial(state: LoopRunState, workspace: Path, log: _LogWriter) -> LoopResult:
+def _exit_partial(
+    state: LoopRunState,
+    workspace: Path,
+    log: _LogWriter,
+    stranded: Sequence[str] = (),
+) -> LoopResult:
     """The ready queue emptied only because parked issues were filtered
     out (harness-iljv). Some work may have closed, but the parked issues
     — and anything depending on them — are stranded pending operator
-    pickup, so this is reported distinctly from "success"."""
-    parked_tail = ", ".join(state.parked_issues)
+    pickup, so this is reported distinctly from "success".
+
+    `stranded` (harness-q1uci) is the set of ready issues filtered out of
+    THIS pass — `state.parked_issues` (parked this run) PLUS any carried
+    `config.skip_issue_ids` parked by a PRIOR auto-iterate pass. The latter
+    don't appear in `state.parked_issues` (fresh per pass), so logging only
+    the parked count read "0 parked" while three issues were actually
+    stranded — making an `exit=stuck` opaque. Log both so the culprits are
+    named."""
+    parked_tail = ", ".join(state.parked_issues) or "(none)"
+    stranded_tail = ", ".join(stranded) or "(none)"
     log(
         f"loop_run={state.loop_run_id} PARTIAL "
-        f"(ready queue drained; {len(state.parked_issues)} parked: {parked_tail})"
+        f"(ready queue drained; {len(state.parked_issues)} parked: {parked_tail}; "
+        f"{len(stranded)} stranded: {stranded_tail})"
     )
     _save_state(state, workspace)  # harness-3zu3: persist on every exit path
     return LoopResult(
