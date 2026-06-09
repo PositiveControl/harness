@@ -67,16 +67,61 @@ def test_barren_reattempt_carried_test_now_green_closes(tmp_path: Path) -> None:
     assert outcome.kind == "test_already_passes"
 
 
-def test_skip_still_wins_over_carried_test(tmp_path: Path) -> None:
-    """An explicit skip_test_phase this attempt still takes precedence —
-    the carry-forward only fires when nothing was captured."""
+def test_skip_honored_when_no_gate_exists(tmp_path: Path) -> None:
+    """A skip with NO established gate (no fresh submit, no carried test) is
+    a legitimate escape — honored."""
     skip = SkipTestPhaseTool()
     skip.call(reason="driving physics does not admit a clean unit test")
     outcome = _resolve_write_test_outcome(
         SubmitFailingTestTool(),
         skip,
         workspace=tmp_path,
-        prior_test_cmd=_RED_DOUBLE,
+        prior_test_cmd=None,
+    )
+    assert outcome.kind == "test_phase_skipped"
+
+
+def test_skip_ignored_when_real_carried_gate_exists(tmp_path: Path) -> None:
+    """harness-15eeq: once a prior attempt established a real failing gate,
+    skip_test_phase is the model trying to disown it to dodge the work. The
+    skip is NOT honored — the carried gate is reused instead (the rxtpz
+    dodge: 'the test is incorrectly written, skip it')."""
+    skip = SkipTestPhaseTool()
+    skip.call(reason="the test file is incorrectly written, skip it")
+    outcome = _resolve_write_test_outcome(
+        SubmitFailingTestTool(),
+        skip,
+        workspace=tmp_path,
+        prior_test_cmd=_RED_DOUBLE,  # a real, runnable, still-red gate
+    )
+    assert outcome.kind == "failing_test_submitted"
+
+
+def test_skip_ignored_when_fresh_submit_present(tmp_path: Path) -> None:
+    """A fresh submit_failing_test this attempt also overrides a skip — a
+    real gate beats a dodge."""
+    skip = SkipTestPhaseTool()
+    skip.call(reason="actually let's skip this test phase entirely")
+    submit = SubmitFailingTestTool()
+    submit.call(
+        test_path="(none)",
+        test_cmd=_RED_DOUBLE,
+        failure_output="real failure output proving the gap exists here",
+    )
+    outcome = _resolve_write_test_outcome(submit, skip, workspace=tmp_path, prior_test_cmd=None)
+    assert outcome.kind == "failing_test_submitted"
+
+
+def test_skip_honored_when_carried_gate_is_degenerate(tmp_path: Path) -> None:
+    """A degenerate carried 'gate' isn't a real gate, so a skip is still a
+    legitimate escape (the model isn't disowning anything of value)."""
+    skip = SkipTestPhaseTool()
+    skip.call(reason="no clean unit test for this UI tweak")
+    outcome = _resolve_write_test_outcome(
+        SubmitFailingTestTool(),
+        skip,
+        workspace=tmp_path,
+        prior_test_cmd="echo nope && exit 1",  # degenerate
     )
     assert outcome.kind == "test_phase_skipped"
 

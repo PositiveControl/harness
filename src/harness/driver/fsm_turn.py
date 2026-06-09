@@ -787,13 +787,26 @@ def _resolve_write_test_outcome(
     prior_test_cmd: str | None = None,
 ) -> PhaseOutcome:
     skip = skip_test_phase.latest()
-    if skip is not None:
+    latest = submit_failing_test.latest()
+    # harness-15eeq: a skip is a legitimate escape ONLY when the issue has no
+    # established gate. Once a prior attempt submitted a real (non-degenerate,
+    # runnable) failing test, a later skip_test_phase is the model disowning
+    # its own gate to dodge the work — "the test is wrong, skip it" — which it
+    # provably isn't, since it runs and fails on the gap (drive loop_run=
+    # 9a1e7970, harness-rxtpz). A fresh submit this attempt likewise overrides
+    # the skip. Honor the skip only when there is no gate at all; otherwise
+    # fall through to reuse the carried gate / accept the fresh submit.
+    carried_gate_is_real = (
+        prior_test_cmd is not None
+        and not _is_degenerate_test_cmd(prior_test_cmd)
+        and not _test_cmd_file_missing(prior_test_cmd, workspace)
+    )
+    if skip is not None and latest is None and not carried_gate_is_real:
         return PhaseOutcome(
             kind="test_phase_skipped",
             detail=f"skipped: {skip['reason'][:120]}",
             payload={"reason": skip["reason"]},
         )
-    latest = submit_failing_test.latest()
     if latest is None:
         # harness-axjt8: this attempt's WRITE_TEST captured neither a
         # submit nor a skip. Before halting "no test" (and burning the
