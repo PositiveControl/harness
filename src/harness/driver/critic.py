@@ -28,7 +28,12 @@ Grounding contract (load-bearing):
     "does this code exhibit that defect?" — default-reject. This is the
     generate-then-verify asymmetry: the critic call is generative and
     hallucination-prone; the verify call is discriminative with the
-    exact lines in focus.
+    exact lines in focus. The verify prompt demands the model DEMONSTRATE
+    the defect — construct a concrete input, trace the cited code, and
+    compute any arithmetic — rather than rubber-stamp a plausible-sounding
+    claim (harness-oo2oe: a drive critic filed a bogus off-by-one against
+    a correct ``splice(0, len - 8)`` because the yes/no verify confirmed
+    the claim without computing it).
 
 ``_validate_finding`` enforces the first three gates silently and the
 verify gate runs on the survivors — invalid findings are dropped rather
@@ -634,20 +639,33 @@ def _verify_system_prompt() -> str:
     return (
         "You are a skeptical grounding checker. A code critic proposed a BUG "
         "FINDING with a `file:line` citation. Below is the ACTUAL code at that "
-        "location. Your only job is to decide whether the cited code visibly "
-        "exhibits the EXACT defect the finding describes.\n\n"
+        "location. Your job is to decide whether the cited code actually "
+        "exhibits the EXACT defect the finding describes — and a defect only "
+        "counts if you can show it MANIFESTS, not merely that the claim sounds "
+        "plausible.\n\n"
+        "Do this before deciding (harness-oo2oe):\n"
+        "  1. Construct a CONCRETE input or program state that should trigger "
+        "the claimed defect.\n"
+        "  2. TRACE the cited code on that input, step by step.\n"
+        "  3. Compare the ACTUAL result of your trace to what the spec / "
+        "finding says is correct.\n"
+        "For any arithmetic / off-by-one / boundary / count claim, actually "
+        "COMPUTE the values — do not accept the claim at face value. (E.g. for "
+        "`splice(0, n - 8)` with n = 10, that removes 2 elements, leaving 8 — "
+        "correct, not an off-by-one.)\n\n"
         "Default to REFUTED. Answer REFUTED when:\n"
-        "  - the construct the finding names (a comparison, call, assignment, "
-        "missing reset, draw order, etc.) is NOT present at or adjacent to the "
-        "cited line;\n"
-        "  - the code already does the correct thing the finding claims is "
-        "missing or wrong;\n"
+        "  - your trace produces the CORRECT result (the code already does the "
+        "right thing);\n"
+        "  - you cannot construct any input that produces a wrong result;\n"
+        "  - the construct the finding names is NOT present at or adjacent to "
+        "the cited line;\n"
         "  - the finding's claim contradicts what the code plainly shows;\n"
         "  - you are unsure.\n\n"
-        "Answer GROUNDED ONLY when the cited code plainly contains the defect "
-        "as described.\n\n"
-        "Respond with one word first — `GROUNDED` or `REFUTED` — optionally "
-        "followed by a colon and a brief reason."
+        "Answer GROUNDED ONLY when your concrete trace produces a demonstrably "
+        "WRONG result that matches the claimed defect.\n\n"
+        "Reason briefly through the trace. Use the words `GROUNDED` and "
+        "`REFUTED` ONLY in your final verdict — begin that final line with the "
+        "one verdict word, optionally followed by a colon and a short reason."
     )
 
 
@@ -659,8 +677,10 @@ def _verify_user_prompt(finding: CriticFinding, window: str) -> str:
         f"cited: {finding.evidence_path}\n\n"
         "[ACTUAL CODE AT CITATION]\n"
         f"{window}\n\n"
-        "Does the cited code visibly exhibit the exact defect described? "
-        "Answer GROUNDED or REFUTED."
+        "Construct a concrete input that should trigger the claimed defect, "
+        "trace the cited code on it, and state expected vs actual. Compute any "
+        "arithmetic explicitly. If no input produces a wrong result, the "
+        "finding is not grounded. Give your verdict: GROUNDED or REFUTED."
     )
 
 

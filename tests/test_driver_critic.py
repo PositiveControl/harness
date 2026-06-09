@@ -26,6 +26,8 @@ from harness.driver.critic import (
     _slice_snapshot,
     _title_matches_any,
     _validate_finding,
+    _verify_system_prompt,
+    _verify_user_prompt,
     budget_snapshot,
     critic_char_budget,
     run_critic,
@@ -636,6 +638,49 @@ def test_parse_verdict_refuted_first_wins() -> None:
 def test_parse_verdict_missing_keyword_rejects() -> None:
     """Default-reject: anything without an explicit GROUNDED is a no."""
     assert not _parse_verdict("I'm not sure, the code is ambiguous here.")
+
+
+def test_verify_prompts_demand_concrete_trace() -> None:
+    """harness-oo2oe: the discriminative verify must force the model to
+    DEMONSTRATE the defect (concrete input + trace + arithmetic), not
+    rubber-stamp a plausible claim — the failure that let a bogus
+    off-by-one against a correct `splice(0, len - 8)` get filed."""
+    sys_prompt = _verify_system_prompt().lower()
+    assert "trace" in sys_prompt
+    assert "concrete" in sys_prompt
+    assert "compute" in sys_prompt
+    # Names the arithmetic/off-by-one class explicitly.
+    assert "off-by-one" in sys_prompt
+    finding = CriticFinding(
+        title="off-by-one in traffic cap",
+        description="game.js:42 removes too many cars when length exceeds 8",
+        acceptance="cap holds at 8",
+        priority=2,
+        spec_quote="Cap total alive civilian cars at 8.",
+        evidence_path="game.js:42",
+        code_quote="traffic.splice(0, traffic.length - 8);",
+    )
+    window = "  42 | traffic.splice(0, traffic.length - 8);"
+    user_prompt = _verify_user_prompt(finding, window).lower()
+    assert "trace" in user_prompt
+    assert "expected vs actual" in user_prompt
+
+
+def test_parse_verdict_handles_trace_then_verdict() -> None:
+    """The strengthened prompt yields reason-then-verdict output. The
+    parser keys off the first GROUNDED/REFUTED token, so a trailing
+    verdict line still parses — provided the trace avoids the keywords
+    (which the prompt instructs)."""
+    grounded = (
+        "Input: 10 cars. The line splices wrongly, leaving 7 not 8. "
+        "Expected 8, actual 7.\nGROUNDED: confirmed undercount."
+    )
+    refuted = (
+        "Input: 10 cars. splice(0, 10 - 8) removes 2, leaving 8. "
+        "Expected 8, actual 8 — correct.\nREFUTED: arithmetic is right."
+    )
+    assert _parse_verdict(grounded)
+    assert not _parse_verdict(refuted)
 
 
 def test_evidence_window_builds_numbered_window() -> None:
