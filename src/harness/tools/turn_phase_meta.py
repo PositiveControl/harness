@@ -140,6 +140,23 @@ class SubmitAssessmentTool:
                             "doesn't admit a unit test; justify in approach."
                         ),
                     },
+                    "premise_mismatch": {
+                        "type": "boolean",
+                        "description": (
+                            "Default false. Set TRUE only when the issue's "
+                            "spec targets a DIFFERENT artifact, project, or "
+                            "language than this workspace — e.g. the spec "
+                            "names a Python 'snake_game.py' with food/score "
+                            "but the workspace is a JavaScript driving game. "
+                            "Setting it PARKS the bead for operator review "
+                            "instead of forcing an unrelated change. Explain "
+                            "the mismatch in `gap`. Do NOT set it merely "
+                            "because the work is hard, or because this bead's "
+                            "OWN deliverable is absent (that absence is your "
+                            "task) — only when the spec is grounded against a "
+                            "different codebase than the one in front of you."
+                        ),
+                    },
                 },
                 "required": ["current_state", "gap", "approach"],
             },
@@ -154,6 +171,7 @@ class SubmitAssessmentTool:
         gap: str,
         approach: str,
         tdd_applicable: bool = True,
+        premise_mismatch: bool = False,
     ) -> str:
         cs = _require_nonempty("current_state", current_state)
         gp = _require_nonempty("gap", gap)
@@ -164,8 +182,11 @@ class SubmitAssessmentTool:
                 "gap": gp,
                 "approach": ap,
                 "tdd_applicable": bool(tdd_applicable),
+                "premise_mismatch": bool(premise_mismatch),
             }
         )
+        if premise_mismatch:
+            return "assessment recorded (premise mismatch flagged — bead will be parked)"
         tdd_note = "" if tdd_applicable else " (TDD skipped — see approach for reason)"
         return f"assessment recorded{tdd_note}"
 

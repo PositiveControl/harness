@@ -385,6 +385,14 @@ _PHASE_INSTRUCTIONS: Mapping[TurnPhase, str] = {
         "  - approach: how you plan to close the gap\n"
         "Set tdd_applicable=false ONLY when the issue genuinely admits "
         "no unit test (UI tweak, docs); justify in the approach field.\n\n"
+        "WRONG-TARGET ESCAPE: if the spec is grounded against a DIFFERENT "
+        "artifact / project / language than this workspace — e.g. it names "
+        "a Python 'snake_game.py' with food/score but the workspace is a "
+        "JavaScript driving game — set premise_mismatch=true on "
+        "submit_assessment and explain the mismatch in `gap`. This parks "
+        "the bead for an operator. Do NOT 'adapt' a mis-grounded spec to "
+        "the workspace and close it — flag it. (Distinct from BLOCKED below, "
+        "which is an absent upstream precondition in the RIGHT project.)\n\n"
         "BLOCKED ESCAPE: if this bead asks you to verify or fix something "
         "that DOES NOT EXIST in the workspace yet — e.g. 'verify the fire-"
         "key gating' when there is no fire handler at all because an "
@@ -622,6 +630,18 @@ def _resolve_assess_outcome(
     latest = submit_assessment.latest()
     if latest is None:
         return phase_no_progress(TurnPhase.ASSESS, reason="no submit_assessment call")
+    # harness-jbz4z: the spec is grounded against a DIFFERENT artifact /
+    # project / language than this workspace (model self-reported via
+    # premise_mismatch). Park-and-flag rather than driving — and eventually
+    # CLOSING — an unrelated change against a mis-grounded bead (drive
+    # gta_r2, harness-rorj: a snake-game score+food bead closed against a JS
+    # driving game). Distinct from flag_blocked, which is an absent UPSTREAM
+    # precondition; here the bead targets the wrong codebase entirely.
+    if latest.get("premise_mismatch", False):
+        return premise_unmet(
+            missing="workspace does not match the issue spec target",
+            reason=str(latest["gap"]),
+        )
     if latest.get("tdd_applicable", True):
         return assessment_submitted(
             current_state=str(latest["current_state"]),

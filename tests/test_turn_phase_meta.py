@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import pytest
 
+from harness.driver.fsm_turn import _resolve_assess_outcome
+from harness.driver.turn_fsm import PREMISE_UNMET_REASON_PREFIX
 from harness.tools.turn_phase_meta import (
     FlagBlockedTool,
     SkipTestPhaseTool,
@@ -37,7 +39,25 @@ def test_submit_assessment_captures_full_payload() -> None:
         "gap": "acceptance criteria require 30 rows by 40 chars each",
         "approach": "regenerate the entire tileGrid as 30 fixed-width strings",
         "tdd_applicable": True,
+        "premise_mismatch": False,
     }
+
+
+def test_submit_assessment_premise_mismatch_path() -> None:
+    """harness-jbz4z: premise_mismatch=True is captured and the result
+    text signals the bead will be parked — the driver reads
+    `premise_mismatch` to route ASSESS to premise_unmet."""
+    tool = SubmitAssessmentTool()
+    result = tool.call(
+        current_state="workspace is a JS canvas driving game (game.js); no snake",
+        gap="spec references snake_game.py with food/score — a different project",
+        approach="cannot ground this bead against the current workspace",
+        premise_mismatch=True,
+    )
+    assert "premise mismatch" in result
+    latest = tool.latest()
+    assert latest is not None
+    assert latest["premise_mismatch"] is True
 
 
 def test_submit_assessment_tdd_skip_path() -> None:
@@ -255,3 +275,56 @@ def test_flag_blocked_copy_distinguishes_upstream_from_deliverable() -> None:
     # The `missing` param echoes the same constraint.
     missing_desc = FlagBlockedTool().spec.parameters["properties"]["missing"]["description"]
     assert "deliverable" in missing_desc.lower()
+
+
+# --- premise_mismatch routing (harness-jbz4z) ---------------------
+
+
+def test_assess_premise_mismatch_routes_to_premise_unmet() -> None:
+    """A submitted assessment with premise_mismatch=True routes ASSESS to
+    premise_unmet (park-and-flag), NOT assessment_submitted — so a bead
+    grounded against a different project can't be driven and closed (drive
+    gta_r2, harness-rorj)."""
+    submit = SubmitAssessmentTool()
+    submit.call(
+        current_state="workspace is a JS driving game; no snake_game.py exists",
+        gap="spec targets a Python snake game with food/score — wrong project",
+        approach="cannot ground this bead against the current workspace",
+        premise_mismatch=True,
+    )
+    outcome = _resolve_assess_outcome(submit, FlagBlockedTool())
+    assert outcome.kind == "premise_unmet"
+    assert outcome.detail.startswith(PREMISE_UNMET_REASON_PREFIX)
+    # The gap is carried as the human-readable reason.
+    assert "wrong project" in outcome.payload["reason"]
+
+
+def test_assess_premise_mismatch_false_is_normal_assessment() -> None:
+    """Default (premise_mismatch absent/False) still yields a normal
+    assessment_submitted — the gate is opt-in and doesn't disturb the
+    happy path."""
+    submit = SubmitAssessmentTool()
+    submit.call(
+        current_state="game.js draws 28 tile rows of varying widths",
+        gap="acceptance criteria require 30 fixed-width rows",
+        approach="regenerate tileGrid as 30 strings of 40 chars",
+    )
+    outcome = _resolve_assess_outcome(submit, FlagBlockedTool())
+    assert outcome.kind == "assessment_submitted"
+
+
+def test_assess_flag_blocked_still_wins_over_mismatch() -> None:
+    """flag_blocked is checked before submit_assessment, so an explicit
+    block still short-circuits regardless of a later mismatch flag."""
+    submit = SubmitAssessmentTool()
+    submit.call(
+        current_state="x" * 30,
+        gap="y" * 30,
+        approach="z" * 30,
+        premise_mismatch=True,
+    )
+    flag = FlagBlockedTool()
+    flag.call(missing="fire_handler", reason="no fire input handler exists upstream")
+    outcome = _resolve_assess_outcome(submit, flag)
+    assert outcome.kind == "premise_unmet"
+    assert "fire_handler" in outcome.payload["missing"]
