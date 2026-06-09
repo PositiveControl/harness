@@ -8,6 +8,7 @@ from pathlib import Path
 from harness.driver.plan_linter import (
     SUBSECTION_THRESHOLD,
     BeadComplexity,
+    is_structural_bead,
     score_bead,
 )
 
@@ -86,6 +87,47 @@ def test_bullet_heavy_short_subsection_flags_on_bullets() -> None:
     assert c.bullets == 7
     assert c.flagged is True
     assert any("bullet" in r for r in c.reasons)
+
+
+# --- is_structural_bead (harness-1kd9t: bypass-TDD signal) --------------
+
+
+def test_skeleton_bead_is_structural() -> None:
+    # The §1/1kd9t shape: a project-shape skeleton. Acceptance mentions
+    # "every frame" (behavioral wording) but the bead IS a skeleton — the
+    # marker carries it; no behavioral veto.
+    title = "§1 Project shape — index.html + game.js skeleton"
+    desc = "Bootstrap the two source files. index.html is the exact skeleton in §1.5."
+    accept = "index.html matches the §1.5 skeleton verbatim. gameLoop fires every frame."
+    assert is_structural_bead(title, desc, accept) is True
+
+
+def test_declaration_at_defaults_is_structural() -> None:
+    # The §6c-i/bie shape: declare shared state at documented defaults.
+    title = "§6c-i Pedestrians — declare shared run-over state at defaults"
+    desc = "Declare the shared state variables at the §12.1 documented defaults: wanted = 0."
+    assert is_structural_bead(title, desc) is True
+
+
+def test_scaffold_and_stub_markers_are_structural() -> None:
+    assert is_structural_bead("§13a HUD — screen-space scaffold + score text", "") is True
+    assert is_structural_bead("Add a render stub for the splat", "") is True
+    assert is_structural_bead("Boilerplate config loader", "") is True
+
+
+def test_behavioral_bead_is_not_structural() -> None:
+    # The §7a-iii/nwf shape: continuous tracking, no scaffold marker. Must
+    # NOT be classified structural — it has a real gap to TDD.
+    title = "§7a-iii Police — count tracks wanted (0..6, spawn within ~5s of increase)"
+    desc = "Each frame in update(), spawn police so police.length climbs toward wanted."
+    accept = "update() spawns police while police.length < wanted (capped 6)."
+    assert is_structural_bead(title, desc, accept) is False
+
+
+def test_plain_feature_bead_is_not_structural() -> None:
+    assert is_structural_bead("Add score tracking and on-screen score display", "") is False
+    # "default" without a declaration verb nearby must not trip the marker.
+    assert is_structural_bead("Use the default road tile when none specified", "") is False
 
 
 # ---- harness-pnkvp: behavioral-acceptance (assertability) signal -------

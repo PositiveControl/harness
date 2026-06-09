@@ -62,6 +62,30 @@ SUBSECTION_THRESHOLD = 3
 ACCEPTANCE_CLAUSE_THRESHOLD = 4
 DESCRIPTION_CHARS_THRESHOLD = 1500
 BULLET_THRESHOLD = 6
+# harness-1kd9t: structural-bead detection — the bypass-TDD signal. A
+# scaffold / skeleton / pure-declaration bead has no runtime behavior to
+# assert: its acceptance is code-presence or file-structure (the file
+# exists, the skeleton matches verbatim, a variable is declared at its
+# default). The executor cannot author a RED test for "this declaration
+# exists" the way it can for a behavioral gap — WRITE_TEST stalls trying to
+# write a never-red test and the turn halts "no test"
+# (loop_run=3638dd4c: §1/1kd9t skeleton + §6c-i/bie state-declaration, both
+# halted no-test). These beads should skip WRITE_TEST and go straight to
+# IMPLEMENT; VERIFY's code-presence gate still proves the work landed.
+#
+# These markers NAME the bead's type (what it IS), so a marker hit is the
+# whole signal — no behavioral-acceptance veto. A scaffold whose acceptance
+# happens to mention "fires every frame" (1kd9t) is still a scaffold; the
+# behavioral wording describes the skeleton's smoke check, not a behavior to
+# TDD. Over-firing is cheap (skip the red test; VERIFY still gates);
+# under-firing reproduces the park we're removing — so bias toward firing,
+# but keep the marker set tight to stay precise.
+_STRUCTURAL_MARKER_RE = re.compile(
+    r"\bskeleton\b|\bscaffold(?:ing)?\b|\bboilerplate\b|\bbootstrap\b"
+    r"|\bproject\s+shape\b|\bstub(?:s|bed|bing)?\b"
+    r"|\bdeclar\w+[^.\n]*\bdefaults?\b",
+    re.IGNORECASE,
+)
 # harness-yzg8: structural-wrap heuristic. When the bead text uses any
 # of these phrases AND a referenced function in the workspace is
 # >LONG_FUNCTION_THRESHOLD lines, the drive will get stuck trying to
@@ -328,6 +352,18 @@ def score_bead(
     )
 
 
+def is_structural_bead(title: str, description: str, acceptance: str = "") -> bool:
+    """True when the bead is a scaffold / skeleton / pure-declaration unit
+    whose work is code-presence or file-structure, not runtime behavior —
+    the kind WRITE_TEST cannot reduce to one failing test.
+
+    Such a bead should bypass the TDD WRITE_TEST phase (drive it straight to
+    IMPLEMENT); the VERIFY phase's code-presence gate still proves the work
+    landed. See `_STRUCTURAL_MARKER_RE` for the loop-run evidence and why a
+    marker hit alone is the signal (no behavioral-acceptance veto)."""
+    return _STRUCTURAL_MARKER_RE.search(f"{title}\n{description}\n{acceptance}") is not None
+
+
 __all__ = [
     "ACCEPTANCE_CLAUSE_THRESHOLD",
     "BULLET_THRESHOLD",
@@ -335,5 +371,6 @@ __all__ = [
     "LONG_FUNCTION_THRESHOLD",
     "SUBSECTION_THRESHOLD",
     "BeadComplexity",
+    "is_structural_bead",
     "score_bead",
 ]

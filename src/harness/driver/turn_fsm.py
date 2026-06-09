@@ -159,6 +159,28 @@ def assessment_skipped_tdd(
     )
 
 
+def assessment_already_satisfied(*, current_state: str, reason: str) -> PhaseOutcome:
+    """ASSESS determined the workspace ALREADY satisfies the bead — no gap,
+    no change needed (a stale or already-built structural bead). Routes
+    ASSESS straight to CLOSE, skipping WRITE_TEST + IMPLEMENT.
+
+    Why this exists (harness-1kd9t): the `test_already_passes` green-check
+    that let an already-done bead close lived only in WRITE_TEST. When a
+    structural bead bypasses WRITE_TEST (no behavioral gap to TDD), that
+    escape vanished — so the FSM forced IMPLEMENT, where the model "builds
+    the skeleton" by rewriting the now-populated file and trips the
+    regression guard (loop_run=7b371136: §1/1kd9t rewrote game.js, lost 5
+    symbols, close blocked + restored, churned 4 attempts). This outcome
+    restores the escape for structural beads. The CLOSE phase's
+    `pre_close_verify` hook still gates the actual bd close, so a wrong
+    'already satisfied' fails verify rather than closing unfinished work."""
+    return PhaseOutcome(
+        kind="assessment_already_satisfied",
+        detail=f"already satisfied: {reason[:120]}",
+        payload={"current_state": current_state, "reason": reason},
+    )
+
+
 def failing_test_submitted(*, test_path: str, test_cmd: str, failure_output: str) -> PhaseOutcome:
     return PhaseOutcome(
         kind="failing_test_submitted",
@@ -285,6 +307,12 @@ def _default_transitions() -> tuple[Transition[TurnPhase, PhaseOutcome], ...]:
         ),
         Transition(
             TurnPhase.ASSESS,
+            TurnPhase.CLOSE,
+            guard=_kind("assessment_already_satisfied"),
+            name="assess->close (already satisfied)",
+        ),
+        Transition(
+            TurnPhase.ASSESS,
             TurnPhase.HALTED,
             guard=_kind("phase_no_progress"),
             name="assess->halted (no assessment)",
@@ -407,6 +435,7 @@ __all__ = [
     "_TERMINAL_PHASES",
     "PhaseOutcome",
     "TurnPhase",
+    "assessment_already_satisfied",
     "assessment_skipped_tdd",
     "assessment_submitted",
     "build_turn_fsm",

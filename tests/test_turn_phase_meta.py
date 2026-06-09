@@ -40,7 +40,25 @@ def test_submit_assessment_captures_full_payload() -> None:
         "approach": "regenerate the entire tileGrid as 30 fixed-width strings",
         "tdd_applicable": True,
         "premise_mismatch": False,
+        "already_satisfied": False,
     }
+
+
+def test_submit_assessment_already_satisfied_path() -> None:
+    """harness-1kd9t: already_satisfied=True is captured and the result
+    text notes the route to close — the driver reads it (gated on the bead
+    being structural) to route ASSESS straight to CLOSE."""
+    tool = SubmitAssessmentTool()
+    result = tool.call(
+        current_state="index.html + game.js skeleton already present, gameLoop wired",
+        gap="none — the scaffold from §1 already exists; no change needed",
+        approach="no edit; the bead is already satisfied by earlier work",
+        already_satisfied=True,
+    )
+    assert "already satisfied" in result
+    latest = tool.latest()
+    assert latest is not None
+    assert latest["already_satisfied"] is True
 
 
 def test_submit_assessment_premise_mismatch_path() -> None:
@@ -310,6 +328,36 @@ def test_assess_premise_mismatch_false_is_normal_assessment() -> None:
         approach="regenerate tileGrid as 30 strings of 40 chars",
     )
     outcome = _resolve_assess_outcome(submit, FlagBlockedTool())
+    assert outcome.kind == "assessment_submitted"
+
+
+def test_assess_already_satisfied_structural_routes_to_close() -> None:
+    """harness-1kd9t: already_satisfied=True on a STRUCTURAL bead routes
+    ASSESS → assessment_already_satisfied (→ CLOSE), skipping the
+    rewrite-the-scaffold IMPLEMENT path."""
+    submit = SubmitAssessmentTool()
+    submit.call(
+        current_state="index.html + game.js skeleton already present",
+        gap="none — scaffold exists from earlier work",
+        approach="no change needed; bead already satisfied",
+        already_satisfied=True,
+    )
+    outcome = _resolve_assess_outcome(submit, FlagBlockedTool(), structural_bead=True)
+    assert outcome.kind == "assessment_already_satisfied"
+
+
+def test_assess_already_satisfied_ignored_when_not_structural() -> None:
+    """already_satisfied is honored ONLY for structural beads — on a
+    non-structural bead the flag is ignored and ASSESS proceeds normally,
+    so the close-verify-gap can't be used to skip behavioral work."""
+    submit = SubmitAssessmentTool()
+    submit.call(
+        current_state="update() has no police spawn call",
+        gap="need a police.length < wanted guard gating spawnPoliceCar",
+        approach="add the spawn guard to update()",
+        already_satisfied=True,
+    )
+    outcome = _resolve_assess_outcome(submit, FlagBlockedTool(), structural_bead=False)
     assert outcome.kind == "assessment_submitted"
 
 

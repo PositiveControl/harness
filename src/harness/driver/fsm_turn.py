@@ -48,6 +48,7 @@ from harness.driver.turn_fsm import (
     DEFAULT_PHASE_BUDGETS,
     PhaseOutcome,
     TurnPhase,
+    assessment_already_satisfied,
     assessment_skipped_tdd,
     assessment_submitted,
     build_turn_fsm,
@@ -385,6 +386,14 @@ _PHASE_INSTRUCTIONS: Mapping[TurnPhase, str] = {
         "  - approach: how you plan to close the gap\n"
         "Set tdd_applicable=false ONLY when the issue genuinely admits "
         "no unit test (UI tweak, docs); justify in the approach field.\n\n"
+        "ALREADY-SATISFIED ESCAPE: if the workspace ALREADY fully meets this "
+        "bead's acceptance and NO change is needed — e.g. a scaffold/skeleton "
+        "bead whose files + structure already exist from earlier work — set "
+        "already_satisfied=true on submit_assessment (honored only for "
+        "structural beads). This routes straight to CLOSE; a close-time verify "
+        "still runs, so do NOT use it to dodge work that genuinely remains. "
+        "Do NOT re-create an existing scaffold from scratch — that destroys "
+        "code other beads added.\n\n"
         "WRONG-TARGET ESCAPE: if the spec is grounded against a DIFFERENT "
         "artifact / project / language than this workspace — e.g. it names "
         "a Python 'snake_game.py' with food/score but the workspace is a "
@@ -622,6 +631,8 @@ def _run_one_phase(
 def _resolve_assess_outcome(
     submit_assessment: SubmitAssessmentTool,
     flag_blocked: FlagBlockedTool,
+    *,
+    structural_bead: bool = False,
 ) -> PhaseOutcome:
     # flag_blocked wins over submit_assessment: a premise-unmet signal
     # short-circuits the normal ASSESS exit so the loop parks-and-flags
@@ -643,6 +654,20 @@ def _resolve_assess_outcome(
         return premise_unmet(
             missing="workspace does not match the issue spec target",
             reason=str(latest["gap"]),
+        )
+    # harness-1kd9t: a structural bead whose scaffold already exists has no
+    # gap to close — route ASSESS straight to CLOSE instead of IMPLEMENT,
+    # where the model "builds the skeleton" by rewriting the now-populated
+    # file and trips the regression guard (loop_run=7b371136). Gated to
+    # structural beads: their acceptance IS code-presence/file-structure,
+    # which the CLOSE phase's pre_close_verify hook re-checks, so a wrong
+    # claim fails verify rather than closing unfinished behavioral work. For
+    # non-structural beads the flag is ignored — they fall through to the
+    # normal TDD path.
+    if structural_bead and latest.get("already_satisfied", False):
+        return assessment_already_satisfied(
+            current_state=str(latest["current_state"]),
+            reason=str(latest.get("gap") or "scaffold already present"),
         )
     if latest.get("tdd_applicable", True):
         return assessment_submitted(
@@ -1021,6 +1046,8 @@ def run_fsm_turn(
     verify_steps: Sequence[VerifyStep] = (),
     phase_budgets: Mapping[TurnPhase, int] | None = None,
     tdd_required: bool = True,
+    tdd_skip_reason: str | None = None,
+    structural_bead: bool = False,
     observe: ExecutorObserver | None = None,
     executor_temperature: float = 0.5,
     summarize_tool_results: bool = True,
@@ -1033,10 +1060,18 @@ def run_fsm_turn(
     composition (bd queries, git diff, thoughts) is the driver's
     contract, not this module's.
 
-    `tdd_required=False` (e.g. CLI --no-tdd) is handled by
-    inspecting the resolved ASSESS outcome and rerouting it through
-    `assessment_skipped_tdd` BEFORE feeding to the FSM. The
-    underlying transition table is unchanged.
+    `tdd_required=False` (e.g. CLI --no-tdd, or a per-bead structural
+    classification — harness-1kd9t) is handled by inspecting the resolved
+    ASSESS outcome and rerouting it through `assessment_skipped_tdd` BEFORE
+    feeding to the FSM. `tdd_skip_reason` overrides the recorded reason so
+    the trace says WHY TDD was skipped (defaults to the --no-tdd text).
+
+    `structural_bead=True` (harness-1kd9t) marks the bead as a
+    scaffold/declaration unit, which enables the ASSESS-phase
+    already_satisfied → CLOSE escape: an already-built scaffold closes
+    (gated by pre_close_verify) instead of being forced through IMPLEMENT,
+    where the model rewrites the populated file and trips the regression
+    guard. The underlying transition table is unchanged.
 
     Returns FsmTurnResult with the terminal phase + success boolean +
     threaded assessment/test_cmd payload for resume.
@@ -1137,6 +1172,7 @@ def run_fsm_turn(
             verify_steps=verify_steps,
             test_cmd=captured_test_cmd,
             workspace=workspace,
+            structural_bead=structural_bead,
         )
 
         # Apply tdd_required override: if operator said --no-tdd and
@@ -1151,7 +1187,7 @@ def run_fsm_turn(
                 current_state=str(outcome.payload.get("current_state", "")),
                 gap=str(outcome.payload.get("gap", "")),
                 approach=str(outcome.payload.get("approach", "")),
-                reason="--no-tdd flag set on this loop run",
+                reason=tdd_skip_reason or "--no-tdd flag set on this loop run",
             )
 
         # Capture the assessment + test_cmd for the next phase's
@@ -1247,9 +1283,12 @@ def _resolve_phase_outcome(
     verify_steps: Sequence[VerifyStep],
     test_cmd: str | None,
     workspace: Path,
+    structural_bead: bool = False,
 ) -> PhaseOutcome:
     if phase == TurnPhase.ASSESS:
-        return _resolve_assess_outcome(submit_assessment, flag_blocked)
+        return _resolve_assess_outcome(
+            submit_assessment, flag_blocked, structural_bead=structural_bead
+        )
     if phase == TurnPhase.WRITE_TEST:
         # harness-axjt8: test_cmd here is captured_test_cmd — a test
         # carried forward from a prior attempt (None on the first). The

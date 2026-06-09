@@ -157,6 +157,21 @@ class SubmitAssessmentTool:
                             "different codebase than the one in front of you."
                         ),
                     },
+                    "already_satisfied": {
+                        "type": "boolean",
+                        "description": (
+                            "Default false. Set TRUE only when the workspace "
+                            "ALREADY fully satisfies this bead's acceptance and "
+                            "NO change is needed — e.g. a scaffold/skeleton bead "
+                            "whose files + structure already exist from earlier "
+                            "work. Routes straight to CLOSE (a close-time verify "
+                            "still gates the close, so a wrong claim fails there, "
+                            "not silently). Honored only for structural "
+                            "(scaffold/declaration) beads; ignored otherwise. Do "
+                            "NOT set it to dodge work that genuinely remains — "
+                            "say so in `gap` and implement it instead."
+                        ),
+                    },
                 },
                 "required": ["current_state", "gap", "approach"],
             },
@@ -172,6 +187,7 @@ class SubmitAssessmentTool:
         approach: str,
         tdd_applicable: bool = True,
         premise_mismatch: bool = False,
+        already_satisfied: bool = False,
     ) -> str:
         cs = _require_nonempty("current_state", current_state)
         gp = _require_nonempty("gap", gap)
@@ -183,10 +199,13 @@ class SubmitAssessmentTool:
                 "approach": ap,
                 "tdd_applicable": bool(tdd_applicable),
                 "premise_mismatch": bool(premise_mismatch),
+                "already_satisfied": bool(already_satisfied),
             }
         )
         if premise_mismatch:
             return "assessment recorded (premise mismatch flagged — bead will be parked)"
+        if already_satisfied:
+            return "assessment recorded (already satisfied — routing to close, verify still gates)"
         tdd_note = "" if tdd_applicable else " (TDD skipped — see approach for reason)"
         return f"assessment recorded{tdd_note}"
 

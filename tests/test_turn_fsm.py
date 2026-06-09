@@ -122,6 +122,27 @@ def test_test_already_passes_short_circuits_to_close() -> None:
     assert fsm.state == TurnPhase.DONE
 
 
+def test_already_satisfied_routes_assess_to_close() -> None:
+    """harness-1kd9t: a structural bead whose scaffold already exists
+    routes ASSESS → CLOSE, skipping WRITE_TEST + IMPLEMENT (which would
+    rewrite the populated file and trip the regression guard)."""
+    from harness.driver.turn_fsm import assessment_already_satisfied
+
+    fsm = build_turn_fsm()
+    trace = _drive(
+        fsm,
+        [
+            assessment_already_satisfied(
+                current_state="index.html + game.js skeleton already present",
+                reason="skeleton exists from earlier work; no change needed",
+            ),
+            close_succeeded(),
+        ],
+    )
+    assert trace == ["assess->close (already satisfied)", "close->done"]
+    assert fsm.state == TurnPhase.DONE
+
+
 # --- failure / halt paths -----------------------------------------
 
 

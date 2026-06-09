@@ -1184,6 +1184,7 @@ def _run_fsm_turn_via_driver(
         run_fsm_turn,
     )
     from harness.driver.handoff import build_handoff
+    from harness.driver.plan_linter import is_structural_bead
     from harness.driver.turn_fsm import TurnPhase
 
     issue_id = current_issue.id
@@ -1226,6 +1227,20 @@ def _run_fsm_turn_via_driver(
     per_item_verify = verify_map.get(current_issue.title, ()) if verify_map else ()
     verify_steps = tuple(default_verify_steps) + tuple(per_item_verify)
 
+    # harness-1kd9t: a scaffold / skeleton / pure-declaration bead has no
+    # behavioral gap to reduce to a RED test — forcing it through WRITE_TEST
+    # stalls the executor authoring a never-red test and halts "no test"
+    # (loop_run=3638dd4c: §1/1kd9t skeleton + §6c-i/bie state-declaration
+    # both parked this way). Drop tdd_required for the turn so ASSESS routes
+    # straight to IMPLEMENT; VERIFY's code-presence gate still proves it.
+    raw = current_issue.raw if isinstance(current_issue.raw, Mapping) else {}
+    structural = is_structural_bead(
+        current_issue.title,
+        str(raw.get("description") or ""),
+        str(raw.get("acceptance_criteria") or ""),
+    )
+    bead_tdd_required = config.tdd_required and not structural
+
     try:
         result: FsmTurnResult = run_fsm_turn(
             adapter=adapter,
@@ -1238,7 +1253,14 @@ def _run_fsm_turn_via_driver(
             prior_assessment=prior_assessment,
             prior_test_cmd=prior_test_cmd,
             verify_steps=verify_steps,
-            tdd_required=config.tdd_required,
+            tdd_required=bead_tdd_required,
+            tdd_skip_reason=(
+                "structural bead (scaffold/skeleton/declaration) — no behavioral "
+                "gap to TDD; code-presence is proven by VERIFY"
+                if structural
+                else None
+            ),
+            structural_bead=structural,
             observe=observe,
             executor_temperature=config.executor_temperature,
             summarize_tool_results=config.summarize_tool_results,
