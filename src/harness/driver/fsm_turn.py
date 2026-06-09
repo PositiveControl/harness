@@ -29,6 +29,7 @@ running the registered verify steps + (when present) the
 from __future__ import annotations
 
 import contextlib
+import re
 import shlex
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
@@ -635,6 +636,46 @@ def _resolve_assess_outcome(
     )
 
 
+# harness-k6du2: shell words that run no test and assert nothing about the
+# code under change. A verify gate built ENTIRELY from these is degenerate:
+# its exit code is fixed (e.g. `echo ... && exit 1` is always red, `true` is
+# always green) regardless of what the implementation does, so it can never
+# go green by fixing code — every VERIFY retry burns against a tautology
+# (drive gta_r2 loop_run=1c7e5c58, harness-491j5). A real gate has at least
+# one segment that runs a test runner / interpreter / script / assertion,
+# none of which appear here. `test` / `[` are deliberately EXCLUDED — they
+# assert (file/string predicates) and are a legitimate, if weak, gate.
+_NOOP_GATE_WORDS: frozenset[str] = frozenset(
+    {"echo", "printf", "exit", "true", "false", ":", "cd", "pwd", "sleep", "export"}
+)
+
+
+def _is_degenerate_test_cmd(cmd: str) -> bool:
+    """True when `cmd` invokes no test — every segment is a shell no-op
+    (echo/exit/cd/...) so its exit code is decoupled from the code under
+    change. Such a command can never transition red->green by editing
+    code, so accepting it as the WRITE_TEST gate guarantees the
+    verify-retry budget is spent on a tautology."""
+    # Split on shell separators; a single real-test segment redeems the cmd.
+    segments = re.split(r"&&|\|\||;|\|", cmd)
+    saw_segment = False
+    for segment in segments:
+        try:
+            tokens = shlex.split(segment)
+        except ValueError:
+            # Unparseable segment — can't prove it's a no-op; treat as real.
+            return False
+        if not tokens:
+            continue
+        # Strip leading `VAR=val` env assignments to reach the command word.
+        word = next((t for t in tokens if "=" not in t.split(" ", 1)[0]), tokens[0])
+        saw_segment = True
+        if word not in _NOOP_GATE_WORDS:
+            return False
+    # All segments were no-ops (and there was at least one) -> degenerate.
+    return saw_segment
+
+
 def _resolve_write_test_outcome(
     submit_failing_test: SubmitFailingTestTool,
     skip_test_phase: SkipTestPhaseTool,
@@ -659,7 +700,7 @@ def _resolve_write_test_outcome(
         # nothing across attempts and any barren one would otherwise park
         # the bead (loop_run=783a4e30: b65f2 / y2gqc). Mirrors gmu9f's
         # IMPLEMENT re-attempt idempotence, opposite phase.
-        if prior_test_cmd:
+        if prior_test_cmd and not _is_degenerate_test_cmd(prior_test_cmd):
             exit_code, _tail = _exec_test_cmd(prior_test_cmd, workspace)
             if exit_code == 0:
                 # Carried test now passes — the implementation already
@@ -676,6 +717,19 @@ def _resolve_write_test_outcome(
         return phase_no_progress(
             TurnPhase.WRITE_TEST,
             reason="no submit_failing_test or skip_test_phase call",
+        )
+    # harness-k6du2: reject a degenerate gate (echo/exit-only, runs no
+    # test) BEFORE the red-check. It's red, but for a reason decoupled from
+    # the code, so VERIFY would burn its whole retry budget against a
+    # tautology. Halt WRITE_TEST instead — the next attempt can re-author a
+    # real test.
+    if _is_degenerate_test_cmd(str(latest["test_cmd"])):
+        return phase_no_progress(
+            TurnPhase.WRITE_TEST,
+            reason=(
+                f"degenerate verify gate: command runs no test (no-op/exit only): "
+                f"{str(latest['test_cmd'])[:120]}"
+            ),
         )
     # Sanity-check the test by re-executing — if it's already green,
     # the model claimed a failing test that isn't actually failing.
