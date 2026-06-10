@@ -295,19 +295,45 @@ def _file_critic_finding(
     return new_id
 
 
+def _workspace_fingerprint(workspace: Path) -> str:
+    """Content fingerprint of the workspace's source files (harness-64jge).
+
+    Stands in for a gate fingerprint when a parked issue has no test_cmd —
+    the verify-parked class (smoke gate, workspace-typed verify steps),
+    where "the gate" is the artifact itself. Built from the same source-file
+    set the critic snapshots, so .harness/ scratch and oversized files never
+    perturb it. An operator repair (or any inter-pass edit) changes the hash
+    and revives the issue for one re-attempt."""
+    digest = hashlib.sha256()
+    for rel, text in sorted(_snapshot_source_files(workspace).items()):
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(text.encode("utf-8"))
+        digest.update(b"\x00")
+    return digest.hexdigest()
+
+
 def _gate_fingerprint(workspace: Path, test_cmd: str | None) -> str | None:
     """Content fingerprint of the gate file a parked issue was stuck on
     (harness-s0el9).
 
     Resolves the script path out of `test_cmd` (the same extraction the FSM
-    uses to tell a real gate from a no-op) and hashes its bytes. Returns None
-    when there is no resolvable gate file — no test_cmd, an unparseable /
-    runner-only command, or the script is absent from the workspace. None is
-    "no fingerprint", deliberately distinct from any real hash: a None->hash
-    transition (a gate that appeared) reads as a change, same as hash->hash'.
+    uses to tell a real gate from a no-op) and hashes its bytes.
+
+    harness-64jge: a park with NO test_cmd at all — verify_failed on a
+    smoke / workspace-typed gate, or write_test->halted — used to return
+    None, which `_revive_repaired_gates` treats as "never revive". That
+    stranded the whole verify-parked class forever (loop_run=f9e09713 ran
+    0 turns against two such parks). Those now fall back to the workspace
+    source fingerprint: the failing gate's subject IS the workspace, so an
+    inter-pass repair reads as a gate change. None remains only for a
+    test_cmd whose script can't be resolved or read — there's a claimed
+    gate file but nothing to fingerprint, so conservative no-revive holds.
+    A None->hash transition (a gate that appeared) reads as a change, same
+    as hash->hash'.
     """
     if not test_cmd:
-        return None
+        return _workspace_fingerprint(workspace)
     script = _test_cmd_script(test_cmd)
     if script is None:
         return None
@@ -379,7 +405,12 @@ def run_auto_iterate(
     # files beads). Carrying them as skip_issue_ids lets the next pass
     # exit fast (partial) instead of burning its whole budget
     # re-discovering the same issues can't close.
-    carried_skip: set[str] = set()
+    # harness-64jge: seeded with the operator's skip_issue_ids — the
+    # later replace() overwrites the LoopConfig field wholesale, so an
+    # unseeded set silently dropped operator skips from pass 1 onward.
+    # Operator ids get no gate fingerprint (below), so the revive pass
+    # never un-skips them — only drive-parked ids earn revival.
+    carried_skip: set[str] = set(config.loop_config.skip_issue_ids)
     # harness-s0el9: per-carried-id gate fingerprint + the cmd that produced
     # it, captured when the issue parked. A bugged gate (loop_run=e7644fa7:
     # gate grepped a literal token the correct idiomatic code never emits)
@@ -422,6 +453,35 @@ def run_auto_iterate(
                 "re-driving once (harness-s0el9)",
                 file=sys.stderr,
             )
+        # harness-64jge: when every ready issue under the epic is carried-
+        # skipped and nothing was revived, the pass is a foregone no-op —
+        # run_loop would spin up full scaffolding (workspace snapshot,
+        # last-green baseline, vllm trace) to execute 0 turns and exit
+        # partial (loop_run=f9e09713). Report stuck immediately instead.
+        # First-pass runs are exempt: pass 0's skip set is operator-
+        # supplied, and the operator may still want the critic's read on
+        # the artifact. A bd error skips the check — the pass itself
+        # handles bd failure with a proper halt.
+        if pass_index > 0 and carried_skip:
+            try:
+                ready_ids = {issue.id for issue in bd.ready_under_epic(epic_id)}
+            except DriverBdError:
+                ready_ids = set()
+            if ready_ids and ready_ids <= carried_skip:
+                print(
+                    f"auto-iterate: every ready issue is carried-skipped with no "
+                    f"gate repair ({', '.join(sorted(ready_ids))}) — skipping "
+                    f"pass {pass_index + 1}, exiting stuck (harness-64jge)",
+                    file=sys.stderr,
+                )
+                return AutoIterateResult(
+                    passes_run=pass_index,
+                    drive_results=drive_results,
+                    critic_findings_total=findings_total,
+                    exit_reason="stuck",
+                    filed_beads=filed_beads,
+                    spec_resolved=spec_resolved,
+                )
         # harness-6y2dc: feed prior passes' parked ids forward so this
         # pass skips them instead of re-driving from cold.
         if carried_skip:

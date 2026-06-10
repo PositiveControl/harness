@@ -69,6 +69,10 @@ class _FakeBd:
     creates: list[dict[str, Any]] = field(default_factory=list)
     dep_adds: list[tuple[str, str]] = field(default_factory=list)
     show_failures: set[str] = field(default_factory=set)
+    # harness-64jge: what ready_under_epic returns. Empty by default so
+    # the all-ready-carried-skipped short-circuit never fires unless a
+    # test opts in.
+    ready: list[BeadsIssue] = field(default_factory=list)
     _next_id: int = 0
 
     def show(self, issue_id: str) -> BeadsIssue:
@@ -77,6 +81,9 @@ class _FakeBd:
         if issue_id not in self.issues:
             raise DriverBdError(f"no such issue {issue_id}")
         return self.issues[issue_id]
+
+    def ready_under_epic(self, epic_id: str) -> list[BeadsIssue]:
+        return list(self.ready)
 
     def create_with_labels(
         self,
@@ -467,6 +474,195 @@ def test_run_auto_iterate_keeps_parked_issue_when_gate_unchanged(
 
     assert seen_skip[0] == frozenset()
     assert seen_skip[1] == frozenset({"harness-a"})
+
+
+def test_run_auto_iterate_revives_verify_parked_issue_on_workspace_repair(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-64jge: an issue parked WITHOUT a test_cmd (verify_failed on
+    a smoke / workspace-typed gate) used to carry a None fingerprint —
+    structurally unrevivable. Its gate's subject is the workspace itself,
+    so an inter-pass source repair must revive it for one re-attempt."""
+    src = tmp_path / "game.js"
+    src.write_text("// v1: render never wired\n")
+    bd = _FakeBd(issues={"harness-epic": _issue("harness-epic", title="GTAII")})
+    cfg = _config(tmp_path, max_passes=3, convergence_streak=2)
+
+    seen_skip: list[frozenset[str]] = []
+
+    def run_loop_spy(_a: Any, _b: Any, loop_config: LoopConfig) -> LoopResult:
+        seen_skip.append(loop_config.skip_issue_ids)
+        if len(seen_skip) == 1:
+            # Verify-parked: no test_cmd recorded.
+            return _loop_result(
+                closed=["harness-b"],
+                exit_reason="partial",
+                parked_issues=["harness-a"],
+                parked_test_cmds={},
+            )
+        return _loop_result(closed=[], exit_reason="partial", turns_used=0)
+
+    def critic_repairs_workspace(**_: Any) -> list[Any]:
+        src.write_text("// v2: operator wired the draw loop by hand\n")
+        return []
+
+    monkeypatch.setattr("harness.driver.auto_iterate.run_loop", run_loop_spy)
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", critic_repairs_workspace)
+
+    run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert seen_skip[0] == frozenset()
+    assert seen_skip[1] == frozenset()  # revived — workspace changed
+
+
+def test_run_auto_iterate_keeps_verify_parked_issue_when_workspace_unchanged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-64jge companion: no inter-pass repair → the verify-parked
+    issue stays carried-skipped (preserves the harness-6y2dc no-wheel-spin
+    guarantee; this is the loop_run=f9e09713 scenario)."""
+    (tmp_path / "game.js").write_text("// unchanged between passes\n")
+    bd = _FakeBd(issues={"harness-epic": _issue("harness-epic", title="GTAII")})
+    cfg = _config(tmp_path, max_passes=3, convergence_streak=2)
+
+    seen_skip: list[frozenset[str]] = []
+
+    def run_loop_spy(_a: Any, _b: Any, loop_config: LoopConfig) -> LoopResult:
+        seen_skip.append(loop_config.skip_issue_ids)
+        if len(seen_skip) == 1:
+            return _loop_result(
+                closed=["harness-b"],
+                exit_reason="partial",
+                parked_issues=["harness-a"],
+                parked_test_cmds={},
+            )
+        return _loop_result(closed=[], exit_reason="partial", turns_used=0)
+
+    monkeypatch.setattr("harness.driver.auto_iterate.run_loop", run_loop_spy)
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", lambda **_: [])
+
+    run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert seen_skip[0] == frozenset()
+    assert seen_skip[1] == frozenset({"harness-a"})
+
+
+def test_run_auto_iterate_short_circuits_when_all_ready_carried_skipped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-64jge: when every ready issue under the epic is carried-
+    skipped and nothing was revived, the next pass is a foregone no-op —
+    don't spin up run_loop's scaffolding (snapshot, baseline, trace) to
+    execute 0 turns; exit stuck immediately. loop_run=f9e09713 burned a
+    full pass this way."""
+    (tmp_path / "game.js").write_text("// unchanged between passes\n")
+    bd = _FakeBd(
+        issues={"harness-epic": _issue("harness-epic", title="GTAII")},
+        ready=[_issue("harness-a", title="render tiles")],
+    )
+    cfg = _config(tmp_path, max_passes=3, convergence_streak=2)
+
+    loop_calls: list[frozenset[str]] = []
+
+    def run_loop_spy(_a: Any, _b: Any, loop_config: LoopConfig) -> LoopResult:
+        loop_calls.append(loop_config.skip_issue_ids)
+        return _loop_result(
+            closed=["harness-b"],
+            exit_reason="partial",
+            parked_issues=["harness-a"],
+            parked_test_cmds={},
+        )
+
+    monkeypatch.setattr("harness.driver.auto_iterate.run_loop", run_loop_spy)
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", lambda **_: [])
+
+    result = run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert len(loop_calls) == 1  # pass 2 never ran
+    assert result.exit_reason == "stuck"
+    assert result.passes_run == 1
+
+
+def test_run_auto_iterate_short_circuit_skipped_when_other_work_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Short-circuit companion: a NON-skipped ready issue means the next
+    pass has real work — it must run."""
+    (tmp_path / "game.js").write_text("// unchanged between passes\n")
+    bd = _FakeBd(
+        issues={"harness-epic": _issue("harness-epic", title="GTAII")},
+        ready=[
+            _issue("harness-a", title="render tiles"),
+            _issue("harness-c", title="fresh critic bead"),
+        ],
+    )
+    cfg = _config(tmp_path, max_passes=2, convergence_streak=2)
+
+    loop_calls: list[frozenset[str]] = []
+
+    def run_loop_spy(_a: Any, _b: Any, loop_config: LoopConfig) -> LoopResult:
+        loop_calls.append(loop_config.skip_issue_ids)
+        if len(loop_calls) == 1:
+            return _loop_result(
+                closed=["harness-b"],
+                exit_reason="partial",
+                parked_issues=["harness-a"],
+                parked_test_cmds={},
+            )
+        return _loop_result(closed=["harness-c"], exit_reason="partial", turns_used=2)
+
+    monkeypatch.setattr("harness.driver.auto_iterate.run_loop", run_loop_spy)
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", lambda **_: [])
+
+    run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert len(loop_calls) == 2  # pass 2 ran — harness-c was genuinely ready
+
+
+def test_run_auto_iterate_operator_skip_ids_survive_later_passes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-64jge: the per-pass replace() overwrites
+    LoopConfig.skip_issue_ids wholesale, so operator-supplied skips were
+    silently dropped from pass 2 onward. Seeding carried_skip with them
+    keeps them in every pass; with no gate fingerprint they are never
+    revived."""
+    (tmp_path / "game.js").write_text("// content\n")
+    bd = _FakeBd(issues={"harness-epic": _issue("harness-epic", title="GTAII")})
+    cfg = _config(tmp_path, max_passes=3, convergence_streak=2)
+    cfg = AutoIterateConfig(
+        loop_config=LoopConfig(
+            epic_id="harness-epic",
+            workspace=tmp_path,
+            character=object(),  # type: ignore[arg-type]
+            max_turns=5,
+            skip_issue_ids=frozenset({"harness-op"}),
+        ),
+        spec_path=cfg.spec_path,
+        max_passes=3,
+        convergence_streak=2,
+    )
+
+    seen_skip: list[frozenset[str]] = []
+
+    def run_loop_spy(_a: Any, _b: Any, loop_config: LoopConfig) -> LoopResult:
+        seen_skip.append(loop_config.skip_issue_ids)
+        if len(seen_skip) == 1:
+            return _loop_result(
+                closed=["harness-b"],
+                exit_reason="partial",
+                parked_issues=["harness-a"],
+                parked_test_cmds={},
+            )
+        return _loop_result(closed=[], exit_reason="partial", turns_used=0)
+
+    monkeypatch.setattr("harness.driver.auto_iterate.run_loop", run_loop_spy)
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", lambda **_: [])
+
+    run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    assert seen_skip[0] == frozenset({"harness-op"})
+    assert seen_skip[1] == frozenset({"harness-op", "harness-a"})
 
 
 def test_run_auto_iterate_exits_drive_halted(
