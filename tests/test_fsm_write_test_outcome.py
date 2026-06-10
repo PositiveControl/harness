@@ -11,6 +11,9 @@ with no carried test halts no-progress.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from harness.driver.fsm_turn import (
     _is_degenerate_test_cmd,
@@ -18,8 +21,50 @@ from harness.driver.fsm_turn import (
     _resolve_write_test_outcome,
     _test_cmd_file_missing,
     _test_cmd_script,
+    run_fsm_turn,
 )
+from harness.driver.handoff import Handoff
+from harness.driver.turn_fsm import TurnPhase
+from harness.model.adapter import ChatMessage
+from harness.orchestrator import ToolLoopResult
 from harness.tools.turn_phase_meta import SkipTestPhaseTool, SubmitFailingTestTool
+
+
+class _FakeCharacter:
+    def system_prompt(
+        self,
+        *,
+        include_samples: Any = (),
+        include_style_rules: bool = True,
+    ) -> str:
+        return "you are an executor."
+
+
+class _FakeBd:
+    """CLOSE-phase resolver surface; never reached — the scripted turn
+    halts before CLOSE."""
+
+    def show(self, issue_id: str) -> Any:  # pragma: no cover - not reached
+        raise AssertionError("bd.show should not be called")
+
+
+def _handoff(phase: TurnPhase, assessment: Any, test_cmd: Any) -> Handoff:
+    return Handoff(
+        loop_run_id="testrun1",
+        epic_id="harness-e9oq",
+        current_issue="harness-x (P2 task)\nTitle: do the thing",
+        parent_epic_summary=None,
+        files_touched=(),
+        closed_this_run=(),
+        decisions=(),
+        observations=(),
+        open_questions=(),
+        prior_attempt_failure=None,
+        phase=phase.value,
+        prior_assessment=assessment,
+        prior_test_cmd=test_cmd,
+    )
+
 
 # Non-degenerate test doubles: they invoke an interpreter (python3), so the
 # harness-k6du2 guard treats them as real tests — exit code stands in for
@@ -110,6 +155,48 @@ def test_skip_ignored_when_fresh_submit_present(tmp_path: Path) -> None:
     )
     outcome = _resolve_write_test_outcome(submit, skip, workspace=tmp_path, prior_test_cmd=None)
     assert outcome.kind == "failing_test_submitted"
+
+
+def test_fresh_submit_with_red_check_proof_skips_reexecution(tmp_path: Path) -> None:
+    """harness-pfr5a: a submission that carries its red_check proof is
+    NOT re-executed at phase end. The test_cmd here is green if run —
+    a re-execution would yield test_already_passes; trusting the stored
+    proof yields failing_test_submitted."""
+    submit = SubmitFailingTestTool(red_check=lambda _cmd: (1, "AssertionError: gap exists"))
+    submit.call(
+        test_path="tests/test_gap.py",
+        test_cmd=_GREEN_DOUBLE,  # would be green if re-run
+        failure_output="AssertionError: gap exists in the implementation",
+    )
+    outcome = _resolve_write_test_outcome(
+        submit,
+        SkipTestPhaseTool(),
+        workspace=tmp_path,
+        prior_test_cmd=None,
+    )
+    assert outcome.kind == "failing_test_submitted"
+
+
+def test_fresh_submit_unrunnable_classified_from_stored_proof(tmp_path: Path) -> None:
+    """The unrunnable classification (harness-75tto) still applies to the
+    stored red_check tail — a phantom red (test can't even load) halts
+    WRITE_TEST rather than burning VERIFY's budget."""
+    submit = SubmitFailingTestTool(
+        red_check=lambda _cmd: (1, "ModuleNotFoundError: No module named 'game'")
+    )
+    submit.call(
+        test_path="tests/test_gap.py",
+        test_cmd=_RED_DOUBLE,
+        failure_output="ModuleNotFoundError: No module named 'game'",
+    )
+    outcome = _resolve_write_test_outcome(
+        submit,
+        SkipTestPhaseTool(),
+        workspace=tmp_path,
+        prior_test_cmd=None,
+    )
+    assert outcome.kind == "phase_no_progress"
+    assert "could not run the test" in outcome.detail
 
 
 def test_skip_honored_when_carried_gate_is_degenerate(tmp_path: Path) -> None:
@@ -272,3 +359,66 @@ def test_is_unrunnable_test_output_classification() -> None:
     # A genuine assertion failure is a REAL red, not unrunnable.
     assert not _is_unrunnable_test_output(1, "AssertionError: expected 8 got 7")
     assert not _is_unrunnable_test_output(1, "FAIL: Run-over detection logic not found")
+
+
+# --- harness-pfr5a: submit-time red_check wiring -------------------
+
+
+def test_run_fsm_turn_rejects_always_green_submission(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-pfr5a wiring test: run_fsm_turn constructs the
+    SubmitFailingTestTool with a workspace-scoped red_check, so a
+    submission whose test_cmd exits 0 comes back as a tool ERROR (the
+    always-green class — loop_run=ca3c96b4: harness-8i9 closed with no
+    implementation because the phase-end green short-circuit read the
+    always-green test as 'already landed'). Nothing is captured, so the
+    phase resolves no-progress instead of green_test_outcome → CLOSE."""
+    submit_results: list[Any] = []
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, registry: Any, **_kwargs: Any
+    ) -> ToolLoopResult:
+        names = registry.names()
+        if "submit_assessment" in names:
+            registry.call(
+                "submit_assessment",
+                {"current_state": "c" * 30, "gap": "g" * 30, "approach": "a" * 30},
+            )
+        elif "submit_failing_test" in names:
+            submit_results.append(
+                registry.call(
+                    "submit_failing_test",
+                    {
+                        "test_path": "test_splat.js",
+                        "test_cmd": _GREEN_DOUBLE,
+                        "failure_output": "FAIL: drawPedestrian is undefined (hand-pasted)",
+                    },
+                )
+            )
+        content = "ok."
+        return ToolLoopResult(
+            content=content,
+            messages=[ChatMessage(role="assistant", content=content)],
+            rounds=1,
+            events=[],
+        )
+
+    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+
+    result = run_fsm_turn(
+        adapter=None,  # type: ignore[arg-type]  # never reached; run_tool_loop is stubbed
+        character=_FakeCharacter(),  # type: ignore[arg-type]
+        bd=_FakeBd(),  # type: ignore[arg-type]
+        handoff_builder=_handoff,
+        workspace=tmp_path,
+        current_issue_id="harness-x",
+    )
+
+    # The submission was rejected with the red-proof error...
+    assert submit_results, "scripted WRITE_TEST never reached submit_failing_test"
+    assert all(not r.success for r in submit_results)
+    assert "exited 0" in (submit_results[0].error or "")
+    # ...so the turn cannot close on a fake red: it halts no-progress.
+    assert not result.succeeded
+    assert result.final_phase == TurnPhase.HALTED

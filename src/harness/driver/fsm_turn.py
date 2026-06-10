@@ -883,7 +883,17 @@ def _resolve_write_test_outcome(
     # the model claimed a failing test that isn't actually failing.
     # Re-route through green_test_outcome so the FSM short-circuits
     # to CLOSE rather than continuing into IMPLEMENT on a fake red.
-    exit_code, tail = _exec_test_cmd(latest["test_cmd"], workspace)
+    # harness-pfr5a: a submission that came through a wired red_check
+    # carries its execution proof (exit + tail captured at submit time,
+    # guaranteed non-zero — exit 0 was rejected as a tool error before
+    # it could land in `captured`). Reuse it rather than running the
+    # same command a second time; the unrunnable classification below
+    # still applies to the stored tail. Submissions without the proof
+    # (callers that wired no red_check) keep the re-execution.
+    if "red_check_exit" in latest:
+        exit_code, tail = int(latest["red_check_exit"]), latest.get("red_check_tail", "")
+    else:
+        exit_code, tail = _exec_test_cmd(latest["test_cmd"], workspace)
     if exit_code == 0:
         return green_test_outcome(
             test_path=latest["test_path"],
@@ -1080,7 +1090,14 @@ def run_fsm_turn(
 
     submit_assessment = SubmitAssessmentTool()
     skip_test_phase_tool = SkipTestPhaseTool()
-    submit_failing_test = SubmitFailingTestTool()
+    # harness-pfr5a: gate the submission on the test actually being red.
+    # An always-green test (exits 0 while printing failure text) is
+    # rejected at submit time with a tool error, so the model fixes it
+    # in-phase instead of the phase-end green short-circuit reading it
+    # as "implementation already landed" and false-closing the bead.
+    submit_failing_test = SubmitFailingTestTool(
+        red_check=lambda cmd: _exec_test_cmd(cmd, workspace)
+    )
     submit_implementation_complete = SubmitImplementationCompleteTool()
     flag_blocked = FlagBlockedTool()
 

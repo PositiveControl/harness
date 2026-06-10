@@ -180,6 +180,60 @@ def test_submit_failing_test_rejects_empty_failure_output() -> None:
         )
 
 
+def test_submit_failing_test_red_check_rejects_green_cmd() -> None:
+    """harness-pfr5a: a test_cmd that exits 0 is an always-green test —
+    it proves nothing about the gap, and the hand-pasted failure_output
+    is contradicted by the actual run (loop_run=ca3c96b4: harness-8i9
+    false-closed on exactly this). The submission must be rejected and
+    nothing captured, so the model fixes the test in-phase."""
+    ran: list[str] = []
+
+    def fake_green(cmd: str) -> tuple[int, str]:
+        ran.append(cmd)
+        return 0, "=== Test Suite === FAIL: drawPedestrian is undefined"
+
+    tool = SubmitFailingTestTool(red_check=fake_green)
+    with pytest.raises(ValueError, match="exited 0"):
+        tool.call(
+            test_path="test_pedestrian_splat_render.js",
+            test_cmd="node test_pedestrian_splat_render.js",
+            failure_output="FAIL: drawPedestrian function is undefined in game.js",
+        )
+    assert ran == ["node test_pedestrian_splat_render.js"]
+    assert tool.latest() is None
+
+
+def test_submit_failing_test_red_check_accepts_red_cmd() -> None:
+    """A test_cmd that exits non-zero is genuinely red — the submission
+    lands in `captured` with the execution proof attached, so the
+    phase-end resolver can reuse it instead of running the command a
+    second time."""
+    tool = SubmitFailingTestTool(red_check=lambda _cmd: (1, "AssertionError: no splat"))
+    result = tool.call(
+        test_path="test_pedestrian_splat_render.js",
+        test_cmd="node test_pedestrian_splat_render.js",
+        failure_output="AssertionError: dead ped not rendered as #5a0a0a circle",
+    )
+    assert "recorded" in result
+    latest = tool.latest()
+    assert latest is not None
+    assert latest["test_cmd"] == "node test_pedestrian_splat_render.js"
+    assert latest["red_check_exit"] == "1"
+    assert latest["red_check_tail"] == "AssertionError: no splat"
+
+
+def test_submit_failing_test_no_red_check_trusts_model() -> None:
+    """Without a wired red_check (callers with no workspace), the
+    pre-pfr5a trust-the-model behavior is preserved."""
+    tool = SubmitFailingTestTool()
+    tool.call(
+        test_path="tests/test_y_well_named.py",
+        test_cmd="true",
+        failure_output="claimed failure output that is never re-executed here",
+    )
+    assert tool.latest() is not None
+
+
 # --- submit_implementation_complete -------------------------------
 
 

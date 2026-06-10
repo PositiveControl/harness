@@ -33,6 +33,7 @@ Design notes:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -353,13 +354,23 @@ class SubmitFailingTestTool:
     implementation makes it pass.
 
     failure_output should be a short captured tail of the test
-    runner's stderr / stdout demonstrating the failure mode. The
-    driver doesn't re-execute the test here (it trusts the model's
-    captured output) — VERIFY is where the real re-execution
-    happens against the implementation.
+    runner's stderr / stdout demonstrating the failure mode.
+
+    ``red_check`` (harness-pfr5a): when wired, the submission is gated
+    on actually re-executing test_cmd — a command that exits 0 is
+    rejected with a tool error so the model fixes the test in-phase.
+    Without it (loop_run=ca3c96b4: harness-8i9), a test that PRINTS
+    failure text but exits 0 gets recorded as red on the strength of
+    hand-pasted failure_output; the phase-end green-test short-circuit
+    then reads the always-green command as "implementation already
+    landed" and false-closes the bead. The callable takes the cmd and
+    returns ``(exit_code, output_tail)`` — the driver passes its
+    workspace-scoped verify executor. None preserves the trust-the-
+    model behavior for callers without a workspace.
     """
 
     captured: list[dict[str, str]] = field(default_factory=list)
+    red_check: Callable[[str], tuple[int, str]] | None = None
 
     @property
     def spec(self) -> ToolSpec:
@@ -410,7 +421,25 @@ class SubmitFailingTestTool:
         tp = _require_nonempty("test_path", test_path, min_chars=_MIN_IDENTIFIER_CHARS)
         tc = _require_nonempty("test_cmd", test_cmd, min_chars=_MIN_IDENTIFIER_CHARS)
         fo = _require_nonempty("failure_output", failure_output)
-        self.captured.append({"test_path": tp, "test_cmd": tc, "failure_output": fo})
+        entry = {"test_path": tp, "test_cmd": tc, "failure_output": fo}
+        if self.red_check is not None:
+            exit_code, tail = self.red_check(tc)
+            if exit_code == 0:
+                raise ValueError(
+                    f"test_cmd exited 0 — the test PASSES right now, so it does "
+                    f"not demonstrate the gap. A failing test must exit non-zero "
+                    f"(printing 'FAIL' to stdout is not enough; the process exit "
+                    f"code is what gates VERIFY). Fix the test so it actually "
+                    f"fails on the missing behavior, then resubmit. If the "
+                    f"behavior is genuinely already implemented, call "
+                    f"skip_test_phase and say so instead. "
+                    f"Output tail: {tail[-400:]}"
+                )
+            # Record the proof so the phase-end resolver can reuse it
+            # instead of executing the same command a second time.
+            entry["red_check_exit"] = str(exit_code)
+            entry["red_check_tail"] = tail
+        self.captured.append(entry)
         return f"failing test recorded: {tp}"
 
     def latest(self) -> dict[str, str] | None:

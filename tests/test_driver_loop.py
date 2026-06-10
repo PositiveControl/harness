@@ -3405,12 +3405,16 @@ def test_run_loop_fsm_halts_when_assess_produces_no_assessment(
     assert result.halted_on == "harness-a"
 
 
-def test_run_loop_fsm_test_already_green_short_circuits_to_close(
+def test_run_loop_fsm_always_green_submission_rejected_never_closes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """harness-kbnl: when WRITE_TEST submits a failing test but the
-    driver's sanity check reveals it actually passes (work was
-    already done), the FSM jumps to CLOSE — no IMPLEMENT phase."""
+    """harness-pfr5a: a WRITE_TEST submission whose test_cmd exits 0 is
+    rejected at submit time with a tool error — it never lands in
+    `captured`, so the FSM cannot short-circuit to CLOSE on it. The
+    pre-pfr5a behavior treated the green run as 'work was already done'
+    and closed; that's exactly how an always-green test (prints FAIL,
+    exits 0) false-closed harness-8i9 (loop_run=ca3c96b4). The genuine
+    already-implemented escape is skip_test_phase, not a green submit."""
     issue_a = _issue("harness-a", title="implement foo", status="open")
     bd = _ScenarioBd(
         ready_sequence=[[issue_a], []],
@@ -3422,6 +3426,7 @@ def test_run_loop_fsm_test_already_green_short_circuits_to_close(
     _stub_git_head(monkeypatch)
 
     phases_seen: list[str] = []
+    submit_results: list[Any] = []
 
     def fake_run_tool_loop(
         _adapter: Any, _messages: Any, registry: Any, **_kwargs: Any
@@ -3439,13 +3444,15 @@ def test_run_loop_fsm_test_already_green_short_circuits_to_close(
             )
         elif "submit_failing_test" in tool_names:
             phases_seen.append("write_test")
-            registry.call(
-                "submit_failing_test",
-                {
-                    "test_path": "tests/test_x.py",
-                    "test_cmd": "pytest tests/test_x.py",
-                    "failure_output": "x" * 30,
-                },
+            submit_results.append(
+                registry.call(
+                    "submit_failing_test",
+                    {
+                        "test_path": "tests/test_x.py",
+                        "test_cmd": "pytest tests/test_x.py",
+                        "failure_output": "x" * 30,
+                    },
+                )
             )
         elif "submit_implementation_complete" in tool_names:
             phases_seen.append("implement")
@@ -3461,9 +3468,14 @@ def test_run_loop_fsm_test_already_green_short_circuits_to_close(
     cfg = _config(tmp_path, use_fsm=True, max_turns=3)
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
 
-    assert result.exit_reason == "success"
+    # The green submission came back as a tool error, not a capture.
+    assert submit_results
+    assert all(not r.success for r in submit_results)
+    assert "exited 0" in (submit_results[0].error or "")
+    # And the issue never closed off the back of it.
+    assert "close" not in phases_seen
     assert "implement" not in phases_seen
-    assert phases_seen == ["assess", "write_test", "close"]
+    assert result.closed == []
 
 
 def test_run_loop_fsm_persists_phase_and_assessment_to_state(
