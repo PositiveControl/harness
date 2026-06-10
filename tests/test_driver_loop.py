@@ -1278,6 +1278,58 @@ def test_run_loop_parks_premise_unmet_without_retry(
     assert flagged[0].startswith("drive parked after max attempts")
 
 
+def test_run_loop_parks_cross_workspace_bead_before_turn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-y0hu5: a bead referencing >=2 files that exist nowhere
+    under the workspace (the harness-rorj mis-wire: snake_game.py +
+    PLAN.md under the GTAII epic) is parked PREMISE_UNMET before any
+    model turn fires — zero attempts burned, no junk writes, and the
+    loop rotates to the next ready issue."""
+    from harness.driver.turn_fsm import PREMISE_UNMET_REASON_PREFIX
+
+    (tmp_path / "game.js").write_text("// gta workspace\n")
+    issue_a = _issue(
+        "harness-a",
+        title="Add score tracking: PLAN.md Phase 3.2 says snake_game.py needs score state",
+    )
+    issue_b = _issue("harness-b", title="B")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a, issue_b], [issue_a, issue_b], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-b": issue_b,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    calls: list[str] = []
+
+    def fake_fsm_turn(*, current_issue: Any, **_kwargs: Any) -> tuple[bool, str, str, None]:
+        calls.append(current_issue.id)
+        bd.flip_closed("harness-b")
+        return True, "", "done", None
+
+    monkeypatch.setattr("harness.driver.loop._run_fsm_turn_via_driver", fake_fsm_turn)
+
+    result = run_loop(
+        _FakeAdapter(),  # type: ignore[arg-type]
+        bd,  # type: ignore[arg-type]
+        _config(tmp_path, max_turns=10, use_fsm=True),
+    )
+
+    assert result.exit_reason == "partial"
+    assert result.parked_issues == ["harness-a"]
+    assert result.closed == ["harness-b"]
+    # A never reached the model — only B was driven.
+    assert calls == ["harness-b"]
+    flagged = [r for (i, r) in bd.log.human_flags if i == "harness-a"]
+    assert len(flagged) == 1
+    assert PREMISE_UNMET_REASON_PREFIX in flagged[0]
+    assert "snake_game.py" in flagged[0]
+
+
 # --- exhaustion -----------------------------------------------------
 
 

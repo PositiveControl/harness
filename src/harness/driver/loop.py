@@ -75,6 +75,7 @@ from harness.driver.precommit_verify_hook import (
     PreCloseVerifyHook,
     make_pre_close_verify_hook,
 )
+from harness.driver.premise_guard import referenced_missing_files
 from harness.driver.state import LoopRunState
 from harness.driver.turn_fsm import PREMISE_UNMET_REASON_PREFIX
 from harness.driver.vision_qa import build_rubric, run_advisory_qa
@@ -563,6 +564,49 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             current = ready[0]
             attempt = state.attempt_counts.get(current.id, 0) + 1
             state.attempt_counts[current.id] = attempt
+            # harness-y0hu5: cross-workspace premise check BEFORE the turn
+            # fires. A bead whose text references >=2 concrete files that
+            # exist nowhere under the workspace is mis-wired (harness-rorj:
+            # a snake_game.py bead under the GTAII epic burned 4 WRITE_TEST
+            # attempts in gta_r2 and littered junk tests). Park it
+            # PREMISE_UNMET immediately — same escape as ASSESS's
+            # flag_blocked — instead of burning model turns on it.
+            issue_text = " ".join(
+                str(part or "")
+                for part in (
+                    current.title,
+                    current.raw.get("description"),
+                    current.raw.get("acceptance_criteria"),
+                )
+            )
+            premise_missing = referenced_missing_files(issue_text, config.workspace)
+            if premise_missing is not None:
+                reason = (
+                    f"{PREMISE_UNMET_REASON_PREFIX} bead references files absent "
+                    f"from this workspace: {', '.join(premise_missing)} — likely "
+                    f"filed against the wrong epic/workspace (harness-y0hu5)"
+                )
+                log(f"{current.id} PREMISE_UNMET pre-turn — parking ({reason})")
+                if config.skip_on_max_attempts:
+                    _park_issue(
+                        bd,
+                        state,
+                        current_id=current.id,
+                        reason=reason,
+                        log=log,
+                        adapter=adapter,
+                        config=config,
+                    )
+                    _save_state(state, config.workspace)
+                    continue
+                return _exit_halted(
+                    bd,
+                    state,
+                    current_id=current.id,
+                    reason=reason,
+                    workspace=config.workspace,
+                    log=log,
+                )
             # harness-ul5z: census the workspace the first time we touch
             # this issue, so the scratch sweep on completion can tell
             # which files the issue itself created vs pre-existing ones.
