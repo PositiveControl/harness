@@ -1324,7 +1324,14 @@ def _run_fsm_turn_via_driver(
     state.last_turn_phase[issue_id] = result.final_phase.value
     if result.last_assessment is not None:
         state.last_assessment[issue_id] = result.last_assessment
-    if result.last_test_cmd is not None:
+    if result.gate_suspect:
+        # loop_run=dae002aa: the turn proved the carried test never
+        # observes the code under change (byte-identical failure across
+        # source-editing IMPLEMENT passes). Drop it so the next attempt
+        # re-authors a real gate instead of reusing the broken one via
+        # the harness-axjt8 carry-forward.
+        state.last_test_cmd.pop(issue_id, None)
+    elif result.last_test_cmd is not None:
         state.last_test_cmd[issue_id] = result.last_test_cmd
 
     return result.succeeded, result.reason, result.reply, result.last_shell_cmd

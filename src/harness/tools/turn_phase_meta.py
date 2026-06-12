@@ -163,12 +163,13 @@ class SubmitAssessmentTool:
                         "description": (
                             "Default false. Set TRUE only when the workspace "
                             "ALREADY fully satisfies this bead's acceptance and "
-                            "NO change is needed — e.g. a scaffold/skeleton bead "
-                            "whose files + structure already exist from earlier "
-                            "work. Routes straight to CLOSE (a close-time verify "
-                            "still gates the close, so a wrong claim fails there, "
-                            "not silently). Honored only for structural "
-                            "(scaffold/declaration) beads; ignored otherwise. Do "
+                            "NO change is needed — e.g. the deliverable landed "
+                            "during earlier work. Structural (scaffold/"
+                            "declaration) beads route straight to CLOSE; "
+                            "behavioral beads route to VERIFY, where the "
+                            "carried test + verify steps arbitrate the claim "
+                            "(green closes, red sends you to IMPLEMENT). A "
+                            "wrong claim fails verification, not silently. Do "
                             "NOT set it to dodge work that genuinely remains — "
                             "say so in `gap` and implement it instead."
                         ),
@@ -367,10 +368,23 @@ class SubmitFailingTestTool:
     returns ``(exit_code, output_tail)`` — the driver passes its
     workspace-scoped verify executor. None preserves the trust-the-
     model behavior for callers without a workspace.
+
+    ``gate_lint`` (loop_run=dae002aa): a second submit-time gate, run only
+    after red_check proved the command exits non-zero. Red is necessary
+    but NOT sufficient — a test that crashes loading the source
+    (``document is not defined`` in a Node run of browser JS) or that
+    never loads the source at all (asserts on its own mocks / scope) is
+    red FOREVER regardless of the implementation, so accepting it burns
+    the whole verify-retry budget against a tautology. The callable takes
+    ``(test_path, test_cmd, exit_code, output_tail)`` and returns a
+    rejection message (the submission raises; the model fixes the test
+    in-phase) or None to accept. The driver wires the workspace-aware
+    lint from ``fsm_turn``; None preserves trust-the-red behavior.
     """
 
     captured: list[dict[str, str]] = field(default_factory=list)
     red_check: Callable[[str], tuple[int, str]] | None = None
+    gate_lint: Callable[[str, str, int, str], str | None] | None = None
 
     @property
     def spec(self) -> ToolSpec:
@@ -425,16 +439,27 @@ class SubmitFailingTestTool:
         if self.red_check is not None:
             exit_code, tail = self.red_check(tc)
             if exit_code == 0:
+                # loop_run=dae002aa (harness-purtm): four straight turns
+                # resubmitted tests that PRINT 'FAIL' but exit 0 — the
+                # abstract rejection never landed. Spell out the exact
+                # exit-code wiring so the fix is copyable, not inferable.
                 raise ValueError(
                     f"test_cmd exited 0 — the test PASSES right now, so it does "
                     f"not demonstrate the gap. A failing test must exit non-zero "
                     f"(printing 'FAIL' to stdout is not enough; the process exit "
-                    f"code is what gates VERIFY). Fix the test so it actually "
-                    f"fails on the missing behavior, then resubmit. If the "
-                    f"behavior is genuinely already implemented, call "
+                    f"code is what gates VERIFY). Common cause: the test prints "
+                    f"failures but never sets the exit code. End it with explicit "
+                    f"wiring — JS: `if (failures > 0) process.exit(1);` — "
+                    f"Python: `sys.exit(1 if failures else 0)`. Fix the test so "
+                    f"it actually fails on the missing behavior, then resubmit. "
+                    f"If the behavior is genuinely already implemented, call "
                     f"skip_test_phase and say so instead. "
                     f"Output tail: {tail[-400:]}"
                 )
+            if self.gate_lint is not None:
+                lint_error = self.gate_lint(tp, tc, exit_code, tail)
+                if lint_error is not None:
+                    raise ValueError(lint_error)
             # Record the proof so the phase-end resolver can reuse it
             # instead of executing the same command a second time.
             entry["red_check_exit"] = str(exit_code)

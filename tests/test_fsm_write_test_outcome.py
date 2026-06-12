@@ -18,9 +18,11 @@ import pytest
 from harness.driver.fsm_turn import (
     _is_degenerate_test_cmd,
     _is_unrunnable_test_output,
+    _lint_submitted_gate,
     _resolve_write_test_outcome,
     _test_cmd_file_missing,
     _test_cmd_script,
+    _test_never_loads_source,
     run_fsm_turn,
 )
 from harness.driver.handoff import Handoff
@@ -422,3 +424,94 @@ def test_run_fsm_turn_rejects_always_green_submission(
     # ...so the turn cannot close on a fake red: it halts no-progress.
     assert not result.succeeded
     assert result.final_phase == TurnPhase.HALTED
+
+
+# --- always-red gate lint (loop_run=dae002aa) ----------------------
+
+
+def test_never_loads_source_rejects_scope_only_js_test(tmp_path: Path) -> None:
+    """loop_run=dae002aa (harness-8i9): a test that checks
+    `typeof drawPedestrian` in its own empty scope — no require, no
+    readFileSync, no subprocess — is implementation-insensitive and must
+    be rejected with a message that names the fix (load the source)."""
+    test_file = tmp_path / "test_pedestrian_splat_missing.js"
+    test_file.write_text(
+        "// asserts only on its own scope\n"
+        "if (typeof drawPedestrian === 'undefined') {\n"
+        "  console.log('FAIL: drawPedestrian is undefined');\n"
+        "  process.exitCode = 1;\n"
+        "}\n"
+    )
+    msg = _test_never_loads_source(tmp_path, "test_pedestrian_splat_missing.js")
+    assert msg is not None
+    assert "never loads any source artifact" in msg
+
+
+def test_never_loads_source_accepts_require(tmp_path: Path) -> None:
+    test_file = tmp_path / "test_drawtile.js"
+    test_file.write_text("const g = require('./game.js');\nprocess.exit(1);\n")
+    assert _test_never_loads_source(tmp_path, "test_drawtile.js") is None
+
+
+def test_never_loads_source_accepts_readfilesync_eval(tmp_path: Path) -> None:
+    test_file = tmp_path / "test_drawtile.js"
+    test_file.write_text("const fs = require('fs');\neval(fs.readFileSync('game.js', 'utf8'));\n")
+    assert _test_never_loads_source(tmp_path, "test_drawtile.js") is None
+
+
+def test_never_loads_source_accepts_python_import(tmp_path: Path) -> None:
+    test_file = tmp_path / "test_game.py"
+    test_file.write_text("import game\nassert game.draw_tile\n")
+    assert _test_never_loads_source(tmp_path, "test_game.py") is None
+
+
+def test_never_loads_source_conservative_on_missing_or_unknown(tmp_path: Path) -> None:
+    """Missing file / unrecognized suffix → None (other guards own those);
+    the lint must never false-drop what it can't read."""
+    assert _test_never_loads_source(tmp_path, "test_absent.js") is None
+    sh = tmp_path / "test_gate.sh"
+    sh.write_text("exit 1\n")
+    assert _test_never_loads_source(tmp_path, "test_gate.sh") is None
+
+
+def test_unrunnable_signatures_cover_browser_global_load_crash() -> None:
+    """loop_run=dae002aa (harness-uy4): `document is not defined` from a
+    bare Node run of browser JS is a LOAD failure — red forever. The
+    legitimate red `drawTile is not defined` (the gap itself) must NOT
+    match: only the named browser globals classify as unrunnable."""
+    assert _is_unrunnable_test_output(
+        1, "ReferenceError: document is not defined\n    at eval (game.js:5)"
+    )
+    assert _is_unrunnable_test_output(1, "ReferenceError: window is not defined")
+    assert not _is_unrunnable_test_output(1, "ReferenceError: drawTile is not defined")
+
+
+def test_lint_submitted_gate_rejects_unrunnable_and_mockless(tmp_path: Path) -> None:
+    """The combined submit-time lint: load-crash output → rejection;
+    never-loads-source file → rejection; a real red gate → None."""
+    crash = _lint_submitted_gate(
+        tmp_path,
+        "test_drawtile.js",
+        "node test_drawtile.js",
+        1,
+        "ReferenceError: document is not defined",
+    )
+    assert crash is not None
+    assert "could not LOAD" in crash
+
+    scope_only = tmp_path / "test_scope.js"
+    scope_only.write_text("if (typeof f === 'undefined') process.exitCode = 1;\n")
+    mockless = _lint_submitted_gate(
+        tmp_path, "test_scope.js", "node test_scope.js", 1, "FAIL: f undefined"
+    )
+    assert mockless is not None
+    assert "never loads any source artifact" in mockless
+
+    real = tmp_path / "test_real.js"
+    real.write_text("require('./game.js');\nprocess.exit(1);\n")
+    assert (
+        _lint_submitted_gate(
+            tmp_path, "test_real.js", "node test_real.js", 1, "AssertionError: no splat"
+        )
+        is None
+    )

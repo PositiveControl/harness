@@ -4111,3 +4111,76 @@ def test_try_auto_decompose_invokes_planner_when_not_labeled(
     assert seen["parent_id"] == "harness-umb"
     assert seen["epic_id"] == "harness-epic"
     assert any("auto-decomposed harness-umb -> 2 child" in line for line in log.lines)
+
+
+def test_run_loop_fsm_gate_suspect_drops_carried_test_cmd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """loop_run=dae002aa: when the FSM turn halts gate-suspect (the test
+    failed byte-identically across source-touching IMPLEMENT passes), the
+    driver must DROP the carried test_cmd from state — otherwise the
+    harness-axjt8 carry-forward re-arms the broken gate on every retry and
+    the issue parks with the work already done."""
+    from harness.orchestrator.tool_loop import ToolLoopEvent
+    from harness.tools.base import ToolCall, ToolResult
+
+    issue_a = _issue("harness-a", title="implement foo", status="open")
+    bd = _ScenarioBd(
+        ready_sequence=[[issue_a], [issue_a], [issue_a], []],
+        issues={
+            "harness-a": issue_a,
+            "harness-e9oq": _issue("harness-e9oq", title="epic"),
+        },
+    )
+    _stub_git_head(monkeypatch)
+
+    def fake_run_tool_loop(
+        _adapter: Any, _messages: Any, registry: Any, **kwargs: Any
+    ) -> ToolLoopResult:
+        tool_names = set(registry.active_names())
+        if "submit_assessment" in tool_names:
+            registry.call(
+                "submit_assessment",
+                {"current_state": "c" * 30, "gap": "g" * 30, "approach": "a" * 30},
+            )
+        elif "submit_failing_test" in tool_names:
+            registry.call(
+                "submit_failing_test",
+                {
+                    "test_path": "tests/test_foo.py",
+                    "test_cmd": "pytest tests/test_foo.py -v",
+                    "failure_output": "AssertionError: expected splat got nothing",
+                },
+            )
+        elif "submit_implementation_complete" in tool_names:
+            observe = kwargs.get("observe")
+            if observe is not None:
+                # A successful write — the IMPLEMENT pass touched source.
+                observe(
+                    ToolLoopEvent(
+                        kind="tool_call_end",
+                        call=ToolCall(name="edit_file", arguments={"path": "game.js"}),
+                        result=ToolResult(tool_name="edit_file", output="ok", success=True),
+                    )
+                )
+            registry.call("submit_implementation_complete", {"summary": "x" * 30})
+        return ToolLoopResult(content="ok", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    # Every execution is red with the SAME tail: the submit-time red_check
+    # accepts it (non-zero), then VERIFY fails identically across
+    # IMPLEMENT passes -> gate suspect.
+    monkeypatch.setattr(
+        "harness.driver.fsm_turn._exec_test_cmd",
+        lambda *_a, **_k: (1, "gap: drawTile missing"),
+    )
+
+    cfg = _config(tmp_path, use_fsm=True, max_turns=4)
+    result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    state_path = LoopRunState.state_path(tmp_path, result.loop_run_id)
+    reloaded = LoopRunState.load(state_path)
+    # The broken gate was dropped, not carried into the next attempt.
+    assert "harness-a" not in reloaded.last_test_cmd
+    assert "suspect verify gate" in reloaded.last_failure.get("harness-a", "")
+    assert result.closed == []

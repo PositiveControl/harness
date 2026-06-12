@@ -181,6 +181,31 @@ def assessment_already_satisfied(*, current_state: str, reason: str) -> PhaseOut
     )
 
 
+def assessment_satisfied_pending_verify(
+    *, current_state: str, gap: str, approach: str
+) -> PhaseOutcome:
+    """ASSESS claims a BEHAVIORAL bead is already satisfied — the gap closed
+    in a prior attempt/turn and no change is needed. Unlike the structural
+    already_satisfied → CLOSE escape (harness-1kd9t), a behavioral claim is
+    never trusted directly: this routes ASSESS → VERIFY, where the carried
+    test + registered verify steps arbitrate. Green → CLOSE; red → IMPLEMENT.
+
+    Why it exists (loop_run=dae002aa): turns 10-12 of harness-8i9 assessed
+    "no gap — drawPedestrian already implemented" (correctly), but the flag
+    was ignored for behavioral beads, so the FSM forced WRITE_TEST anyway —
+    where the model manufactured an always-red scope-only test to satisfy
+    the phase, burned the verify-retry ceiling against it, and parked a
+    done bead. Emitted only when the turn has a real gate to arbitrate (a
+    carried non-degenerate test or registered verify steps) — see
+    `_resolve_assess_outcome`; with no gate at all the flag is ignored so
+    a behavioral bead can't close on zero evidence."""
+    return PhaseOutcome(
+        kind="assessment_satisfied_pending_verify",
+        detail=f"claimed satisfied (verify arbitrates): {gap[:100]}",
+        payload={"current_state": current_state, "gap": gap, "approach": approach},
+    )
+
+
 def failing_test_submitted(*, test_path: str, test_cmd: str, failure_output: str) -> PhaseOutcome:
     return PhaseOutcome(
         kind="failing_test_submitted",
@@ -256,11 +281,23 @@ def verify_passed(*, verify_summary: str = "") -> PhaseOutcome:
     )
 
 
-def verify_failed(*, failure_tail: str) -> PhaseOutcome:
+def verify_failed(*, failure_tail: str, step: str = "", tail: str = "") -> PhaseOutcome:
+    """`step` / `tail` (loop_run=dae002aa): which gate failed ("test" for
+    the WRITE_TEST command, "verify" for a registered VerifyStep) and the
+    raw output tail of that step. The turn driver compares consecutive
+    test-step tails to detect an implementation-insensitive gate — a test
+    whose failure is byte-identical across IMPLEMENT passes that changed
+    the source never observes the code under change. Empty strings when
+    the caller has nothing to classify; guards never read these."""
+    payload: dict[str, Any] = {"failure_tail": failure_tail}
+    if step:
+        payload["step"] = step
+    if tail:
+        payload["tail"] = tail
     return PhaseOutcome(
         kind="verify_failed",
         detail=failure_tail[:140],
-        payload={"failure_tail": failure_tail},
+        payload=payload,
     )
 
 
@@ -310,6 +347,12 @@ def _default_transitions() -> tuple[Transition[TurnPhase, PhaseOutcome], ...]:
             TurnPhase.CLOSE,
             guard=_kind("assessment_already_satisfied"),
             name="assess->close (already satisfied)",
+        ),
+        Transition(
+            TurnPhase.ASSESS,
+            TurnPhase.VERIFY,
+            guard=_kind("assessment_satisfied_pending_verify"),
+            name="assess->verify (claimed satisfied; verify arbitrates)",
         ),
         Transition(
             TurnPhase.ASSESS,
@@ -436,6 +479,7 @@ __all__ = [
     "PhaseOutcome",
     "TurnPhase",
     "assessment_already_satisfied",
+    "assessment_satisfied_pending_verify",
     "assessment_skipped_tdd",
     "assessment_submitted",
     "build_turn_fsm",

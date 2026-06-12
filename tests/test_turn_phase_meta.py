@@ -9,9 +9,12 @@ construct the PhaseOutcome event. These tests pin the validation
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from harness.driver.fsm_turn import _resolve_assess_outcome
+from harness.driver.planner import VerifyStep
 from harness.driver.turn_fsm import PREMISE_UNMET_REASON_PREFIX
 from harness.tools.turn_phase_meta import (
     FlagBlockedTool,
@@ -430,3 +433,155 @@ def test_assess_flag_blocked_still_wins_over_mismatch() -> None:
     outcome = _resolve_assess_outcome(submit, flag)
     assert outcome.kind == "premise_unmet"
     assert "fire_handler" in outcome.payload["missing"]
+
+
+# --- always-red gate rejection (loop_run=dae002aa) ----------------
+
+
+def test_submit_failing_test_green_rejection_includes_exit_wiring() -> None:
+    """loop_run=dae002aa (harness-purtm): four straight turns resubmitted
+    tests that print FAIL but exit 0 — the abstract rejection never
+    landed. The error must include copyable exit-code wiring for both
+    runtimes so the fix is mechanical, not inferable."""
+    tool = SubmitFailingTestTool(red_check=lambda _cmd: (0, "FAIL printed, exit 0"))
+    with pytest.raises(ValueError, match=r"process\.exit\(1\)") as excinfo:
+        tool.call(
+            test_path="test_render.js",
+            test_cmd="node test_render.js",
+            failure_output="FAIL: render does not draw the grid (printed only)",
+        )
+    assert "sys.exit" in str(excinfo.value)
+
+
+def test_submit_failing_test_gate_lint_rejects_and_captures_nothing() -> None:
+    """loop_run=dae002aa: gate_lint runs after red_check proves non-zero
+    exit and can still reject — an always-red gate (load crash /
+    never-loads-source) raises with the lint's message so the model
+    fixes the test in-phase, and nothing lands in `captured`."""
+    tool = SubmitFailingTestTool(
+        red_check=lambda _cmd: (1, "ReferenceError: document is not defined"),
+        gate_lint=lambda _tp, _tc, _ec, tail: f"always-red gate: {tail}",
+    )
+    with pytest.raises(ValueError, match="always-red gate"):
+        tool.call(
+            test_path="test_drawtile.js",
+            test_cmd="node test_drawtile.js",
+            failure_output="ReferenceError: document is not defined at game.js line 5",
+        )
+    assert tool.latest() is None
+
+
+def test_submit_failing_test_gate_lint_none_accepts() -> None:
+    """A gate_lint that returns None accepts the submission — the lint
+    is a veto, not a rewrite."""
+    tool = SubmitFailingTestTool(
+        red_check=lambda _cmd: (1, "AssertionError: drawTile missing"),
+        gate_lint=lambda _tp, _tc, _ec, _tail: None,
+    )
+    tool.call(
+        test_path="test_drawtile.js",
+        test_cmd="node test_drawtile.js",
+        failure_output="AssertionError: drawTile missing from the loaded source",
+    )
+    assert tool.latest() is not None
+
+
+def test_submit_failing_test_gate_lint_skipped_without_red_check() -> None:
+    """gate_lint depends on the red_check's exit/tail; without a wired
+    red_check there's nothing to lint and the trust-the-model path is
+    preserved."""
+    tool = SubmitFailingTestTool(
+        gate_lint=lambda _tp, _tc, _ec, _tail: "should never fire",
+    )
+    tool.call(
+        test_path="tests/test_y.py",
+        test_cmd="pytest tests/test_y.py",
+        failure_output="claimed failure output that is never re-executed here",
+    )
+    assert tool.latest() is not None
+
+
+# --- behavioral already_satisfied → VERIFY arbitration (loop_run=dae002aa)
+
+
+def _satisfied_assessment() -> SubmitAssessmentTool:
+    submit = SubmitAssessmentTool()
+    submit.call(
+        current_state="drawPedestrian (game.js:274) already renders dead peds as splats",
+        gap="none — the behavior the bead asks for is already implemented",
+        approach="no change needed; verification should arbitrate the claim",
+        already_satisfied=True,
+    )
+    return submit
+
+
+def test_assess_behavioral_satisfied_routes_to_verify_with_steps() -> None:
+    """loop_run=dae002aa (harness-8i9): a behavioral bead claiming
+    already_satisfied routes to VERIFY arbitration when registered
+    verify steps exist — not to a forced WRITE_TEST that manufactures
+    an always-red test against a done bead."""
+    outcome = _resolve_assess_outcome(
+        _satisfied_assessment(),
+        FlagBlockedTool(),
+        structural_bead=False,
+        verify_steps=(VerifyStep(cmd="node --check game.js"),),
+    )
+    assert outcome.kind == "assessment_satisfied_pending_verify"
+    # The assessment payload carries through for the handoff render.
+    assert "drawPedestrian" in outcome.payload["current_state"]
+
+
+def test_assess_behavioral_satisfied_routes_to_verify_with_carried_test(
+    tmp_path: Path,
+) -> None:
+    """A real carried test (non-degenerate, script present) also
+    qualifies as an arbitration gate."""
+    script = tmp_path / "test_splat.js"
+    script.write_text("require('./game.js');\nprocess.exit(1);\n")
+    outcome = _resolve_assess_outcome(
+        _satisfied_assessment(),
+        FlagBlockedTool(),
+        structural_bead=False,
+        prior_test_cmd="node test_splat.js",
+        workspace=tmp_path,
+    )
+    assert outcome.kind == "assessment_satisfied_pending_verify"
+
+
+def test_assess_behavioral_satisfied_ignored_without_any_gate() -> None:
+    """With no verify steps and no carried test there is nothing to
+    arbitrate the claim — the flag is ignored (normal TDD path) so a
+    behavioral bead can't close on zero evidence."""
+    outcome = _resolve_assess_outcome(
+        _satisfied_assessment(),
+        FlagBlockedTool(),
+        structural_bead=False,
+    )
+    assert outcome.kind == "assessment_submitted"
+
+
+def test_assess_behavioral_satisfied_degenerate_carried_gate_does_not_qualify(
+    tmp_path: Path,
+) -> None:
+    """A degenerate carried command (echo/exit only) is not an
+    arbitration gate — its verdict is fixed, so the claim falls through
+    to the normal path instead of 'verifying' against a tautology."""
+    outcome = _resolve_assess_outcome(
+        _satisfied_assessment(),
+        FlagBlockedTool(),
+        structural_bead=False,
+        prior_test_cmd="echo nope && exit 1",
+        workspace=tmp_path,
+    )
+    assert outcome.kind == "assessment_submitted"
+
+
+def test_assess_structural_satisfied_still_routes_to_close() -> None:
+    """The harness-1kd9t structural escape is unchanged: structural beads
+    route straight to CLOSE regardless of gates."""
+    outcome = _resolve_assess_outcome(
+        _satisfied_assessment(),
+        FlagBlockedTool(),
+        structural_bead=True,
+    )
+    assert outcome.kind == "assessment_already_satisfied"

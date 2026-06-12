@@ -319,6 +319,16 @@ def _workspace_has_browser_js(workspace: Path) -> bool:
     return False
 
 
+def workspace_has_browser_js(workspace: Path) -> bool:
+    """Public face of the browser-authored-JS census (loop_run=dae002aa).
+    The FSM driver uses it to decide whether WRITE_TEST needs the
+    browser-test hint: source that touches document/canvas/window at top
+    level cannot be `require`d/`eval`ed by a bare Node test — the load
+    crashes with 'document is not defined' before any assertion runs, so
+    every naively-authored gate is red forever."""
+    return _workspace_has_browser_js(workspace)
+
+
 def missing_entry_html_reason(workspace: Path) -> str | None:
     """Loud reason when the workspace has browser-authored JS but NO
     entry ``index.html`` at the root (harness-9ugc). The runtime
@@ -462,4 +472,5 @@ __all__ = [
     "default_workspace_verify_steps",
     "extract_smoke_symptom",
     "missing_entry_html_reason",
+    "workspace_has_browser_js",
 ]

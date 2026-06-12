@@ -49,6 +49,7 @@ from harness.driver.turn_fsm import (
     PhaseOutcome,
     TurnPhase,
     assessment_already_satisfied,
+    assessment_satisfied_pending_verify,
     assessment_skipped_tdd,
     assessment_submitted,
     build_turn_fsm,
@@ -62,6 +63,7 @@ from harness.driver.turn_fsm import (
     verify_failed,
     verify_passed,
 )
+from harness.driver.workspace_verify import workspace_has_browser_js
 from harness.model.adapter import ChatMessage, ModelAdapter
 from harness.orchestrator import ToolLoopEvent, ToolLoopResult, run_tool_loop
 from harness.orchestrator.hooks import EXHAUSTED_FABRICATION_FALLBACK
@@ -152,7 +154,14 @@ class FsmTurnResult:
     - `last_shell_cmd`: the `cmd` argument from the most recent
       shell tool call across all FSM phases, or None. Used by the
       legacy claim-without-close gate to detect celebratory `echo`
-      finalization gestures (harness-24pn)."""
+      finalization gestures (harness-24pn).
+    - `gate_suspect` (loop_run=dae002aa): True when the turn halted
+      because the WRITE_TEST gate failed byte-identically across
+      IMPLEMENT passes that touched the source — the test never
+      observes the code under change. The loop must DROP the carried
+      test_cmd for this issue (state.last_test_cmd) so the next
+      attempt re-authors a real gate instead of reusing the broken
+      one; `last_test_cmd` is already None on these results."""
 
     final_phase: TurnPhase
     succeeded: bool
@@ -162,6 +171,7 @@ class FsmTurnResult:
     last_test_cmd: str | None
     phase_trace: list[tuple[TurnPhase, TurnPhase, str]]
     last_shell_cmd: str | None = None
+    gate_suspect: bool = False
 
 
 # --- per-phase tool rosters ---------------------------------------
@@ -387,13 +397,16 @@ _PHASE_INSTRUCTIONS: Mapping[TurnPhase, str] = {
         "Set tdd_applicable=false ONLY when the issue genuinely admits "
         "no unit test (UI tweak, docs); justify in the approach field.\n\n"
         "ALREADY-SATISFIED ESCAPE: if the workspace ALREADY fully meets this "
-        "bead's acceptance and NO change is needed — e.g. a scaffold/skeleton "
-        "bead whose files + structure already exist from earlier work — set "
-        "already_satisfied=true on submit_assessment (honored only for "
-        "structural beads). This routes straight to CLOSE; a close-time verify "
-        "still runs, so do NOT use it to dodge work that genuinely remains. "
-        "Do NOT re-create an existing scaffold from scratch — that destroys "
-        "code other beads added.\n\n"
+        "bead's acceptance and NO change is needed — e.g. the deliverable "
+        "landed during earlier work — set already_satisfied=true on "
+        "submit_assessment. Structural (scaffold/skeleton) beads route "
+        "straight to CLOSE; behavioral beads route to VERIFY, where the "
+        "carried test + verify steps arbitrate your claim (green closes, red "
+        "sends you to IMPLEMENT). Do NOT write a new 'failing' test for a "
+        "behavior that already works — say already_satisfied instead. Do NOT "
+        "use the flag to dodge work that genuinely remains, and do NOT "
+        "re-create an existing scaffold from scratch — that destroys code "
+        "other beads added.\n\n"
         "WRONG-TARGET ESCAPE: if the spec is grounded against a DIFFERENT "
         "artifact / project / language than this workspace — e.g. it names "
         "a Python 'snake_game.py' with food/score but the workspace is a "
@@ -499,6 +512,35 @@ _PHASE_USER_PROMPTS: Mapping[TurnPhase, str] = {
     ),
     TurnPhase.CLOSE: ("Close the bd issue: `bd close <issue-id>` via shell."),
 }
+
+
+# loop_run=dae002aa: appended to the WRITE_TEST user prompt when the
+# workspace is browser-authored JS. Every gate the model wrote that run
+# was always-red for one of two reasons this hint preempts: (a) loading
+# the source in bare Node crashes on `document` before any assertion
+# runs; (b) avoiding (a) by never loading the source at all, asserting
+# on mock copies the implementation can't reach. The stub recipe is the
+# minimal one that lets sloppy-mode `eval` hoist the source's function
+# declarations into the test scope.
+_BROWSER_TEST_HINT = (
+    "\n\nWORKSPACE NOTE — browser JS: the source uses browser globals "
+    "(document / canvas / window) at top level, so a bare require()/eval in "
+    "Node crashes with 'document is not defined' BEFORE any assertion runs. "
+    "That red is a load failure, not a failing test, and will be rejected. "
+    "Stub the globals FIRST, then load the REAL source file, then assert:\n"
+    "  const fs = require('fs');\n"
+    "  const stub = new Proxy(function () {}, "
+    "{ get: () => stub, apply: () => stub });\n"
+    "  global.document = { getElementById: () => stub, "
+    "addEventListener: () => {} };\n"
+    "  global.window = { addEventListener: () => {} };\n"
+    "  global.requestAnimationFrame = () => {};\n"
+    "  eval(fs.readFileSync('game.js', 'utf8')); "
+    "// function declarations land in this scope\n"
+    "Do NOT re-define mock copies of the functions under test in the test "
+    "file — the test must observe the real source, and must process.exit(1) "
+    "when the gap is present."
+)
 
 
 # --- one phase ----------------------------------------------------
@@ -633,6 +675,9 @@ def _resolve_assess_outcome(
     flag_blocked: FlagBlockedTool,
     *,
     structural_bead: bool = False,
+    verify_steps: Sequence[VerifyStep] = (),
+    prior_test_cmd: str | None = None,
+    workspace: Path | None = None,
 ) -> PhaseOutcome:
     # flag_blocked wins over submit_assessment: a premise-unmet signal
     # short-circuits the normal ASSESS exit so the loop parks-and-flags
@@ -669,6 +714,29 @@ def _resolve_assess_outcome(
             current_state=str(latest["current_state"]),
             reason=str(latest.get("gap") or "scaffold already present"),
         )
+    # loop_run=dae002aa: a BEHAVIORAL bead claiming already_satisfied is
+    # never trusted to CLOSE, but it shouldn't be forced through WRITE_TEST
+    # either — turns 10-12 of harness-8i9 assessed "no gap, drawPedestrian
+    # already implemented" (correctly), got the flag ignored, and the forced
+    # TDD path manufactured an always-red scope-only test that parked a done
+    # bead. Route to VERIFY and let the carried test + registered verify
+    # steps arbitrate: green → CLOSE, red → IMPLEMENT. Honored only when
+    # there IS a real gate to arbitrate — with no carried non-degenerate
+    # test and no verify steps the flag is ignored (fall through to the
+    # normal TDD path) so a behavioral bead can't close on zero evidence.
+    if not structural_bead and latest.get("already_satisfied", False):
+        carried_gate_is_real = (
+            prior_test_cmd is not None
+            and workspace is not None
+            and not _is_degenerate_test_cmd(prior_test_cmd)
+            and not _test_cmd_file_missing(prior_test_cmd, workspace)
+        )
+        if carried_gate_is_real or verify_steps:
+            return assessment_satisfied_pending_verify(
+                current_state=str(latest["current_state"]),
+                gap=str(latest["gap"]),
+                approach=str(latest["approach"]),
+            )
     if latest.get("tdd_applicable", True):
         return assessment_submitted(
             current_state=str(latest["current_state"]),
@@ -772,6 +840,17 @@ _UNRUNNABLE_TEST_SIGNATURES: tuple[str, ...] = (
     "file or directory not found",  # pytest collection
     "errors during collection",
     "command not found",  # wrong interpreter
+    # loop_run=dae002aa (harness-uy4): a Node test that loads browser-
+    # authored source without stubbing the DOM crashes at LOAD —
+    # `ReferenceError: document is not defined` at game.js line 5 — before
+    # any assertion runs. That red is decoupled from the implementation
+    # (4 attempts burned the verify-retry ceiling against it). Scoped to
+    # the named browser globals; a bare "referenceerror" would also match
+    # the legitimate red `ReferenceError: drawTile is not defined`, which
+    # IS the gap.
+    "document is not defined",
+    "window is not defined",
+    "navigator is not defined",
 )
 
 
@@ -804,6 +883,99 @@ def _test_cmd_file_missing(cmd: str, workspace: Path) -> bool:
     candidate = Path(script)
     resolved = candidate if candidate.is_absolute() else workspace / candidate
     return not resolved.exists()
+
+
+# loop_run=dae002aa: constructs whose presence in a test file proves it
+# LOADS something outside itself — a module import, a file read, a
+# subprocess. Lower-cased before matching. A test with NONE of these can
+# only assert on its own scope and mocks, so its verdict is fixed at
+# authoring time: `typeof drawPedestrian === 'undefined'` in an empty
+# scope is red forever no matter what lands in game.js (harness-8i9
+# burned 4 attempts x 3 verify retries against exactly that test while
+# the implementation it "tested" sat finished in the workspace).
+_SOURCE_LOAD_MARKERS: tuple[str, ...] = (
+    "require(",  # JS CommonJS module load
+    "import ",  # Python import / ESM static import
+    "import(",  # ESM dynamic import
+    "readfilesync",  # fs.readFileSync — the eval-the-source pattern
+    "readfile(",  # fs.readFile / aiofiles
+    "open(",  # Python file read
+    "exec",  # child_process.exec / execSync / Python exec(open(...))
+    "spawn",  # child_process.spawn
+    "subprocess",  # Python subprocess
+    "__import__",
+)
+
+# Cap on how much of a submitted test file the lint reads. A real test
+# is a few KB; the cap just bounds a pathological submission.
+_GATE_LINT_READ_CAP: int = 262_144
+
+# Test-file suffixes the source-load lint understands. A .sh / .yaml /
+# other gate shape is skipped — the lint can't reason about its load
+# semantics and a false reject would block a legitimate gate.
+_GATE_LINT_SUFFIXES: tuple[str, ...] = _TEST_SCRIPT_EXTS
+
+
+def _test_never_loads_source(workspace: Path, test_path: str) -> str | None:
+    """Rejection message when the submitted test file provably never
+    loads any artifact outside itself — no import, no require, no file
+    read, no subprocess (loop_run=dae002aa). Such a test asserts only on
+    its own scope/mocks, so it is implementation-insensitive: red forever
+    (or green forever), never a gate. Conservative: unreadable / missing
+    / unrecognized-suffix files return None (other guards own those)."""
+    candidate = Path(test_path)
+    resolved = candidate if candidate.is_absolute() else workspace / candidate
+    if resolved.suffix not in _GATE_LINT_SUFFIXES or not resolved.is_file():
+        return None
+    try:
+        content = resolved.read_text(encoding="utf-8", errors="replace")[:_GATE_LINT_READ_CAP]
+    except (OSError, PermissionError):
+        return None
+    low = content.lower()
+    if any(marker in low for marker in _SOURCE_LOAD_MARKERS):
+        return None
+    return (
+        f"the test file {test_path} never loads any source artifact — no "
+        f"import / require / file read / subprocess anywhere in it. A test "
+        f"that only asserts on its own scope and mock copies is red forever "
+        f"regardless of the implementation: it cannot observe the code under "
+        f"change, so it can never go green in VERIFY. Load the REAL source "
+        f"file first (e.g. eval(fs.readFileSync('<source>.js', 'utf8')) after "
+        f"stubbing any browser globals it touches, or a plain import), then "
+        f"assert on what it defines, and resubmit."
+    )
+
+
+def _lint_submitted_gate(
+    workspace: Path, test_path: str, test_cmd: str, exit_code: int, tail: str
+) -> str | None:
+    """Submit-time gate lint (loop_run=dae002aa), wired into
+    SubmitFailingTestTool.gate_lint. Runs only after red_check proved the
+    command exits non-zero; rejects the two always-red shapes that a red
+    exit alone can't distinguish from a genuine failing assertion:
+
+      1. The runner couldn't LOAD/run the test (missing module, syntax
+         error, browser global in a bare Node run) — red for a reason
+         decoupled from the implementation.
+      2. The test never loads any source artifact — it asserts on its own
+         mocks, so the implementation is invisible to it.
+
+    Rejecting at submit time gives the model an in-phase retry with the
+    reason in hand; letting either shape through spends the verify-retry
+    ceiling + the issue's whole attempt budget on a gate that can never
+    go green (harness-8i9 / harness-uy4 parked exactly this way)."""
+    if _is_unrunnable_test_output(exit_code, tail):
+        return (
+            f"test_cmd exits non-zero, but because the runner could not LOAD "
+            f"or run the test — not because an assertion failed: "
+            f"{tail.strip()[-200:]} — that red is decoupled from the "
+            f"implementation and can never go green by changing the source. "
+            f"Fix the load error first (stub browser globals like document/"
+            f"window before loading browser-authored source, correct the "
+            f"path/import), confirm the test fails on the MISSING BEHAVIOR, "
+            f"then resubmit."
+        )
+    return _test_never_loads_source(workspace, test_path)
 
 
 def _resolve_write_test_outcome(
@@ -972,12 +1144,24 @@ def _resolve_verify_outcome(
     if test_cmd:
         exit_code, tail = _exec_test_cmd(test_cmd, workspace)
         if exit_code != 0:
-            return verify_failed(failure_tail=f"test {test_cmd!r} exit={exit_code}: {tail}")
+            # step/tail feed the gate-suspect tracker in run_fsm_turn
+            # (loop_run=dae002aa): identical test-step tails across
+            # IMPLEMENT passes that touched the source mark the gate as
+            # implementation-insensitive.
+            return verify_failed(
+                failure_tail=f"test {test_cmd!r} exit={exit_code}: {tail}",
+                step="test",
+                tail=tail,
+            )
     for step in verify_steps:
         exit_code, tail = _exec_test_cmd(step.cmd, workspace, shell_mode=step.shell)
         if exit_code != 0:
             preview = step.cmd if len(step.cmd) <= 80 else step.cmd[:77] + "..."
-            return verify_failed(failure_tail=f"{preview} exit={exit_code}: {tail}")
+            return verify_failed(
+                failure_tail=f"{preview} exit={exit_code}: {tail}",
+                step="verify",
+                tail=tail,
+            )
     return verify_passed()
 
 
@@ -1095,8 +1279,14 @@ def run_fsm_turn(
     # rejected at submit time with a tool error, so the model fixes it
     # in-phase instead of the phase-end green short-circuit reading it
     # as "implementation already landed" and false-closing the bead.
+    # loop_run=dae002aa: gate_lint rejects the two always-red shapes a red
+    # exit alone can't distinguish from a genuine failing assertion — a
+    # test the runner can't load, and a test that never loads the source.
     submit_failing_test = SubmitFailingTestTool(
-        red_check=lambda cmd: _exec_test_cmd(cmd, workspace)
+        red_check=lambda cmd: _exec_test_cmd(cmd, workspace),
+        gate_lint=lambda test_path, test_cmd, exit_code, tail: _lint_submitted_gate(
+            workspace, test_path, test_cmd, exit_code, tail
+        ),
     )
     submit_implementation_complete = SubmitImplementationCompleteTool()
     flag_blocked = FlagBlockedTool()
@@ -1119,6 +1309,19 @@ def run_fsm_turn(
     # _MAX_PHASE_EXECUTIONS above.
     verify_retries = 0
     phase_executions = 0
+    # Gate-suspect tracking (loop_run=dae002aa): consecutive test-step
+    # verify failures with byte-identical output tails, where the
+    # IMPLEMENT pass between them at least ATTEMPTED a write, mean the
+    # test never observes the code under change — re-authoring the gate
+    # is the move, not more IMPLEMENT passes. Attempted (not just landed)
+    # writes count: on an already-implemented bead every edit is a no-op,
+    # which is exactly the harness-8i9 shape that burned 4 attempts.
+    last_test_fail_tail: str | None = None
+    implement_touched_source = False
+    gate_suspect = False
+    # Browser-JS census, computed once per turn: gates the WRITE_TEST
+    # stub-the-DOM hint (loop_run=dae002aa).
+    browser_workspace = workspace_has_browser_js(workspace)
 
     while not fsm.is_terminal():
         phase = fsm.state
@@ -1147,6 +1350,8 @@ def run_fsm_turn(
         )
         handoff = handoff_builder(phase, captured_assessment, captured_test_cmd)
         user_prompt = _PHASE_USER_PROMPTS.get(phase, "Proceed with this phase.")
+        if phase is TurnPhase.WRITE_TEST and browser_workspace:
+            user_prompt += _BROWSER_TEST_HINT
         max_rounds = budgets.get(phase, 4)
 
         execution = _run_one_phase(
@@ -1173,6 +1378,14 @@ def run_fsm_turn(
         phase_shell = last_shell_cmd_in_messages(execution.tool_loop_result.messages)
         if phase_shell is not None:
             last_shell_cmd = phase_shell
+        # Gate-suspect input (loop_run=dae002aa): did the most recent
+        # IMPLEMENT pass touch the source? Attempted counts — a no-op
+        # edit on an already-implemented bead still proves the model
+        # acted on the source while the gate's verdict didn't move.
+        if phase is TurnPhase.IMPLEMENT:
+            implement_touched_source = bool(
+                WRITE_TOOL_NAMES & (execution.succeeded_tools | execution.attempted_write_tools)
+            )
 
         # Map per-phase results to PhaseOutcome.
         outcome = _resolve_phase_outcome(
@@ -1209,7 +1422,11 @@ def run_fsm_turn(
 
         # Capture the assessment + test_cmd for the next phase's
         # handoff render + the run's state persistence.
-        if outcome.kind in {"assessment_submitted", "assessment_skipped"}:
+        if outcome.kind in {
+            "assessment_submitted",
+            "assessment_skipped",
+            "assessment_satisfied_pending_verify",
+        }:
             captured_assessment = dict(outcome.payload)
         if outcome.kind == "failing_test_submitted":
             captured_test_cmd = str(outcome.payload.get("test_cmd", ""))
@@ -1220,6 +1437,30 @@ def run_fsm_turn(
         # the outcome (pre-handle) so the cap halts BEFORE re-entering
         # IMPLEMENT for a pass the budget would just burn.
         if phase == TurnPhase.VERIFY and outcome.kind == "verify_failed":
+            # Gate-suspect check (loop_run=dae002aa): the test step failed
+            # with the SAME output tail as the previous verify pass, and
+            # the IMPLEMENT pass between them touched the source. The gate
+            # never observes the code under change — more IMPLEMENT passes
+            # can't move it. Halt, mark the result so the loop drops the
+            # carried test_cmd, and let the next attempt re-author.
+            if outcome.payload.get("step") == "test":
+                this_tail = str(outcome.payload.get("tail", ""))
+                if this_tail and this_tail == last_test_fail_tail and implement_touched_source:
+                    gate_suspect = True
+                    captured_test_cmd = None
+                    fsm.force(
+                        TurnPhase.HALTED,
+                        reason=(
+                            "suspect verify gate: the test failed byte-identically "
+                            "across IMPLEMENT passes that edited the source — it "
+                            "never observes the code under change "
+                            "(loop_run=dae002aa); the carried test is dropped so "
+                            "the next attempt re-authors a gate that LOADS the "
+                            f"source artifact. last tail: {this_tail[:140]}"
+                        ),
+                    )
+                    break
+                last_test_fail_tail = this_tail
             verify_retries += 1
             if verify_retries >= _MAX_VERIFY_RETRIES:
                 fsm.force(
@@ -1282,6 +1523,7 @@ def run_fsm_turn(
         last_test_cmd=captured_test_cmd,
         phase_trace=list(fsm.trace),
         last_shell_cmd=last_shell_cmd,
+        gate_suspect=gate_suspect,
     )
 
 
@@ -1303,8 +1545,16 @@ def _resolve_phase_outcome(
     structural_bead: bool = False,
 ) -> PhaseOutcome:
     if phase == TurnPhase.ASSESS:
+        # verify_steps / test_cmd / workspace feed the behavioral
+        # already_satisfied → VERIFY route (loop_run=dae002aa): the claim is
+        # honored only when there's a real gate for VERIFY to arbitrate.
         return _resolve_assess_outcome(
-            submit_assessment, flag_blocked, structural_bead=structural_bead
+            submit_assessment,
+            flag_blocked,
+            structural_bead=structural_bead,
+            verify_steps=verify_steps,
+            prior_test_cmd=test_cmd,
+            workspace=workspace,
         )
     if phase == TurnPhase.WRITE_TEST:
         # harness-axjt8: test_cmd here is captured_test_cmd — a test
