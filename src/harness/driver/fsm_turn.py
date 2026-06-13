@@ -41,6 +41,7 @@ from typing import Any
 from harness.character import Character
 from harness.driver.bd import DriverBd, DriverBdError
 from harness.driver.claim_detector import last_shell_cmd_in_messages
+from harness.driver.gate_blind import GATE_BLIND_IDIOM_NOTE, eval_blind_reference
 from harness.driver.handoff import Handoff
 from harness.driver.planner import VerifyStep
 from harness.driver.precommit_verify_hook import PreCloseVerifyHook
@@ -537,6 +538,18 @@ _BROWSER_TEST_HINT = (
     "  global.requestAnimationFrame = () => {};\n"
     "  eval(fs.readFileSync('game.js', 'utf8')); "
     "// function declarations land in this scope\n"
+    "SCOPING PITFALL (harness-815wm): only FUNCTION declarations (and "
+    "`var`) escape a direct eval — top-level `let`/`const` bindings do "
+    "NOT. `eval(src); traffic.length` throws 'traffic is not defined' "
+    "even when the source declares `let traffic = []`. To assert on "
+    "let/const state, append your assertions INTO the eval'd string so "
+    "they run in the same scope:\n"
+    "  const src = fs.readFileSync('game.js', 'utf8');\n"
+    '  eval(src + "\\n;if (!Array.isArray(traffic) || traffic.length '
+    "!== 6) { console.error('FAIL: expected 6 cars'); process.exit(1); "
+    '}");\n'
+    "or assert on the source text itself (readFileSync + regex) for "
+    "presence-shaped checks.\n"
     "Do NOT re-define mock copies of the functions under test in the test "
     "file — the test must observe the real source, and must process.exit(1) "
     "when the gap is present."
@@ -963,7 +976,12 @@ def _lint_submitted_gate(
     Rejecting at submit time gives the model an in-phase retry with the
     reason in hand; letting either shape through spends the verify-retry
     ceiling + the issue's whole attempt budget on a gate that can never
-    go green (harness-8i9 / harness-uy4 parked exactly this way)."""
+    go green (harness-8i9 / harness-uy4 parked exactly this way).
+
+    Third shape (harness-815wm): the test loads the source via direct
+    eval but throws ReferenceError on a top-level let/const binding the
+    source DOES declare — eval scoping makes those bindings invisible to
+    the test's own code, so the red is structural, not the gap."""
     if _is_unrunnable_test_output(exit_code, tail):
         return (
             f"test_cmd exits non-zero, but because the runner could not LOAD "
@@ -973,6 +991,14 @@ def _lint_submitted_gate(
             f"Fix the load error first (stub browser globals like document/"
             f"window before loading browser-authored source, correct the "
             f"path/import), confirm the test fails on the MISSING BEHAVIOR, "
+            f"then resubmit."
+        )
+    blind = eval_blind_reference(tail, test_path, workspace)
+    if blind is not None:
+        return (
+            f"test_cmd exits non-zero, but the red is structural, not the "
+            f"gap: {blind}. Fix the test so its assertions can observe the "
+            f"source's state, confirm it fails on the MISSING BEHAVIOR, "
             f"then resubmit."
         )
     return _test_never_loads_source(workspace, test_path)
@@ -1142,16 +1168,23 @@ def _resolve_verify_outcome(
     # Run the captured failing test first — it's the most specific
     # signal for the TDD path.
     if test_cmd:
-        exit_code, tail = _exec_test_cmd(test_cmd, workspace)
+        exit_code, tail, output = _exec_test_cmd_capture(test_cmd, workspace)
         if exit_code != 0:
             # step/tail feed the gate-suspect tracker in run_fsm_turn
             # (loop_run=dae002aa): identical test-step tails across
             # IMPLEMENT passes that touched the source mark the gate as
             # implementation-insensitive.
+            # harness-815wm: the eval-blind tell runs on the FULL output —
+            # a ReferenceError on a name the eval'd source declares with
+            # top-level let/const means the gate can never observe the
+            # implementation, so run_fsm_turn halts on the FIRST failure
+            # instead of burning the verify-retry ceiling.
             return verify_failed(
                 failure_tail=f"test {test_cmd!r} exit={exit_code}: {tail}",
                 step="test",
                 tail=tail,
+                gate_blind=eval_blind_reference(output, _test_cmd_script(test_cmd), workspace)
+                or "",
             )
     for step in verify_steps:
         exit_code, tail = _exec_test_cmd(step.cmd, workspace, shell_mode=step.shell)
@@ -1186,13 +1219,24 @@ def _resolve_close_outcome(
 
 _VERIFY_TIMEOUT_SECONDS: int = 60
 _VERIFY_TAIL_CHARS: int = 200
+# harness-815wm: cap on the fuller output the gate-blind tell reads. A
+# Node stack trace pushes the ReferenceError line out of the 200-char
+# tail, so diagnosis needs the head of the error too.
+_VERIFY_OUTPUT_CAP: int = 8_000
 
 
-def _exec_test_cmd(cmd: str, workspace: Path, *, shell_mode: bool = True) -> tuple[int, str]:
+def _exec_test_cmd_capture(
+    cmd: str, workspace: Path, *, shell_mode: bool = True
+) -> tuple[int, str, str]:
     """Re-execute a single test command. Mirrors `_exec_verify_cmd`
     in `loop.py` (harness-xfh2) — same timeout, same tail length,
     same failure shape. Kept separate so the FSM module doesn't
-    import private helpers from the legacy executor module."""
+    import private helpers from the legacy executor module.
+
+    Returns ``(exit_code, tail, output)`` — `tail` is the classic
+    200-char tail (gate-suspect byte-identical comparison keys on it);
+    `output` is the same stream capped at `_VERIFY_OUTPUT_CAP` for
+    diagnostics that need the error's head (harness-815wm)."""
     args: str | list[str]
     if shell_mode:
         args = cmd
@@ -1200,7 +1244,8 @@ def _exec_test_cmd(cmd: str, workspace: Path, *, shell_mode: bool = True) -> tup
         try:
             args = shlex.split(cmd)
         except ValueError as exc:
-            return 1, f"unparseable cmd: {exc}"
+            msg = f"unparseable cmd: {exc}"
+            return 1, msg, msg
     try:
         result = subprocess.run(  # noqa: S603 — cmd from trusted local source
             args,
@@ -1212,15 +1257,27 @@ def _exec_test_cmd(cmd: str, workspace: Path, *, shell_mode: bool = True) -> tup
             check=False,
         )
     except FileNotFoundError as exc:
-        return 1, f"executable not found: {exc}"
+        msg = f"executable not found: {exc}"
+        return 1, msg, msg
     except subprocess.TimeoutExpired:
-        return 1, f"timeout after {_VERIFY_TIMEOUT_SECONDS}s"
+        msg = f"timeout after {_VERIFY_TIMEOUT_SECONDS}s"
+        return 1, msg, msg
     except OSError as exc:
-        return 1, f"exec failed: {exc}"
+        msg = f"exec failed: {exc}"
+        return 1, msg, msg
     stderr = (result.stderr or "").strip()
     stdout = (result.stdout or "").strip()
     tail_src = stderr or stdout
-    return result.returncode, tail_src[-_VERIFY_TAIL_CHARS:]
+    return (
+        result.returncode,
+        tail_src[-_VERIFY_TAIL_CHARS:],
+        tail_src[-_VERIFY_OUTPUT_CAP:],
+    )
+
+
+def _exec_test_cmd(cmd: str, workspace: Path, *, shell_mode: bool = True) -> tuple[int, str]:
+    exit_code, tail, _ = _exec_test_cmd_capture(cmd, workspace, shell_mode=shell_mode)
+    return exit_code, tail
 
 
 # --- public entry point -------------------------------------------
@@ -1274,6 +1331,7 @@ def run_fsm_turn(
 
     submit_assessment = SubmitAssessmentTool()
     skip_test_phase_tool = SkipTestPhaseTool()
+
     # harness-pfr5a: gate the submission on the test actually being red.
     # An always-green test (exits 0 while printing failure text) is
     # rejected at submit time with a tool error, so the model fixes it
@@ -1282,8 +1340,16 @@ def run_fsm_turn(
     # loop_run=dae002aa: gate_lint rejects the two always-red shapes a red
     # exit alone can't distinguish from a genuine failing assertion — a
     # test the runner can't load, and a test that never loads the source.
+    # harness-815wm: the red_check hands gate_lint the FULL (capped)
+    # output, not the 200-char verify tail — a Node stack trace pushes
+    # the lint-relevant head of the error (ReferenceError name,
+    # SyntaxError location) out of a short tail.
+    def _red_check(cmd: str) -> tuple[int, str]:
+        exit_code, _tail, output = _exec_test_cmd_capture(cmd, workspace)
+        return exit_code, output
+
     submit_failing_test = SubmitFailingTestTool(
-        red_check=lambda cmd: _exec_test_cmd(cmd, workspace),
+        red_check=_red_check,
         gate_lint=lambda test_path, test_cmd, exit_code, tail: _lint_submitted_gate(
             workspace, test_path, test_cmd, exit_code, tail
         ),
@@ -1444,10 +1510,37 @@ def run_fsm_turn(
             # can't move it. Halt, mark the result so the loop drops the
             # carried test_cmd, and let the next attempt re-author.
             if outcome.payload.get("step") == "test":
+                # harness-815wm: the eval-blind tell fired — the test threw
+                # ReferenceError on a binding the eval'd source declares at
+                # top level with let/const, so the gate is structurally
+                # unable to observe the implementation. Halt on the FIRST
+                # failure (the byte-identical detector below would burn
+                # another IMPLEMENT pass first, and the verify-retry
+                # ceiling three) and drop the carried test so the next
+                # attempt re-authors with the diagnosis in hand.
+                blind_msg = str(outcome.payload.get("gate_blind", ""))
+                if blind_msg:
+                    gate_suspect = True
+                    captured_test_cmd = None
+                    fsm.force(
+                        TurnPhase.HALTED,
+                        reason=f"gate-blind verify gate (harness-815wm): {blind_msg}",
+                    )
+                    break
                 this_tail = str(outcome.payload.get("tail", ""))
                 if this_tail and this_tail == last_test_fail_tail and implement_touched_source:
                     gate_suspect = True
                     captured_test_cmd = None
+                    # harness-815wm: the old text said the re-authored gate
+                    # should "LOAD the source artifact" — which steered the
+                    # model back into the direct-eval idiom that cannot see
+                    # top-level let/const. Name the pitfall instead when
+                    # the workspace is browser JS.
+                    pitfall = (
+                        f" (browser-JS workspace: {GATE_BLIND_IDIOM_NOTE})"
+                        if browser_workspace
+                        else ""
+                    )
                     fsm.force(
                         TurnPhase.HALTED,
                         reason=(
@@ -1455,8 +1548,9 @@ def run_fsm_turn(
                             "across IMPLEMENT passes that edited the source — it "
                             "never observes the code under change "
                             "(loop_run=dae002aa); the carried test is dropped so "
-                            "the next attempt re-authors a gate that LOADS the "
-                            f"source artifact. last tail: {this_tail[:140]}"
+                            "the next attempt re-authors a gate whose assertions "
+                            "can actually observe the source's state"
+                            f"{pitfall}. last tail: {this_tail[:140]}"
                         ),
                     )
                     break

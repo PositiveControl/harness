@@ -281,19 +281,29 @@ def verify_passed(*, verify_summary: str = "") -> PhaseOutcome:
     )
 
 
-def verify_failed(*, failure_tail: str, step: str = "", tail: str = "") -> PhaseOutcome:
+def verify_failed(
+    *, failure_tail: str, step: str = "", tail: str = "", gate_blind: str = ""
+) -> PhaseOutcome:
     """`step` / `tail` (loop_run=dae002aa): which gate failed ("test" for
     the WRITE_TEST command, "verify" for a registered VerifyStep) and the
     raw output tail of that step. The turn driver compares consecutive
     test-step tails to detect an implementation-insensitive gate — a test
     whose failure is byte-identical across IMPLEMENT passes that changed
     the source never observes the code under change. Empty strings when
-    the caller has nothing to classify; guards never read these."""
+    the caller has nothing to classify; guards never read these.
+
+    `gate_blind` (harness-815wm): non-empty when the eval-blind tell
+    diagnosed the failing test as structurally unable to observe the
+    source (ReferenceError on a top-level let/const binding the eval'd
+    source declares). The turn driver halts on the FIRST such failure
+    instead of waiting for the byte-identical detector."""
     payload: dict[str, Any] = {"failure_tail": failure_tail}
     if step:
         payload["step"] = step
     if tail:
         payload["tail"] = tail
+    if gate_blind:
+        payload["gate_blind"] = gate_blind
     return PhaseOutcome(
         kind="verify_failed",
         detail=failure_tail[:140],

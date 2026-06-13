@@ -3296,7 +3296,7 @@ def test_run_loop_fsm_happy_path_drives_issue_through_all_phases(
     ASSESS → WRITE_TEST → IMPLEMENT → VERIFY → CLOSE in a single
     turn. Stub `run_tool_loop` to invoke the appropriate meta-tool
     per phase (detected by inspecting registry tool names) and
-    `_exec_test_cmd` to make the test/verify steps pass."""
+    `_exec_test_cmd_capture` to make the test/verify steps pass."""
     issue_a = _issue("harness-a", title="implement foo", status="open")
     bd = _ScenarioBd(
         ready_sequence=[[issue_a], []],
@@ -3349,11 +3349,12 @@ def test_run_loop_fsm_happy_path_drives_issue_through_all_phases(
     # proceeds to IMPLEMENT); subsequent calls (VERIFY) return success.
     exec_calls = {"count": 0}
 
-    def fake_exec(*_a: Any, **_k: Any) -> tuple[int, str]:
+    def fake_exec(*_a: Any, **_k: Any) -> tuple[int, str, str]:
         exec_calls["count"] += 1
-        return (1, "AssertionError: red") if exec_calls["count"] == 1 else (0, "")
+        red = exec_calls["count"] == 1
+        return (1, "AssertionError: red", "AssertionError: red") if red else (0, "", "")
 
-    monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd", fake_exec)
+    monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd_capture", fake_exec)
 
     cfg = _config(tmp_path, use_fsm=True, max_turns=3)
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
@@ -3411,7 +3412,9 @@ def test_run_loop_fsm_no_tdd_skips_write_test(
 
     monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
     # All test invocations pass — no WRITE_TEST sanity check on this path.
-    monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd", lambda *_a, **_k: (0, ""))
+    monkeypatch.setattr(
+        "harness.driver.fsm_turn._exec_test_cmd_capture", lambda *_a, **_k: (0, "", "")
+    )
 
     cfg = _config(tmp_path, use_fsm=True, tdd_required=False, max_turns=3)
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
@@ -3442,7 +3445,9 @@ def test_run_loop_fsm_halts_when_assess_produces_no_assessment(
         return ToolLoopResult(content="idle", messages=[], rounds=1, events=[])
 
     monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
-    monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd", lambda *_a, **_k: (0, ""))
+    monkeypatch.setattr(
+        "harness.driver.fsm_turn._exec_test_cmd_capture", lambda *_a, **_k: (0, "", "")
+    )
 
     cfg = _config(
         tmp_path,
@@ -3515,7 +3520,9 @@ def test_run_loop_fsm_always_green_submission_rejected_never_closes(
         return ToolLoopResult(content="ok", messages=[], rounds=1, events=[])
 
     monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
-    monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd", lambda *_a, **_k: (0, ""))
+    monkeypatch.setattr(
+        "harness.driver.fsm_turn._exec_test_cmd_capture", lambda *_a, **_k: (0, "", "")
+    )
 
     cfg = _config(tmp_path, use_fsm=True, max_turns=3)
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
@@ -3584,11 +3591,11 @@ def test_run_loop_fsm_persists_phase_and_assessment_to_state(
     # are VERIFY (must pass).
     exec_calls = {"count": 0}
 
-    def fake_exec(*_a: Any, **_k: Any) -> tuple[int, str]:
+    def fake_exec(*_a: Any, **_k: Any) -> tuple[int, str, str]:
         exec_calls["count"] += 1
-        return (1, "red") if exec_calls["count"] == 1 else (0, "")
+        return (1, "red", "red") if exec_calls["count"] == 1 else (0, "", "")
 
-    monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd", fake_exec)
+    monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd_capture", fake_exec)
 
     cfg = _config(tmp_path, use_fsm=True, max_turns=3)
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
@@ -4171,8 +4178,8 @@ def test_run_loop_fsm_gate_suspect_drops_carried_test_cmd(
     # accepts it (non-zero), then VERIFY fails identically across
     # IMPLEMENT passes -> gate suspect.
     monkeypatch.setattr(
-        "harness.driver.fsm_turn._exec_test_cmd",
-        lambda *_a, **_k: (1, "gap: drawTile missing"),
+        "harness.driver.fsm_turn._exec_test_cmd_capture",
+        lambda *_a, **_k: (1, "gap: drawTile missing", "gap: drawTile missing"),
     )
 
     cfg = _config(tmp_path, use_fsm=True, max_turns=4)
