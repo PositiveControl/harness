@@ -960,6 +960,68 @@ def _test_never_loads_source(workspace: Path, test_path: str) -> str | None:
     )
 
 
+# loop_run=df358902 (harness-491j5 / harness-c6jqy): the eval-the-source
+# idiom fails a SECOND way beyond the let/const ReferenceError gate_blind
+# catches. `eval(readFileSync('game.js')); global.player.x = …` never
+# attaches the source's bindings to `global`, so `global.player` is
+# `undefined` and the test's OWN setup throws
+# `TypeError: Cannot set properties of undefined` at its line N — a crash
+# in the harness scaffolding, before any assertion runs. The exit is
+# non-zero, so red_check accepts it and the byte-identical detector only
+# catches it after the verify-retry ceiling. This is the first-failure
+# tell: an uncaught property-access TypeError whose top frame is the test
+# file is broken scaffolding, not a gap the implementation can close.
+#
+# Scoped to "cannot read/set propert{y,ies} of undefined/null" — the
+# reference-is-undefined fingerprint. Deliberately NOT
+# "X is not a function" / "X is not defined": those name the deliverable
+# the bead must build (game.spawnPed is not a function) and ARE the gap.
+_SCAFFOLD_CRASH_RE = re.compile(
+    r"TypeError:\s*cannot (?:read|set) propert(?:y|ies) of (?:undefined|null)",
+    re.IGNORECASE,
+)
+
+
+def _frame_references_test_file(tail: str, test_path: str) -> bool:
+    """True when a stack frame in `tail` points into the test file — a
+    Node frame (``… test_x.js:25:20``) or a Python traceback line
+    (``File "test_x.py", line 25``). Matched on basename so absolute and
+    relative frame paths both hit. A crash whose top frame is the test
+    file originates in the harness, not in the source under test."""
+    name = re.escape(Path(test_path).name)
+    js_frame = re.search(rf"\b{name}:\d+", tail)
+    py_frame = re.search(rf'"[^"\n]*{name}",\s*line\s+\d+', tail)
+    return bool(js_frame or py_frame)
+
+
+def _test_scaffold_crash_output(test_path: str, tail: str) -> str | None:
+    """Rejection message when a failing-test submission is a scaffold
+    crash (harness-c6jqy): an uncaught property-access TypeError thrown
+    from the test file's OWN code (top frame inside the test file) before
+    any assertion — the test's handle on the source under test is
+    undefined because its setup failed to expose it. Red forever
+    regardless of the implementation. Returns None for any other shape
+    (genuine assertion failure, missing-deliverable crash, source-side
+    error) so it never false-rejects a real gate."""
+    if not _SCAFFOLD_CRASH_RE.search(tail):
+        return None
+    if not _frame_references_test_file(tail, test_path):
+        return None
+    return (
+        f"test_cmd exits non-zero, but the failure is an uncaught TypeError in "
+        f"the test's OWN scaffolding ({test_path}), not an assertion: the test "
+        f"crashed reading/setting a property of `undefined` before it could "
+        f"check any behavior. The usual cause is the eval-the-source idiom — "
+        f"`eval(fs.readFileSync('<source>.js'))` does NOT attach the source's "
+        f"top-level `let`/`const`/`var` bindings to `global`, so `global.<name>` "
+        f"is undefined. That red is decoupled from the implementation and can "
+        f"never go green. Fix the harness so the source's symbols are reachable "
+        f"(append the assertions INTO the eval'd string so they share its scope, "
+        f"or have the source export and require it), confirm the test then fails "
+        f"on the MISSING BEHAVIOR, and resubmit."
+    )
+
+
 def _lint_submitted_gate(
     workspace: Path, test_path: str, test_cmd: str, exit_code: int, tail: str
 ) -> str | None:
@@ -982,7 +1044,13 @@ def _lint_submitted_gate(
     Third shape (harness-815wm): the test loads the source via direct
     eval but throws ReferenceError on a top-level let/const binding the
     source DOES declare — eval scoping makes those bindings invisible to
-    the test's own code, so the red is structural, not the gap."""
+    the test's own code, so the red is structural, not the gap.
+
+    Fourth shape (harness-c6jqy): the test crashes with an uncaught
+    property-access TypeError in its OWN scaffolding (`Cannot set
+    properties of undefined` at the test's line) before any assertion —
+    the eval-the-source binding never attached to `global`, so the SUT
+    handle is undefined. Red forever, like the others."""
     if _is_unrunnable_test_output(exit_code, tail):
         return (
             f"test_cmd exits non-zero, but because the runner could not LOAD "
@@ -1002,6 +1070,9 @@ def _lint_submitted_gate(
             f"source's state, confirm it fails on the MISSING BEHAVIOR, "
             f"then resubmit."
         )
+    crash = _test_scaffold_crash_output(test_path, tail)
+    if crash is not None:
+        return crash
     return _test_never_loads_source(workspace, test_path)
 
 

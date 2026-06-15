@@ -23,6 +23,7 @@ from harness.driver.fsm_turn import (
     _test_cmd_file_missing,
     _test_cmd_script,
     _test_never_loads_source,
+    _test_scaffold_crash_output,
     run_fsm_turn,
 )
 from harness.driver.handoff import Handoff
@@ -515,3 +516,103 @@ def test_lint_submitted_gate_rejects_unrunnable_and_mockless(tmp_path: Path) -> 
         )
         is None
     )
+
+
+# --- crash-shaped red gate lint (harness-c6jqy) --------------------
+
+# loop_run=df358902 (harness-491j5): eval-the-source idiom leaves
+# global.player undefined, so the test's own setup throws before any
+# assertion. Top frame is the test file.
+_SCAFFOLD_CRASH_TAIL = (
+    "=== Handbrake and Brake Test ===\n"
+    "TypeError: Cannot set properties of undefined (setting 'speed')\n"
+    "    at Object.<anonymous> (/ws/scratch/gta_r2/test_handbrake_and_collision.js:25:20)\n"
+    "    at Module._compile (node:internal/modules/cjs/loader:1234:14)\n"
+    "    at node:internal/main/run_main_module:28:49\n"
+)
+
+
+def test_scaffold_crash_rejects_property_of_undefined_in_test_file() -> None:
+    """harness-491j5 regression: a TypeError reading/setting a property of
+    undefined whose top frame is the test file is broken scaffolding, not
+    a gap — rejected with an actionable harness-fix hint."""
+    msg = _test_scaffold_crash_output("test_handbrake_and_collision.js", _SCAFFOLD_CRASH_TAIL)
+    assert msg is not None
+    assert "scaffolding" in msg
+    assert "eval" in msg.lower()
+
+
+def test_scaffold_crash_matches_read_and_python_frames() -> None:
+    """The `read properties` variant and a Python traceback frame both
+    classify — the fingerprint is reference-is-undefined from the test."""
+    js_read = _test_scaffold_crash_output(
+        "test_x.js",
+        "TypeError: Cannot read properties of undefined (reading 'x')\n    at /ws/test_x.js:12:9\n",
+    )
+    assert js_read is not None
+    py = _test_scaffold_crash_output(
+        "test_x.py",
+        "TypeError: Cannot read properties of undefined\n"
+        '  File "/ws/test_x.py", line 12, in <module>\n',
+    )
+    assert py is not None
+
+
+def test_scaffold_crash_ignores_missing_deliverable_crash() -> None:
+    """`X is not a function` / `X is not defined` name the deliverable the
+    bead must build — the genuine gap. Must NOT be rejected."""
+    not_a_fn = _test_scaffold_crash_output(
+        "test_spawn.js",
+        "TypeError: game.spawnPed is not a function\n    at /ws/test_spawn.js:8:6\n",
+    )
+    assert not_a_fn is None
+    not_defined = _test_scaffold_crash_output(
+        "test_spawn.js",
+        "ReferenceError: drawTile is not defined\n    at /ws/test_spawn.js:8:6\n",
+    )
+    assert not_defined is None
+
+
+def test_scaffold_crash_ignores_crash_outside_test_file() -> None:
+    """A property-of-undefined TypeError whose only frame is inside the
+    source under test (not the test file) is a source-side error, not a
+    harness crash — left to other guards."""
+    source_side = _test_scaffold_crash_output(
+        "test_x.js",
+        "TypeError: Cannot read properties of undefined (reading 'y')\n"
+        "    at update (/ws/game.js:140:3)\n"
+        "    at [eval]:9:1\n",
+    )
+    assert source_side is None
+
+
+def test_scaffold_crash_ignores_assertion_failure() -> None:
+    """A genuine assertion failure (AssertionError / FAIL, no TypeError)
+    passes the check unflagged."""
+    assert (
+        _test_scaffold_crash_output(
+            "test_x.js", "FAIL: handbrake does not reduce speed\nexpected 0 got 12\n"
+        )
+        is None
+    )
+    assert _test_scaffold_crash_output("test_x.js", "AssertionError: expected 8 got 7") is None
+
+
+def test_lint_submitted_gate_rejects_scaffold_crash(tmp_path: Path) -> None:
+    """End-to-end through the combined lint: the df358902 crash output is
+    rejected even though the test file loads the source (so the
+    never-loads guard would pass it)."""
+    test_file = tmp_path / "test_handbrake_and_collision.js"
+    test_file.write_text(
+        "const fs = require('fs');\neval(fs.readFileSync('game.js','utf8'));\n"
+        "global.player.speed = 0;\n"
+    )
+    msg = _lint_submitted_gate(
+        tmp_path,
+        "test_handbrake_and_collision.js",
+        "node test_handbrake_and_collision.js",
+        1,
+        _SCAFFOLD_CRASH_TAIL,
+    )
+    assert msg is not None
+    assert "scaffolding" in msg
