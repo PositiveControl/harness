@@ -873,6 +873,21 @@ _UNRUNNABLE_TEST_SIGNATURES: tuple[str, ...] = (
     "document is not defined",
     "window is not defined",
     "navigator is not defined",
+    # loop_run=069d6172 (harness-xdgtb): the same bare-Node load crash via a
+    # different browser global — `ReferenceError: requestAnimationFrame is
+    # not defined` thrown from the eval'd source's own top-level game loop,
+    # before any assertion. Not caught by the eval-blind tell (the source
+    # CALLS rAF, doesn't declare it) nor the scaffold-crash check (it's a
+    # ReferenceError at `at eval`, not a TypeError in the test file). Same
+    # browser-global class as document/window — name the common timing /
+    # storage / dialog globals so the gate is rejected at submit instead of
+    # burning attempts until the byte-identical detector catches it.
+    "requestanimationframe is not defined",
+    "cancelanimationframe is not defined",
+    "requestidlecallback is not defined",
+    "localstorage is not defined",
+    "sessionstorage is not defined",
+    "alert is not defined",
 )
 
 

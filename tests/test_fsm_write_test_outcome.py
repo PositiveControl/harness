@@ -485,6 +485,14 @@ def test_unrunnable_signatures_cover_browser_global_load_crash() -> None:
     )
     assert _is_unrunnable_test_output(1, "ReferenceError: window is not defined")
     assert not _is_unrunnable_test_output(1, "ReferenceError: drawTile is not defined")
+    # loop_run=069d6172 (harness-xdgtb): the rAF game-loop load crash — same
+    # browser-global class, a different name. Now rejected at submit.
+    assert _is_unrunnable_test_output(
+        1, "ReferenceError: requestAnimationFrame is not defined\n    at eval (<anonymous>:42)"
+    )
+    assert _is_unrunnable_test_output(1, "ReferenceError: localStorage is not defined")
+    # Still conservative: a deliverable symbol absence is the gap, not a load crash.
+    assert not _is_unrunnable_test_output(1, "ReferenceError: spawnPed is not defined")
 
 
 def test_lint_submitted_gate_rejects_unrunnable_and_mockless(tmp_path: Path) -> None:
