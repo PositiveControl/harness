@@ -57,9 +57,20 @@ python report.py                          # tables from the store
 
 ## Status
 
-Validated end-to-end: **aider** adapter builds the web game against gx10
-(`Qwen/Qwen3-Coder-30B-A3B-Instruct`); all five scorers run, incl. the headless
-browser. The reworked scorer suite scores the reference build
-(`scratch/workspace/index.html` + `game.js`) at 8/8 milestones + runs_headless ✅.
+**Tracer bullet complete (1 framework, full loop).** The **aider** adapter builds
+the web game against gx10 (`Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8`), all five
+scorers run incl. the headless browser, and `report.py` renders a clean
+single-schema distribution. The headless scorer is hardened: a build that hangs
+the main thread (e.g. an unbounded init loop) records cleanly as
+`runs_headless: false, reason: "load timeout …"` instead of wedging the run.
+
+The current aider build is itself a true-positive failure the rig caught: an
+unbounded `while(!validPosition)` pedestrian-spawn loop against a map with no
+matching tile → infinite loop on load. `builds` + `feature_checklist` pass
+(6/8 milestones), `runs_headless` correctly fails.
+
+Not yet done (see plan §6): a real N-run matrix and a second comparand.
 **opencode** + **goose** adapters exist but opencode 1.x hangs on run-init in this
-env; goose CLI not installed. OpenHands / mini-SWE adapters are TODO — see the plan.
+env and the goose CLI isn't installed; **OpenHands** / **mini-SWE** adapters and a
+**harness** baseline entry are TODO. mini-SWE is the cheapest next comparand
+(pure LiteLLM, no sandbox).
