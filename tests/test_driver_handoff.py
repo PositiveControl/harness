@@ -233,6 +233,26 @@ def test_render_no_edit_directive_absent_by_default() -> None:
     assert "[NO EDITS LAST ATTEMPT" not in out
 
 
+def test_render_no_submit_directive_when_prior_write_test_halted() -> None:
+    """harness-1ttpl: a WRITE_TEST retry after a prior 'no test' halt renders
+    a directive that names the eval-scope trap, the existing-gate escape, and
+    demands a submit_failing_test / skip_test_phase exit this attempt."""
+    out = _base_handoff(
+        prior_attempt_failure="write_test->halted (no test)",
+        prior_write_test_no_submit=True,
+    ).render()
+    assert "[WROTE/RAN A TEST LAST ATTEMPT BUT NEVER SUBMITTED IT]" in out
+    assert "submit_failing_test" in out
+    assert "skip_test_phase" in out
+    assert "eval-scope trap" in out
+    assert out.index("[WROTE/RAN A TEST") < out.index("Current issue:")
+
+
+def test_render_no_submit_directive_absent_by_default() -> None:
+    out = _base_handoff(prior_attempt_failure="write_test->halted (no test)").render()
+    assert "[WROTE/RAN A TEST LAST ATTEMPT BUT NEVER SUBMITTED IT]" not in out
+
+
 def test_render_inserts_forbidden_patterns_block_when_set() -> None:
     """harness-d8e3: when the operator sets forbidden_patterns on
     LoopConfig (default 'TODO', 'FIXME', 'XXX', 'HACK'), every

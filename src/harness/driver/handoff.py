@@ -175,6 +175,16 @@ class Handoff:
     # investigation loop that never writes is invisible to it. This
     # directive breaks the loop by naming the no-edit pattern explicitly.
     prior_made_no_edits: bool = False
+    # harness-1ttpl (loop_run=065ff3c1): the PRIOR WRITE_TEST attempt ran a
+    # test via shell but never called submit_failing_test, so the phase halted
+    # "no test" and made zero progress — invisible to every existing defense,
+    # all of which gate behind a submission. The on-foot-physics bead burned 4
+    # attempts this way: each rediscovered the let/const eval-scope trap, knew
+    # its test was broken, self-censored, and re-authored from scratch. The
+    # builder sets this True only for a WRITE_TEST retry after that halt; the
+    # render directive names the trap + the existing-gate escape and demands a
+    # submit_failing_test / skip_test_phase exit this time.
+    prior_write_test_no_submit: bool = False
 
     def render(self) -> str:
         """Produce the `[SESSION HANDOFF]` block. Applies the render-
@@ -300,6 +310,29 @@ class Handoff:
                     "",
                 ]
             )
+        if self.prior_write_test_no_submit:
+            parts.extend(
+                [
+                    "[WROTE/RAN A TEST LAST ATTEMPT BUT NEVER SUBMITTED IT]",
+                    "Your previous WRITE_TEST attempt ran a test via shell but never "
+                    "called submit_failing_test, so the phase halted with 'no test' "
+                    "and made ZERO progress. Re-authoring from scratch will not help.",
+                    "  - If your test loads the source via eval and throws "
+                    "ReferenceError on a top-level let/const (e.g. 'foot is not "
+                    "defined' though the source declares `let foot`), that IS the "
+                    "eval-scope trap, not the gap. Append your assertions INTO the "
+                    "eval'd string — eval(src + '\\n;<assertions>; process.exit(1)') "
+                    "— so they share the source's scope, or assert on the source "
+                    "text itself (readFileSync + regex).",
+                    "  - An EXISTING test file in this workspace may ALREADY be your "
+                    "red gate — run it instead of writing a new one.",
+                    "  - You MUST end WRITE_TEST by calling submit_failing_test with "
+                    "your red test (the harness checks the red and tells you how to "
+                    "fix a structural one), or skip_test_phase with a concrete reason "
+                    "if no unit gate fits here.",
+                    "",
+                ]
+            )
         if self.forbidden_patterns:
             pattern_list = ", ".join(repr(p) for p in self.forbidden_patterns)
             parts.extend(
@@ -383,6 +416,7 @@ def build_handoff(
     prior_test_cmd: str | None = None,
     forbidden_patterns: tuple[str, ...] = (),
     prior_made_no_edits: bool = False,
+    prior_write_test_no_submit: bool = False,
 ) -> Handoff:
     """Assemble a `Handoff` for the next executor turn.
 
@@ -449,6 +483,7 @@ def build_handoff(
         prior_test_cmd=prior_test_cmd,
         forbidden_patterns=forbidden_patterns,
         prior_made_no_edits=prior_made_no_edits,
+        prior_write_test_no_submit=prior_write_test_no_submit,
     )
 
 

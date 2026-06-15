@@ -1238,6 +1238,13 @@ def _run_fsm_turn_via_driver(
 
     issue_id = current_issue.id
 
+    # harness-1ttpl: the prior attempt halted in WRITE_TEST without ever
+    # submitting a test. Flag a WRITE_TEST retry so the handoff demands a
+    # submit_failing_test / skip_test_phase exit this time (loop_run=065ff3c1
+    # burned 4 attempts re-authoring a never-submitted gate). Gated to the
+    # WRITE_TEST phase inside the builder — the directive is WRITE_TEST-only.
+    prior_write_test_halted = bool(prior_failure and "write_test->halted" in prior_failure.lower())
+
     def builder(
         phase: TurnPhase,
         prior_assessment: dict[str, Any] | None,
@@ -1256,6 +1263,7 @@ def _run_fsm_turn_via_driver(
             prior_assessment=prior_assessment if prior_assessment else None,
             prior_test_cmd=prior_test_cmd,
             prior_made_no_edits=prior_made_no_edits,
+            prior_write_test_no_submit=(phase is TurnPhase.WRITE_TEST and prior_write_test_halted),
         )
 
     initial_phase = TurnPhase.ASSESS
