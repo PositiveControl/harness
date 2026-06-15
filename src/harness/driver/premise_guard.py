@@ -85,6 +85,133 @@ def _walk_workspace_files(workspace: Path) -> tuple[set[str], set[str]]:
     return rel_paths, basenames
 
 
+# harness-0t2f9: mid-turn flag_blocked validation. The pre-turn guard
+# above catches a bead wired against the wrong WORKSPACE (named files
+# absent everywhere). This sibling catches a different false premise the
+# model declares MID-turn: flag_blocked(missing=...) whose `missing` names
+# the bead's OWN deliverable rather than an upstream precondition. A
+# build/create bead's deliverable is absent before the bead runs — that
+# absence IS the task, not a block. loop_run=069d6172 (harness-4s2bb)
+# parked a perfectly drivable "spawn pedestrians in game.js" bead because
+# the model flagged missing="pedestrian spawning and wandering logic in
+# game.js" — verbatim the §6a acceptance criteria.
+#
+# Cheap, deterministic discriminator: content-token overlap between
+# `missing` and the bead's own text (title + description + acceptance). A
+# high overlap means the absent thing IS what the bead exists to build —
+# reject the flag. A genuine upstream precondition (a named symbol/file the
+# bead presupposes but does not itself produce) shares few tokens with the
+# deliverable text, so it stays under threshold and still parks.
+
+# English function words + bead-boilerplate that carry no deliverable
+# signal. Kept deliberately small — over-pruning would let a genuine
+# upstream `missing` slip below threshold on its remaining content words.
+_OVERLAP_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "but",
+        "for",
+        "nor",
+        "yet",
+        "so",
+        "in",
+        "on",
+        "at",
+        "to",
+        "of",
+        "by",
+        "as",
+        "is",
+        "are",
+        "be",
+        "was",
+        "were",
+        "with",
+        "into",
+        "from",
+        "that",
+        "this",
+        "these",
+        "those",
+        "it",
+        "its",
+        "no",
+        "not",
+        "when",
+        "where",
+        "which",
+        "who",
+        "whom",
+        "must",
+        "should",
+        "will",
+        "would",
+        "can",
+        "could",
+        "may",
+        "there",
+        "here",
+        "then",
+        "than",
+        "use",
+        "used",
+        "using",
+        "via",
+    }
+)
+
+
+def _stem(token: str) -> str:
+    """Crude suffix strip so inflected forms collide (spawning↔spawn,
+    wanders↔wander). Longest suffix first; never strips below 3 chars."""
+    for suffix in ("ings", "ing", "ed", "es", "s"):
+        if token.endswith(suffix) and len(token) - len(suffix) >= 3:
+            return token[: -len(suffix)]
+    return token
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Stemmed content tokens: lowercased alnum words, minus stopwords,
+    pure numbers, and tokens under 3 chars."""
+    out: set[str] = set()
+    for raw in re.findall(r"[a-z0-9_]+", text.lower()):
+        if len(raw) < 3 or raw.isdigit() or raw in _OVERLAP_STOPWORDS:
+            continue
+        out.add(_stem(raw))
+    return out
+
+
+# Threshold tuned on harness-4s2bb (overlap 1.0) vs a genuine upstream
+# precondition (a named foreign symbol shares few deliverable tokens,
+# overlap well under 0.5). 0.7 leaves margin against both.
+_DELIVERABLE_OVERLAP_THRESHOLD = 0.7
+
+
+def flag_blocked_names_own_deliverable(missing: str, deliverable_text: str) -> bool:
+    """True when `missing` substantially restates the bead's own
+    deliverable (so flag_blocked should be rejected, not honored).
+
+    Conservative — biases toward honoring the flag (parking):
+    - Requires >=2 content tokens in `missing`. A one-word `missing`
+      (a bare symbol name) carries too little signal to call.
+    - Requires the deliverable text to have content tokens at all.
+    - Trips only when >=70% of `missing`'s content tokens appear in the
+      deliverable text. A genuine upstream artifact shares few.
+    """
+    m = _content_tokens(missing)
+    if len(m) < 2:
+        return False
+    d = _content_tokens(deliverable_text)
+    if not d:
+        return False
+    overlap = len(m & d) / len(m)
+    return overlap >= _DELIVERABLE_OVERLAP_THRESHOLD
+
+
 def referenced_missing_files(text: str, workspace: Path) -> list[str] | None:
     """The missing-file list when `text` trips the cross-workspace
     premise check, else None (= drive normally).
@@ -109,4 +236,4 @@ def referenced_missing_files(text: str, workspace: Path) -> list[str] | None:
     return None
 
 
-__all__ = ["referenced_missing_files"]
+__all__ = ["flag_blocked_names_own_deliverable", "referenced_missing_files"]

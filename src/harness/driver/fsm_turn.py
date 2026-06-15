@@ -45,6 +45,7 @@ from harness.driver.gate_blind import GATE_BLIND_IDIOM_NOTE, eval_blind_referenc
 from harness.driver.handoff import Handoff
 from harness.driver.planner import VerifyStep
 from harness.driver.precommit_verify_hook import PreCloseVerifyHook
+from harness.driver.premise_guard import flag_blocked_names_own_deliverable
 from harness.driver.turn_fsm import (
     DEFAULT_PHASE_BUDGETS,
     PhaseOutcome,
@@ -1299,6 +1300,7 @@ def run_fsm_turn(
     tdd_required: bool = True,
     tdd_skip_reason: str | None = None,
     structural_bead: bool = False,
+    deliverable_text: str = "",
     observe: ExecutorObserver | None = None,
     executor_temperature: float = 0.5,
     summarize_tool_results: bool = True,
@@ -1355,7 +1357,30 @@ def run_fsm_turn(
         ),
     )
     submit_implementation_complete = SubmitImplementationCompleteTool()
-    flag_blocked = FlagBlockedTool()
+
+    # harness-0t2f9: reject a flag_blocked whose `missing` restates the
+    # bead's own deliverable (the absent artifact IS the task, not an
+    # upstream precondition) before it can route ASSESS to PREMISE_UNMET.
+    # Returns a corrective tool error so the model proceeds with ASSESS;
+    # a genuine upstream precondition shares few deliverable tokens and
+    # falls through to the normal park. Disabled when no bead text is
+    # supplied (deliverable_text="") — trust-the-model, for unit callers.
+    def _deliverable_check(missing: str) -> str | None:
+        if not deliverable_text.strip():
+            return None
+        if flag_blocked_names_own_deliverable(missing, deliverable_text):
+            return (
+                f"flag_blocked rejected: '{missing}' names THIS bead's own "
+                f"deliverable, not an absent UPSTREAM precondition. That the "
+                f"artifact doesn't exist yet is the task — it's what this bead "
+                f"exists to build. flag_blocked is only for a concrete symbol / "
+                f"file the bead presupposes and a DIFFERENT, earlier bead owns. "
+                f"Do not flag; proceed with ASSESS and call submit_assessment to "
+                f"plan the implementation."
+            )
+        return None
+
+    flag_blocked = FlagBlockedTool(deliverable_check=_deliverable_check)
 
     fsm = build_turn_fsm(initial=initial_phase)
     last_reply = ""

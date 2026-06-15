@@ -330,6 +330,30 @@ def test_flag_blocked_rejects_vague_reason() -> None:
         tool.call(missing="fireWeapon()", reason="no")
 
 
+def test_flag_blocked_deliverable_check_rejects_and_does_not_capture() -> None:
+    """harness-0t2f9: a deliverable_check that returns a message rejects
+    the call (raises) and leaves nothing captured, so latest() stays None
+    and the ASSESS resolver sees no premise-unmet signal."""
+    tool = FlagBlockedTool(
+        deliverable_check=lambda missing: f"rejected: {missing} is the deliverable"
+    )
+    with pytest.raises(ValueError, match="is the deliverable"):
+        tool.call(missing="pedestrian spawning logic", reason="x" * 40)
+    assert tool.latest() is None
+    assert tool.captured == []
+
+
+def test_flag_blocked_deliverable_check_none_honors_flag() -> None:
+    """A deliverable_check returning None (genuine upstream) lets the flag
+    land — captured + latest() carry the claim through to premise_unmet."""
+    tool = FlagBlockedTool(deliverable_check=lambda _missing: None)
+    tool.call(missing="drawCop() upstream symbol", reason="x" * 40)
+    assert tool.latest() == {
+        "missing": "drawCop() upstream symbol",
+        "reason": "x" * 40,
+    }
+
+
 def test_flag_blocked_advertises_read_tier() -> None:
     """flag_blocked is read-tier — it records intent, mutates nothing."""
     assert FlagBlockedTool().spec.tier == "read"

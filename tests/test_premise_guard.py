@@ -11,7 +11,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from harness.driver.premise_guard import _extract_path_tokens, referenced_missing_files
+from harness.driver.premise_guard import (
+    _extract_path_tokens,
+    flag_blocked_names_own_deliverable,
+    referenced_missing_files,
+)
 
 _RORJ_TEXT = (
     "Add score tracking and on-screen score display. PLAN.md Phase 3.2 "
@@ -91,3 +95,47 @@ def test_extract_skips_urls_and_dedupes() -> None:
 def test_extract_caps_token_count() -> None:
     text = " ".join(f"file{i}.py" for i in range(20))
     assert len(_extract_path_tokens(text)) == 8
+
+
+# --- mid-turn flag_blocked deliverable check (harness-0t2f9) ----------
+
+_PED_DELIVERABLE = (
+    "Spawn pedestrians in game.js\n"
+    "Add pedestrian spawning and wandering logic so peds appear on the "
+    "sidewalk and walk around.\n"
+    "Acceptance: pedestrians spawn periodically in game.js and wander."
+)
+
+
+def test_flag_blocked_rejected_when_missing_is_own_deliverable() -> None:
+    """harness-4s2bb: a flag whose `missing` restates the bead's §6a
+    acceptance criteria is the deliverable, not an upstream block."""
+    assert flag_blocked_names_own_deliverable(
+        "pedestrian spawning and wandering logic in game.js",
+        _PED_DELIVERABLE,
+    )
+
+
+def test_flag_blocked_honored_for_genuine_upstream_precondition() -> None:
+    """A concrete foreign symbol the bead presupposes shares few
+    deliverable tokens → flag stands, the bead still parks PREMISE_UNMET."""
+    siren_deliverable = (
+        "Add police siren audio near the player\n"
+        "When a cop is within range, play a looping siren.\n"
+        "Acceptance: siren is audible as a cop approaches."
+    )
+    assert not flag_blocked_names_own_deliverable(
+        "drawCop() render function — cops are never drawn, nothing to attach audio to",
+        siren_deliverable,
+    )
+
+
+def test_flag_blocked_single_token_missing_never_trips() -> None:
+    """One content word carries too little signal — bias toward parking
+    (honoring the flag) rather than rejecting on a bare symbol name."""
+    assert not flag_blocked_names_own_deliverable("spawnPed", _PED_DELIVERABLE)
+
+
+def test_flag_blocked_empty_deliverable_text_never_trips() -> None:
+    """No bead text supplied → check disabled, flag honored."""
+    assert not flag_blocked_names_own_deliverable("pedestrian spawning logic in game.js", "")

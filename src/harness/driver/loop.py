@@ -1285,6 +1285,19 @@ def _run_fsm_turn_via_driver(
     )
     bead_tdd_required = config.tdd_required and not structural
 
+    # harness-0t2f9: the bead's own deliverable text (title + description +
+    # acceptance) gates mid-turn flag_blocked — a `missing` that restates
+    # the deliverable is rejected so the turn drives instead of parking.
+    deliverable_text = "\n".join(
+        part
+        for part in (
+            str(current_issue.title or ""),
+            str(raw.get("description") or ""),
+            str(raw.get("acceptance_criteria") or ""),
+        )
+        if part
+    )
+
     try:
         result: FsmTurnResult = run_fsm_turn(
             adapter=adapter,
@@ -1305,6 +1318,7 @@ def _run_fsm_turn_via_driver(
                 else None
             ),
             structural_bead=structural,
+            deliverable_text=deliverable_text,
             observe=observe,
             executor_temperature=config.executor_temperature,
             summarize_tool_results=config.summarize_tool_results,

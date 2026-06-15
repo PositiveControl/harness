@@ -239,9 +239,23 @@ class FlagBlockedTool:
       - `reason` explains why that upstream absence blocks the bead.
     The outcome is a PARK (operator review with the `blocked` flag), never
     a close — so a wrong "blocked" costs only an operator glance, while a
-    right one saves three futile attempts."""
+    right one saves three futile attempts.
+
+    ``deliverable_check`` (harness-0t2f9): when wired, the submission is
+    gated against the bead's own text — if `missing` substantially
+    restates the bead's own deliverable (the absent artifact IS what the
+    bead exists to build, not an upstream precondition), the call is
+    rejected with a corrective tool error so the model proceeds with
+    ASSESS instead of the loop parking PREMISE_UNMET. loop_run=069d6172
+    (harness-4s2bb) parked a drivable "spawn pedestrians in game.js" bead
+    on a flag whose `missing` was the §6a acceptance criteria verbatim.
+    The callable takes `missing` and returns a rejection message (the call
+    raises; the model fixes in-phase) or None to honor the flag. None
+    preserves the trust-the-model behavior for callers without bead text.
+    """
 
     captured: list[dict[str, Any]] = field(default_factory=list)
+    deliverable_check: Callable[[str], str | None] | None = None
 
     @property
     def spec(self) -> ToolSpec:
@@ -292,6 +306,13 @@ class FlagBlockedTool:
     def call(self, *, missing: str, reason: str) -> str:
         ms = _require_nonempty("missing", missing, min_chars=_MIN_IDENTIFIER_CHARS)
         rs = _require_nonempty("reason", reason)
+        if self.deliverable_check is not None:
+            rejection = self.deliverable_check(ms)
+            if rejection is not None:
+                # Not captured — latest() stays None, so the ASSESS
+                # resolver sees no premise-unmet signal and the model
+                # must submit_assessment to exit the phase.
+                raise ValueError(rejection)
         self.captured.append({"missing": ms, "reason": rs})
         return f"flagged blocked: {ms}"
 
