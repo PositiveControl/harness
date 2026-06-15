@@ -45,7 +45,10 @@ from harness.driver.gate_blind import GATE_BLIND_IDIOM_NOTE, eval_blind_referenc
 from harness.driver.handoff import Handoff
 from harness.driver.planner import VerifyStep
 from harness.driver.precommit_verify_hook import PreCloseVerifyHook
-from harness.driver.premise_guard import flag_blocked_names_own_deliverable
+from harness.driver.premise_guard import (
+    flag_blocked_names_own_deliverable,
+    flag_blocked_names_withheld_tool,
+)
 from harness.driver.turn_fsm import (
     DEFAULT_PHASE_BUDGETS,
     PhaseOutcome,
@@ -1461,6 +1464,21 @@ def run_fsm_turn(
     # falls through to the normal park. Disabled when no bead text is
     # supplied (deliverable_text="") — trust-the-model, for unit callers.
     def _deliverable_check(missing: str) -> str | None:
+        # harness-vsv: reject a flag_blocked that blames a write-tier editor
+        # ASSESS withholds by design (available in IMPLEMENT). loop_run=065ff3c1
+        # parked harness-vsv on attempt 1 — "edit_file tool not available" — a
+        # phase-confusion, not an unmet premise. No deliverable_text needed: the
+        # tool roster is the same regardless of bead text, so this fires for
+        # unit callers too.
+        withheld = flag_blocked_names_withheld_tool(missing, _EDITOR_TOOL_NAMES)
+        if withheld is not None:
+            return (
+                f"flag_blocked rejected: '{withheld}' is not an absent premise — "
+                f"it's a write-tier tool the ASSESS phase withholds by design. "
+                f"It IS available in the IMPLEMENT phase. Do NOT flag; call "
+                f"submit_assessment to plan the change and the FSM routes you to "
+                f"IMPLEMENT, where {withheld} is in your toolset."
+            )
         if not deliverable_text.strip():
             return None
         if flag_blocked_names_own_deliverable(missing, deliverable_text):

@@ -14,8 +14,11 @@ from pathlib import Path
 from harness.driver.premise_guard import (
     _extract_path_tokens,
     flag_blocked_names_own_deliverable,
+    flag_blocked_names_withheld_tool,
     referenced_missing_files,
 )
+
+_EDITORS = ("edit_file", "write_file", "stream_edit")
 
 _RORJ_TEXT = (
     "Add score tracking and on-screen score display. PLAN.md Phase 3.2 "
@@ -134,6 +137,32 @@ def test_flag_blocked_single_token_missing_never_trips() -> None:
     """One content word carries too little signal — bias toward parking
     (honoring the flag) rather than rejecting on a bare symbol name."""
     assert not flag_blocked_names_own_deliverable("spawnPed", _PED_DELIVERABLE)
+
+
+def test_withheld_tool_detected_on_vsv_shape() -> None:
+    # loop_run=065ff3c1, harness-vsv verbatim.
+    missing = "edit_file tool not available — I cannot execute the edit_file tool"
+    assert flag_blocked_names_withheld_tool(missing, _EDITORS) == "edit_file"
+
+
+def test_withheld_tool_detects_each_editor() -> None:
+    assert flag_blocked_names_withheld_tool("write_file is missing", _EDITORS) == "write_file"
+    assert flag_blocked_names_withheld_tool("no stream_edit here", _EDITORS) == "stream_edit"
+
+
+def test_withheld_tool_none_for_genuine_premise() -> None:
+    # A real upstream precondition naming no editor tool stays honored.
+    assert (
+        flag_blocked_names_withheld_tool(
+            "drawCop() render function from cop.js — never defined", _EDITORS
+        )
+        is None
+    )
+
+
+def test_withheld_tool_word_boundary_no_false_positive() -> None:
+    # "edit the foo config file" must not match the editor token edit_file.
+    assert flag_blocked_names_withheld_tool("edit the foo config file first", _EDITORS) is None
 
 
 def test_flag_blocked_empty_deliverable_text_never_trips() -> None:

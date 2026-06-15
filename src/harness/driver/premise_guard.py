@@ -29,6 +29,7 @@ Deliberately conservative — every guard below biases toward driving:
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
 
 # Suffixes that make a token "path-shaped". Mirrors the artifact types
@@ -212,6 +213,33 @@ def flag_blocked_names_own_deliverable(missing: str, deliverable_text: str) -> b
     return overlap >= _DELIVERABLE_OVERLAP_THRESHOLD
 
 
+# harness-vsv: a third false-premise shape. ASSESS withholds the write-tier
+# editor tools by design — they're handed to IMPLEMENT (see
+# fsm_turn._build_phase_registry). A model that flag_blocks citing
+# "edit_file tool not available" (loop_run=065ff3c1, harness-vsv: parked
+# PREMISE_UNMET on attempt 1, no retry, no gate → no s0el9/6zjjm revival →
+# stranded forever) has mistaken a phase boundary for an unmet premise. The
+# recovery is submit_assessment, which routes the turn to IMPLEMENT where the
+# editor exists — not a park. Match is word-boundary on the tool identifier:
+# these are distinctive underscore tokens that don't surface in natural
+# premise prose, so a genuine "edit the foo_file config" stays clear.
+
+
+def flag_blocked_names_withheld_tool(missing: str, tool_names: Iterable[str]) -> str | None:
+    """The withheld-tool name `missing` blames, when it cites a phase-scoped
+    editor tool as the blocker — else None (= a real premise, honor the flag).
+
+    `tool_names` is the set of editors the ASSESS phase withholds but a later
+    phase provides. A `missing` naming any of them is a phase-confusion
+    hallucination, not an upstream precondition gap.
+    """
+    lowered = missing.lower()
+    for name in tool_names:
+        if re.search(rf"\b{re.escape(name.lower())}\b", lowered):
+            return name
+    return None
+
+
 def referenced_missing_files(text: str, workspace: Path) -> list[str] | None:
     """The missing-file list when `text` trips the cross-workspace
     premise check, else None (= drive normally).
@@ -236,4 +264,8 @@ def referenced_missing_files(text: str, workspace: Path) -> list[str] | None:
     return None
 
 
-__all__ = ["flag_blocked_names_own_deliverable", "referenced_missing_files"]
+__all__ = [
+    "flag_blocked_names_own_deliverable",
+    "flag_blocked_names_withheld_tool",
+    "referenced_missing_files",
+]

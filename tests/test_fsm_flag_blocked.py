@@ -40,6 +40,8 @@ _PED_DELIVERABLE = (
 
 _FLAG_MISSING_DELIVERABLE = "pedestrian spawning and wandering logic in game.js"
 _FLAG_MISSING_UPSTREAM = "drawCop() render function from cop.js — never defined"
+# loop_run=065ff3c1, harness-vsv verbatim shape: blames a phase-withheld editor.
+_FLAG_MISSING_WITHHELD_TOOL = "edit_file tool not available — I cannot execute the edit_file tool"
 
 
 class _FakeCharacter:
@@ -190,6 +192,37 @@ def test_flag_naming_genuine_upstream_still_parks(
     assert "flag_rejected" not in events
     assert not result.succeeded
     assert result.final_phase == TurnPhase.HALTED
+
+
+def test_flag_naming_withheld_editor_is_rejected_and_turn_continues(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-vsv shape: flag_blocked blaming edit_file (withheld in ASSESS,
+    handed to IMPLEMENT) is rejected; the model recovers via submit_assessment
+    and drives to DONE instead of stranding PREMISE_UNMET on attempt 1.
+
+    No deliverable_text supplied — the withheld-tool check fires regardless,
+    since the phase tool roster doesn't depend on bead text."""
+    events: list[str] = []
+    monkeypatch.setattr(
+        "harness.driver.fsm_turn.run_tool_loop",
+        _flag_then_recover_tool_loop(_FLAG_MISSING_WITHHELD_TOOL, events),
+    )
+
+    result = run_fsm_turn(
+        adapter=None,  # type: ignore[arg-type]
+        character=_FakeCharacter(),  # type: ignore[arg-type]
+        bd=_CloseBd(),  # type: ignore[arg-type]
+        handoff_builder=_handoff,
+        workspace=tmp_path,
+        current_issue_id="harness-x",
+        tdd_required=False,
+    )
+
+    assert "flag_rejected" in events
+    assert "flag_honored" not in events
+    assert result.succeeded
+    assert result.final_phase == TurnPhase.DONE
 
 
 def test_no_deliverable_text_disables_the_gate(
