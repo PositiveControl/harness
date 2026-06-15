@@ -593,6 +593,25 @@ _BROWSER_TEST_HINT = (
 )
 
 
+# harness-vsv close-target fix (loop_run=adfc7bd6): the CLOSE phase prompt
+# carries a generic `bd close <issue-id>` template — it never names the actual
+# id. The model inferred the id from the handoff's current-issue line
+# (`harness-vsv · harness-l3tgq — Cruise behavior`) and closed the PARENT epic
+# `harness-l3tgq` instead of `harness-vsv`. That close was rejected ("blocked by
+# open issues [harness-vsv]") and the turn halted close->halted with the work
+# already implemented but the issue unclosed. Inject the exact id so the model
+# closes the current issue, not a parent referenced for context.
+def _close_target_directive(issue_id: str) -> str:
+    return (
+        f"\n\nCLOSE THIS EXACT ISSUE: run `bd close {issue_id}`. Close "
+        f"`{issue_id}` and NOTHING ELSE — NOT the parent epic, NOT any other id "
+        f"shown for context in the issue title (the `· <parent>` reference is "
+        f"orientation, not your target). loop_run=adfc7bd6 closed the parent "
+        f"epic by mistake; that close is rejected (blocked by this still-open "
+        f"issue) and the turn halts with the work done but the issue unclosed."
+    )
+
+
 # --- one phase ----------------------------------------------------
 
 
@@ -1598,6 +1617,8 @@ def run_fsm_turn(
         user_prompt = _PHASE_USER_PROMPTS.get(phase, "Proceed with this phase.")
         if phase is TurnPhase.WRITE_TEST and browser_workspace:
             user_prompt += _BROWSER_TEST_HINT
+        if phase is TurnPhase.CLOSE:
+            user_prompt += _close_target_directive(current_issue_id)
         max_rounds = budgets.get(phase, 4)
 
         execution = _run_one_phase(

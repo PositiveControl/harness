@@ -16,6 +16,7 @@ from pathlib import Path
 
 from harness.driver.fsm_turn import (
     _READ_STRATEGY_HINT,
+    _close_target_directive,
     _read_only_tools,
     _resolve_assess_outcome,
     _write_tier_tools,
@@ -79,6 +80,18 @@ def test_implement_instructions_forbid_resurvey() -> None:
     assert "edit_file" in impl
     # ASSESS must NOT carry the IMPLEMENT-only directive.
     assert "GO STRAIGHT TO THE EDIT" not in phase_instructions(TurnPhase.ASSESS)
+
+
+def test_close_directive_names_exact_id_not_parent() -> None:
+    """harness-vsv close-target fix (loop_run=adfc7bd6): the CLOSE directive
+    must name the exact current issue id and forbid closing a parent epic
+    referenced in the issue title."""
+    directive = _close_target_directive("harness-vsv")
+    assert "bd close harness-vsv" in directive
+    assert "`harness-vsv`" in directive
+    assert "NOT the parent epic" in directive
+    # The other-run id never leaks a hardcoded target — it interpolates.
+    assert "bd close harness-zzz" in _close_target_directive("harness-zzz")
 
 
 def test_planner_prompt_steers_to_symbol_reads() -> None:
