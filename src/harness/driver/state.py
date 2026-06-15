@@ -78,6 +78,13 @@ class LoopRunState:
     last_turn_phase: dict[str, str] = field(default_factory=dict)
     last_assessment: dict[str, dict[str, Any]] = field(default_factory=dict)
     last_test_cmd: dict[str, str] = field(default_factory=dict)
+    # harness-smplj: per-issue last VERIFY test-step failure tail, carried
+    # ACROSS attempts. The intra-turn gate-suspect detector compares
+    # consecutive verify failures within one turn; when each turn instead
+    # halts at the hs50i verify-retry ceiling first, the byte-identical
+    # signal never spans two attempts. Persisting the tail lets attempt
+    # N+1's first verify fail trip gate-suspect against attempt N's tail.
+    last_test_fail_tail: dict[str, str] = field(default_factory=dict)
     # harness-zcrd: bd ids the drive parked after max-attempts
     # exhaustion. Filtered out of subsequent `ready_under_epic` results
     # so the drive doesn't re-pick them within the same run. Each entry
@@ -166,5 +173,6 @@ class LoopRunState:
             last_turn_phase=dict(raw.get("last_turn_phase", {})),
             last_assessment=dict(raw.get("last_assessment", {})),
             last_test_cmd=dict(raw.get("last_test_cmd", {})),
+            last_test_fail_tail=dict(raw.get("last_test_fail_tail", {})),
             parked_issues=list(raw.get("parked_issues", [])),
         )

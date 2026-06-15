@@ -163,7 +163,14 @@ class FsmTurnResult:
       observes the code under change. The loop must DROP the carried
       test_cmd for this issue (state.last_test_cmd) so the next
       attempt re-authors a real gate instead of reusing the broken
-      one; `last_test_cmd` is already None on these results."""
+      one; `last_test_cmd` is already None on these results.
+    - `last_test_fail_tail` (harness-smplj): the most recent VERIFY
+      test-step failure tail this turn, or None. The loop persists it
+      per issue (state.last_test_fail_tail) so the NEXT attempt seeds its
+      detector with it — a byte-identical failure across attempts trips
+      gate-suspect even when each turn halts at the hs50i ceiling before
+      seeing two identical tails in one turn. None on success / suspect
+      (the gate is being dropped anyway)."""
 
     final_phase: TurnPhase
     succeeded: bool
@@ -174,6 +181,7 @@ class FsmTurnResult:
     phase_trace: list[tuple[TurnPhase, TurnPhase, str]]
     last_shell_cmd: str | None = None
     gate_suspect: bool = False
+    last_test_fail_tail: str | None = None
 
 
 # --- per-phase tool rosters ---------------------------------------
@@ -1366,6 +1374,7 @@ def run_fsm_turn(
     initial_phase: TurnPhase = TurnPhase.ASSESS,
     prior_assessment: dict[str, Any] | None = None,
     prior_test_cmd: str | None = None,
+    prior_test_fail_tail: str | None = None,
     verify_steps: Sequence[VerifyStep] = (),
     phase_budgets: Mapping[TurnPhase, int] | None = None,
     tdd_required: bool = True,
@@ -1478,8 +1487,25 @@ def run_fsm_turn(
     # is the move, not more IMPLEMENT passes. Attempted (not just landed)
     # writes count: on an already-implemented bead every edit is a no-op,
     # which is exactly the harness-8i9 shape that burned 4 attempts.
-    last_test_fail_tail: str | None = None
+    # harness-smplj widened the arming on two axes: (1) an IMPLEMENT pass
+    # that declared the work complete with NO edits is as suspect as one
+    # that edited — the model believes it's done and the verdict won't
+    # move; (2) the fail tail is seeded from the prior attempt (state),
+    # so a byte-identical failure across attempts trips even when each
+    # turn hits the hs50i verify-retry ceiling before seeing two in one
+    # turn (loop_run=df358902, harness-491j5: 4 turns x 3 verifies = 12
+    # byte-identical failures, none detected).
+    # harness-smplj: seed from the prior attempt's persisted fail tail so a
+    # byte-identical failure ACROSS attempts trips the detector on this
+    # turn's FIRST verify pass — the cross-turn hole the per-turn-local
+    # variable left open when each turn halted at the hs50i ceiling first.
+    last_test_fail_tail: str | None = prior_test_fail_tail
     implement_touched_source = False
+    # harness-smplj: the model declared IMPLEMENT complete this pass WITHOUT
+    # editing the source — it believes the bead is done. A subsequent
+    # byte-identical verify fail is as suspect as one after an edit: the
+    # gate verdict won't move because the model isn't changing the source.
+    implement_complete_no_edits = False
     gate_suspect = False
     # Browser-JS census, computed once per turn: gates the WRITE_TEST
     # stub-the-DOM hint (loop_run=dae002aa).
@@ -1595,6 +1621,16 @@ def run_fsm_turn(
         if outcome.kind == "premise_unmet":
             premise_unmet_reason = outcome.detail
 
+        # harness-smplj: did the IMPLEMENT pass declare the work complete
+        # with NO source edits? Keyed on the resolved outcome (implement_complete
+        # fires when submit_implementation_complete was recorded) rather than a
+        # fresh tool-call sniff, so it survives the auto-resolve path. Recomputed
+        # every IMPLEMENT pass: a later pass that touches source clears it.
+        if phase == TurnPhase.IMPLEMENT:
+            implement_complete_no_edits = (
+                outcome.kind == "implement_complete" and not implement_touched_source
+            )
+
         # harness-hs50i: bound the IMPLEMENT↔VERIFY cycle. Counted on
         # the outcome (pre-handle) so the cap halts BEFORE re-entering
         # IMPLEMENT for a pass the budget would just burn.
@@ -1624,7 +1660,14 @@ def run_fsm_turn(
                     )
                     break
                 this_tail = str(outcome.payload.get("tail", ""))
-                if this_tail and this_tail == last_test_fail_tail and implement_touched_source:
+                # harness-smplj: arm when the gate verdict is byte-identical
+                # AND the model has stopped meaningfully moving the source —
+                # either it edited (touched_source) or it declared the work
+                # complete with no edits (complete_no_edits). The compared
+                # tail may be from a prior verify THIS turn or, when seeded
+                # from state, the prior ATTEMPT's tail (cross-turn trip).
+                implement_settled = implement_touched_source or implement_complete_no_edits
+                if this_tail and this_tail == last_test_fail_tail and implement_settled:
                     gate_suspect = True
                     captured_test_cmd = None
                     # harness-815wm: the old text said the re-authored gate
@@ -1641,9 +1684,10 @@ def run_fsm_turn(
                         TurnPhase.HALTED,
                         reason=(
                             "suspect verify gate: the test failed byte-identically "
-                            "across IMPLEMENT passes that edited the source — it "
-                            "never observes the code under change "
-                            "(loop_run=dae002aa); the carried test is dropped so "
+                            "across IMPLEMENT passes that edited the source or "
+                            "declared it complete without edits — it never observes "
+                            "the code under change "
+                            "(loop_run=dae002aa/harness-smplj); the carried test is dropped so "
                             "the next attempt re-authors a gate whose assertions "
                             "can actually observe the source's state"
                             f"{pitfall}. last tail: {this_tail[:140]}"
@@ -1687,6 +1731,7 @@ def run_fsm_turn(
             last_test_cmd=captured_test_cmd,
             phase_trace=list(fsm.trace),
             last_shell_cmd=last_shell_cmd,
+            last_test_fail_tail=None,
         )
 
     # HALTED — derive reason from the last trace step or the last
@@ -1714,6 +1759,10 @@ def run_fsm_turn(
         phase_trace=list(fsm.trace),
         last_shell_cmd=last_shell_cmd,
         gate_suspect=gate_suspect,
+        # harness-smplj: on a gate-suspect halt the carried gate is being
+        # dropped, so there's nothing to compare next attempt against —
+        # clear the tail too. Otherwise persist it for the cross-turn trip.
+        last_test_fail_tail=None if gate_suspect else last_test_fail_tail,
     )
 
 

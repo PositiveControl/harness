@@ -1264,6 +1264,9 @@ def _run_fsm_turn_via_driver(
 
     prior_assessment = state.last_assessment.get(issue_id)
     prior_test_cmd = state.last_test_cmd.get(issue_id)
+    # harness-smplj: the prior attempt's last verify fail tail seeds the
+    # cross-turn gate-suspect detector.
+    prior_test_fail_tail = state.last_test_fail_tail.get(issue_id)
     # harness-oxj7: workspace-typed defaults run BEFORE per-item steps
     # so cheap parse-checks fail fast ahead of slower operator-authored
     # gates. The FSM's `_resolve_verify_outcome` walks the sequence in
@@ -1309,6 +1312,7 @@ def _run_fsm_turn_via_driver(
             initial_phase=initial_phase,
             prior_assessment=prior_assessment,
             prior_test_cmd=prior_test_cmd,
+            prior_test_fail_tail=prior_test_fail_tail,
             verify_steps=verify_steps,
             tdd_required=bead_tdd_required,
             tdd_skip_reason=(
@@ -1347,6 +1351,14 @@ def _run_fsm_turn_via_driver(
         state.last_test_cmd.pop(issue_id, None)
     elif result.last_test_cmd is not None:
         state.last_test_cmd[issue_id] = result.last_test_cmd
+
+    # harness-smplj: persist the verify fail tail per issue so the next
+    # attempt's detector trips on a byte-identical cross-turn failure.
+    # Cleared on success / gate-suspect (run_fsm_turn returns None there).
+    if result.last_test_fail_tail is not None:
+        state.last_test_fail_tail[issue_id] = result.last_test_fail_tail
+    else:
+        state.last_test_fail_tail.pop(issue_id, None)
 
     return result.succeeded, result.reason, result.reply, result.last_shell_cmd
 

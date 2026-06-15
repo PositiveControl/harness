@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from harness.driver.fsm_turn import run_fsm_turn
+from harness.driver.fsm_turn import _exec_test_cmd_capture, run_fsm_turn
 from harness.driver.handoff import Handoff
 from harness.driver.planner import VerifyStep
 from harness.driver.turn_fsm import TurnPhase
@@ -95,14 +95,18 @@ def _scripted_tool_loop(
     *,
     assessment_kwargs: dict[str, Any] | None = None,
     write_test_action: str = "barren",
+    implement_edits: bool = True,
 ) -> Any:
     """Scripted run_tool_loop:
 
     - ASSESS: submit_assessment (extra fields via assessment_kwargs).
     - WRITE_TEST: 'barren' leaves no capture (the carried prior_test_cmd
       is reused); 'skip' calls skip_test_phase.
-    - IMPLEMENT: submit_implementation_complete + a successful edit_file
-      event via the observe relay, so the pass counts as touching source.
+    - IMPLEMENT: submit_implementation_complete + (when implement_edits)
+      a successful edit_file event via the observe relay, so the pass
+      counts as touching source. With implement_edits=False the pass
+      submits complete WITHOUT any write — the harness-smplj
+      complete-without-edit shape.
     - VERIFY / CLOSE: no-op reply.
 
     Records the per-phase user prompt so tests can assert on hints.
@@ -134,7 +138,7 @@ def _scripted_tool_loop(
             phases_seen.append("implement")
             user_prompts["implement"] = user_text
             observe = kwargs.get("observe")
-            if observe is not None:
+            if observe is not None and implement_edits:
                 observe(_write_event())
             registry.call(
                 "submit_implementation_complete",
@@ -346,3 +350,98 @@ def test_write_test_prompt_clean_without_browser_js(
         current_issue_id="harness-x",
     )
     assert "WORKSPACE NOTE" not in prompts["write_test"]
+
+
+# --- harness-smplj: complete-without-edit + cross-turn seeding ------
+
+
+def test_complete_without_edit_identical_tail_is_suspect(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-smplj hole 1 (loop_run=df358902, harness-491j5): the model
+    diagnosed 'test env broken, implementation present' and re-submitted
+    complete WITHOUT editing. The old detector required touched_source, so
+    it never armed and the hs50i ceiling parked the turn KEEPING the
+    broken gate. A complete-without-edit pass followed by a byte-identical
+    verify fail must now arm gate-suspect."""
+    phases_seen: list[str] = []
+    monkeypatch.setattr(
+        "harness.driver.fsm_turn.run_tool_loop",
+        _scripted_tool_loop(phases_seen, {}, implement_edits=False),
+    )
+
+    result = run_fsm_turn(
+        adapter=None,  # type: ignore[arg-type]
+        character=_FakeCharacter(),  # type: ignore[arg-type]
+        bd=_OpenBd(),  # type: ignore[arg-type]
+        handoff_builder=_handoff,
+        workspace=tmp_path,
+        current_issue_id="harness-x",
+        prior_test_cmd=_const_red_script(tmp_path),
+    )
+
+    assert result.gate_suspect
+    assert "suspect verify gate" in result.reason
+    assert result.last_test_cmd is None
+    # Armed on the 2nd verify (identical tail) without burning the ceiling.
+    assert phases_seen.count("implement") == 2
+
+
+def test_cross_turn_identical_tail_trips_on_first_verify(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-smplj hole 2: seed the prior attempt's fail tail (as the
+    loop does from state.last_test_fail_tail). A byte-identical failure on
+    THIS turn's first verify trips gate-suspect immediately — the
+    cross-turn signal the per-turn-local variable missed when each turn
+    hit the hs50i ceiling first (df358902: 4 turns x 3 verifies, none
+    detected)."""
+    phases_seen: list[str] = []
+    monkeypatch.setattr(
+        "harness.driver.fsm_turn.run_tool_loop",
+        _scripted_tool_loop(phases_seen, {}),
+    )
+    cmd = _const_red_script(tmp_path)
+    # The exact tail the carried gate produces — what attempt N persisted.
+    _exit, prior_tail, _out = _exec_test_cmd_capture(cmd, tmp_path)
+
+    result = run_fsm_turn(
+        adapter=None,  # type: ignore[arg-type]
+        character=_FakeCharacter(),  # type: ignore[arg-type]
+        bd=_OpenBd(),  # type: ignore[arg-type]
+        handoff_builder=_handoff,
+        workspace=tmp_path,
+        current_issue_id="harness-x",
+        prior_test_cmd=cmd,
+        prior_test_fail_tail=prior_tail,
+    )
+
+    assert result.gate_suspect
+    assert result.last_test_cmd is None
+    # Tripped on the FIRST verify — only one IMPLEMENT pass ran.
+    assert phases_seen.count("implement") == 1
+
+
+def test_ceiling_halt_persists_fail_tail_for_next_attempt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A non-suspect ceiling halt (varying gate) returns its last fail
+    tail so the loop can seed the next attempt; a suspect halt clears it
+    (the gate is being dropped)."""
+    phases_seen: list[str] = []
+    monkeypatch.setattr(
+        "harness.driver.fsm_turn.run_tool_loop",
+        _scripted_tool_loop(phases_seen, {}),
+    )
+    result = run_fsm_turn(
+        adapter=None,  # type: ignore[arg-type]
+        character=_FakeCharacter(),  # type: ignore[arg-type]
+        bd=_OpenBd(),  # type: ignore[arg-type]
+        handoff_builder=_handoff,
+        workspace=tmp_path,
+        current_issue_id="harness-x",
+        prior_test_cmd=_varying_red_script(tmp_path),
+    )
+    assert not result.gate_suspect
+    assert "verify-retry ceiling" in result.reason
+    assert result.last_test_fail_tail is not None  # carried to next attempt

@@ -43,6 +43,8 @@ def test_save_then_load_round_trips_every_field(tmp_path: Path) -> None:
     s.attempt_counts["harness-ccc"] = 2
     s.attempt_counts["harness-ddd"] = 1
     s.last_failure["harness-ccc"] = "fabrication_fallback fired"
+    # harness-smplj: cross-turn gate-suspect tail persists per issue.
+    s.last_test_fail_tail["harness-ccc"] = "TypeError: Cannot set properties of undefined"
 
     path = LoopRunState.state_path(tmp_path, s.loop_run_id)
     s.save(path)
@@ -57,6 +59,7 @@ def test_save_then_load_round_trips_every_field(tmp_path: Path) -> None:
     assert loaded.closed_this_run == s.closed_this_run
     assert loaded.attempt_counts == s.attempt_counts
     assert loaded.last_failure == s.last_failure
+    assert loaded.last_test_fail_tail == s.last_test_fail_tail
 
 
 def test_save_creates_parent_directory(tmp_path: Path) -> None:
