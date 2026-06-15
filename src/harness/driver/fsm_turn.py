@@ -466,7 +466,17 @@ _PHASE_INSTRUCTIONS: Mapping[TurnPhase, str] = {
         "registered for this issue.\n"
         "If you wrote a test in WRITE_TEST, your implementation must "
         "make that exact test pass. Do NOT modify the test to make it "
-        "pass — that defeats the purpose of TDD." + _READ_STRATEGY_HINT
+        "pass — that defeats the purpose of TDD.\n\n"
+        "GO STRAIGHT TO THE EDIT. Your assessment above (current_state / "
+        "gap / approach) ALREADY located the change and named the plan — "
+        "that orientation is done. Do NOT re-run outline / grep / read_file "
+        "to re-survey files you already assessed this turn: it burns the "
+        "IMPLEMENT round budget without new information, and the phase halts "
+        "'no writes' with the work unstarted (loop_run=6308eb21: harness-vsv "
+        "re-read + grepped game.js 8x in IMPLEMENT and parked having edited "
+        "nothing). Read AT MOST one file once to confirm an exact insertion "
+        "point, then call edit_file / stream_edit. The deliverable of this "
+        "phase is an EDIT, not a finding." + _READ_STRATEGY_HINT
     ),
     TurnPhase.VERIFY: (
         "You are in the VERIFY phase. The driver will execute the "

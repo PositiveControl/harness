@@ -69,6 +69,18 @@ def test_fsm_assess_and_implement_carry_read_strategy() -> None:
     assert hint_fragment not in phase_instructions(TurnPhase.CLOSE)
 
 
+def test_implement_instructions_forbid_resurvey() -> None:
+    """harness read-thrash fix (loop_run=6308eb21): IMPLEMENT must steer the
+    model straight to the edit, citing the carried assessment, instead of
+    re-surveying files it already assessed and halting 'no writes'."""
+    impl = phase_instructions(TurnPhase.IMPLEMENT)
+    assert "GO STRAIGHT TO THE EDIT" in impl
+    assert "already assessed this turn" in impl
+    assert "edit_file" in impl
+    # ASSESS must NOT carry the IMPLEMENT-only directive.
+    assert "GO STRAIGHT TO THE EDIT" not in phase_instructions(TurnPhase.ASSESS)
+
+
 def test_planner_prompt_steers_to_symbol_reads() -> None:
     assert "outline" in PLANNER_SYSTEM_PROMPT
     assert "symbol=" in PLANNER_SYSTEM_PROMPT
