@@ -143,6 +143,7 @@ def _loop_result(
     turns_used: int = 1,
     parked_issues: Sequence[str] = (),
     parked_test_cmds: dict[str, str] | None = None,
+    gate_suspect_parks: Sequence[str] = (),
 ) -> LoopResult:
     return LoopResult(
         loop_run_id=loop_run_id,
@@ -153,6 +154,7 @@ def _loop_result(
         exit_reason=exit_reason,  # type: ignore[arg-type]
         parked_issues=list(parked_issues),
         parked_test_cmds=dict(parked_test_cmds or {}),
+        gate_suspect_parks=list(gate_suspect_parks),
     )
 
 
@@ -1058,3 +1060,88 @@ def test_print_auto_iterate_result_explains_no_work(
     # Per-pass line must surface the drive's loop_run_id so the operator can
     # find the .harness/loop_runs/<id>.json artifact straight from the summary.
     assert "loop_run=run01" in out
+
+
+# ---- harness-6zjjm: gate-suspect park revival --------------------------
+
+
+def test_run_auto_iterate_revives_gate_suspect_park_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-6zjjm (loop_run=df358902, harness-bbx): a gate-suspect park
+    dropped its carried test, so s0el9's gate-file fingerprint falls back to
+    the workspace hash — unchanged between read-only critic passes, so the
+    issue never revives and the run exits stuck with the work already done.
+    The DROP itself is the re-author signal: drive the issue once more on the
+    next pass instead of carrying it skipped."""
+    bd = _FakeBd(issues={"harness-epic": _issue("harness-epic", title="GTAII")})
+    cfg = _config(tmp_path, max_passes=3, convergence_streak=2)
+
+    seen_skip: list[frozenset[str]] = []
+
+    def run_loop_spy(_a: Any, _b: Any, loop_config: LoopConfig) -> LoopResult:
+        seen_skip.append(loop_config.skip_issue_ids)
+        if len(seen_skip) == 1:
+            # Pass 1: A parks gate-suspect (test dropped → no parked_test_cmd).
+            return _loop_result(
+                closed=["harness-b"],
+                exit_reason="partial",
+                parked_issues=["harness-a"],
+                gate_suspect_parks=["harness-a"],
+            )
+        # Pass 2: A re-drives and closes (re-authored gate now observes code).
+        return _loop_result(closed=["harness-a"], exit_reason="success")
+
+    monkeypatch.setattr("harness.driver.auto_iterate.run_loop", run_loop_spy)
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", lambda **_: [])
+
+    run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    # Pass 1: no carry. Pass 2: A revived (gate-suspect), NOT skipped.
+    assert seen_skip[0] == frozenset()
+    assert len(seen_skip) >= 2
+    assert "harness-a" not in seen_skip[1]
+
+
+def test_run_auto_iterate_gate_suspect_repark_is_carried_not_respun(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-6zjjm bound: the revive is one-shot. If the revived issue
+    re-parks (gate-suspect again), it is carried normally on the next pass —
+    no wheel-spin re-driving it every pass."""
+    bd = _FakeBd(
+        issues={"harness-epic": _issue("harness-epic", title="GTAII")},
+        ready=[_issue("harness-a", title="A")],
+    )
+    # High streak so two empty-critic passes don't converge before pass 3,
+    # where the carried-skip / stuck short-circuit is what we're pinning.
+    cfg = _config(tmp_path, max_passes=4, convergence_streak=5)
+
+    seen_skip: list[frozenset[str]] = []
+
+    def run_loop_spy(_a: Any, _b: Any, loop_config: LoopConfig) -> LoopResult:
+        seen_skip.append(loop_config.skip_issue_ids)
+        # A parks gate-suspect every time it is driven. Close a fresh
+        # sibling each pass so auto_iterate sees progress and continues
+        # (an empty-critic pass with zero closes exits stuck immediately).
+        if "harness-a" not in loop_config.skip_issue_ids:
+            return _loop_result(
+                closed=[f"harness-sib{len(seen_skip)}"],
+                exit_reason="partial",
+                parked_issues=["harness-a"],
+                gate_suspect_parks=["harness-a"],
+                turns_used=1,
+            )
+        return _loop_result(closed=[], exit_reason="partial", turns_used=0)
+
+    monkeypatch.setattr("harness.driver.auto_iterate.run_loop", run_loop_spy)
+    monkeypatch.setattr("harness.driver.auto_iterate.run_critic", lambda **_: [])
+
+    result = run_auto_iterate(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
+
+    # Pass 1: drives A (no skip) → gate-suspect park. Pass 2: A revived once
+    # (no skip) → re-parks. Pass 3: A already used its one revive and is the
+    # only ready id, all carried-skipped → run exits stuck WITHOUT re-driving
+    # it. Exactly two drives — no wheel-spin.
+    assert seen_skip == [frozenset(), frozenset()]
+    assert result.exit_reason == "stuck"

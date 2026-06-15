@@ -387,6 +387,11 @@ class LoopResult:
     # the gate file a parked issue was stuck on, so a between-pass gate
     # repair can un-strand it instead of carrying it skipped forever.
     parked_test_cmds: dict[str, str] = field(default_factory=dict)
+    # harness-6zjjm: parked ids whose final turn halted gate-suspect (the
+    # carried test was dropped). The outer auto_iterate pass revives these
+    # once — the dropped gate is the change signal, but parked_test_cmds
+    # carries no cmd for them so s0el9's fingerprint revive can't fire.
+    gate_suspect_parks: list[str] = field(default_factory=list)
 
 
 def _blank_canvas_enforced(bd: DriverBd, milestone_id: str | None) -> bool:
@@ -1349,8 +1354,17 @@ def _run_fsm_turn_via_driver(
         # re-authors a real gate instead of reusing the broken one via
         # the harness-axjt8 carry-forward.
         state.last_test_cmd.pop(issue_id, None)
-    elif result.last_test_cmd is not None:
-        state.last_test_cmd[issue_id] = result.last_test_cmd
+        # harness-6zjjm: record the gate-suspect halt so a park here is
+        # revived once by the outer auto_iterate pass — the dropped test
+        # leaves no gate file for s0el9's fingerprint to detect a change on.
+        if issue_id not in state.gate_suspect_ids:
+            state.gate_suspect_ids.append(issue_id)
+    else:
+        # A later turn that didn't halt gate-suspect supersedes the flag.
+        if issue_id in state.gate_suspect_ids:
+            state.gate_suspect_ids.remove(issue_id)
+        if result.last_test_cmd is not None:
+            state.last_test_cmd[issue_id] = result.last_test_cmd
 
     # harness-smplj: persist the verify fail tail per issue so the next
     # attempt's detector trips on a byte-identical cross-turn failure.
@@ -2080,6 +2094,14 @@ def _parked_test_cmds(state: LoopRunState) -> dict[str, str]:
     }
 
 
+def _gate_suspect_parks(state: LoopRunState) -> list[str]:
+    """Parked ids whose final turn halted gate-suspect (harness-6zjjm).
+    These carry no test_cmd (it was dropped), so the outer pass revives
+    them via the gate-DROP signal rather than s0el9's gate-file change."""
+    suspect = set(state.gate_suspect_ids)
+    return [pid for pid in state.parked_issues if pid in suspect]
+
+
 def _exit_success(state: LoopRunState, workspace: Path, log: _LogWriter) -> LoopResult:
     # harness-iljv: reached only when the ready queue emptied with
     # nothing parked, so the epic is genuinely complete. A run that
@@ -2095,6 +2117,7 @@ def _exit_success(state: LoopRunState, workspace: Path, log: _LogWriter) -> Loop
         exit_reason="success",
         parked_issues=list(state.parked_issues),
         parked_test_cmds=_parked_test_cmds(state),
+        gate_suspect_parks=_gate_suspect_parks(state),
     )
 
 
@@ -2133,6 +2156,7 @@ def _exit_partial(
         exit_reason="partial",
         parked_issues=list(state.parked_issues),
         parked_test_cmds=_parked_test_cmds(state),
+        gate_suspect_parks=_gate_suspect_parks(state),
     )
 
 
@@ -2151,6 +2175,7 @@ def _exit_exhausted(state: LoopRunState, workspace: Path, log: _LogWriter) -> Lo
         exit_reason="exhausted",
         parked_issues=list(state.parked_issues),
         parked_test_cmds=_parked_test_cmds(state),
+        gate_suspect_parks=_gate_suspect_parks(state),
     )
 
 
@@ -2191,6 +2216,7 @@ def _exit_halted(
         exit_reason="halted",
         parked_issues=list(state.parked_issues),
         parked_test_cmds=_parked_test_cmds(state),
+        gate_suspect_parks=_gate_suspect_parks(state),
     )
 
 
@@ -2215,6 +2241,7 @@ def _exit_interrupted(
         exit_reason="interrupted",
         parked_issues=list(state.parked_issues),
         parked_test_cmds=_parked_test_cmds(state),
+        gate_suspect_parks=_gate_suspect_parks(state),
     )
 
 
@@ -2343,6 +2370,9 @@ def _on_success(bd: DriverBd, state: LoopRunState, current_id: str, log: _LogWri
     if current_id not in state.closed_this_run:
         state.closed_this_run.append(current_id)
     state.last_failure.pop(current_id, None)
+    # harness-6zjjm: a closed issue is no longer a gate-suspect park.
+    if current_id in state.gate_suspect_ids:
+        state.gate_suspect_ids.remove(current_id)
     log(f"turn {state.turns_used}: {current_id} CLOSED")
     with contextlib.suppress(DriverBdError):
         bd.write_session_state(

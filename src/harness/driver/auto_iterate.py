@@ -420,6 +420,15 @@ def run_auto_iterate(
     # revive the issue for one re-attempt.
     skip_gate_fp: dict[str, str | None] = {}
     skip_gate_cmd: dict[str, str] = {}
+    # harness-6zjjm: a gate-suspect park dropped its carried test, so it has
+    # no gate file for the s0el9 fingerprint to detect a change on — the
+    # DROP itself is the re-author signal. Revive each such park EXACTLY
+    # once on the next pass. `gate_suspect_revive` arms the next pass;
+    # `gate_suspect_seen` bounds it to one revival per id ever — a revived
+    # issue that re-parks (gate-suspect again or otherwise) is carried
+    # normally, no wheel-spin.
+    gate_suspect_revive: set[str] = set()
+    gate_suspect_seen: set[str] = set()
     workspace = config.loop_config.workspace
     spec_text = _resolve_spec(config, bd)
     spec_resolved = spec_text is not None
@@ -453,6 +462,20 @@ def run_auto_iterate(
                 "re-driving once (harness-s0el9)",
                 file=sys.stderr,
             )
+        # harness-6zjjm: revive gate-suspect parks once — the dropped test
+        # means s0el9's fingerprint can't fire, but the re-author still
+        # needs an attempt. Drop them from carried_skip (+ stale fingerprint
+        # state) so this pass re-drives them; the arm is one-shot.
+        for revived_id in sorted(gate_suspect_revive):
+            carried_skip.discard(revived_id)
+            skip_gate_fp.pop(revived_id, None)
+            skip_gate_cmd.pop(revived_id, None)
+            print(
+                f"auto-iterate: {revived_id} parked gate-suspect (test dropped) — "
+                "re-driving once to re-author the gate (harness-6zjjm)",
+                file=sys.stderr,
+            )
+        gate_suspect_revive.clear()
         # harness-64jge: when every ready issue under the epic is carried-
         # skipped and nothing was revived, the pass is a foregone no-op —
         # run_loop would spin up full scaffolding (workspace snapshot,
@@ -498,6 +521,13 @@ def run_auto_iterate(
             skip_gate_fp[pid] = _gate_fingerprint(workspace, gate_cmd)
             if gate_cmd is not None:
                 skip_gate_cmd[pid] = gate_cmd
+        # harness-6zjjm: arm a one-shot revive for each NEW gate-suspect
+        # park. `gate_suspect_seen` ensures a re-parked issue (it already
+        # had its one revive) is carried normally — no wheel-spin.
+        for pid in drive_result.gate_suspect_parks:
+            if pid not in gate_suspect_seen:
+                gate_suspect_seen.add(pid)
+                gate_suspect_revive.add(pid)
 
         if drive_result.exit_reason in {"halted", "interrupted"}:
             return AutoIterateResult(
