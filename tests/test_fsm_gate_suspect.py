@@ -326,6 +326,11 @@ def test_write_test_prompt_carries_browser_hint(
     )
     assert "WORKSPACE NOTE — browser JS" in prompts["write_test"]
     assert "process.exit(1)" in prompts["write_test"]
+    # harness-vsv: the hint steers physics/behavioral gates to source-text
+    # regex (runtime state is empty headless) and authorizes skip_test_phase
+    # when neither a runtime nor a source gate fits.
+    assert "RUNTIME STATE IS OFTEN EMPTY HEADLESS" in prompts["write_test"]
+    assert "skip_test_phase" in prompts["write_test"]
     # The hint is WRITE_TEST-scoped, not sprayed across phases.
     assert "WORKSPACE NOTE" not in prompts["assess"]
 
