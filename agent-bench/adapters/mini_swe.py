@@ -79,9 +79,9 @@ class MiniSweAdapter:
             transcript=transcript_of(cmd, proc),
             diff=snapshot_diff(workspace),
             duration_s=duration,
-            tokens_prompt=metrics.get("tokens_prompt"),
-            tokens_completion=metrics.get("tokens_completion"),
-            turns=metrics.get("turns"),
+            tokens_prompt=_opt_int(metrics, "tokens_prompt"),
+            tokens_completion=_opt_int(metrics, "tokens_completion"),
+            turns=_opt_int(metrics, "turns"),
             extra={
                 "returncode": proc.returncode,
                 "timed_out": timed_out,
@@ -91,12 +91,19 @@ class MiniSweAdapter:
         )
 
 
-def _read_metrics(path: Path) -> dict:
+def _opt_int(metrics: dict[str, object], key: str) -> int | None:
+    """A metric value as int, or None when absent/non-int (bools excluded)."""
+    value = metrics.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _read_metrics(path: Path) -> dict[str, object]:
     """Driver metrics, or empty on timeout/crash before it could write them."""
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except (FileNotFoundError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _tool_interpreter() -> list[str]:

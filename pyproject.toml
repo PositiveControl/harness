@@ -255,6 +255,12 @@ ignore_missing_imports = true
 module = ["playwright", "playwright.*"]
 ignore_missing_imports = true
 
+# agent-bench drives mini-SWE-agent through its tool-venv interpreter; minisweagent
+# is intentionally not a dependency of this repo (external CLI, like aider).
+[[tool.mypy.overrides]]
+module = ["minisweagent", "minisweagent.*"]
+ignore_missing_imports = true
+
 [[tool.mypy.overrides]]
 module = [
     "tree_sitter",

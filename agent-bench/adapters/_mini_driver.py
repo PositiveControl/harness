@@ -30,7 +30,7 @@ from minisweagent.models.litellm_model import LitellmModel
 ENV_COMMAND_TIMEOUT_S = 120
 
 
-def _sum_tokens(messages: list[dict]) -> tuple[int, int]:
+def _sum_tokens(messages: list[dict[str, object]]) -> tuple[int, int]:
     """Sum prompt/completion tokens across every model response in the trajectory.
 
     Matches the cost scorer's convention (sum every usage block), so the
@@ -38,22 +38,23 @@ def _sum_tokens(messages: list[dict]) -> tuple[int, int]:
     """
     prompt = completion = 0
     for msg in messages:
-        usage = (msg.get("extra") or {}).get("response", {})
-        usage = usage.get("usage") if isinstance(usage, dict) else None
+        extra = msg.get("extra")
+        response = extra.get("response") if isinstance(extra, dict) else None
+        usage = response.get("usage") if isinstance(response, dict) else None
         if isinstance(usage, dict):
             prompt += int(usage.get("prompt_tokens") or 0)
             completion += int(usage.get("completion_tokens") or 0)
     return prompt, completion
 
 
-def _render_transcript(messages: list[dict]) -> str:
+def _render_transcript(messages: list[dict[str, object]]) -> str:
     """Flatten the message log into a readable transcript for replay."""
     lines: list[str] = []
     for msg in messages:
         role = msg.get("role", "?")
         content = msg.get("content", "")
         if isinstance(content, list):  # multimodal — keep the text parts
-            content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+            content = " ".join(str(p.get("text", "")) for p in content if isinstance(p, dict))
         lines.append(f"### {role}\n{content}")
     return "\n\n".join(lines)
 

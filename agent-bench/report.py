@@ -16,6 +16,13 @@ from store import ResultsStore
 ROOT = Path(__file__).resolve().parent
 
 
+def _as_float(value: object) -> float:
+    """Coerce a stored metric value to float, rejecting non-numbers explicitly."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    raise TypeError(f"expected a number, got {type(value).__name__}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="agent-bench report")
     ap.add_argument("--config", default=str(ROOT / "bench.yaml"))
@@ -33,7 +40,7 @@ def main() -> int:
 
     for fw, fw_rows in sorted(by_fw.items()):
         n = len(fw_rows)
-        durations = [float(r["duration_s"]) for r in fw_rows]
+        durations = [_as_float(r["duration_s"]) for r in fw_rows]
         exit_ok = sum(int(bool(r["exit_ok"])) for r in fw_rows)
         print(f"\n=== {fw}  (n={n}, version={fw_rows[0]['version']}) ===")
         print(f"  exit_ok      : {exit_ok}/{n}")
@@ -59,7 +66,7 @@ def _report_metrics(fw_rows: list[dict[str, object]]) -> None:
             true_n = sum(1 for v in present if v)
             print(f"  {key:<20}: {true_n}/{n} true")
         elif all(isinstance(v, (int, float)) for v in present):
-            nums = [float(v) for v in present]  # type: ignore[arg-type]
+            nums = [_as_float(v) for v in present]
             print(
                 f"  {key:<20}: median {statistics.median(nums):.2f}  "
                 f"min {min(nums):.2f}  max {max(nums):.2f}"
