@@ -20,6 +20,7 @@ import yaml
 from adapters.aider import AiderAdapter
 from adapters.base import Adapter, Endpoint, RunArtifacts
 from adapters.goose import GooseAdapter
+from adapters.mini_swe import MiniSweAdapter
 from adapters.opencode import OpencodeAdapter
 from scorers.base import Scorer, Scores
 from scorers.builds import BuildsScorer
@@ -36,6 +37,7 @@ ADAPTERS: dict[str, type[Adapter]] = {
     "aider": AiderAdapter,
     "opencode": OpencodeAdapter,
     "goose": GooseAdapter,
+    "mini-swe-agent": MiniSweAdapter,
 }
 SCORERS: dict[str, type[Scorer]] = {
     "builds": BuildsScorer,

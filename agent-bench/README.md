@@ -57,20 +57,26 @@ python report.py                          # tables from the store
 
 ## Status
 
-**Tracer bullet complete (1 framework, full loop).** The **aider** adapter builds
-the web game against gx10 (`Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8`), all five
-scorers run incl. the headless browser, and `report.py` renders a clean
-single-schema distribution. The headless scorer is hardened: a build that hangs
-the main thread (e.g. an unbounded init loop) records cleanly as
-`runs_headless: false, reason: "load timeout …"` instead of wedging the run.
+**Two frameworks live against gx10** (`Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8`),
+both through all five scorers incl. the headless browser, with `report.py`
+rendering clean single-schema distributions. First real contrast (n=1 each):
 
-The current aider build is itself a true-positive failure the rig caught: an
-unbounded `while(!validPosition)` pedestrian-spawn loop against a map with no
-matching tile → infinite loop on load. `builds` + `feature_checklist` pass
-(6/8 milestones), `runs_headless` correctly fails.
+| framework | turns | wall-clock | milestones | runs_headless |
+|---|---|---|---|---|
+| aider | 1-shot | ~82 s | 6/8 | ✗ — build hangs on load |
+| mini-swe-agent | 17 | ~926 s | 7/8 | ✅ — game runs (362 rAF ticks, 0 errors) |
 
-Not yet done (see plan §6): a real N-run matrix and a second comparand.
+The aider row is a true-positive failure the rig caught: an unbounded
+`while(!validPosition)` pedestrian-spawn loop against a map with no matching tile
+→ infinite loop on load. The headless scorer is hardened to record that cleanly
+as `runs_headless: false, reason: "load timeout …"` instead of wedging the run.
+
+The **mini-swe-agent** adapter drives the agent's Python API headlessly via
+`adapters/_mini_driver.py` (its `mini` CLI is interactive-only — crashes on a
+non-tty), run by the tool venv's own interpreter. Install once:
+`uv tool install mini-swe-agent`.
+
+Not yet done (see plan §6): an N-run matrix (currently n=1 per framework).
 **opencode** + **goose** adapters exist but opencode 1.x hangs on run-init in this
-env and the goose CLI isn't installed; **OpenHands** / **mini-SWE** adapters and a
-**harness** baseline entry are TODO. mini-SWE is the cheapest next comparand
-(pure LiteLLM, no sandbox).
+env and the goose CLI isn't installed; an **OpenHands** adapter and a **harness**
+baseline entry are TODO.
