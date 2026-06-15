@@ -57,10 +57,12 @@ class RunsHeadlessScorer:
 
     @staticmethod
     def _find_entry(workspace: Path) -> Path | None:
+        # Resolve to absolute: Path.as_uri() (used below) rejects relative paths.
         index = workspace / "index.html"
         if index.exists():
-            return index
-        return next((p for p in workspace.rglob("*.html") if ".git" not in p.parts), None)
+            return index.resolve()
+        hit = next((p for p in workspace.rglob("*.html") if ".git" not in p.parts), None)
+        return hit.resolve() if hit is not None else None
 
     @staticmethod
     def _run(entry: Path) -> Scores:
