@@ -77,6 +77,31 @@ from harness.tools.base import ToolResult, ToolSpec
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
+def _strip_leading_id_prefix(title: str, id_prefix: str) -> str:
+    """Strip leading bd-id tokens a decomposition model prepended to a child
+    title (harness-vsv close-target bug, loop_run=adfc7bd6).
+
+    `decompose_bead` writes the planner's `plan_add(title=...)` verbatim. The
+    model, told to "echo the parent", echoed the parent BEAD ID — so vsv's
+    title became "harness-l3tgq — Cruise behavior" and the CLOSE phase read
+    that leading id as its close target, closing the parent epic. Recursive
+    decompose compounded it ("harness-ou5: harness-vsv — …").
+
+    Removes one-or-more leading `<id_prefix>-<token><sep>` groups, where sep is
+    a colon or an em/en-dash (NOT an ascii hyphen — bd ids contain those). A
+    title with no id prefix is returned unchanged; a title that is ALL prefix
+    falls back to the original so we never create an empty title.
+    """
+    # Separators a model puts after an echoed id: colon, en-dash, em-dash.
+    # Escapes (not literal glyphs) keep the ambiguous-unicode lint quiet.
+    sep = "[:\u2013\u2014]"
+    pattern = re.compile(
+        rf"^(?:{re.escape(id_prefix)}-[A-Za-z0-9]+\s*{sep}\s*)+",
+    )
+    stripped = pattern.sub("", title).strip()
+    return stripped or title
+
+
 # Minimum quote length the validator demands. Anything shorter is too
 # generic to verify usefully (and probably indicates the model
 # blockquoted a section header). Tuned for "one phrase or sentence."
@@ -810,7 +835,12 @@ Process:
   1. Read the spec section the bead implements (`read_file` / `grep` on
      the spec path you are given) so your children quote it verbatim.
   2. For each child, call `plan_add(...)` with:
-     - title: short; echo the parent (e.g. "<parent §> — <unit>").
+     - title: a SHORT human-readable name for the unit, optionally
+       referencing the spec section (e.g. "§11.4 cruise accel" or
+       "max-speed clamp"). Do NOT prefix it with the parent BEAD ID or any
+       `harness-xxxx` id — that id reads as a close target and the executor
+       closes the wrong bead (loop_run=adfc7bd6: every child titled
+       "harness-l3tgq — …" got the parent epic closed in its place).
      - description: full body INCLUDING a '> ' blockquote of the spec.
      - spec_quote: the verbatim spec text the description blockquotes.
      - acceptance: a CODE-PRESENCE assertion ONLY — name the literal
@@ -908,11 +938,16 @@ def decompose_bead(
         return []
 
     child_label = f"plan-source:{spec_path.name}"
+    # harness-vsv: derive the bd id prefix from the parent id ("harness-l3tgq"
+    # -> "harness") and scrub it from any child title the planner prefixed,
+    # so CLOSE can't mistake a baked-in id for its close target.
+    id_prefix = parent_id.rsplit("-", 1)[0] if "-" in parent_id else parent_id
     title_to_id: dict[str, str] = {}
     new_ids: list[str] = []
     for item in valid:
+        clean_title = _strip_leading_id_prefix(item.title, id_prefix)
         child_id = bd.create_with_labels(
-            title=item.title,
+            title=clean_title,
             description=item.description,
             issue_type=item.issue_type,
             priority=item.priority,

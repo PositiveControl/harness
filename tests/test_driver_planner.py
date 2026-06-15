@@ -19,6 +19,7 @@ from harness.driver.planner import (
     VerifyStep,
     _description_has_blockquote,
     _PlannerState,
+    _strip_leading_id_prefix,
     commit_plan,
     decompose_bead,
     run_planner,
@@ -874,3 +875,55 @@ def test_decompose_bead_returns_empty_when_planner_adds_nothing(
     )
     assert ids == []
     assert bd.labels_added == []
+
+
+def test_decompose_bead_strips_parent_id_prefix_from_child_title(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-vsv: a planner that prefixes the parent BEAD ID into a child
+    title ("echo the parent" misread, loop_run=adfc7bd6) has it scrubbed before
+    create, so the CLOSE phase can't read the baked-in id as its close target."""
+    spec = tmp_path / "spec.md"
+    spec.write_text(_SPEC_TEXT)
+    bd = _DecomposeBd(_parent_bead())
+
+    def fake_loop(_a: Any, _m: Any, registry: Any, **_k: Any) -> ToolLoopResult:
+        pa = registry.get("plan_add")
+        pf = registry.get("plan_finish")
+        pa.call(
+            title="harness-lsna2 — police spawn rule",
+            description="> police spawn rule details",
+            spec_quote="police spawn rule details",
+            acceptance="game.js declares a police array",
+        )
+        pf.call()
+        return ToolLoopResult(content="", messages=[], rounds=1, events=[])
+
+    monkeypatch.setattr("harness.driver.planner.run_tool_loop", fake_loop)
+    decompose_bead(
+        None,  # type: ignore[arg-type]
+        bd,  # type: ignore[arg-type]
+        parent_id="harness-lsna2",
+        epic_id="harness-epic",
+        spec_path=spec,
+        workspace=tmp_path,
+    )
+    titles = [c["title"] for c in bd.creates]
+    assert titles == ["police spawn rule"]
+    assert not any("harness-lsna2" in t for t in titles)
+
+
+def test_strip_leading_id_prefix_cases() -> None:
+    # Single parent-id prefix (the vsv shape) — em-dash separator.
+    assert (
+        _strip_leading_id_prefix("harness-l3tgq — Cruise behavior", "harness") == "Cruise behavior"
+    )
+    # Recursive stacked prefixes (colon between ids, em-dash before title).
+    assert (
+        _strip_leading_id_prefix("harness-ou5: harness-vsv — Cruise — cap", "harness")
+        == "Cruise — cap"
+    )
+    # No id prefix: unchanged (em-dash inside a real title is not stripped).
+    assert _strip_leading_id_prefix("Cruise — max speed cap", "harness") == "Cruise — max speed cap"
+    # All-prefix degenerate input falls back to the original (never empty).
+    assert _strip_leading_id_prefix("harness-vsv — ", "harness") == "harness-vsv — "
