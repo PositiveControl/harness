@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -19,6 +20,17 @@ from harness.orchestrator.hooks import (
     ReplaceResult,
 )
 from harness.tools.base import ToolCall, ToolResult, ToolSpec
+
+
+@pytest.fixture(autouse=True)
+def _clean_git_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip ``GIT_*`` env before each test. The pre-push hook in pre-commit
+    exports ``GIT_DIR`` / ``GIT_WORK_TREE`` / ``GIT_INDEX_FILE``; without this,
+    ``workspace_is_gitignored``'s ``git check-ignore`` resolves against the repo
+    running the hook instead of the test's tmp dirs and the assertions flip.
+    Mirrors tests/test_git_tools.py::_clean_env."""
+    for key in [k for k in os.environ if k.startswith("GIT_")]:
+        monkeypatch.delenv(key, raising=False)
 
 
 def _spec(name: str = "shell") -> ToolSpec:

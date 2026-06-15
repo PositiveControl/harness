@@ -1,0 +1,23 @@
+# agent-bench run config. One gx10 endpoint for every framework so the only
+# variable under test is the framework itself.
+gx10:
+  base_url: "http://gx10-5fb9:8000/v1"     # vLLM OpenAI-compatible endpoint over Tailscale
+  model: "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"  # pinned; runner aborts if /v1/models disagrees
+  api_key: "gx10"                            # dummy; vLLM ignores but OpenAI clients require one
+  temperature: 0.0                           # max determinism (loops still vary -> N runs)
+
+runs_per_framework: 5
+timeout_s: 1800                              # per-run wall-clock cap
+turn_cap: 60                                 # advisory; adapters that support it pass it through
+
+spec: "spec/gta-spec.md"
+metrics_file: "metrics.yaml"
+results_dir: "results"
+store_db: "results/bench.sqlite3"
+
+frameworks:
+  - aider
+  - mini-swe-agent
+  - opencode
+  - goose
+  # - openhands      # TODO
