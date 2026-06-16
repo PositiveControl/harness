@@ -1146,12 +1146,135 @@ def _lint_submitted_gate(
     return _test_never_loads_source(workspace, test_path)
 
 
+# harness-1ttpl (loop_run=d12941b6): WRITE_TEST kept halting "no test" because
+# the model never called submit_failing_test — it looped read_file/glob over
+# the test files ALREADY on disk and concluded it "cannot run a test" (it had
+# shell the whole time). The prior_test_cmd reuse below only helps once a PRIOR
+# attempt submitted a gate; here nothing ever submitted, yet a ready red gate
+# sits in the workspace, unused. Auto-adopt it: glob test files, keep the ones
+# whose name overlaps the bead subject, run them, and adopt the first that is
+# red, runnable, and passes the same submit-time lint a real submission would.
+_TEST_FILE_GLOBS: tuple[str, ...] = (
+    "test_*.py",
+    "*_test.py",
+    "test_*.js",
+    "*_test.js",
+    "*.test.js",
+    "*.test.mjs",
+    "test_*.mjs",
+)
+# Generic verbs / scaffolding words a bead title or test filename carries that
+# carry no subject signal — matching on them would adopt an unrelated gate.
+_ADOPT_STOP_WORDS: frozenset[str] = frozenset(
+    {
+        "test",
+        "tests",
+        "implement",
+        "add",
+        "fix",
+        "make",
+        "ensure",
+        "correct",
+        "update",
+        "support",
+        "handle",
+        "mode",
+        "spec",
+        "game",
+        "should",
+        "the",
+        "and",
+        "for",
+        "with",
+        "per",
+        "behavior",
+        "behaviour",
+        "requirement",
+        "requirements",
+    }
+)
+# Cap how many candidate gates we actually execute, bounding the cost of the
+# no-submit recovery path. Best name-overlap first, so the cap rarely bites.
+_MAX_ADOPT_CANDIDATES = 3
+
+
+def _subject_tokens(text: str) -> set[str]:
+    """Domain tokens of a bead title / test filename for overlap matching.
+    Lowercased, ≥3 chars, generic verbs/scaffolding words dropped."""
+    return {
+        tok
+        for tok in re.split(r"[^a-z0-9]+", text.lower())
+        if len(tok) >= 3 and tok not in _ADOPT_STOP_WORDS
+    }
+
+
+def _default_test_cmd_for(rel_path: Path) -> str | None:
+    """A bare runner command for an on-disk test file, or None when the
+    extension needs a toolchain we can't assume present (e.g. .ts)."""
+    suffix = rel_path.suffix
+    if suffix == ".py":
+        return f"python3 {rel_path.as_posix()}"
+    if suffix in (".js", ".mjs", ".cjs"):
+        return f"node {rel_path.as_posix()}"
+    return None
+
+
+def _adopt_existing_red_gate(workspace: Path, issue_title: str) -> PhaseOutcome | None:
+    """Find an existing test file that is already this bead's red gate and
+    adopt it as `failing_test_submitted`, so a model that never called
+    submit_failing_test doesn't park the bead when the gate is right there.
+
+    Conservative by construction: requires name-overlap with the bead
+    subject, only adopts a RED + runnable result, and routes it through the
+    same `_lint_submitted_gate` a real submission passes (rejects
+    blind/scaffold-crash/never-loads-source shapes). Green candidates are
+    skipped — a filename-matched green test is too weak a signal to close
+    the bead on. Returns None when nothing qualifies (caller halts)."""
+    title_tokens = _subject_tokens(issue_title)
+    if not title_tokens:
+        return None
+    candidates: list[tuple[int, Path]] = []
+    seen: set[Path] = set()
+    for pattern in _TEST_FILE_GLOBS:
+        for path in workspace.rglob(pattern):
+            if path in seen or not path.is_file():
+                continue
+            seen.add(path)
+            overlap = title_tokens & _subject_tokens(path.stem)
+            if overlap:
+                candidates.append((len(overlap), path))
+    # Best overlap first; deterministic tiebreak on path so the choice is stable.
+    candidates.sort(key=lambda c: (-c[0], str(c[1])))
+    for _score, path in candidates[:_MAX_ADOPT_CANDIDATES]:
+        rel = path.relative_to(workspace)
+        cmd = _default_test_cmd_for(rel)
+        if cmd is None:
+            continue
+        exit_code, tail = _exec_test_cmd(cmd, workspace)
+        if exit_code == 0:
+            continue  # green: too weak to adopt as the gate
+        if _is_unrunnable_test_output(exit_code, tail):
+            continue  # red for a load reason, not the gap
+        if _lint_submitted_gate(workspace, str(rel), cmd, exit_code, tail) is not None:
+            continue  # blind / scaffold-crash / never-loads — not a real gate
+        return failing_test_submitted(
+            test_path=str(rel),
+            test_cmd=cmd,
+            failure_output=(
+                f"adopted existing red gate {rel} — the model never submitted one: "
+                f"{tail.strip()[-300:]}"
+            ),
+        )
+    return None
+
+
 def _resolve_write_test_outcome(
     submit_failing_test: SubmitFailingTestTool,
     skip_test_phase: SkipTestPhaseTool,
     *,
     workspace: Path,
     prior_test_cmd: str | None = None,
+    issue_title: str = "",
 ) -> PhaseOutcome:
     skip = skip_test_phase.latest()
     latest = submit_failing_test.latest()
@@ -1202,6 +1325,13 @@ def _resolve_write_test_outcome(
                     test_cmd=prior_test_cmd,
                     failure_output="reused failing test carried from a prior attempt (still red)",
                 )
+        # harness-1ttpl: no submission this attempt and no carried gate — before
+        # halting, adopt an existing on-disk test that is already this bead's red
+        # gate (loop_run=d12941b6: the model read the gate files repeatedly but
+        # never ran or submitted one).
+        adopted = _adopt_existing_red_gate(workspace, issue_title)
+        if adopted is not None:
+            return adopted
         return phase_no_progress(
             TurnPhase.WRITE_TEST,
             reason="no submit_failing_test or skip_test_phase call",
@@ -1879,8 +2009,21 @@ def _resolve_phase_outcome(
         # carried forward from a prior attempt (None on the first). The
         # resolver reuses it instead of halting "no test" on a barren
         # re-attempt.
+        # harness-1ttpl: the bead title feeds the existing-red-gate auto-adopt
+        # on a no-submit halt. Soft on bd errors — a missing title just
+        # disables adoption, never blocks the resolve.
+        issue_title = ""
+        try:
+            # Best-effort: a bd failure just disables adoption, never blocks.
+            issue_title = bd.show(issue_id).title
+        except Exception:
+            issue_title = ""
         return _resolve_write_test_outcome(
-            submit_failing_test, skip_test_phase, workspace=workspace, prior_test_cmd=test_cmd
+            submit_failing_test,
+            skip_test_phase,
+            workspace=workspace,
+            prior_test_cmd=test_cmd,
+            issue_title=issue_title,
         )
     if phase == TurnPhase.IMPLEMENT:
         return _resolve_implement_outcome(

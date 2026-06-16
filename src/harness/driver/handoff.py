@@ -175,14 +175,17 @@ class Handoff:
     # investigation loop that never writes is invisible to it. This
     # directive breaks the loop by naming the no-edit pattern explicitly.
     prior_made_no_edits: bool = False
-    # harness-1ttpl (loop_run=065ff3c1): the PRIOR WRITE_TEST attempt ran a
-    # test via shell but never called submit_failing_test, so the phase halted
-    # "no test" and made zero progress — invisible to every existing defense,
-    # all of which gate behind a submission. The on-foot-physics bead burned 4
-    # attempts this way: each rediscovered the let/const eval-scope trap, knew
-    # its test was broken, self-censored, and re-authored from scratch. The
-    # builder sets this True only for a WRITE_TEST retry after that halt; the
-    # render directive names the trap + the existing-gate escape and demands a
+    # harness-1ttpl: a PRIOR WRITE_TEST attempt halted "no test" — it never
+    # called submit_failing_test, so the phase made zero progress, invisible to
+    # every existing defense (all gate behind a submission). Two observed
+    # shapes, same halt: (a) loop_run=065ff3c1 ran a test via shell, hit the
+    # let/const eval-scope trap, self-censored, re-authored from scratch; (b)
+    # loop_run=d12941b6 never ran a test AT ALL — it read/globbed the existing
+    # test files in a loop and concluded "I cannot run a test due to tool
+    # limitations" though `shell` was in the WRITE_TEST roster the whole time.
+    # The builder sets this True only for a WRITE_TEST retry after that halt;
+    # the render directive covers both shapes (you HAVE shell; an existing test
+    # may already be your red gate — RUN it, don't re-inspect it) and demands a
     # submit_failing_test / skip_test_phase exit this time.
     prior_write_test_no_submit: bool = False
 
@@ -313,10 +316,15 @@ class Handoff:
         if self.prior_write_test_no_submit:
             parts.extend(
                 [
-                    "[WROTE/RAN A TEST LAST ATTEMPT BUT NEVER SUBMITTED IT]",
-                    "Your previous WRITE_TEST attempt ran a test via shell but never "
-                    "called submit_failing_test, so the phase halted with 'no test' "
-                    "and made ZERO progress. Re-authoring from scratch will not help.",
+                    "[WRITE_TEST MADE ZERO PROGRESS LAST ATTEMPT — SUBMIT A GATE THIS TIME]",
+                    "Your previous WRITE_TEST attempt ended without calling "
+                    "submit_failing_test, so the phase halted with 'no test' and made "
+                    "ZERO progress — whether you ran a test and didn't submit it, or "
+                    "never ran one at all. Re-reading or re-authoring will not help.",
+                    "  - You HAVE a `shell` tool in this phase. Running a test is NOT a "
+                    "tool limitation — call shell to run it (e.g. `node test_foo.js`, "
+                    "`python test_foo.py`). If you caught yourself only reading/globbing "
+                    "test files last time, stop inspecting and RUN one now.",
                     "  - If your test loads the source via eval and throws "
                     "ReferenceError on a top-level let/const (e.g. 'foot is not "
                     "defined' though the source declares `let foot`), that IS the "

@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from harness.driver.fsm_turn import (
+    _adopt_existing_red_gate,
     _is_degenerate_test_cmd,
     _is_unrunnable_test_output,
     _lint_submitted_gate,
@@ -86,6 +87,87 @@ def test_no_submit_no_skip_no_prior_halts_no_progress(tmp_path: Path) -> None:
         prior_test_cmd=None,
     )
     assert outcome.kind == "phase_no_progress"
+
+
+def _write_py_test(path: Path, *, red: bool, loads_source: bool) -> None:
+    """Materialize a runnable python test file. `red` → exits non-zero on an
+    AssertionError; `loads_source` → contains an `import` marker so the
+    never-loads-source lint accepts it."""
+    lines = []
+    if loads_source:
+        lines.append("import os  # source-load marker")
+    lines.append("assert not " + ("True" if red else "False") + ', "gap"')
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_adopts_existing_red_gate_matching_subject(tmp_path: Path) -> None:
+    """harness-1ttpl: no submit/skip, no carried gate, but a red on-disk test
+    whose name overlaps the bead subject IS the gate — adopt it rather than
+    halt 'no test'."""
+    _write_py_test(tmp_path / "test_cruise_behavior.py", red=True, loads_source=True)
+    outcome = _resolve_write_test_outcome(
+        SubmitFailingTestTool(),
+        SkipTestPhaseTool(),
+        workspace=tmp_path,
+        prior_test_cmd=None,
+        issue_title="NPC cruise acceleration toward maxSpeed",
+    )
+    assert outcome.kind == "failing_test_submitted"
+    assert outcome.payload["test_path"] == "test_cruise_behavior.py"
+    assert outcome.payload["test_cmd"] == "python3 test_cruise_behavior.py"
+
+
+def test_no_adopt_when_no_name_overlap(tmp_path: Path) -> None:
+    """A red test whose name shares no domain token with the bead subject is
+    NOT this gate — halt rather than adopt an unrelated gate."""
+    _write_py_test(tmp_path / "test_widget_layout.py", red=True, loads_source=True)
+    outcome = _resolve_write_test_outcome(
+        SubmitFailingTestTool(),
+        SkipTestPhaseTool(),
+        workspace=tmp_path,
+        prior_test_cmd=None,
+        issue_title="NPC cruise acceleration toward maxSpeed",
+    )
+    assert outcome.kind == "phase_no_progress"
+
+
+def test_no_adopt_green_existing_test(tmp_path: Path) -> None:
+    """A name-matched but GREEN test is too weak a signal to adopt as the
+    gate — closing the bead on it would skip the work. Halt instead."""
+    _write_py_test(tmp_path / "test_cruise_behavior.py", red=False, loads_source=True)
+    outcome = _resolve_write_test_outcome(
+        SubmitFailingTestTool(),
+        SkipTestPhaseTool(),
+        workspace=tmp_path,
+        prior_test_cmd=None,
+        issue_title="NPC cruise acceleration toward maxSpeed",
+    )
+    assert outcome.kind == "phase_no_progress"
+
+
+def test_no_adopt_test_never_loads_source(tmp_path: Path) -> None:
+    """A name-matched red test that never loads any source artifact is red
+    forever (asserts on its own scope) — the submit-time lint rejects it, so
+    adoption must too."""
+    _write_py_test(tmp_path / "test_cruise_behavior.py", red=True, loads_source=False)
+    outcome = _resolve_write_test_outcome(
+        SubmitFailingTestTool(),
+        SkipTestPhaseTool(),
+        workspace=tmp_path,
+        prior_test_cmd=None,
+        issue_title="NPC cruise acceleration toward maxSpeed",
+    )
+    assert outcome.kind == "phase_no_progress"
+
+
+def test_adopt_helper_picks_best_overlap(tmp_path: Path) -> None:
+    """When several red tests match, the one with the most subject-token
+    overlap wins (deterministic selection)."""
+    _write_py_test(tmp_path / "test_cruise.py", red=True, loads_source=True)
+    _write_py_test(tmp_path / "test_cruise_npc_acceleration.py", red=True, loads_source=True)
+    outcome = _adopt_existing_red_gate(tmp_path, "NPC cruise acceleration toward maxSpeed")
+    assert outcome is not None
+    assert outcome.payload["test_path"] == "test_cruise_npc_acceleration.py"
 
 
 def test_barren_reattempt_reuses_carried_red_test(tmp_path: Path) -> None:
