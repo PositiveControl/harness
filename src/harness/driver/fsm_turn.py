@@ -41,7 +41,11 @@ from typing import Any
 from harness.character import Character
 from harness.driver.bd import DriverBd, DriverBdError
 from harness.driver.claim_detector import last_shell_cmd_in_messages
-from harness.driver.gate_blind import GATE_BLIND_IDIOM_NOTE, eval_blind_reference
+from harness.driver.gate_blind import (
+    GATE_BLIND_IDIOM_NOTE,
+    eval_blind_reference,
+    eval_blind_typeof_guard,
+)
 from harness.driver.handoff import Handoff
 from harness.driver.planner import VerifyStep
 from harness.driver.precommit_verify_hook import PreCloseVerifyHook
@@ -1133,6 +1137,10 @@ def _lint_submitted_gate(
             f"then resubmit."
         )
     blind = eval_blind_reference(tail, test_path, workspace)
+    if blind is None:
+        # The `typeof`-guarded sibling throws nothing, so the runtime tell
+        # above can't see it — fall back to the static read of the test text.
+        blind = eval_blind_typeof_guard(test_path, workspace)
     if blind is not None:
         return (
             f"test_cmd exits non-zero, but the red is structural, not the "

@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from harness.driver.fsm_turn import _lint_submitted_gate, run_fsm_turn
-from harness.driver.gate_blind import eval_blind_reference
+from harness.driver.gate_blind import eval_blind_reference, eval_blind_typeof_guard
 from harness.driver.turn_fsm import TurnPhase
 from tests.test_fsm_gate_suspect import (
     _ClosedBd,
@@ -51,6 +51,83 @@ def _blind_test_file(workspace: Path, *, name: str = "test_gate.js") -> str:
         "if (!Array.isArray(traffic)) { process.exit(1); }\n"
     )
     return name
+
+
+def _typeof_blind_file(
+    workspace: Path, *, name: str = "test_typeof.js", ident: str = "foot"
+) -> str:
+    """The typeof-guarded trap: eval the source, then `typeof <ident>` —
+    returns 'undefined' for a trapped let/const, no ReferenceError thrown."""
+    (workspace / name).write_text(
+        "const fs = require('fs');\n"
+        "const src = fs.readFileSync('game.js', 'utf8');\n"
+        "eval(src);\n"
+        f"if (typeof {ident} !== 'object') {{ process.exit(1); }}\n"
+    )
+    return name
+
+
+# --- eval_blind_typeof_guard unit tests -----------------------------
+
+
+def test_typeof_guard_flags_trapped_let_binding(tmp_path: Path) -> None:
+    (tmp_path / "game.js").write_text("let foot = { x: 0 };\nfunction update(dt) {}\n")
+    test_path = _typeof_blind_file(tmp_path)
+
+    diag = eval_blind_typeof_guard(test_path, tmp_path)
+
+    assert diag is not None
+    assert "`foot`" in diag
+    assert "typeof" in diag
+    assert "INTO the eval'd string" in diag
+
+
+def test_typeof_guard_flags_inline_eval_readfilesync(tmp_path: Path) -> None:
+    """The inline `eval(fs.readFileSync(...))` form (no intermediate var) is
+    the same trap and must also be flagged."""
+    (tmp_path / "game.js").write_text("const foot = { x: 0 };\n")
+    (tmp_path / "test_inline.js").write_text(
+        "const fs = require('fs');\n"
+        "eval(fs.readFileSync('game.js', 'utf8'));\n"
+        "if (typeof foot !== 'object') { process.exit(1); }\n"
+    )
+
+    assert eval_blind_typeof_guard("test_inline.js", tmp_path) is not None
+
+
+def test_typeof_guard_ignores_append_into_eval_idiom(tmp_path: Path) -> None:
+    """Working idiom: assertions concatenated INTO the eval string share its
+    scope, so the binding is visible — not blind, never flagged."""
+    (tmp_path / "game.js").write_text("let foot = { x: 0 };\n")
+    (tmp_path / "test_ok.js").write_text(
+        "const fs = require('fs');\n"
+        "const src = fs.readFileSync('game.js', 'utf8');\n"
+        "eval(src + '\\n;if (typeof foot !== \"object\") process.exit(1);');\n"
+    )
+
+    assert eval_blind_typeof_guard("test_ok.js", tmp_path) is None
+
+
+def test_typeof_guard_ignores_undeclared_deliverable(tmp_path: Path) -> None:
+    """`typeof` on a name the source does NOT declare top-level let/const is
+    the genuine gap (the bead must build it), never the trap."""
+    (tmp_path / "game.js").write_text("function update(dt) {}\n")
+    test_path = _typeof_blind_file(tmp_path, ident="spawnFoot")
+
+    assert eval_blind_typeof_guard(test_path, tmp_path) is None
+
+
+def test_typeof_guard_none_for_text_regex_gate(tmp_path: Path) -> None:
+    """The recommended source-text gate (readFileSync + regex, no eval) is
+    exactly what we steer toward — must never be flagged."""
+    (tmp_path / "game.js").write_text("let foot = {};\n")
+    (tmp_path / "test_text.js").write_text(
+        "const fs = require('fs');\n"
+        "const src = fs.readFileSync('game.js', 'utf8');\n"
+        "if (!/let foot/.test(src)) process.exit(1);\n"
+    )
+
+    assert eval_blind_typeof_guard("test_text.js", tmp_path) is None
 
 
 # --- eval_blind_reference unit tests --------------------------------
@@ -159,6 +236,22 @@ def test_submit_lint_accepts_gate_red_on_the_genuine_gap(tmp_path: Path) -> None
         _lint_submitted_gate(tmp_path, test_path, "node test_gate.js", 1, _REFERENCE_ERROR_OUTPUT)
         is None
     )
+
+
+def test_submit_lint_rejects_typeof_guarded_trap(tmp_path: Path) -> None:
+    """loop_run=55568949: the typeof-guarded trap throws no ReferenceError,
+    so the runtime tell misses it — its custom FAIL tail carries no error to
+    parse. The submit lint must still reject it via the static read."""
+    (tmp_path / "game.js").write_text("let foot = { x: 0 };\nfunction update(dt) {}\n")
+    test_path = _typeof_blind_file(tmp_path, name="test_foot.js")
+    custom_tail = "FAIL: foot state not found or not an object"
+
+    rejection = _lint_submitted_gate(tmp_path, test_path, "node test_foot.js", 1, custom_tail)
+
+    assert rejection is not None
+    assert "structural" in rejection
+    assert "`foot`" in rejection
+    assert "INTO the eval'd string" in rejection
 
 
 # --- turn-level: first-failure halt ----------------------------------

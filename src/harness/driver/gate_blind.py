@@ -34,6 +34,23 @@ from pathlib import Path
 
 _REFERENCE_ERROR_RE = re.compile(r"ReferenceError: ([A-Za-z_$][\w$]*) is not defined")
 
+# The `typeof`-guarded sibling of the ReferenceError trap (loop_run=55568949,
+# harness-1ttpl / harness-k18er): the model writes `eval(src); if (typeof foot
+# !== 'object') process.exit(1)`. `typeof` on a trapped binding returns
+# 'undefined' rather than THROWING, so eval_blind_reference (which keys on the
+# ReferenceError) never fires — the gate slips past submit, reds out
+# byte-identically across every IMPLEMENT pass, and only the VERIFY
+# byte-identical detector catches it, after the whole attempt budget is gone.
+# Detect it statically from the test text: an eval call that does NOT append
+# the assertions into the eval string, plus a `typeof <name>` guard on a name
+# the eval'd source declares at top level with let/const. The working idiom
+# `eval(src + '\n;…assertions…')` carries a `+` inside the eval parens before
+# the close; the trapped forms `eval(src)` / `eval(fs.readFileSync(…))` never
+# do — so a `+`-free eval call is the trap tell.
+_EVAL_CALL_RE = re.compile(r"\beval\s*\(")
+_EVAL_APPEND_RE = re.compile(r"\beval\s*\([^)\n]*\+")
+_TYPEOF_RE = re.compile(r"\btypeof\s+([A-Za-z_$][\w$]*)\b")
+
 # Source files the test reads — the eval-the-source idiom always goes
 # through fs.readFileSync('<source>').
 _READ_SOURCE_RE = re.compile(r"""readFileSync\(\s*['"]([^'"]+\.[cm]?js)['"]""")
@@ -102,4 +119,52 @@ def eval_blind_reference(output: str, test_path: str | None, workspace: Path) ->
                 f"structurally blind to the source's state, not red on the "
                 f"gap: {GATE_BLIND_IDIOM_NOTE}"
             )
+    return None
+
+
+def eval_blind_typeof_guard(test_path: str | None, workspace: Path) -> str | None:
+    """Static diagnostic for the `typeof`-guarded eval-blind trap; None
+    otherwise. Unlike `eval_blind_reference`, this reads the test TEXT (not
+    runtime output) — the trap it catches produces no ReferenceError, so there
+    is nothing in the output to key on.
+
+    Fires only on the precise trap shape: an eval call that does NOT append
+    the assertions into the eval string (the working idiom ``eval(src +
+    '…assertions…')`` carries a ``+`` inside the parens and is never matched)
+    plus a ``typeof <name>`` guard on a binding the eval'd source declares at
+    top level with let/const. Such a guard reads 'undefined' for the trapped
+    binding regardless of the implementation, so the gate is red forever.
+    Conservative throughout: no eval, an append-idiom eval, no typeof guard,
+    no readFileSync source, or an unreadable file → None."""
+    if test_path is None:
+        return None
+    resolved = Path(test_path)
+    if not resolved.is_absolute():
+        resolved = workspace / resolved
+    try:
+        test_text = resolved.read_text(encoding="utf-8", errors="replace")[:_READ_CAP]
+    except OSError:
+        return None
+    if not _EVAL_CALL_RE.search(test_text) or _EVAL_APPEND_RE.search(test_text):
+        return None
+    guarded = set(_TYPEOF_RE.findall(test_text))
+    if not guarded:
+        return None
+    for source_rel in _READ_SOURCE_RE.findall(test_text):
+        source_path = Path(source_rel)
+        if not source_path.is_absolute():
+            source_path = workspace / source_path
+        try:
+            source_text = source_path.read_text(encoding="utf-8", errors="replace")[:_READ_CAP]
+        except OSError:
+            continue
+        for name in sorted(guarded):
+            if _top_level_declares(source_text, name):
+                return (
+                    f"the test guards `typeof {name}` after eval-loading {source_rel}, "
+                    f"but {source_rel} declares `{name}` at top level with let/const — "
+                    f"`typeof` reads 'undefined' for the trapped binding (no "
+                    f"ReferenceError), so the gate is red regardless of the "
+                    f"implementation: {GATE_BLIND_IDIOM_NOTE}"
+                )
     return None
