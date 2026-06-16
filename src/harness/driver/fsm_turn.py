@@ -45,6 +45,7 @@ from harness.driver.gate_blind import (
     GATE_BLIND_IDIOM_NOTE,
     eval_blind_reference,
     eval_blind_typeof_guard,
+    phantom_member_assertion,
     regex_body_truncation,
 )
 from harness.driver.handoff import Handoff
@@ -1154,6 +1155,11 @@ def _lint_submitted_gate(
         # nothing and DOES read the source — a `{[^}]*}` body slice that
         # captures only up to the first inner brace. Static text read too.
         blind = regex_body_truncation(test_path, workspace)
+    if blind is None:
+        # harness-o4cbj: the phantom-member trap also throws nothing and
+        # DOES read the source — it asserts on `A.B.C` where the source
+        # uses `A.C` (invented intermediate segment). Static text read too.
+        blind = phantom_member_assertion(test_path, workspace)
     if blind is not None:
         return (
             f"test_cmd exits non-zero, but the red is structural, not the "
