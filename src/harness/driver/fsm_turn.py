@@ -1459,11 +1459,21 @@ def _resolve_verify_outcome(
             # top-level let/const means the gate can never observe the
             # implementation, so run_fsm_turn halts on the FIRST failure
             # instead of burning the verify-retry ceiling.
+            # harness-1ttpl follow-on: the submit-time lint catches both the
+            # ReferenceError trap AND its `typeof`-guarded sibling, but a
+            # gate CARRIED from a prior attempt (carried_gate_is_real) is
+            # reused without re-submitting — so it never sees that lint. The
+            # ReferenceError detector below keys on runtime output, which the
+            # `typeof` trap never produces; fall back to the static text read
+            # so a carried `typeof`-trap gate is caught at the FIRST verify
+            # too, not after the byte-identical detector burns the budget.
+            test_script = _test_cmd_script(test_cmd)
             return verify_failed(
                 failure_tail=f"test {test_cmd!r} exit={exit_code}: {tail}",
                 step="test",
                 tail=tail,
-                gate_blind=eval_blind_reference(output, _test_cmd_script(test_cmd), workspace)
+                gate_blind=eval_blind_reference(output, test_script, workspace)
+                or eval_blind_typeof_guard(test_script, workspace)
                 or "",
             )
     for step in verify_steps:
