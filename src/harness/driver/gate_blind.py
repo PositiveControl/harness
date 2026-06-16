@@ -96,6 +96,110 @@ GATE_BODY_TRUNCATION_NOTE = (
 )
 
 
+# The phantom-member trap (loop_run=77f684f9, harness-o4cbj): the test reads
+# the source and asserts (required-present) on a dotted member path the source
+# does NOT use, because the test author invented an intermediate segment — the
+# gate demands `player.car.speed` while the source models speed flat as
+# `player.speed` (no `player.car.speed` exists, and a correct implementation
+# never adds one). Red against the CORRECT implementation, so no IMPLEMENT pass
+# can move it: the gate parks byte-identically once the verify detector catches
+# it, after the whole attempt budget is gone (o4cbj parked this way across 4
+# attempts). Unlike the eval traps it throws nothing and DOES read the source;
+# unlike body-truncation the regex is well-formed — it just names a path that
+# can't exist. Detect it statically with a tight discriminator: the full path
+# `A.B.C` is absent from the source AND the middle-dropped path `A.C` IS present
+# — proof the concept `C` already lives directly on `A`, so requiring the longer
+# spelling contradicts the source. When `A.C` is also absent (genuine greenfield
+# add), no flag. The shared note steers re-authoring toward asserting on the
+# spelling the source actually uses.
+_DOTTED_PATH_RE = re.compile(r"[A-Za-z_$][\w$]*(?:\\?\.[A-Za-z_$][\w$]*)+")
+
+GATE_PHANTOM_MEMBER_NOTE = (
+    "the gate requires the member path `{full}`, but {source} never uses it — "
+    "the source expresses that field one level up as `{short}` (a correct "
+    "implementation writes `{short}`, not `{full}`), so the assertion is red "
+    "no matter what the implementation does. Assert on the member path the "
+    "source actually uses (`{short}`), not an invented intermediate segment"
+)
+
+
+def _member_path_present(source_text: str, path: str) -> bool:
+    """True when `source_text` contains `path` as a literal dotted member
+    access (e.g. ``player.speed``), word-bounded so ``player.speed`` does
+    not match inside ``player.speedometer``."""
+    pattern = re.compile(r"\b" + r"\.".join(re.escape(p) for p in path.split(".")) + r"\b")
+    return bool(pattern.search(source_text))
+
+
+def _path_required_present(test_text: str, raw_path: str) -> bool:
+    """True when at least one line mentioning `raw_path` asserts it
+    PRESENT — i.e. the line carries no `!` negation before the path. A
+    required-present assertion on a phantom path is the trap; a
+    should-be-absent assertion (`!src.includes(path)`) goes green when the
+    path is absent, so paths used only under negation are never flagged."""
+    for line in test_text.splitlines():
+        idx = line.find(raw_path)
+        if idx == -1:
+            continue
+        if "!" not in line[:idx]:
+            return True
+    return False
+
+
+def phantom_member_assertion(test_path: str | None, workspace: Path) -> str | None:
+    """Static diagnostic for the phantom-member trap; None otherwise. Like
+    the other static guards this reads the test TEXT — the trap throws
+    nothing and the regex is well-formed, it just names a member path the
+    source can't produce.
+
+    Fires only when the test reads source (``readFileSync``) AND a
+    required-present assertion references a 3-segment path ``A.B.C`` that is
+    absent from the source while the middle-dropped path ``A.C`` is present
+    — proof the concept lives one level up and the longer spelling
+    contradicts the source. Conservative throughout: no source read, no such
+    contradicted path, every occurrence negated, or an unreadable file →
+    None."""
+    if test_path is None:
+        return None
+    resolved = Path(test_path)
+    if not resolved.is_absolute():
+        resolved = workspace / resolved
+    try:
+        test_text = resolved.read_text(encoding="utf-8", errors="replace")[:_READ_CAP]
+    except OSError:
+        return None
+    source_rels = _READ_SOURCE_RE.findall(test_text)
+    if not source_rels:
+        return None
+    # Normalize regex-escaped dots (`player\.car\.speed`) to plain paths,
+    # keeping the raw spelling for the per-line negation check.
+    candidates: dict[str, str] = {}
+    for raw in _DOTTED_PATH_RE.findall(test_text):
+        norm = raw.replace("\\", "")
+        if norm.count(".") == 2:  # exactly A.B.C
+            candidates.setdefault(norm, raw)
+    if not candidates:
+        return None
+    for source_rel in source_rels:
+        source_path = Path(source_rel)
+        if not source_path.is_absolute():
+            source_path = workspace / source_path
+        try:
+            source_text = source_path.read_text(encoding="utf-8", errors="replace")[:_READ_CAP]
+        except OSError:
+            continue
+        for full, raw in sorted(candidates.items()):
+            a, _, c = full.split(".")
+            short = f"{a}.{c}"
+            if (
+                not _member_path_present(source_text, full)
+                and _member_path_present(source_text, short)
+                and _path_required_present(test_text, raw)
+            ):
+                return GATE_PHANTOM_MEMBER_NOTE.format(full=full, short=short, source=source_rel)
+    return None
+
+
 def _top_level_declares(source_text: str, name: str) -> bool:
     """True when `source_text` has a top-level ``let``/``const``
     declaration whose FIRST declarator is `name`. Later declarators in a

@@ -26,6 +26,7 @@ from harness.driver.fsm_turn import _lint_submitted_gate, run_fsm_turn
 from harness.driver.gate_blind import (
     eval_blind_reference,
     eval_blind_typeof_guard,
+    phantom_member_assertion,
     regex_body_truncation,
 )
 from harness.driver.turn_fsm import TurnPhase
@@ -201,6 +202,93 @@ def test_body_truncation_none_for_missing_file(tmp_path: Path) -> None:
     assert regex_body_truncation(None, tmp_path) is None
 
 
+# --- phantom_member_assertion unit tests ----------------------------
+
+
+def _phantom_member_file(workspace: Path, *, name: str = "test_phantom.js") -> str:
+    """The o4cbj shape: reads source, then asserts (required-present) on
+    `player.car.speed` — a path the source never produces because speed
+    lives flat on `player.speed`."""
+    (workspace / name).write_text(
+        "const fs = require('fs');\n"
+        "const src = fs.readFileSync('game.js', 'utf8');\n"
+        "const patterns = [\n"
+        "  /Math\\.abs\\(player\\.car\\.speed\\)\\s*<\\s*20/,\n"
+        "  /player\\.car\\.speed\\s*=\\s*0/,\n"
+        "];\n"
+        "for (const p of patterns) { if (!p.test(src)) process.exit(1); }\n"
+    )
+    return name
+
+
+def test_phantom_member_flags_invented_intermediate_segment(tmp_path: Path) -> None:
+    """`player.car.speed` is absent from source while `player.speed` IS
+    present — the gate names a member path the source can't produce."""
+    (tmp_path / "game.js").write_text(
+        "let player = { x: 0, speed: 0 };\nplayer.speed = 0;\nplayer.car = null;\n"
+    )
+    test_path = _phantom_member_file(tmp_path)
+
+    diag = phantom_member_assertion(test_path, tmp_path)
+
+    assert diag is not None
+    assert "`player.car.speed`" in diag
+    assert "`player.speed`" in diag
+    assert "game.js" in diag
+
+
+def test_phantom_member_none_when_full_path_present(tmp_path: Path) -> None:
+    """`player.car.driver = null` genuinely lives on `player.car` — the full
+    path IS in the source, so it is not a phantom and must be accepted."""
+    (tmp_path / "game.js").write_text("player.car = c;\nplayer.car.driver = null;\n")
+    (tmp_path / "test_driver.js").write_text(
+        "const fs = require('fs');\n"
+        "const src = fs.readFileSync('game.js', 'utf8');\n"
+        "if (!/player\\.car\\.driver\\s*=\\s*null/.test(src)) process.exit(1);\n"
+    )
+
+    assert phantom_member_assertion("test_driver.js", tmp_path) is None
+
+
+def test_phantom_member_none_for_greenfield_add(tmp_path: Path) -> None:
+    """Conservative: when NEITHER `player.car.speed` nor `player.speed` is in
+    the source yet, the gate may legitimately require the impl to add it —
+    no contradiction, so never flag."""
+    (tmp_path / "game.js").write_text("let player = { x: 0 };\n")
+    _phantom_member_file(tmp_path, name="test_add.js")
+
+    assert phantom_member_assertion("test_add.js", tmp_path) is None
+
+
+def test_phantom_member_none_when_only_negated(tmp_path: Path) -> None:
+    """A should-be-ABSENT assertion (`!src.includes(path)`) goes green when
+    the path is absent — that is the gap, not a phantom. A path whose every
+    occurrence is `!`-negated on its line is never flagged."""
+    (tmp_path / "game.js").write_text("let player = { speed: 0 };\nplayer.speed = 0;\n")
+    (tmp_path / "test_neg.js").write_text(
+        "const fs = require('fs');\n"
+        "const src = fs.readFileSync('game.js', 'utf8');\n"
+        "if (!src.includes('player.car.speed')) { /* expected absent */ }\n"
+    )
+
+    assert phantom_member_assertion("test_neg.js", tmp_path) is None
+
+
+def test_phantom_member_none_when_source_not_read(tmp_path: Path) -> None:
+    """A `player.car.speed` mention in a test that never reads source isn't
+    the source-blind trap."""
+    (tmp_path / "test_noread.js").write_text(
+        "const player = { car: { speed: 5 } };\nif (player.car.speed < 20) process.exit(1);\n"
+    )
+
+    assert phantom_member_assertion("test_noread.js", tmp_path) is None
+
+
+def test_phantom_member_none_for_missing_file(tmp_path: Path) -> None:
+    assert phantom_member_assertion("nonexistent.js", tmp_path) is None
+    assert phantom_member_assertion(None, tmp_path) is None
+
+
 # --- eval_blind_reference unit tests --------------------------------
 
 
@@ -339,6 +427,40 @@ def test_submit_lint_rejects_body_truncation_gate(tmp_path: Path) -> None:
     assert "structural" in rejection
     assert "FIRST inner" in rejection
     assert "src.includes" in rejection
+
+
+def test_submit_lint_rejects_phantom_member_gate(tmp_path: Path) -> None:
+    """harness-o4cbj: a gate asserting `player.car.speed` against a source
+    that models speed flat as `player.speed` reds out byte-identically across
+    every IMPLEMENT pass. The static phantom-member read must reject it at
+    submit, before the verify detector burns the whole attempt budget."""
+    (tmp_path / "game.js").write_text(
+        "let player = { x: 0, speed: 0 };\nplayer.speed = 0;\nplayer.car = null;\n"
+    )
+    test_path = _phantom_member_file(tmp_path, name="test_phantom.js")
+    custom_tail = "FAIL: Missing required patterns (0, 1)"
+
+    rejection = _lint_submitted_gate(tmp_path, test_path, "node test_phantom.js", 1, custom_tail)
+
+    assert rejection is not None
+    assert "structural" in rejection
+    assert "`player.car.speed`" in rejection
+    assert "`player.speed`" in rejection
+
+
+def test_submit_lint_accepts_member_path_the_source_uses(tmp_path: Path) -> None:
+    """A gate whose required path genuinely lives on the source object
+    (`player.car.driver`) is not a phantom — it must be accepted."""
+    (tmp_path / "game.js").write_text("player.car = c;\nplayer.car.driver = null;\n")
+    (tmp_path / "test_driver.js").write_text(
+        "const fs = require('fs');\n"
+        "const src = fs.readFileSync('game.js', 'utf8');\n"
+        "if (!/player\\.car\\.driver\\s*=\\s*null/.test(src)) process.exit(1);\n"
+    )
+
+    assert (
+        _lint_submitted_gate(tmp_path, "test_driver.js", "node test_driver.js", 1, "FAIL") is None
+    )
 
 
 # --- turn-level: first-failure halt ----------------------------------
