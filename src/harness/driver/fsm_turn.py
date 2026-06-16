@@ -48,6 +48,7 @@ from harness.driver.gate_blind import (
     phantom_member_assertion,
     regex_body_truncation,
 )
+from harness.driver.gate_synth import build_source_text_gate
 from harness.driver.handoff import Handoff
 from harness.driver.planner import VerifyStep
 from harness.driver.precommit_verify_hook import PreCloseVerifyHook
@@ -1295,6 +1296,44 @@ def _adopt_existing_red_gate(workspace: Path, issue_title: str) -> PhaseOutcome 
     return None
 
 
+def _adopt_synthesized_gate(
+    workspace: Path,
+    assessment: dict[str, Any] | None,
+    is_browser_js: bool,
+) -> PhaseOutcome | None:
+    """Synthesize a source-text gate from the assessment's named code shapes,
+    write + run it, and adopt it as `failing_test_submitted` — or None to halt.
+
+    The synthesizer (gate_synth) is pure: it picks the shapes and renders the
+    file text. This runs the same red + runnable + lint-clean gauntlet a real
+    submission passes; a synthesized gate that comes up green, unrunnable, or
+    structurally blind is discarded (and its file removed so it can't become
+    adopt-bait next attempt), leaving the caller to halt unchanged."""
+    synth = build_source_text_gate(assessment, workspace, is_browser_js=is_browser_js)
+    if synth is None:
+        return None
+    path = workspace / synth.test_filename
+    try:
+        path.write_text(synth.content, encoding="utf-8")
+    except OSError:
+        return None
+    exit_code, tail = _exec_test_cmd(synth.test_cmd, workspace)
+    blind = _lint_submitted_gate(workspace, synth.test_filename, synth.test_cmd, exit_code, tail)
+    if exit_code == 0 or _is_unrunnable_test_output(exit_code, tail) or blind is not None:
+        # Green (nothing to prove), unrunnable, or somehow blind — discard.
+        path.unlink(missing_ok=True)
+        return None
+    return failing_test_submitted(
+        test_path=synth.test_filename,
+        test_cmd=synth.test_cmd,
+        failure_output=(
+            f"synthesized source-text gate {synth.test_filename} from the assessment "
+            f"({synth.shape_count} absent code shape(s)) — the executor never submitted "
+            f"a runnable gate: {tail.strip()[-300:]}"
+        ),
+    )
+
+
 def _resolve_write_test_outcome(
     submit_failing_test: SubmitFailingTestTool,
     skip_test_phase: SkipTestPhaseTool,
@@ -1302,6 +1341,8 @@ def _resolve_write_test_outcome(
     workspace: Path,
     prior_test_cmd: str | None = None,
     issue_title: str = "",
+    assessment: dict[str, Any] | None = None,
+    is_browser_js: bool = False,
 ) -> PhaseOutcome:
     skip = skip_test_phase.latest()
     latest = submit_failing_test.latest()
@@ -1359,6 +1400,15 @@ def _resolve_write_test_outcome(
         adopted = _adopt_existing_red_gate(workspace, issue_title)
         if adopted is not None:
             return adopted
+        # harness-l3tgq: still no gate, and the executor has typically
+        # re-authored the same structurally-blind gate every attempt. Before
+        # halting, synthesize a structure-safe source-text gate from the
+        # assessment's own named code shapes (gate_synth). Adopt it only when
+        # it is red-now, runnable, and passes the same submit-lint a real gate
+        # passes — otherwise discard it and halt exactly as before.
+        synthesized = _adopt_synthesized_gate(workspace, assessment, is_browser_js)
+        if synthesized is not None:
+            return synthesized
         return phase_no_progress(
             TurnPhase.WRITE_TEST,
             reason="no submit_failing_test or skip_test_phase call",
@@ -1838,6 +1888,8 @@ def run_fsm_turn(
             test_cmd=captured_test_cmd,
             workspace=workspace,
             structural_bead=structural_bead,
+            assessment=captured_assessment,
+            is_browser_js=browser_workspace,
         )
 
         # Apply tdd_required override: if operator said --no-tdd and
@@ -2029,6 +2081,8 @@ def _resolve_phase_outcome(
     test_cmd: str | None,
     workspace: Path,
     structural_bead: bool = False,
+    assessment: dict[str, Any] | None = None,
+    is_browser_js: bool = False,
 ) -> PhaseOutcome:
     if phase == TurnPhase.ASSESS:
         # verify_steps / test_cmd / workspace feed the behavioral
@@ -2062,6 +2116,8 @@ def _resolve_phase_outcome(
             workspace=workspace,
             prior_test_cmd=test_cmd,
             issue_title=issue_title,
+            assessment=assessment,
+            is_browser_js=is_browser_js,
         )
     if phase == TurnPhase.IMPLEMENT:
         return _resolve_implement_outcome(
