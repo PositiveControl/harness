@@ -32,6 +32,7 @@ import contextlib
 import re
 import shlex
 import subprocess
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -56,6 +57,7 @@ from harness.driver.premise_guard import (
     flag_blocked_names_own_deliverable,
     flag_blocked_names_withheld_tool,
 )
+from harness.driver.runtime_gate_synth import RuntimeGateCandidate, build_runtime_gates
 from harness.driver.turn_fsm import (
     DEFAULT_PHASE_BUDGETS,
     PhaseOutcome,
@@ -75,7 +77,7 @@ from harness.driver.turn_fsm import (
     verify_failed,
     verify_passed,
 )
-from harness.driver.workspace_verify import workspace_has_browser_js
+from harness.driver.workspace_verify import _browser_app_index, workspace_has_browser_js
 from harness.model.adapter import ChatMessage, ModelAdapter
 from harness.orchestrator import ToolLoopEvent, ToolLoopResult, run_tool_loop
 from harness.orchestrator.hooks import EXHAUSTED_FABRICATION_FALLBACK
@@ -1296,6 +1298,92 @@ def _adopt_existing_red_gate(workspace: Path, issue_title: str) -> PhaseOutcome 
     return None
 
 
+def _runtime_gate_red_now(exit_code: int, tail: str) -> bool:
+    """A synthesized runtime probe is adoptable only when its smoke run failed
+    ON THE GAP — exit 1 with our ``RGFAIL:`` sentinel in the output — and is
+    free of probe errors. A mis-extracted collection / state symbol throws a
+    ReferenceError that ``smoke_runner`` surfaces as a ``scenario error``; a
+    page that errors on load fails without any ``RGFAIL:``. Both are discarded
+    (the caller falls through to the source-text gate / skip), so a bad guess
+    is never a false red — only an observed behavioral gap is adopted."""
+    if exit_code != 1 or _is_unrunnable_test_output(exit_code, tail):
+        return False
+    lowered = tail.lower()
+    if "scenario error" in lowered or "is not defined" in lowered:
+        return False
+    return "RGFAIL:" in tail
+
+
+def _adopt_synthesized_runtime_gate(
+    workspace: Path,
+    assessment: dict[str, Any] | None,
+    is_browser_js: bool,
+    issue_id: str,
+) -> PhaseOutcome | None:
+    """Synthesize a RUNTIME behavioral gate from the assessment and adopt the
+    first candidate whose smoke run is red on the gap — or None to fall through.
+
+    The synthesizer (runtime_gate_synth) is pure: it renders ``--setup`` /
+    ``--assert`` probe JS from the assessment's named motion / state-transition
+    invariants. This writes each candidate's probe files under ``.harness/``
+    (excluded from the file census / regression guard, and named per-issue so
+    they never collide with the global ``smoke_assert.js`` auto-pickup), runs
+    ``smoke_runner`` against the workspace ``index.html``, and adopts the first
+    one that is red-now + probe-clean (``_runtime_gate_red_now``). Non-adopted
+    candidates' files are removed so they can't become adopt-bait next attempt.
+
+    Closes the false-close class the load-only smoke gate can't see: a page
+    that loads clean but whose NPC cars never move / whose mode never reaches
+    'foot'. The adopted gate steps the loop (the settle window) and asserts the
+    behavior, so VERIFY arbitrates the actual gap, not just syntax + load."""
+    candidates: list[RuntimeGateCandidate] = build_runtime_gates(
+        assessment, is_browser_js=is_browser_js
+    )
+    if not candidates:
+        return None
+    index = _browser_app_index(workspace)
+    if index is None:
+        return None
+    harness_dir = workspace / ".harness"
+    try:
+        harness_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    safe_issue = re.sub(r"[^A-Za-z0-9_-]", "_", issue_id) or "issue"
+    for i, cand in enumerate(candidates):
+        setup_path = harness_dir / f"rg_{safe_issue}_{i}_setup.js"
+        assert_path = harness_dir / f"rg_{safe_issue}_{i}_assert.js"
+        try:
+            setup_path.write_text(cand.setup_js, encoding="utf-8")
+            assert_path.write_text(cand.assert_js, encoding="utf-8")
+        except OSError:
+            setup_path.unlink(missing_ok=True)
+            assert_path.unlink(missing_ok=True)
+            continue
+        test_cmd = (
+            f"{shlex.quote(sys.executable)} -m harness.driver.smoke_runner "
+            f"--setup={shlex.quote(str(setup_path.resolve()))} "
+            f"--assert={shlex.quote(str(assert_path.resolve()))} "
+            f"{shlex.quote(str(index.resolve()))}"
+        )
+        exit_code, tail = _exec_test_cmd(test_cmd, workspace)
+        if _runtime_gate_red_now(exit_code, tail):
+            return failing_test_submitted(
+                test_path=str(assert_path.relative_to(workspace)),
+                test_cmd=test_cmd,
+                failure_output=(
+                    f"synthesized runtime gate ({cand.kind}: {cand.description}) — the "
+                    f"executor never submitted a behavioral gate and the load-only smoke "
+                    f"gate can't observe this at runtime: {tail.strip()[-300:]}"
+                ),
+            )
+        # Green (behavior already correct), probe error, or unrunnable —
+        # discard this candidate's files and try the next.
+        setup_path.unlink(missing_ok=True)
+        assert_path.unlink(missing_ok=True)
+    return None
+
+
 def _adopt_synthesized_gate(
     workspace: Path,
     assessment: dict[str, Any] | None,
@@ -1341,6 +1429,7 @@ def _resolve_write_test_outcome(
     workspace: Path,
     prior_test_cmd: str | None = None,
     issue_title: str = "",
+    issue_id: str = "",
     assessment: dict[str, Any] | None = None,
     is_browser_js: bool = False,
 ) -> PhaseOutcome:
@@ -1360,6 +1449,22 @@ def _resolve_write_test_outcome(
         and not _test_cmd_file_missing(prior_test_cmd, workspace)
     )
     if skip is not None and latest is None and not carried_gate_is_real:
+        # harness: a skip on a browser-JS workspace must not dodge the gate
+        # synthesizers — the load-only smoke gate can't see behavioral gaps
+        # (NPC cars don't move, mode never reaches 'foot'), so a free skip
+        # lands in a VERIFY that false-closes (run a55b4862 reopened
+        # harness-l3tgq this way). Try a RUNTIME behavioral gate first (steps
+        # the loop, asserts the behavior), then a source-text gate, before
+        # honoring the skip. Each is adopted only when red-now + runnable +
+        # probe-clean, so this is strictly no-worse-than-skip.
+        synthesized = _adopt_synthesized_runtime_gate(
+            workspace, assessment, is_browser_js, issue_id
+        )
+        if synthesized is not None:
+            return synthesized
+        synthesized = _adopt_synthesized_gate(workspace, assessment, is_browser_js)
+        if synthesized is not None:
+            return synthesized
         return PhaseOutcome(
             kind="test_phase_skipped",
             detail=f"skipped: {skip['reason'][:120]}",
@@ -1402,10 +1507,18 @@ def _resolve_write_test_outcome(
             return adopted
         # harness-l3tgq: still no gate, and the executor has typically
         # re-authored the same structurally-blind gate every attempt. Before
-        # halting, synthesize a structure-safe source-text gate from the
-        # assessment's own named code shapes (gate_synth). Adopt it only when
-        # it is red-now, runnable, and passes the same submit-lint a real gate
-        # passes — otherwise discard it and halt exactly as before.
+        # halting, synthesize a gate from the assessment's own words. Try a
+        # RUNTIME behavioral gate first (steps the loop, asserts motion / a
+        # state transition — the only thing that catches the behavioral
+        # false-close class the load-only smoke gate can't see), then fall back
+        # to a structure-safe source-text gate. Each is adopted only when
+        # red-now + runnable + probe-/lint-clean — otherwise discarded and the
+        # phase halts exactly as before.
+        synthesized = _adopt_synthesized_runtime_gate(
+            workspace, assessment, is_browser_js, issue_id
+        )
+        if synthesized is not None:
+            return synthesized
         synthesized = _adopt_synthesized_gate(workspace, assessment, is_browser_js)
         if synthesized is not None:
             return synthesized
@@ -2116,6 +2229,7 @@ def _resolve_phase_outcome(
             workspace=workspace,
             prior_test_cmd=test_cmd,
             issue_title=issue_title,
+            issue_id=issue_id,
             assessment=assessment,
             is_browser_js=is_browser_js,
         )
