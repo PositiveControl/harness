@@ -45,6 +45,7 @@ from harness.driver.gate_blind import (
     GATE_BLIND_IDIOM_NOTE,
     eval_blind_reference,
     eval_blind_typeof_guard,
+    regex_body_truncation,
 )
 from harness.driver.handoff import Handoff
 from harness.driver.planner import VerifyStep
@@ -591,6 +592,13 @@ _BROWSER_TEST_HINT = (
     "SYNCHRONOUSLY at load. When neither a runtime nor a source-text gate "
     "genuinely fits, call skip_test_phase with that reason — VERIFY's "
     "source-presence + runtime smoke gates still arbitrate the close.\n"
+    "BODY-SLICE PITFALL (harness-k18er): regex the WHOLE source for the "
+    "code shape — do NOT first slice a function body with `{[^}]*}` and "
+    "assert on the slice. `[^}]*` stops at the first inner `}`, so any "
+    "function with a nested if/for block yields a truncated fragment and "
+    "the assertion is red no matter what you implement. "
+    "`src.includes(\"player.mode === 'foot'\")` on the full text is correct; "
+    "`src.match(/function update\\(\\)\\s*{[^}]*}/)[0].includes(...)` is not.\n"
     "Do NOT re-define mock copies of the functions under test in the test "
     "file — the test must observe the real source, and must process.exit(1) "
     "when the gap is present."
@@ -1141,6 +1149,11 @@ def _lint_submitted_gate(
         # The `typeof`-guarded sibling throws nothing, so the runtime tell
         # above can't see it — fall back to the static read of the test text.
         blind = eval_blind_typeof_guard(test_path, workspace)
+    if blind is None:
+        # harness-k18er: the function-body-truncation trap also throws
+        # nothing and DOES read the source — a `{[^}]*}` body slice that
+        # captures only up to the first inner brace. Static text read too.
+        blind = regex_body_truncation(test_path, workspace)
     if blind is not None:
         return (
             f"test_cmd exits non-zero, but the red is structural, not the "
@@ -1474,6 +1487,7 @@ def _resolve_verify_outcome(
                 tail=tail,
                 gate_blind=eval_blind_reference(output, test_script, workspace)
                 or eval_blind_typeof_guard(test_script, workspace)
+                or regex_body_truncation(test_script, workspace)
                 or "",
             )
     for step in verify_steps:

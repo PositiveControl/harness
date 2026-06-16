@@ -70,6 +70,31 @@ GATE_BLIND_IDIOM_NOTE = (
     "source text itself (readFileSync + regex)"
 )
 
+# The function-body-truncation trap (loop_run=7b5de2af, harness-k18er): the
+# model reads the source, extracts a function body with a `\{[^}]*\}` regex,
+# then asserts the captured body contains (or lacks) some token. `[^}]*` is a
+# NON-NESTING char class — it stops at the FIRST inner `}`, so for any
+# function with nested blocks (if / for / object literal) the capture is a
+# truncated fragment ending at that first brace, never the whole body. The
+# real implementation lives past it, so a "body lacks X" assertion is red
+# regardless of what the model writes. Unlike the eval traps this throws
+# nothing and DOES observe the source (readFileSync) — only the byte-identical
+# detector caught it, after the whole attempt budget was gone (k18er parked
+# this way across 4 attempts, the model re-authoring the identical regex each
+# time). Detect it statically: a `{[^}]*}` (or `[^}]+`) body capture in a test
+# that reads source. The shared note steers re-authoring AWAY from another
+# body-extraction regex — assert on the full source text, not a sliced body.
+_BODY_TRUNCATION_RE = re.compile(r"\{\s*\[\^}\]\s*[*+]\??\s*\}")
+
+GATE_BODY_TRUNCATION_NOTE = (
+    "a `{[^}]*}` regex captures only up to the FIRST inner `}`, so a function "
+    "with any nested block (if / for / object literal) yields a truncated "
+    "fragment, not its full body — an assertion on that fragment is red no "
+    "matter what the implementation does. Assert on the FULL source text "
+    "directly (e.g. src.includes(\"player.mode === 'foot'\")), not on a "
+    "regex-sliced function body"
+)
+
 
 def _top_level_declares(source_text: str, name: str) -> bool:
     """True when `source_text` has a top-level ``let``/``const``
@@ -168,3 +193,34 @@ def eval_blind_typeof_guard(test_path: str | None, workspace: Path) -> str | Non
                     f"implementation: {GATE_BLIND_IDIOM_NOTE}"
                 )
     return None
+
+
+def regex_body_truncation(test_path: str | None, workspace: Path) -> str | None:
+    """Static diagnostic for the function-body-truncation trap; None
+    otherwise. Like `eval_blind_typeof_guard` this reads the test TEXT — the
+    trap produces no runtime error, just a structurally-red assertion on a
+    truncated capture.
+
+    Fires only when the test reads source (``readFileSync``) AND contains a
+    ``{[^}]*}`` / ``{[^}]+}`` non-nesting body-capture regex. That char class
+    stops at the first inner ``}``, so any function with a nested block
+    captures a fragment, never the full body — an assertion on it is red
+    regardless of the implementation. Conservative: no source read, or no
+    truncating body capture, or an unreadable file → None."""
+    if test_path is None:
+        return None
+    resolved = Path(test_path)
+    if not resolved.is_absolute():
+        resolved = workspace / resolved
+    try:
+        test_text = resolved.read_text(encoding="utf-8", errors="replace")[:_READ_CAP]
+    except OSError:
+        return None
+    if not _READ_SOURCE_RE.search(test_text):
+        return None
+    if not _BODY_TRUNCATION_RE.search(test_text):
+        return None
+    return (
+        f"the test slices a function body with a non-nesting `{{[^}}]*}}` regex "
+        f"after reading the source, but {GATE_BODY_TRUNCATION_NOTE}"
+    )
