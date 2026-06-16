@@ -23,7 +23,11 @@ from pathlib import Path
 import pytest
 
 from harness.driver.fsm_turn import _lint_submitted_gate, run_fsm_turn
-from harness.driver.gate_blind import eval_blind_reference, eval_blind_typeof_guard
+from harness.driver.gate_blind import (
+    eval_blind_reference,
+    eval_blind_typeof_guard,
+    regex_body_truncation,
+)
 from harness.driver.turn_fsm import TurnPhase
 from tests.test_fsm_gate_suspect import (
     _ClosedBd,
@@ -128,6 +132,73 @@ def test_typeof_guard_none_for_text_regex_gate(tmp_path: Path) -> None:
     )
 
     assert eval_blind_typeof_guard("test_text.js", tmp_path) is None
+
+
+# --- regex_body_truncation unit tests -------------------------------
+
+
+def _body_truncation_file(workspace: Path, *, name: str = "test_body.js") -> str:
+    """The k18er trap: read the source, slice a function body with a
+    non-nesting `{[^}]*}` regex, assert on the (truncated) slice."""
+    (workspace / name).write_text(
+        "const fs = require('fs');\n"
+        "const src = fs.readFileSync('game.js', 'utf8');\n"
+        "const body = src.match(/function\\s+update\\([^)]*\\)\\s*{[^}]*}/s)[0];\n"
+        "if (!/player\\.mode/.test(body)) process.exit(1);\n"
+    )
+    return name
+
+
+def test_body_truncation_flags_nonnesting_slice(tmp_path: Path) -> None:
+    (tmp_path / "game.js").write_text("function update(dt) { if (x) { foo(); } }\n")
+    test_path = _body_truncation_file(tmp_path)
+
+    diag = regex_body_truncation(test_path, tmp_path)
+
+    assert diag is not None
+    assert "FIRST inner" in diag
+    assert "src.includes" in diag
+
+
+def test_body_truncation_matches_plus_quantifier(tmp_path: Path) -> None:
+    """`{[^}]+}` is the same non-nesting trap as `{[^}]*}`."""
+    (tmp_path / "game.js").write_text("function update() { if (x) {} }\n")
+    (tmp_path / "test_plus.js").write_text(
+        "const fs = require('fs');\n"
+        "const src = fs.readFileSync('game.js', 'utf8');\n"
+        "if (!/update\\(\\)\\s*{[^}]+}/.test(src)) process.exit(1);\n"
+    )
+
+    assert regex_body_truncation("test_plus.js", tmp_path) is not None
+
+
+def test_body_truncation_none_for_whole_source_regex(tmp_path: Path) -> None:
+    """A regex on the FULL source (no body slice) is the correct idiom —
+    must never be flagged."""
+    (tmp_path / "game.js").write_text("function update() {}\n")
+    (tmp_path / "test_ok.js").write_text(
+        "const fs = require('fs');\n"
+        "const src = fs.readFileSync('game.js', 'utf8');\n"
+        "if (!/player\\.mode\\s*===\\s*'foot'/.test(src)) process.exit(1);\n"
+    )
+
+    assert regex_body_truncation("test_ok.js", tmp_path) is None
+
+
+def test_body_truncation_none_when_source_not_read(tmp_path: Path) -> None:
+    """Conservative: the `{[^}]*}` token in a test that never reads source
+    (asserts on its own scope) isn't the source-blind trap — not flagged."""
+    (tmp_path / "test_noread.js").write_text(
+        "const body = someString.match(/f\\(\\)\\s*{[^}]*}/)[0];\n"
+        "if (!/x/.test(body)) process.exit(1);\n"
+    )
+
+    assert regex_body_truncation("test_noread.js", tmp_path) is None
+
+
+def test_body_truncation_none_for_missing_file(tmp_path: Path) -> None:
+    assert regex_body_truncation("nonexistent.js", tmp_path) is None
+    assert regex_body_truncation(None, tmp_path) is None
 
 
 # --- eval_blind_reference unit tests --------------------------------
@@ -252,6 +323,22 @@ def test_submit_lint_rejects_typeof_guarded_trap(tmp_path: Path) -> None:
     assert "structural" in rejection
     assert "`foot`" in rejection
     assert "INTO the eval'd string" in rejection
+
+
+def test_submit_lint_rejects_body_truncation_gate(tmp_path: Path) -> None:
+    """harness-k18er: a `{[^}]*}` body-slice gate reads the source and throws
+    nothing, so both eval tells miss it — the static body-truncation read must
+    reject it at submit, before the byte-identical detector burns the budget."""
+    (tmp_path / "game.js").write_text("function update(dt) { if (x) { foo(); } }\n")
+    test_path = _body_truncation_file(tmp_path, name="test_body.js")
+    custom_tail = "FAIL: No foot mode detection found in update function"
+
+    rejection = _lint_submitted_gate(tmp_path, test_path, "node test_body.js", 1, custom_tail)
+
+    assert rejection is not None
+    assert "structural" in rejection
+    assert "FIRST inner" in rejection
+    assert "src.includes" in rejection
 
 
 # --- turn-level: first-failure halt ----------------------------------

@@ -10,6 +10,7 @@ with no carried test halts no-progress.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from harness.driver.fsm_turn import (
     _is_degenerate_test_cmd,
     _is_unrunnable_test_output,
     _lint_submitted_gate,
+    _resolve_verify_outcome,
     _resolve_write_test_outcome,
     _test_cmd_file_missing,
     _test_cmd_script,
@@ -411,6 +413,32 @@ def test_test_cmd_script_extraction() -> None:
     assert _test_cmd_script("cd /ws && python test_x.py") == "test_x.py"
     assert _test_cmd_script("python3 path/to/test_y.py") == "path/to/test_y.py"
     assert _test_cmd_script("pytest tests/test_z.py::test_case -v") == "tests/test_z.py"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_verify_flags_carried_typeof_trap_gate(tmp_path: Path) -> None:
+    """harness-1ttpl follow-on: a CARRIED `typeof`-trap gate (reused at
+    verify without re-submitting, so it never sees the submit-time lint)
+    must still surface gate_blind at the FIRST verify. The trap throws no
+    ReferenceError, so eval_blind_reference can't see it — only the static
+    eval_blind_typeof_guard fallback catches it before the byte-identical
+    detector burns the verify-retry ceiling."""
+    (tmp_path / "game.js").write_text("let foot = null;\nfunction update() {}\n")
+    # eval(src) traps `let foot` inside the eval scope; `typeof foot` reads
+    # 'undefined' regardless of the source -> exit 1, red forever.
+    (tmp_path / "test_foot.js").write_text(
+        "const fs = require('fs');\n"
+        "const src = fs.readFileSync('game.js', 'utf8');\n"
+        "eval(src);\n"
+        "if (typeof foot !== 'object') process.exit(1);\n"
+    )
+    outcome = _resolve_verify_outcome(
+        verify_steps=[],
+        test_cmd=f"cd {tmp_path} && node test_foot.js",
+        workspace=tmp_path,
+    )
+    assert outcome.kind == "verify_failed"
+    assert "typeof foot" in outcome.payload.get("gate_blind", "")
     assert _test_cmd_script("node game.test.js") == "game.test.js"
     # No script path -> None (don't false-positive into "missing").
     assert _test_cmd_script('python3 -c "import sys; sys.exit(1)"') is None
