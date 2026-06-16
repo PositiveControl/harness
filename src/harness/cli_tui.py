@@ -76,7 +76,7 @@ def run_tui(
         from harness.tui import ChatApp
     except ImportError as exc:
         raise typer.BadParameter(
-            "--tui requires the `tui` extra. Install it with: uv sync --extra tui"
+            "--tui requires the `tui` extra. Install it with: uv sync --extra all"
         ) from exc
 
     character = load_character(settings.character_path)

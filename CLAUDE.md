@@ -14,7 +14,7 @@ For daily-use workflow (how Mark actually talks to Airton), see `docs/usage.md`.
 
 Environment setup (one time):
 
-- `uv sync --extra dev --extra mlx --extra retrieval --extra grammar --extra tui --extra code` — install runtime + dev + MLX + retrieval + grammar-router + Textual TUI + tree-sitter symbol layer (powers `outline` / `read_file symbol=`). Omitting `--extra code` silently degrades symbol reads to line-based.
+- `uv sync --extra all` — install the full core set in one shot: dev + MLX + retrieval + grammar-router + Textual TUI + tree-sitter symbol layer (`outline` / `read_file symbol=`) + browser (Playwright smoke gate) + web gateway. `all` is an aggregate extra = `harness[dev,mlx,retrieval,grammar,tui,code,browser,web]`. ALWAYS sync `all` — `uv sync` PRUNES any extra you omit, so a partial sync (e.g. `--extra browser` alone) silently rips out numpy / tree-sitter / fastapi and the next mypy / pytest / drive run breaks. Add a niche extra additively: `uv sync --extra all --extra asr`. Then `uv run playwright install chromium` once for the browser smoke gate.
 - `uv run hf download mlx-community/Qwen2.5-7B-Instruct-4bit` — pull the default MLX model (~4 GB). For the fuller 32B model: `uv run hf download mlx-community/Qwen2.5-32B-Instruct-4bit` (~18 GB).
 - `uv run pre-commit install --install-hooks && uv run pre-commit install --hook-type pre-push` — install git hooks.
 
@@ -162,4 +162,4 @@ Rules of engagement:
 
 - Don't silence a failing check with blanket `# noqa` / `# type: ignore`. Fix it, or add a targeted per-file ignore with a comment explaining why.
 - `ruff format` owns layout; don't hand-format. If formatter and rule disagree, change the rule.
-- New deps go in `pyproject.toml`. Run `uv sync --extra dev --extra mlx --extra retrieval --extra grammar --extra tui --extra code` after (the full extra set — `uv sync` prunes any extra you omit).
+- New deps go in `pyproject.toml`. Run `uv sync --extra all` after (`uv sync` prunes any extra you omit; `all` is the aggregate that keeps the full core set installed). A new *core* extra must also be added to the `all` list in `pyproject.toml`.

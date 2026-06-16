@@ -892,7 +892,7 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                         "(syntax-only verify) — not auto-closing a browser app on a "
                         "claim the gate can't corroborate. Close manually after a "
                         "real runtime check, or install the browser extra "
-                        "(uv sync --extra browser && playwright install chromium)."
+                        "(uv sync --extra all && playwright install chromium)."
                     )
                 elif (
                     config.auto_close_on_claim

@@ -132,6 +132,16 @@ dev = [
     "types-python-dateutil>=2.9",
     "pre-commit>=4.0",
 ]
+# Aggregate "everything the core dev + drive env needs" extra. `uv sync`
+# PRUNES any extra not named on the command line, so a partial
+# `uv sync --extra browser` silently rips out numpy / tree-sitter / fastapi
+# and the next mypy / pytest / drive run breaks (uv 0.11.7 has no
+# `default-extras`). Sync `--extra all` (or `--extra all --extra <niche>`)
+# so the full set is always the closure and nothing is pruned. The niche
+# audio/aviation extras (atc / asr / notam — whisper, pyproj) stay OUT on
+# purpose: heavy + workflow-specific, added explicitly when that work needs
+# them. Keep this list in sync when adding a core extra.
+all = ["harness[dev,mlx,retrieval,grammar,tui,code,browser,web]"]
 
 [project.scripts]
 harness = "harness.cli:app"

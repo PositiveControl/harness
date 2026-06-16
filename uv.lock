@@ -754,6 +754,30 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+all = [
+    { name = "datasets" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "mlx" },
+    { name = "mlx-lm" },
+    { name = "mypy" },
+    { name = "numpy" },
+    { name = "outlines" },
+    { name = "playwright" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "sentence-transformers" },
+    { name = "slowapi" },
+    { name = "textual" },
+    { name = "tree-sitter" },
+    { name = "tree-sitter-language-pack" },
+    { name = "types-python-dateutil" },
+    { name = "types-pyyaml" },
+    { name = "uvicorn" },
+]
 asr = [
     { name = "mlx-whisper" },
 ]
@@ -807,6 +831,7 @@ requires-dist = [
     { name = "astral", specifier = ">=3.0" },
     { name = "datasets", marker = "extra == 'grammar'", specifier = ">=2.20" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115" },
+    { name = "harness", extras = ["dev", "mlx", "retrieval", "grammar", "tui", "code", "browser", "web"], marker = "extra == 'all'" },
     { name = "holidays", specifier = ">=0.50" },
     { name = "httpx", marker = "extra == 'web'", specifier = ">=0.27" },
     { name = "mlx", marker = "extra == 'mlx'", specifier = ">=0.22" },
@@ -839,7 +864,7 @@ requires-dist = [
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.30" },
 ]
-provides-extras = ["mlx", "retrieval", "grammar", "tui", "atc", "asr", "notam", "web", "browser", "code", "dev"]
+provides-extras = ["mlx", "retrieval", "grammar", "tui", "atc", "asr", "notam", "web", "browser", "code", "dev", "all"]
 
 [[package]]
 name = "hf-xet"

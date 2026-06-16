@@ -4,8 +4,9 @@ Uses pymupdf4llm.to_markdown() — preserves headings, lists, and tables
 in the markdown output so the section-aware chunker (harness-xbk.5)
 has anchors to parse. Idempotent on source mtime so re-runs are cheap.
 
-Requires the `atc` optional extra:
-    uv sync --extra atc
+Requires the `atc` optional extra (run additively with `all` so the rest of
+the env isn't pruned):
+    uv sync --extra all --extra atc
 
 Usage (from repo root):
     uv run python scripts/atc_extract.py
@@ -153,7 +154,7 @@ def extract_one(
         except ImportError:
             sys.exit(
                 "pymupdf4llm is not installed. Run "
-                "`uv sync --extra atc` to install atc's corpus-extraction deps."
+                "`uv sync --extra all --extra atc` to install atc's corpus-extraction deps."
             )
         extractor = pymupdf4llm.to_markdown
     else:

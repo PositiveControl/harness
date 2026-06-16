@@ -367,7 +367,7 @@ def browser_smoke_skip_reason(workspace: Path) -> str | None:
     invisibly: Playwright wasn't importable, so the strongest gate
     produced no step and no signal. The loop logs this reason loudly at
     startup so the operator knows runtime verification is OFF and can
-    install the ``browser`` extra (``uv sync --extra browser`` +
+    install the ``browser`` extra (``uv sync --extra all`` +
     ``playwright install chromium``) before trusting auto-closes.
 
     Returns None when there's no browser app (nothing to warn about) or
@@ -382,7 +382,7 @@ def browser_smoke_skip_reason(workspace: Path) -> str | None:
         "browser app detected (index.html + local JS) but the smoke-execute "
         "verify gate is OFF: Playwright is not installed. Runtime-on-load JS "
         "bugs will NOT fail verify, so auto-closes are syntax-only. Install "
-        "with `uv sync --extra browser && uv run playwright install chromium`."
+        "with `uv sync --extra all && uv run playwright install chromium`."
     )
 
 

@@ -16,7 +16,7 @@ on aviation radio audio in this corpus's class). Override with
 --model for tiny/base/turbo runs during iteration.
 
 Usage (from repo root, requires `--extra asr`):
-    uv sync --extra asr
+    uv sync --extra all --extra asr
     uv run python scripts/atc_audio_transcribe.py
     uv run python scripts/atc_audio_transcribe.py --model mlx-community/whisper-tiny
     uv run python scripts/atc_audio_transcribe.py --only 04dd0a5b26d4 --force
@@ -46,7 +46,9 @@ def _load_mlx_whisper() -> types.ModuleType:
     try:
         import mlx_whisper
     except ImportError as exc:
-        raise SystemExit("mlx-whisper not installed. Run `uv sync --extra asr` and retry.") from exc
+        raise SystemExit(
+            "mlx-whisper not installed. Run `uv sync --extra all --extra asr` and retry."
+        ) from exc
     return mlx_whisper  # type: ignore[no-any-return]
 
 

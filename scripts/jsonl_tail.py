@@ -42,8 +42,8 @@ try:
     from textual.widgets.tree import TreeNode
 except ImportError:  # pragma: no cover - depends on --extra tui
     sys.stderr.write(
-        "textual not installed. Run: uv sync --extra tui\n"
-        "(or: uv run --extra tui python scripts/jsonl_tail.py ...)\n"
+        "textual not installed. Run: uv sync --extra all\n"
+        "(or: uv run --extra all python scripts/jsonl_tail.py ...)\n"
     )
     raise SystemExit(1) from None
 

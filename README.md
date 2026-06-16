@@ -69,8 +69,11 @@ Each character's data lives under `character/<name>/` — `core.yaml`, `constitu
 Requirements: macOS (Apple Silicon for MLX), Python 3.11+, [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-# 1. Install dependencies (grammar + tui + code extras are optional — see below)
-uv sync --extra dev --extra mlx --extra retrieval --extra grammar --extra tui --extra code
+# 1. Install dependencies. `--extra all` pulls the full core set (dev + mlx +
+#    retrieval + grammar + tui + code + browser + web). Always sync `all` —
+#    `uv sync` PRUNES any extra you omit, so a partial sync silently breaks
+#    later mypy / pytest / drive runs.
+uv sync --extra all
 
 # 2. Pull the default MLX model (~4 GB, 4-bit quantized Qwen 2.5 7B Instruct)
 uv run hf download mlx-community/Qwen2.5-7B-Instruct-4bit

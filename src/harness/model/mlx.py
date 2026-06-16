@@ -297,8 +297,7 @@ class MLXAdapter:
             from outlines.samplers import greedy, multinomial
         except ImportError as exc:
             raise RuntimeError(
-                "complete_grammar requires the `grammar` extra. "
-                "Install with: uv sync --extra grammar"
+                "complete_grammar requires the `grammar` extra. Install with: uv sync --extra all"
             ) from exc
 
         prompt = self._build_prompt(messages)

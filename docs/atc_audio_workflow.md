@@ -7,7 +7,7 @@ The pipeline is four scripts run in order, plus one eval subcommand. Each stage 
 ## Prereqs
 
 - ffmpeg + ffplay on PATH (`brew install ffmpeg`).
-- `uv sync --extra asr --extra retrieval` — adds mlx-whisper + sentence-transformers.
+- `uv sync --extra all --extra asr` — adds mlx-whisper on top of the full core set. (Run additively with `all`, not `--extra asr` alone — a bare `--extra asr` prunes the rest of the env.)
 - Source mp3s somewhere on disk. Default ingest dir is `../atc-audio` relative to the repo root; override with `--source`.
 - ATC family character set: `export HARNESS_CHARACTER_NAME=airton_c1`.
 

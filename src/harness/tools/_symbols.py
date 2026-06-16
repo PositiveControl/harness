@@ -219,7 +219,7 @@ def _get_parser(language: str) -> Any:
     except ImportError as exc:  # extra not installed
         raise SymbolsUnavailableError(
             "symbol indexing needs the [code] extra "
-            "(uv sync --extra code) — tree-sitter is not importable"
+            "(uv sync --extra all) — tree-sitter is not importable"
         ) from exc
     try:
         return get_parser(language)

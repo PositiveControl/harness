@@ -350,7 +350,7 @@ def _load_embedder() -> object | None:
     except ImportError:
         console.print(
             "[yellow]retrieval extra not installed. "
-            "Run `uv sync --extra retrieval` to enable retrieval + memory.[/yellow]"
+            "Run `uv sync --extra all` to enable retrieval + memory.[/yellow]"
         )
         _cached_embedder = None
         return None
@@ -2422,7 +2422,7 @@ def chat(
         "Persistent input at the bottom, scrolling output above, live "
         "ctx + elapsed metrics. Phase 1 is a scaffold (echo only); "
         "model wiring lands in harness-29c. Requires the `tui` extra: "
-        "uv sync --extra tui.",
+        "uv sync --extra all.",
     ),
 ) -> None:
     """CLI chat loop. Swap model runtimes with --model."""
@@ -2596,7 +2596,7 @@ def phraseology_lint_cmd(
     if memory_store is None:
         raise typer.BadParameter(
             "phraseology lint needs the episodic store — install with "
-            "`uv sync --extra retrieval` and run `harness memory ingest`."
+            "`uv sync --extra all` and run `harness memory ingest`."
         )
 
     try:
@@ -4456,7 +4456,7 @@ def eval_atc_retrieval(
     store = _open_episodic_store(character, ingest=False)
     if store is None:
         raise typer.BadParameter(
-            "retrieval eval needs the `retrieval` extra — re-run `uv sync --extra retrieval`."
+            "retrieval eval needs the `retrieval` extra — re-run `uv sync --extra all`."
         )
 
     # Build the query expander the same way SearchMemoryTool does, so
@@ -4851,7 +4851,7 @@ def eval_phraseology(
     if memory_store is None:
         raise typer.BadParameter(
             "phraseology eval needs the episodic store — install with "
-            "`uv sync --extra retrieval` and run `harness memory ingest`."
+            "`uv sync --extra all` and run `harness memory ingest`."
         )
 
     verb_anchors = load_verb_anchors(default_verb_anchors_path(settings.character_path))
@@ -5179,7 +5179,7 @@ def eval_atc_audio(
     if memory_store is None:
         raise typer.BadParameter(
             "atc-audio eval needs the episodic store — install with "
-            "`uv sync --extra retrieval` and run `harness memory ingest`."
+            "`uv sync --extra all` and run `harness memory ingest`."
         )
 
     try:
