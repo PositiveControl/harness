@@ -448,6 +448,34 @@ def test_render_tool_event_marks_deduped_call() -> None:
     assert "🔧" not in output
 
 
+def test_render_tool_event_marks_blocked_call() -> None:
+    """A non-duplicate pre_tool guard (targeted_fix_no_overwrite,
+    grounding, …) emits tool_call_blocked, not tool_call_deduped. The
+    CLI surfaces the guard's reason — NOT a misleading 'duplicate' line."""
+    call = ToolCall(name="write_file", arguments={"path": "game.js", "content": "…"})
+    events = [
+        ToolLoopEvent(
+            kind="tool_call_blocked",
+            call=call,
+            result=ToolResult(
+                tool_name="write_file",
+                output="refusing write_file on existing game.js in TARGETED-FIX mode…",
+                success=False,
+                error="targeted_fix_no_overwrite",
+            ),
+            round_index=1,
+        ),
+    ]
+    output = _render_all(events)
+    assert "blocked" in output
+    assert "targeted_fix_no_overwrite" in output
+    assert "write_file" in output
+    # Not labeled a duplicate — that was the bug this split fixed.
+    assert "duplicate" not in output
+    # No 🔧 — the call never ran.
+    assert "🔧" not in output
+
+
 def test_render_tool_event_marks_failed_and_declined() -> None:
     call = ToolCall(name="shell", arguments={"cmd": "ls"})
     events = [

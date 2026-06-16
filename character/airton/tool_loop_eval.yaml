@@ -281,7 +281,7 @@
             old_string: "// still doesn't match the actual file"
             new_string: "let peds = [];"
     - content: "The edit failed because my old_string didn't match what's in game.js."
-  expected_events_contain: [tool_call_deduped]
+  expected_events_contain: [tool_call_blocked]
 
 - id: post_dup_completion_claim_gta_session
   label: post_dup_completion_claim
@@ -699,7 +699,7 @@
   expected_messages_contain:
     - "grounded-args check failed"
     - "dailydrop"
-  expected_events_contain: [tool_call_deduped]
+  expected_events_contain: [tool_call_blocked]
   expected_messages_not_contain: ["search-result"]
 
 - id: scope_violation_mexico_for_south_america
@@ -802,7 +802,7 @@
         edit_file keeps failing. Switching to write_file for the
         wholesale replacement.
   expected_contains: ["write_file"]
-  expected_events_contain: [tool_call_deduped]
+  expected_events_contain: [tool_call_blocked]
   expected_messages_contain: ["edit_file", "disabled"]
 
 - id: load_tool_loop_caught_at_third_no_change
@@ -834,7 +834,7 @@
     - content: |
         I can't find a new tool to load. Reporting blocker.
   expected_contains: ["blocker"]
-  expected_events_contain: [tool_call_deduped]
+  expected_events_contain: [tool_call_blocked]
   expected_messages_contain: ["load_tool loop"]
 
 - id: tool_search_loop_caught_at_third_call
@@ -869,7 +869,7 @@
         a source URL or rephrase the question — discovery loops
         aren't getting me anywhere new.
   expected_contains: ["Paste"]
-  expected_events_contain: [tool_call_deduped]
+  expected_events_contain: [tool_call_blocked]
   expected_messages_contain: ["tool_search loop", "load_tool"]
 
 - id: duplicate_call_short_circuit

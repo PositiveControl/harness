@@ -161,6 +161,7 @@ class _EventTracker:
                 "tool_call_failed",
                 "tool_call_declined",
                 "tool_call_deduped",
+                "tool_call_blocked",
             }
             and event.result is not None
         ):

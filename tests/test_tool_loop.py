@@ -3135,10 +3135,12 @@ def test_main_model_tool_call_skipped_when_args_ungrounded() -> None:
         registry,
     )
 
-    # tool_call_deduped (the event kind used for any pre-tool Skip,
-    # including grounding) replaces tool_call_start/end.
+    # tool_call_blocked (the event kind for a non-duplicate pre-tool
+    # Skip — here, argument grounding) replaces tool_call_start/end.
+    # tool_call_deduped is reserved for genuine duplicates.
     kinds = [e.kind for e in result.events]
-    assert "tool_call_deduped" in kinds
+    assert "tool_call_blocked" in kinds
+    assert "tool_call_deduped" not in kinds
     # The grounding nudge landed in the tool-role message, not the
     # search_web output.
     tool_msgs = [m for m in result.messages if m.role == "tool"]
@@ -3179,6 +3181,7 @@ def test_grounded_main_model_call_runs_normally() -> None:
     kinds = [e.kind for e in result.events]
     assert "tool_call_end" in kinds
     assert "tool_call_deduped" not in kinds
+    assert "tool_call_blocked" not in kinds
     tool_msgs = [m for m in result.messages if m.role == "tool"]
     assert tool_msgs[0].content == "SO result"
 
@@ -3726,7 +3729,7 @@ def test_blocked_meta_rounds_count_as_work_budget_burn(tmp_path: Path) -> None:
     blocked_count = sum(
         1
         for e in result.events
-        if e.kind == "tool_call_deduped"
+        if e.kind == "tool_call_blocked"
         and e.result is not None
         and "loop detected" in (e.result.error or "").lower()
     )

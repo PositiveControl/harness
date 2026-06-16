@@ -283,8 +283,8 @@ class ToolLoopEvent:
     print inline status. Kind is one of: router_intent, round_start,
     model_call_start, token_delta, model_call_end, tool_call_start,
     tool_call_end, tool_call_failed, tool_call_declined,
-    tool_call_deduped, truncated_retry, bail_retry, round_complete,
-    scope_redirected, meta_round, wrap_up_forced.
+    tool_call_deduped, tool_call_blocked, truncated_retry, bail_retry,
+    round_complete, scope_redirected, meta_round, wrap_up_forced.
 
     `meta_round` (harness-rlza) fires when an iteration's only tool
     calls were meta-tools (tool_search / load_tool / introspect /
@@ -344,6 +344,16 @@ class ToolLoopEvent:
     stock nudge as the tool-role message so the next round sees 'stop
     calling, give the final answer'. `result` carries that nudge so
     the CLI can render an inline 'duplicate; skipped' line.
+
+    `tool_call_blocked` fires (also in place of tool_call_start+end)
+    when a NON-duplicate pre_tool guard short-circuits a first-time
+    call — targeted_fix_no_overwrite, suspicious_shrink, the
+    write_file→edit_file reroute, or argument grounding. These are
+    policy refusals, not repeats; splitting the kind keeps
+    `tool_call_deduped` meaning strictly 'you already ran this'
+    (harness) so work-round accounting and renderers no longer have to
+    string-sniff the result to tell a refusal from a duplicate.
+    `result` carries the guard's own corrective message.
 
     `model_call_start` fires just before the adapter is invoked;
     `model_call_end` fires once it returns. When the adapter supports
@@ -958,7 +968,7 @@ def _execute_tool_calls(
     Cross-round dedup stays — the hook fires on a real prior call and
     re-issues that prior result preserving success/error (harness-v5w),
     not a fixed success=True nudge."""
-    from harness.orchestrator.hooks import _call_key
+    from harness.orchestrator.hooks import _DUPLICATE_CALL_PREFIX, _call_key
 
     # In-round dedup: keep the first call of each duplicate set.
     # Iterating once is fine — typical tool-call batches are short.
@@ -1013,14 +1023,21 @@ def _execute_tool_calls(
         # the NEXT call's catcher will see.
         attempted_calls[key] = attempted_calls.get(key, 0) + 1
         if isinstance(pre_outcome, Skip):
-            # Cross-round duplicate (or grounding rejection). For
-            # duplicate_call this carries the prior ToolResult re-issued
-            # with a prefix; for other Skip-emitting hooks (grounding)
-            # it carries the hook's own ToolResult.
+            # A pre_tool hook short-circuited the call. Two shapes, two
+            # event kinds (harness): only DuplicateCallHook means "you
+            # already ran this exact call" — its result carries the
+            # _DUPLICATE_CALL_PREFIX. Every other Skip-emitting guard
+            # (targeted_fix_no_overwrite, suspicious_shrink, argument
+            # grounding, write→edit reroute) is a FIRST-TIME policy block,
+            # not a duplicate. Emitting them all as `tool_call_deduped`
+            # mislabeled first-time refusals as repeats and forced the
+            # work-round accounting + renderers to string-sniff the prefix
+            # to tell them apart. Split the kind at the source instead.
             result = pre_outcome.result
+            is_duplicate = (result.output or "").startswith(_DUPLICATE_CALL_PREFIX)
             emit(
                 ToolLoopEvent(
-                    kind="tool_call_deduped",
+                    kind="tool_call_deduped" if is_duplicate else "tool_call_blocked",
                     call=call,
                     result=result,
                     round_index=round_idx,
@@ -1694,7 +1711,6 @@ def run_tool_loop(
         # tool_search round (before the catcher fires) or a successful
         # load_tool(new_name) round both produce no "loop detected" /
         # "DUPLICATE CALL" marker, so they stay free passes.
-        from harness.orchestrator.hooks import _DUPLICATE_CALL_PREFIX
         from harness.orchestrator.hooks import _call_key as _call_key_for_meta_check
 
         # harness-estby: content calls this round that were rejected as
@@ -1703,16 +1719,17 @@ def run_tool_loop(
         # of a file the model already read cleanly, the "basically done"
         # gesture. They made no progress, so they must not burn a work
         # round. The dedup result rides the tool_call_deduped EVENT
-        # (prefixed output, prior success preserved); it is NOT written
-        # back to seen_calls (only real executions are), so the event
-        # stream is the source of truth.
+        # (prior success preserved); it is NOT written back to seen_calls
+        # (only real executions are), so the event stream is the source
+        # of truth.
         #
-        # Scoped two ways on purpose: (1) the duplicate prefix — other
-        # Skip-emitting hooks (argument grounding) also surface as
-        # tool_call_deduped but aren't the re-read we exempt; (2)
-        # result.success — a repeated FAILING call is the model thrashing
-        # (it should keep counting so the spin stops promptly, the
-        # test_loop_respects_max_rounds contract), whereas a repeated
+        # The kind alone now identifies genuine duplicates: first-time
+        # policy blocks (targeted_fix_no_overwrite, suspicious_shrink,
+        # argument grounding) emit `tool_call_blocked`, not
+        # `tool_call_deduped` (harness). The remaining filter is
+        # result.success — a repeated FAILING duplicate is the model
+        # thrashing (it should keep counting so the spin stops promptly,
+        # the test_loop_respects_max_rounds contract), whereas a repeated
         # SUCCESSFUL call is the redundant re-confirm we want to forgive.
         dup_content_keys = {
             _call_key_for_meta_check(e.call)
@@ -1723,7 +1740,6 @@ def run_tool_loop(
             and e.call.name not in _META_TOOLS
             and e.result is not None
             and e.result.success
-            and (e.result.output or "").startswith(_DUPLICATE_CALL_PREFIX)
         }
         # Unknown-tool rejections this round (loop_run=4d11ea3f). A call
         # to a tool the registry doesn't have — e.g. the model reaching

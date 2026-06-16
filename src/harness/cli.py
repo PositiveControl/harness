@@ -1288,6 +1288,16 @@ def _render_tool_event(
         # clutter the transcript. Result is the stock nudge; no need
         # to echo it.
         console.print(f"[dim]⇢ {label} {call.arguments} — duplicate call skipped[/dim]")
+    elif event.kind == "tool_call_blocked":
+        call = event.call
+        assert call is not None
+        label = tool_label(call.name)
+        # A pre_tool guard refused a first-time call (policy block, not a
+        # duplicate). Surface the guard's own corrective message so the
+        # user sees WHY it was blocked, not a misleading "duplicate" line.
+        result = event.result
+        reason = result.error if result is not None and result.error else "blocked"
+        console.print(f"[dim]⇢ {label} {call.arguments} — blocked ({reason})[/dim]")
     elif event.kind == "truncated_retry":
         # Wrap-up round hit the token cap mid-reply; orchestrator
         # widened the budget and is about to re-run. Drop the

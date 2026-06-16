@@ -1600,6 +1600,18 @@ class ChatApp(App[None]):
                     style="dim",
                 )
             )
+        elif event.kind == "tool_call_blocked":
+            call = event.call
+            assert call is not None
+            label = self._tool_label(call.name)
+            result = event.result
+            reason = result.error if result is not None and result.error else "blocked"
+            log.write(
+                Text(
+                    f"⇢ {label} {call.arguments} — blocked ({reason})",
+                    style="dim",
+                )
+            )
         elif event.kind == "token_delta":
             # Orchestrator / adapter already masked tool-call tag
             # spans; whatever survives is visible reply text. Feed
