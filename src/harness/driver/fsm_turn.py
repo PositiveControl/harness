@@ -748,6 +748,9 @@ def _run_one_phase(
         # loop_run=dfc38c5f: let the forced wrap-up round still emit
         # this phase's exit-signal call instead of stripping it.
         wrap_up_tools=_PHASE_EXIT_TOOLS.get(phase, frozenset()),
+        # loop_run=467233ea: end the phase the moment its capture call
+        # succeeds — don't let the model spin rounds after a clean submit.
+        stop_on_success=_PHASE_EXIT_TOOLS.get(phase, frozenset()),
     )
     return _PhaseExecutionResult(
         tool_loop_result=result,

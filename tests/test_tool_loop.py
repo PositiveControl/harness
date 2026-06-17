@@ -4643,3 +4643,83 @@ def test_read_reservation_off_by_default(tmp_path: Path) -> None:
         and e.result is not None
         and e.result.error == "read_budget_reserved"
     ]
+
+
+def test_stop_on_success_ends_loop_when_exit_tool_succeeds(tmp_path: Path) -> None:
+    """loop_run=467233ea: a phase whose deliverable is a capture call is
+    done the moment that call succeeds. With stop_on_success naming the
+    tool, the loop ends immediately — it must NOT keep consuming later
+    model replies (re-submit -> deduped, more reads) until the budget runs
+    out and wrap_up_forced fires."""
+    (tmp_path / "x.txt").write_text("hello\n")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            # Round 1: the "exit" call succeeds — loop should stop here.
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt"}),),
+            ),
+            # These must never be reached.
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt"}),),
+            ),
+            ModelReply(content="should not get here"),
+        ]
+    )
+
+    observed: list[ToolLoopEvent] = []
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="assess")],
+        registry,
+        max_rounds=8,
+        stop_on_success=frozenset({"read_file"}),
+        observe=lambda e: observed.append(e),
+    )
+
+    kinds = [e.kind for e in observed]
+    assert "exit_signal_stop" in kinds
+    assert "wrap_up_forced" not in kinds
+    # Exactly one tool executed — the loop did not spin further.
+    assert sum(1 for e in observed if e.kind == "tool_call_end") == 1
+
+
+def test_stop_on_success_off_lets_loop_continue(tmp_path: Path) -> None:
+    """Without stop_on_success, a succeeding tool does NOT end the loop —
+    the model keeps going until it returns a no-tool reply. Pins that the
+    early exit is opt-in and other callers are unaffected."""
+    (tmp_path / "x.txt").write_text("hello\n")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt"}),),
+            ),
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt", "offset": 1}),),
+            ),
+            ModelReply(content="done"),
+        ]
+    )
+
+    observed: list[ToolLoopEvent] = []
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="read")],
+        registry,
+        max_rounds=8,
+        observe=lambda e: observed.append(e),
+    )
+
+    kinds = [e.kind for e in observed]
+    assert "exit_signal_stop" not in kinds
+    # Both reads ran — the loop continued past the first success.
+    assert sum(1 for e in observed if e.kind == "tool_call_end") == 2

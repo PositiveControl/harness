@@ -1185,6 +1185,7 @@ def run_tool_loop(
     no_write_streak: _StallDetector | None = None,
     read_reservation: ReadReservation | None = None,
     wrap_up_tools: frozenset[str] = frozenset(),
+    stop_on_success: frozenset[str] = frozenset(),
 ) -> ToolLoopResult:
     """Drive a model + tool registry until the model emits a text-only
     reply or `max_rounds` rounds are spent.
@@ -1269,7 +1270,16 @@ def run_tool_loop(
     the driver's zero-side-effect phase-exit capture tools
     (submit_failing_test, submit_assessment, …) — the exit signal the
     FSM resolves on. Calls to these names execute normally in the
-    wrap-up; all other wrap-up tool calls are stripped as before."""
+    wrap-up; all other wrap-up tool calls are stripped as before.
+
+    `stop_on_success`, when non-empty, names exit-signal tools whose
+    SUCCESS ends the loop immediately (loop_run=467233ea). A driver phase
+    whose deliverable is a capture call (submit_assessment / submit_failing_test
+    / submit_implementation_complete) is done the moment that call succeeds —
+    without this, the model kept emitting rounds (re-submit -> deduped, more
+    reads) until the budget ran out and wrap_up_forced fired, burning the
+    whole phase after the work was already in hand. No wrap-up round runs
+    on this clean exit — the deliverable is captured, nothing to synthesize."""
     pipeline = hooks if hooks is not None else _DEFAULT_PIPELINE
     working: list[ChatMessage] = list(messages)
     # Inject the active-plan block as a system-role message before
@@ -1498,6 +1508,9 @@ def run_tool_loop(
     work_rounds = 0
     total_iterations = 0
     hard_ceiling = max(2 * max_rounds, max_rounds + 1)
+    # loop_run=467233ea: set when a stop_on_success exit tool succeeds, so
+    # the loop ends and the wrap-up is skipped (deliverable already captured).
+    exited_on_exit_signal = False
     # harness-4tphl: `repeat_counter.escalated` latches once a fingerprint
     # thrashes past 2x its nudge threshold this turn. We stop opening new
     # rounds when it does — the model already got (and ignored) the soft
@@ -1824,6 +1837,17 @@ def run_tool_loop(
         else:
             emit(ToolLoopEvent(kind="meta_round", round_index=round_idx))
 
+        # Exit-signal stop (loop_run=467233ea). A driver phase whose
+        # deliverable is a capture call is done the moment that call
+        # succeeds. Without this the model kept spending rounds after a
+        # clean submit_assessment (re-submit -> deduped, more reads) until
+        # the budget ran out — the whole phase burned past the work. End
+        # now; skip the wrap-up (nothing to synthesize, the signal is in).
+        if stop_on_success and not succeeded_tools.isdisjoint(stop_on_success):
+            emit(ToolLoopEvent(kind="exit_signal_stop", round_index=round_idx))
+            exited_on_exit_signal = True
+            break
+
     # Wrap-up round (harness-0gss). If the loop exited mid-investigation
     # — work budget hit AND the last round emitted a tool call that
     # actually ran — force ONE more model round (no new tools allowed)
@@ -1838,6 +1862,9 @@ def run_tool_loop(
     wrap_up_eligible = (
         bool(last_reply.tool_calls)
         and any_tool_succeeded
+        # A clean exit-signal stop already has the deliverable in hand —
+        # no mid-investigation state to synthesize (loop_run=467233ea).
+        and not exited_on_exit_signal
         # harness-4tphl: an escalated (thrash) exit is just as eligible
         # for synthesis as a max_rounds exit — both leave the model
         # mid-investigation on a tool call that needs wrapping up.
