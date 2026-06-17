@@ -44,10 +44,7 @@ from harness.driver.bd import DriverBd, DriverBdError
 from harness.driver.claim_detector import last_shell_cmd_in_messages
 from harness.driver.gate_blind import (
     GATE_BLIND_IDIOM_NOTE,
-    eval_blind_reference,
-    eval_blind_typeof_guard,
-    phantom_member_assertion,
-    regex_body_truncation,
+    first_blind_tell,
 )
 from harness.driver.gate_synth import build_source_text_gate
 from harness.driver.handoff import Handoff
@@ -1148,21 +1145,12 @@ def _lint_submitted_gate(
             f"path/import), confirm the test fails on the MISSING BEHAVIOR, "
             f"then resubmit."
         )
-    blind = eval_blind_reference(tail, test_path, workspace)
-    if blind is None:
-        # The `typeof`-guarded sibling throws nothing, so the runtime tell
-        # above can't see it — fall back to the static read of the test text.
-        blind = eval_blind_typeof_guard(test_path, workspace)
-    if blind is None:
-        # harness-k18er: the function-body-truncation trap also throws
-        # nothing and DOES read the source — a `{[^}]*}` body slice that
-        # captures only up to the first inner brace. Static text read too.
-        blind = regex_body_truncation(test_path, workspace)
-    if blind is None:
-        # harness-o4cbj: the phantom-member trap also throws nothing and
-        # DOES read the source — it asserts on `A.B.C` where the source
-        # uses `A.C` (invented intermediate segment). Static text read too.
-        blind = phantom_member_assertion(test_path, workspace)
+    # Full blind-gate roster (ReferenceError runtime tell + the three
+    # static text reads: typeof-guard, body-truncation, phantom-member).
+    # Routed through first_blind_tell so this submit-time lint and the
+    # carried-gate VERIFY check share one roster — they drifted once
+    # (loop_run=135f0d99) and a carried phantom-member gate slipped through.
+    blind = first_blind_tell(tail, test_path, workspace)
     if blind is not None:
         return (
             f"test_cmd exits non-zero, but the red is structural, not the "
@@ -1641,23 +1629,20 @@ def _resolve_verify_outcome(
             # top-level let/const means the gate can never observe the
             # implementation, so run_fsm_turn halts on the FIRST failure
             # instead of burning the verify-retry ceiling.
-            # harness-1ttpl follow-on: the submit-time lint catches both the
-            # ReferenceError trap AND its `typeof`-guarded sibling, but a
-            # gate CARRIED from a prior attempt (carried_gate_is_real) is
-            # reused without re-submitting — so it never sees that lint. The
-            # ReferenceError detector below keys on runtime output, which the
-            # `typeof` trap never produces; fall back to the static text read
-            # so a carried `typeof`-trap gate is caught at the FIRST verify
-            # too, not after the byte-identical detector burns the budget.
+            # harness-1ttpl follow-on: the submit-time lint catches every
+            # blind shape, but a gate CARRIED from a prior attempt
+            # (carried_gate_is_real) is reused without re-submitting — so it
+            # never sees that lint. first_blind_tell runs the SAME roster here
+            # so a carried blind gate is caught at the FIRST verify, not after
+            # the byte-identical detector burns the budget. loop_run=135f0d99:
+            # this site previously ran only 3 of the 4 traps and a carried
+            # phantom-member gate (harness-o4cbj) slipped to the ceiling.
             test_script = _test_cmd_script(test_cmd)
             return verify_failed(
                 failure_tail=f"test {test_cmd!r} exit={exit_code}: {tail}",
                 step="test",
                 tail=tail,
-                gate_blind=eval_blind_reference(output, test_script, workspace)
-                or eval_blind_typeof_guard(test_script, workspace)
-                or regex_body_truncation(test_script, workspace)
-                or "",
+                gate_blind=first_blind_tell(output, test_script, workspace) or "",
             )
     for step in verify_steps:
         exit_code, tail = _exec_test_cmd(step.cmd, workspace, shell_mode=step.shell)

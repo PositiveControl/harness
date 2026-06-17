@@ -328,3 +328,29 @@ def regex_body_truncation(test_path: str | None, workspace: Path) -> str | None:
         f"the test slices a function body with a non-nesting `{{[^}}]*}}` regex "
         f"after reading the source, but {GATE_BODY_TRUNCATION_NOTE}"
     )
+
+
+def first_blind_tell(output: str, test_path: str | None, workspace: Path) -> str | None:
+    """First-failure blind-gate tell: run the full trap roster in priority
+    order and return the first non-None diagnostic (None if the gate is
+    clean).
+
+    Single source of truth for the roster so the submit-time lint
+    (`fsm_turn._lint_submitted_gate`) and the carried-gate VERIFY check
+    (`fsm_turn._resolve_verify_outcome`) stay in lock-step. They drifted
+    once (loop_run=135f0d99): the VERIFY site ran only the first three
+    traps, so a phantom-member gate CARRIED from a prior attempt — which
+    never re-submits, so it never sees the submit-time lint — got no
+    first-failure tell and burned the verify-retry ceiling before the
+    byte-identical detector finally caught it. Both callers route through
+    here now; adding a trap updates both at once.
+
+    `output` is the test run's combined output, consumed only by the
+    runtime ReferenceError tell (`eval_blind_reference`); the other three
+    traps read the test text statically and ignore it."""
+    return (
+        eval_blind_reference(output, test_path, workspace)
+        or eval_blind_typeof_guard(test_path, workspace)
+        or regex_body_truncation(test_path, workspace)
+        or phantom_member_assertion(test_path, workspace)
+    )

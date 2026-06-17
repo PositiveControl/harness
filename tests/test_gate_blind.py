@@ -26,6 +26,7 @@ from harness.driver.fsm_turn import _lint_submitted_gate, run_fsm_turn
 from harness.driver.gate_blind import (
     eval_blind_reference,
     eval_blind_typeof_guard,
+    first_blind_tell,
     phantom_member_assertion,
     regex_body_truncation,
 )
@@ -606,3 +607,90 @@ def test_write_test_hint_names_scoping_pitfall(
     hint = prompts["write_test"]
     assert "SCOPING PITFALL" in hint
     assert "eval(src + " in hint
+
+
+# --- first_blind_tell: the shared roster ----------------------------
+
+
+def test_first_blind_tell_includes_phantom_member(tmp_path: Path) -> None:
+    """Regression (loop_run=135f0d99): the shared entry point must run the
+    FULL roster — including phantom_member_assertion, the 4th trap. The
+    carried-gate VERIFY check drifted to only the first three, so an o4cbj
+    phantom-member gate got no first-failure tell."""
+    (tmp_path / "game.js").write_text(
+        "let player = { x: 0, speed: 0 };\nplayer.speed = 0;\nplayer.car = null;\n"
+    )
+    test_path = _phantom_member_file(tmp_path)
+
+    # Output carries no ReferenceError, so only the static phantom-member
+    # read can catch it — the trap the VERIFY site used to omit.
+    diag = first_blind_tell("FAIL: Missing required patterns (0, 1)", test_path, tmp_path)
+
+    assert diag is not None
+    assert "`player.car.speed`" in diag
+    assert "`player.speed`" in diag
+
+
+def test_first_blind_tell_none_for_clean_gate(tmp_path: Path) -> None:
+    """A gate whose required path genuinely lives on the source object is no
+    trap on any roster entry — the shared tell returns None."""
+    (tmp_path / "game.js").write_text("player.car = c;\nplayer.car.driver = null;\n")
+    (tmp_path / "test_clean.js").write_text(
+        "const fs = require('fs');\n"
+        "const src = fs.readFileSync('game.js', 'utf8');\n"
+        "if (!/player\\.car\\.driver\\s*=\\s*null/.test(src)) process.exit(1);\n"
+    )
+
+    assert first_blind_tell("FAIL", "test_clean.js", tmp_path) is None
+
+
+def _phantom_runnable_gate(workspace: Path) -> str:
+    """A carried phantom-member gate the FSM can execute: Python body under a
+    `.js` name, exiting red WITHOUT a ReferenceError (so only the static
+    phantom-member read can catch it) while its TEXT carries the readFileSync
+    marker and a required-present `player.car.speed` path."""
+    (workspace / "test_phantom_gate.js").write_text(
+        "# const src = fs.readFileSync('game.js', 'utf8')  # idiom marker\n"
+        "# required-present assertion: player.car.speed must appear in src\n"
+        "import sys\n"
+        "sys.stderr.write('FAIL: missing required pattern player.car.speed\\n')\n"
+        "sys.exit(1)\n"
+    )
+    return "python3 test_phantom_gate.js"
+
+
+def test_carried_phantom_member_gate_halts_on_first_verify_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """harness-o4cbj / loop_run=135f0d99 acceptance: a phantom-member gate
+    CARRIED from a prior attempt (reused without re-submitting, so it never
+    sees the submit-time lint) must now halt gate-blind on the FIRST verify
+    failure — not burn the verify-retry ceiling + a byte-identical second lap
+    before parking. Proves first_blind_tell wired the 4th trap into the
+    carried-gate VERIFY path."""
+    (tmp_path / "game.js").write_text(
+        "let player = { x: 0, speed: 0 };\nplayer.speed = 0;\nplayer.car = null;\n"
+    )
+    phases_seen: list[str] = []
+    monkeypatch.setattr(
+        "harness.driver.fsm_turn.run_tool_loop",
+        _scripted_tool_loop(phases_seen, {}),
+    )
+
+    result = run_fsm_turn(
+        adapter=None,  # type: ignore[arg-type]  # never reached; run_tool_loop is stubbed
+        character=_FakeCharacter(),  # type: ignore[arg-type]
+        bd=_OpenBd(),  # type: ignore[arg-type]
+        handoff_builder=_handoff,
+        workspace=tmp_path,
+        current_issue_id="harness-x",
+        prior_test_cmd=_phantom_runnable_gate(tmp_path),
+    )
+
+    assert not result.succeeded
+    assert result.final_phase == TurnPhase.HALTED
+    assert "gate-blind verify gate" in result.reason
+    assert "`player.speed`" in result.reason
+    assert result.gate_suspect
+    assert result.last_test_cmd is None
+    assert phases_seen.count("implement") == 1
