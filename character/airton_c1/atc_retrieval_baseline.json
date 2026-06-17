@@ -37,8 +37,8 @@
       "expected_anchors": [
         "3-9-6"
       ],
-      "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.032266458495966696,
+      "rank_of_first_expected": 1,
+      "score_of_first_expected": 0.03200204813108039,
       "found": true
     },
     {
@@ -49,7 +49,7 @@
         "3-10-3"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03278688524590164,
+      "score_of_first_expected": 1000000000.0,
       "found": true
     },
     {
@@ -60,7 +60,7 @@
         "3-10-3"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03278688524590164,
+      "score_of_first_expected": 1000000000.0,
       "found": true
     },
     {
@@ -104,7 +104,7 @@
         "5-4-5"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03278688524590164,
+      "score_of_first_expected": 0.03252247488101534,
       "found": true
     },
     {
@@ -115,7 +115,7 @@
         "5-10-11"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03278688524590164,
+      "score_of_first_expected": 1000000000.0,
       "found": true
     },
     {
@@ -137,7 +137,7 @@
         "7-3-1"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03278688524590164,
+      "score_of_first_expected": 0.03252247488101534,
       "found": true
     },
     {
@@ -159,7 +159,7 @@
         "10-2-5"
       ],
       "rank_of_first_expected": 1,
-      "score_of_first_expected": 0.031099324975891997,
+      "score_of_first_expected": 0.03131881575727918,
       "found": true
     },
     {
@@ -170,7 +170,7 @@
         "4-6-4"
       ],
       "rank_of_first_expected": 1,
-      "score_of_first_expected": 0.029726775956284153,
+      "score_of_first_expected": 0.029551337359792925,
       "found": true
     },
     {
@@ -182,7 +182,7 @@
         "2-1-20"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03028233151183971,
+      "score_of_first_expected": 1000000000.0,
       "found": true
     },
     {
@@ -193,7 +193,7 @@
         "3-10-3"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03278688524590164,
+      "score_of_first_expected": 1000000000.0,
       "found": true
     },
     {
@@ -204,7 +204,7 @@
         "13-1-2"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03278688524590164,
+      "score_of_first_expected": 1000000000.0,
       "found": true
     },
     {
@@ -226,7 +226,7 @@
         "2-1-6"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03278688524590164,
+      "score_of_first_expected": 0.03252247488101534,
       "found": true
     },
     {
@@ -248,7 +248,7 @@
         "2-1-21"
       ],
       "rank_of_first_expected": 1,
-      "score_of_first_expected": 0.027149321266968326,
+      "score_of_first_expected": 0.028371628371628373,
       "found": true
     },
     {
@@ -270,7 +270,7 @@
         "2-4-3"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.02844163539403516,
+      "score_of_first_expected": 1000000000.0,
       "found": true
     },
     {
@@ -281,7 +281,7 @@
         "4-5-1"
       ],
       "rank_of_first_expected": 3,
-      "score_of_first_expected": 0.028782894736842105,
+      "score_of_first_expected": 0.027820121951219513,
       "found": true
     },
     {
@@ -292,7 +292,7 @@
         "5-10-11"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.0315136476426799,
+      "score_of_first_expected": 1000000000.0,
       "found": true
     },
     {
@@ -303,7 +303,7 @@
         "5-4-5"
       ],
       "rank_of_first_expected": 0,
-      "score_of_first_expected": 0.03252247488101534,
+      "score_of_first_expected": 1000000000.0,
       "found": true
     },
     {
@@ -325,8 +325,8 @@
         "5-7-1",
         "5-7-2"
       ],
-      "rank_of_first_expected": 1,
-      "score_of_first_expected": 0.03047794966520434,
+      "rank_of_first_expected": 0,
+      "score_of_first_expected": 1000000000.0,
       "found": true
     }
   ]
