@@ -264,7 +264,128 @@ def referenced_missing_files(text: str, workspace: Path) -> list[str] | None:
     return None
 
 
+# harness-8k6lp: the INVERSE false premise. The guards above park a bead whose
+# named files are ABSENT (wrong workspace) or whose flag_blocked names its own
+# deliverable. This one catches a bead whose REOPENED notes assert specific code
+# is MISSING — "there is no car.x += Math.cos(car.angle)*car.speed*dt", "no
+# '.intent =' in the file" — when that code is in fact already PRESENT in the
+# workspace source. harness-l3tgq (loop_run=fec79051) burned 4+ WRITE_TEST /
+# IMPLEMENT attempts across runs on exactly this: game.js already integrated
+# position (car.x +=) and assigned intent (.intent =), so WRITE_TEST could not
+# author a red test for a non-existent gap and IMPLEMENT emitted no-op edits;
+# both phases halted opaquely and the bead reopened forever.
+#
+# The distinctive shape an absence claim points at is a dotted-member
+# assignment — `car.x +=`, `.intent =`, `this.angle -=`. We extract those, but
+# only when a negation cue sits just before the marker, so a bead that SPECS an
+# assignment ("set car.x += v") isn't mistaken for one asserting it's missing.
+# Then we test each marker against the (whitespace-stripped) workspace source.
+# All markers present → the premise is already met; park for human verify/close.
+
+# A dotted-member assignment LHS. `(?!=)` rejects the comparison operators
+# (`==`, `>=`, `<=`, `!=`) so a read like `a.b == c` is never mistaken for an
+# assignment the bead says is missing.
+_ASSIGN_MARKER_RE = re.compile(r"(?:[A-Za-z_]\w*)?\.[A-Za-z_]\w*\s*(?:[+\-*/]=|=)(?!=)")
+
+# Negation cues that mark a nearby code span as asserted-absent. Word-boundary
+# so "annotation" doesn't match "not". Kept to unambiguous absence words.
+_NEGATION_CUE_RE = re.compile(
+    r"\b(?:no|not|never|without|missing|absent|lacks?|lacking|nor)\b",
+    re.IGNORECASE,
+)
+
+# How far before a marker a negation cue may sit and still scope it. "there is
+# no car.x += …" puts the cue ~12 chars ahead; 80 leaves margin without
+# reaching across a sentence boundary into unrelated prose.
+_NEG_WINDOW = 80
+
+# Bound the source read — this stays a cheap pre-turn guard.
+_MAX_BLOB_BYTES = 4 * 1024 * 1024
+
+# Drop sub-noise like ".x+=" — too short to be a distinctive marker.
+_MIN_MARKER_LEN = 5
+
+
+def _strip_ws(text: str) -> str:
+    """Remove all whitespace so a marker matches the source regardless of the
+    spacing the bead prose used vs the code (`car.x +=` ↔ `car.x += `)."""
+    return re.sub(r"\s+", "", text)
+
+
+def _extract_absence_markers(text: str) -> list[str]:
+    """Dotted-member assignment markers the text asserts are ABSENT, deduped by
+    whitespace-free form. A marker counts only when a negation cue sits within
+    `_NEG_WINDOW` chars before it; markers under `_MIN_MARKER_LEN` stripped
+    chars are dropped as noise."""
+    seen: dict[str, str] = {}
+    for match in _ASSIGN_MARKER_RE.finditer(text):
+        marker = match.group(0).strip()
+        stripped = _strip_ws(marker)
+        if len(stripped) < _MIN_MARKER_LEN:
+            continue
+        window = text[max(0, match.start() - _NEG_WINDOW) : match.start()]
+        if not _NEGATION_CUE_RE.search(window):
+            continue
+        seen.setdefault(stripped, marker)
+    return list(seen.values())
+
+
+def _workspace_source_blob(workspace: Path) -> str:
+    """Whitespace-stripped concatenation of every non-hidden source file's
+    text, bounded. Hidden dirs (.harness/.git) are skipped so driver scratch
+    can't satisfy a premise. Mirrors `_walk_workspace_files`' traversal."""
+    source_re = re.compile(rf"\.(?:{_PATH_SUFFIXES})$")
+    chunks: list[str] = []
+    total = 0
+    files_seen = 0
+    stack = [workspace]
+    while stack and files_seen < _MAX_WALK_FILES and total < _MAX_BLOB_BYTES:
+        cur = stack.pop()
+        try:
+            entries = list(cur.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name.startswith("."):
+                continue
+            if entry.is_dir():
+                stack.append(entry)
+            elif entry.is_file() and source_re.search(entry.name):
+                files_seen += 1
+                try:
+                    text = entry.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                total += len(text)
+                chunks.append(text)
+    return _strip_ws("".join(chunks))
+
+
+def already_implemented_markers(text: str, workspace: Path) -> list[str] | None:
+    """The asserted-absent code markers that are in fact ALREADY PRESENT in the
+    workspace source, when `text` trips the already-implemented check — else
+    None (= drive normally).
+
+    Conservative — biases toward driving:
+    - Requires >=2 distinct dotted-member assignment markers, each negation-
+      scoped. One marker (or an un-negated mention) is too little signal.
+    - The workspace must contain source files (empty blob → drive).
+    - EVERY marker must be present in the source. A bead that names two gaps
+      where only one is closed still drives — the other is real work.
+    """
+    markers = _extract_absence_markers(text)
+    if len(markers) < 2:
+        return None
+    blob = _workspace_source_blob(workspace)
+    if not blob:
+        return None
+    if all(_strip_ws(m) in blob for m in markers):
+        return markers
+    return None
+
+
 __all__ = [
+    "already_implemented_markers",
     "flag_blocked_names_own_deliverable",
     "flag_blocked_names_withheld_tool",
     "referenced_missing_files",

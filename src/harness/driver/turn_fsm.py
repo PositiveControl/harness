@@ -257,6 +257,12 @@ def phase_no_progress(phase: TurnPhase, *, reason: str) -> PhaseOutcome:
 # trying to gate fire/walk/weapon inputs that §9b-i/§10 closed blind).
 PREMISE_UNMET_REASON_PREFIX = "premise unmet:"
 
+# harness-8k6lp: the inverse — the bead's asserted-missing code is already
+# present in the workspace source, so there is no gap to drive. Distinct prefix
+# from PREMISE_UNMET so a triage view can tell "wrong workspace" (unmet) from
+# "already done" (met); both park-and-flag rather than burn the retry budget.
+PREMISE_MET_REASON_PREFIX = "premise already met:"
+
 
 def premise_unmet(*, missing: str, reason: str) -> PhaseOutcome:
     """ASSESS determined the bead can't be done because a concrete
@@ -484,6 +490,7 @@ def build_turn_fsm(
 
 __all__ = [
     "DEFAULT_PHASE_BUDGETS",
+    "PREMISE_MET_REASON_PREFIX",
     "PREMISE_UNMET_REASON_PREFIX",
     "_TERMINAL_PHASES",
     "PhaseOutcome",

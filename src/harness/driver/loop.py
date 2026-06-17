@@ -75,9 +75,15 @@ from harness.driver.precommit_verify_hook import (
     PreCloseVerifyHook,
     make_pre_close_verify_hook,
 )
-from harness.driver.premise_guard import referenced_missing_files
+from harness.driver.premise_guard import (
+    already_implemented_markers,
+    referenced_missing_files,
+)
 from harness.driver.state import LoopRunState
-from harness.driver.turn_fsm import PREMISE_UNMET_REASON_PREFIX
+from harness.driver.turn_fsm import (
+    PREMISE_MET_REASON_PREFIX,
+    PREMISE_UNMET_REASON_PREFIX,
+)
 from harness.driver.vision_qa import build_rubric, run_advisory_qa
 from harness.driver.workspace_guard import (
     DEFAULT_SCRATCH_PATTERNS,
@@ -592,6 +598,51 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
                     f"filed against the wrong epic/workspace (harness-y0hu5)"
                 )
                 log(f"{current.id} PREMISE_UNMET pre-turn — parking ({reason})")
+                if config.skip_on_max_attempts:
+                    _park_issue(
+                        bd,
+                        state,
+                        current_id=current.id,
+                        reason=reason,
+                        log=log,
+                        adapter=adapter,
+                        config=config,
+                    )
+                    _save_state(state, config.workspace)
+                    continue
+                return _exit_halted(
+                    bd,
+                    state,
+                    current_id=current.id,
+                    reason=reason,
+                    workspace=config.workspace,
+                    log=log,
+                )
+            # harness-8k6lp: the inverse premise check. A bead whose notes
+            # assert specific code is MISSING ("there is no car.x += …", "no
+            # '.intent =' in the file") when that code already exists in the
+            # workspace source has no gap to drive — WRITE_TEST can't author a
+            # red test and IMPLEMENT emits no-op edits, so it halts opaquely and
+            # reopens forever (harness-l3tgq, loop_run=fec79051). Scan notes too:
+            # the asserted-missing markers live in the REOPENED audit notes, not
+            # the description. Park-and-flag for human verify/close.
+            premise_met_text = " ".join(
+                str(part or "")
+                for part in (
+                    current.title,
+                    current.raw.get("description"),
+                    current.raw.get("acceptance_criteria"),
+                    current.raw.get("notes"),
+                )
+            )
+            premise_met = already_implemented_markers(premise_met_text, config.workspace)
+            if premise_met is not None:
+                reason = (
+                    f"{PREMISE_MET_REASON_PREFIX} bead asserts these are missing "
+                    f"but they already exist in workspace source: "
+                    f"{', '.join(premise_met)} — verify and close (harness-8k6lp)"
+                )
+                log(f"{current.id} PREMISE_ALREADY_MET pre-turn — parking ({reason})")
                 if config.skip_on_max_attempts:
                     _park_issue(
                         bd,
