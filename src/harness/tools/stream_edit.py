@@ -46,6 +46,7 @@ Bench fixtures live in ``scripts/bench_file_ops.py``; the eval is in
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import time
@@ -53,7 +54,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from harness.tools.base import ToolSpec, tool_schema_from_model
 
@@ -93,6 +94,27 @@ class StreamEditArgs(BaseModel):
         ),
     )
 
+    @field_validator("args", "paths", mode="before")
+    @classmethod
+    def _coerce_jsonish_list(cls, v: object) -> object:
+        """Recover a JSON-stringified list (loop_run=ed1e2582 / 135f0d99):
+        small models repeatedly emit ``args='["-E", "s/a/b/"]'`` — the list
+        serialized as a single string — instead of a real list, and the
+        bare Pydantic error ("Input should be a valid list") burns a round.
+        If the value is a string that parses to a JSON list, unwrap it;
+        otherwise pass it through unchanged so the normal type error still
+        fires for genuinely malformed input."""
+        if isinstance(v, str):
+            s = v.strip()
+            if s.startswith("[") and s.endswith("]"):
+                try:
+                    parsed = json.loads(s)
+                except (ValueError, TypeError):
+                    return v
+                if isinstance(parsed, list):
+                    return parsed
+        return v
+
 
 # Drift guard: the Literal above and the runtime verb set must agree.
 if set(StreamEditArgs.model_fields["tool"].annotation.__args__) != set(_VERBS):  # type: ignore[union-attr]
@@ -109,6 +131,17 @@ if set(StreamEditArgs.model_fields["tool"].annotation.__args__) != set(_VERBS): 
 # legitimate sed substitution. Blocking an inert byte added zero safety
 # and real false positives, so only `|` remains.
 _DISALLOWED_METACHARS: frozenset[str] = frozenset("|")
+
+# Steering text for the multi-line-insert misuse: stream_edit is a
+# single-verb line/pattern transform, not a block editor. Point the model
+# at the tools that DO insert multi-line code (loop_run=ed1e2582 burned a
+# whole turn trying to push a ~40-line JS block through sed s///).
+_MULTILINE_REDIRECT = (
+    "stream_edit is a single-verb line/pattern transform (sed/awk/cut/tr), "
+    "not a block editor — use `edit_file` (anchored old_string -> new_string) "
+    "or `write_file` (full new contents) for multi-line inserts, or "
+    "`python_stream` for a programmatic block rewrite."
+)
 
 # Default cap on captured stdout returned to the model. Anything past
 # this is truncated with a marker so the model knows output was cut.
@@ -175,12 +208,23 @@ def _validate_args(args: list[str]) -> list[str]:
                 f"stream_edit: an args element is {len(arg.encode('utf-8'))} bytes — "
                 f"max is {_MAX_ARG_BYTES}; trim the script"
             )
+        # A literal newline in an argv element is the "pasting a multi-line
+        # block through sed s///" tell (loop_run=ed1e2582): sed rejects it
+        # ("unescaped newline inside substitute pattern") and awk fares no
+        # better. Redirect to the right tool BEFORE the verb chokes on it.
+        if "\n" in arg:
+            raise ValueError(
+                f"stream_edit: args element {arg!r} contains a literal newline — "
+                f"{_MULTILINE_REDIRECT}"
+            )
         offending = {ch for ch in arg if ch in _DISALLOWED_METACHARS}
         if offending:
             raise ValueError(
                 f"stream_edit: args element {arg!r} contains disallowed shell "
                 f"metachars {sorted(offending)!r} — this tool is a single-verb "
-                f"wrapper, not a shell. Compose multiple calls instead."
+                f"wrapper, not a shell. For a multi-line insert or block "
+                f"rewrite, {_MULTILINE_REDIRECT} To chain simple transforms, "
+                f"compose multiple stream_edit calls instead."
             )
     return list(args)
 

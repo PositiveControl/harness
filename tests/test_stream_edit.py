@@ -14,8 +14,9 @@ import shutil
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from harness.tools.stream_edit import StreamEditTool
+from harness.tools.stream_edit import StreamEditArgs, StreamEditTool
 
 
 @pytest.fixture
@@ -118,6 +119,28 @@ def test_empty_args_rejected(tool: StreamEditTool, workspace: Path) -> None:
         tool.call(tool="awk", args=[], paths=["in.txt"])
 
 
+def test_multiline_arg_redirects_to_block_editors(tool: StreamEditTool, workspace: Path) -> None:
+    """loop_run=ed1e2582: a literal newline in an args element is the
+    'pasting a multi-line block through sed s///' tell. Reject it BEFORE
+    the verb chokes, and steer to edit_file / write_file / python_stream."""
+    (workspace / "game.js").write_text("function update(dt) {}\n")
+    with pytest.raises(ValueError, match="literal newline") as exc:
+        tool.call(tool="sed", args=["s/x/a\n      b/"], paths=["game.js"])
+    msg = str(exc.value)
+    assert "edit_file" in msg
+    assert "write_file" in msg
+
+
+def test_metachar_message_steers_to_block_editors(tool: StreamEditTool, workspace: Path) -> None:
+    """The `|` rejection now names the right tools for a multi-line insert
+    instead of the unhelpful 'compose multiple calls' (loop_run=ed1e2582
+    crammed a 40-line block + pipe into one sed program)."""
+    (workspace / "in.txt").write_text("hello\n")
+    with pytest.raises(ValueError, match="disallowed shell metachars") as exc:
+        tool.call(tool="awk", args=["{print} | sort"], paths=["in.txt"])
+    assert "edit_file" in str(exc.value)
+
+
 def test_args_as_string_rejected_with_corrective_message(
     tool: StreamEditTool, workspace: Path
 ) -> None:
@@ -127,6 +150,32 @@ def test_args_as_string_rejected_with_corrective_message(
     (workspace / "in.txt").write_text("hello\n")
     with pytest.raises(TypeError, match=r"list of argv strings"):
         tool.call(tool="sed", args="s/old/new/g", paths=["in.txt"])  # type: ignore[arg-type]
+
+
+def test_jsonish_string_list_coerced_via_schema() -> None:
+    """loop_run=ed1e2582 / 135f0d99: small models emit a JSON-stringified
+    list for a list field (args / paths). The before-validator unwraps it
+    instead of failing with a bare 'Input should be a valid list'."""
+    validated = StreamEditArgs.model_validate(
+        {"tool": "sed", "args": '["-E", "s/a/b/"]', "paths": '["game.js"]'}
+    )
+    assert validated.args == ["-E", "s/a/b/"]
+    assert validated.paths == ["game.js"]
+
+
+def test_jsonish_coercion_preserves_int_to_str() -> None:
+    """A stringified list of line numbers coerces to strings, matching
+    the existing coerce_numbers_to_str contract for real-list args."""
+    validated = StreamEditArgs.model_validate({"tool": "sed", "args": "[290, 320]"})
+    assert validated.args == ["290", "320"]
+
+
+def test_plain_string_args_still_rejected_by_schema() -> None:
+    """A non-JSON joined string is NOT a stringified list — it must still
+    fail validation so the corrective message fires. Only the genuine
+    serialized-list shape (`[...]`) is unwrapped."""
+    with pytest.raises(ValidationError):
+        StreamEditArgs.model_validate({"tool": "sed", "args": "s/old/new/g"})
 
 
 def test_oversized_arg_rejected(tool: StreamEditTool, workspace: Path) -> None:
