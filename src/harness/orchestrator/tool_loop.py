@@ -41,6 +41,7 @@ from harness.orchestrator.no_write_streak import (
     NoSubmitStreakDetector,
     NoTestSubmitStreakDetector,
     NoWriteStreakDetector,
+    ReadReservation,
 )
 from harness.orchestrator.repeat_detector import RepeatCounter, build_nudge_text
 from harness.persona.banter import BanterStreakTracker, is_banter_prompt
@@ -949,6 +950,8 @@ def _execute_tool_calls(
     attempted_calls: dict[tuple[str, str], int] | None = None,
     repeat_counter: RepeatCounter | None = None,
     no_write_streak: _StallDetector | None = None,
+    read_reservation: ReadReservation | None = None,
+    rounds_left: int = 0,
 ) -> bool:
     """Execute the round's tool calls: in-round dedup, duplicate-call
     hook (cross-round), write-tier confirm, dispatch, append tool-role
@@ -1008,6 +1011,23 @@ def _execute_tool_calls(
     pending_nudges: list[str] = []
     for call in deduped:
         key = _call_key(call)
+        # harness read reservation: in the last `reserve` IMPLEMENT rounds,
+        # refuse read-only exploration so the remaining budget goes to a
+        # write or a phase-exit decision (loop_run=135f0d99). Only armed by
+        # the driver's IMPLEMENT phase; None everywhere else. Checked before
+        # the pre_tool pipeline — it's a hard policy block, like a Skip.
+        if read_reservation is not None and read_reservation.should_block(call, rounds_left):
+            result = read_reservation.block_result(call, rounds_left)
+            emit(
+                ToolLoopEvent(
+                    kind="tool_call_blocked",
+                    call=call,
+                    result=result,
+                    round_index=round_idx,
+                )
+            )
+            working.append(ChatMessage(role="tool", content=result.output, name=call.name))
+            continue
         pre_outcome = hooks.run_pre_tool(
             PreToolContext(
                 call=call,
@@ -1163,6 +1183,7 @@ def run_tool_loop(
     plan: Plan | None = None,
     inbox: Callable[[], list[ChatMessage]] | None = None,
     no_write_streak: _StallDetector | None = None,
+    read_reservation: ReadReservation | None = None,
     wrap_up_tools: frozenset[str] = frozenset(),
 ) -> ToolLoopResult:
     """Drive a model + tool registry until the model emits a text-only
@@ -1685,6 +1706,11 @@ def run_tool_loop(
             attempted_calls=attempted_calls,
             repeat_counter=repeat_counter,
             no_write_streak=no_write_streak,
+            read_reservation=read_reservation,
+            # work_rounds has not yet counted THIS round — so the count
+            # the reservation sees is rounds consumed so far, and
+            # max_rounds - that is the rounds remaining including this one.
+            rounds_left=max_rounds - work_rounds,
         )
         any_tool_succeeded = any_tool_succeeded or round_success
         # Second drain (harness-6fr0). All tool-role results for the

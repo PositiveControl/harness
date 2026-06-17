@@ -83,6 +83,7 @@ from harness.orchestrator.no_write_streak import (
     NoSubmitStreakDetector,
     NoTestSubmitStreakDetector,
     NoWriteStreakDetector,
+    ReadReservation,
 )
 from harness.tools import (
     CalcTool,
@@ -723,8 +724,13 @@ def _run_one_phase(
     no_write_streak: (
         NoWriteStreakDetector | NoSubmitStreakDetector | NoTestSubmitStreakDetector | None
     ) = None
+    # The read reservation is the hard backstop behind the no-write nudge —
+    # IMPLEMENT only. ASSESS / WRITE_TEST keep just the (escalating-elsewhere)
+    # submit nudges; reading IS the work in those phases until the decision.
+    read_reservation: ReadReservation | None = None
     if phase is TurnPhase.IMPLEMENT:
         no_write_streak = NoWriteStreakDetector()
+        read_reservation = ReadReservation()
     elif phase is TurnPhase.ASSESS:
         no_write_streak = NoSubmitStreakDetector()
     elif phase is TurnPhase.WRITE_TEST:
@@ -737,6 +743,7 @@ def _run_one_phase(
         observe=relay,
         max_rounds=max_rounds,
         no_write_streak=no_write_streak,
+        read_reservation=read_reservation,
         temperature=executor_temperature,
         # loop_run=dfc38c5f: let the forced wrap-up round still emit
         # this phase's exit-signal call instead of stripping it.

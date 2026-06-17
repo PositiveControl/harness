@@ -33,6 +33,14 @@ from harness.tools.base import ToolCall, ToolResult
 # phase halts. One-shot per turn.
 DEFAULT_NO_WRITE_STREAK_THRESHOLD: int = 4
 
+# After the threshold-crossing fire, re-fire every this-many further
+# non-write calls with escalated text (loop_run=135f0d99: the model
+# ignored the single one-shot nudge, read four more rounds, then
+# self-parked on tool-call exhaustion without a write). 2 keeps the
+# IMPLEMENT budget (8 rounds) re-nudged at ~rounds 4/6/8 without spamming
+# every round.
+DEFAULT_NO_WRITE_REFIRE_EVERY: int = 2
+
 # Tools that count as a write. Succeeding on any of these resets the
 # streak. `fsm_turn._resolve_implement_outcome` imports this same set so
 # what the detector counts and what the phase outcome checks stay in
@@ -42,6 +50,17 @@ DEFAULT_NO_WRITE_STREAK_THRESHOLD: int = 4
 WRITE_TOOL_NAMES: frozenset[str] = frozenset({"edit_file", "write_file", "stream_edit"})
 # Back-compat alias for the original private name.
 _WRITE_TOOL_NAMES = WRITE_TOOL_NAMES
+
+# Read-only exploration tools the IMPLEMENT read reservation locks once the
+# round budget is down to its last `reserve` rounds. Writes (WRITE_TOOL_NAMES)
+# and the phase-exit decisions always pass — the wall forces a write-or-decide,
+# it never traps the model with no legal move.
+READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
+    {"read_file", "outline", "grep", "glob", "list_dir"}
+)
+
+# Reserve the last N IMPLEMENT rounds for non-read work.
+DEFAULT_READ_RESERVE: int = 2
 
 
 @dataclass
@@ -71,8 +90,9 @@ class NoWriteStreakDetector:
     write but kept failing' case."""
 
     threshold: int = DEFAULT_NO_WRITE_STREAK_THRESHOLD
+    refire_every: int = DEFAULT_NO_WRITE_REFIRE_EVERY
     _streak: int = 0
-    _fired: bool = False
+    _fires: int = 0
 
     @property
     def streak(self) -> int:
@@ -81,26 +101,39 @@ class NoWriteStreakDetector:
         state."""
         return self._streak
 
+    @property
+    def fires(self) -> int:
+        """How many times the nudge has fired this turn — drives the
+        escalation tier `nudge()` renders."""
+        return self._fires
+
     def observe(self, call: ToolCall, result: ToolResult) -> bool:
         """Update state for the just-completed tool call and return True
-        the first time the streak crosses threshold. Returns False on
-        every subsequent call this turn (one-shot)."""
+        whenever a nudge should fire: on the threshold-crossing call, then
+        again every `refire_every` non-write calls past it. A successful
+        write resets both the streak and the escalation tier."""
         if call.name in _WRITE_TOOL_NAMES and result.success:
+            # Real progress: the spiral broke. Reset the streak AND the
+            # escalation tier so a later relapse starts from tier 1.
             self._streak = 0
-            return False
-        if self._fired:
+            self._fires = 0
             return False
         self._streak += 1
-        if self._streak >= self.threshold:
-            self._fired = True
+        if self._streak < self.threshold:
+            return False
+        # Escalate instead of latching silent: the model ignored the first
+        # soft nudge (loop_run=135f0d99), so re-fire on a cadence with
+        # progressively sharper text until a write lands or the phase halts.
+        if (self._streak - self.threshold) % self.refire_every == 0:
+            self._fires += 1
             return True
         return False
 
     def nudge(self) -> str:
         """The user-role nudge for this detector — paired interface with
         NoSubmitStreakDetector so the tool loop can call `.nudge()` on
-        whichever stall detector a phase armed."""
-        return build_nudge_text(self._streak)
+        whichever stall detector a phase armed. Tier rises with `_fires`."""
+        return build_nudge_text(self._streak, self._fires or 1)
 
     event_kind: ClassVar[str] = "no_write_streak_detected"
 
@@ -127,11 +160,37 @@ _NUDGE_TEMPLATE = (
 )
 
 
-def build_nudge_text(streak: int) -> str:
-    """Compose the user-role nudge appended after the threshold-crossing
-    tool call. `streak` is the count that just crossed — included
-    verbatim so the model sees the magnitude of what it just did."""
-    return _NUDGE_TEMPLATE.format(count=streak)
+# Escalated text for the second-and-later fire (loop_run=135f0d99): the
+# soft menu already landed and was ignored, so this drops the optionality
+# framing and makes the write-or-decide mandatory on the VERY NEXT call.
+_ESCALATED_NUDGE_TEMPLATE = (
+    "[NO-WRITE STREAK ESCALATING — {count} tool calls in IMPLEMENT, still "
+    "ZERO successful writes; this is the {nth} time you've been told. STOP "
+    "READING — the phase halts shortly and parks this bead UNMET. The "
+    "assessment already names the change. Your VERY NEXT call MUST be one of:]\n"
+    "(a) `edit_file` / `stream_edit` / `write_file` — make the change now. Do "
+    "NOT read another file first.\n"
+    "(b) `submit_implementation_complete` if it is already done.\n"
+    "(c) `flag_blocked` with the concrete obstacle if you genuinely cannot "
+    "proceed. Another read is not an option."
+)
+
+
+def _ordinal(n: int) -> str:
+    """Small ordinal renderer for the escalation count (2 -> '2nd')."""
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def build_nudge_text(streak: int, fires: int = 1) -> str:
+    """Compose the user-role nudge appended after a threshold-crossing or
+    re-fire tool call. `streak` is the count that just crossed — included
+    verbatim so the model sees the magnitude of what it just did. `fires`
+    is the escalation tier: 1 (default) renders the soft (a)(b)(c) menu;
+    2+ renders the mandatory escalated directive."""
+    if fires <= 1:
+        return _NUDGE_TEMPLATE.format(count=streak)
+    return _ESCALATED_NUDGE_TEMPLATE.format(count=streak, nth=_ordinal(fires))
 
 
 # --- ASSESS analog: read-without-submitting (harness follow-on) ------
@@ -280,16 +339,71 @@ class NoTestSubmitStreakDetector:
     event_kind: ClassVar[str] = "no_test_submit_streak_detected"
 
 
+# --- IMPLEMENT read reservation: the wall behind the escalating nudge --
+#
+# loop_run=135f0d99 parked harness-l3tgq UNMET: the no-write nudge fired,
+# the model ignored it, read several more rounds, then self-parked on
+# "tool-call exhaustion" without ever attempting the write. The escalating
+# nudge above is the louder warning; this is the hard backstop — once the
+# IMPLEMENT round budget is down to its last `reserve` rounds, read-only
+# tools are refused so the remaining budget can only go to a write or a
+# phase-exit decision.
+
+_RESERVATION_BLOCK_TEMPLATE = (
+    "[READ BUDGET SPENT — {rounds_left} IMPLEMENT round(s) left, read-only "
+    "tools are now locked: reading more cannot land the change in time, so "
+    "`{tool}` was refused. The assessment already names what to change. Your "
+    "next call must `edit_file` / `stream_edit` / `write_file`, "
+    "`submit_implementation_complete`, or `flag_blocked`.]"
+)
+
+
+@dataclass
+class ReadReservation:
+    """Hard backstop paired with NoWriteStreakDetector's escalating nudge.
+
+    Once the IMPLEMENT round budget is down to the last `reserve` rounds,
+    `should_block` returns True for read-only exploration tools so the loop
+    refuses them (via `block_result`) and the model must write or call a
+    phase-exit tool. Writes and the exit decisions always pass — the wall
+    forces a move, it never leaves the model with no legal call.
+
+    Caller-supplied like the streak detectors: only the driver's IMPLEMENT
+    phase arms it; every other caller passes None and sees no change."""
+
+    reserve: int = DEFAULT_READ_RESERVE
+
+    def should_block(self, call: ToolCall, rounds_left: int) -> bool:
+        """True when only `reserve` (or fewer) rounds remain AND this call
+        is a read-only exploration tool."""
+        return rounds_left <= self.reserve and call.name in READ_ONLY_TOOL_NAMES
+
+    def block_result(self, call: ToolCall, rounds_left: int) -> ToolResult:
+        """The forcing FAIL substituted for a blocked read-only call."""
+        return ToolResult(
+            tool_name=call.name,
+            output=_RESERVATION_BLOCK_TEMPLATE.format(
+                rounds_left=max(rounds_left, 0), tool=call.name
+            ),
+            success=False,
+            error="read_budget_reserved",
+        )
+
+
 __all__ = [
     "ASSESS_PROGRESS_TOOLS",
     "DEFAULT_NO_SUBMIT_STREAK_THRESHOLD",
     "DEFAULT_NO_TEST_SUBMIT_STREAK_THRESHOLD",
+    "DEFAULT_NO_WRITE_REFIRE_EVERY",
     "DEFAULT_NO_WRITE_STREAK_THRESHOLD",
+    "DEFAULT_READ_RESERVE",
+    "READ_ONLY_TOOL_NAMES",
     "WRITE_TEST_PROGRESS_TOOLS",
     "WRITE_TOOL_NAMES",
     "NoSubmitStreakDetector",
     "NoTestSubmitStreakDetector",
     "NoWriteStreakDetector",
+    "ReadReservation",
     "build_nudge_text",
     "build_submit_nudge_text",
     "build_test_submit_nudge_text",

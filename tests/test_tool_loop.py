@@ -4557,3 +4557,89 @@ def test_tools_module_importable() -> None:
     import harness.tools  # noqa: F401 — import-for-side-effect check
 
     assert True
+
+
+def test_read_reservation_blocks_reads_in_final_rounds(tmp_path: Path) -> None:
+    """harness / loop_run=135f0d99: with a ReadReservation armed (reserve=2)
+    and max_rounds=3, the round whose rounds_left drops to the reserve has
+    its read-only call refused — the remaining budget is reserved for a write
+    or a phase-exit decision. The first read (rounds_left=3) still passes."""
+    from harness.orchestrator.no_write_streak import ReadReservation
+
+    (tmp_path / "x.txt").write_text("starter\n")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt", "offset": 1}),),
+            ),
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt", "offset": 2}),),
+            ),
+            ModelReply(content="giving up"),
+        ]
+    )
+
+    observed: list[ToolLoopEvent] = []
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="implement")],
+        registry,
+        max_rounds=3,
+        read_reservation=ReadReservation(),  # reserve=2
+        observe=lambda e: observed.append(e),
+    )
+
+    blocked = [
+        e
+        for e in observed
+        if e.kind == "tool_call_blocked"
+        and e.result is not None
+        and e.result.error == "read_budget_reserved"
+    ]
+    succeeded_reads = [
+        e
+        for e in observed
+        if e.kind == "tool_call_end" and e.call is not None and e.call.name == "read_file"
+    ]
+    # Round 1 read (rounds_left=3) ran; round 2 read (rounds_left=2) blocked.
+    assert len(succeeded_reads) == 1
+    assert len(blocked) == 1
+
+
+def test_read_reservation_off_by_default(tmp_path: Path) -> None:
+    """No reservation passed → reads are never blocked on budget grounds,
+    even in the last round. Every other caller (chat, evals) is unaffected."""
+    (tmp_path / "x.txt").write_text("starter\n")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+
+    adapter = _ScriptedAdapter(
+        replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "x.txt"}),),
+            ),
+            ModelReply(content="done"),
+        ]
+    )
+
+    observed: list[ToolLoopEvent] = []
+    run_tool_loop(
+        adapter,
+        [ChatMessage(role="user", content="poke")],
+        registry,
+        max_rounds=1,
+        observe=lambda e: observed.append(e),
+    )
+    assert not [
+        e
+        for e in observed
+        if e.kind == "tool_call_blocked"
+        and e.result is not None
+        and e.result.error == "read_budget_reserved"
+    ]

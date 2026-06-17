@@ -13,9 +13,11 @@ from harness.orchestrator.no_write_streak import (
     DEFAULT_NO_SUBMIT_STREAK_THRESHOLD,
     DEFAULT_NO_TEST_SUBMIT_STREAK_THRESHOLD,
     DEFAULT_NO_WRITE_STREAK_THRESHOLD,
+    DEFAULT_READ_RESERVE,
     NoSubmitStreakDetector,
     NoTestSubmitStreakDetector,
     NoWriteStreakDetector,
+    ReadReservation,
     build_nudge_text,
 )
 from harness.tools.base import ToolCall, ToolResult
@@ -55,18 +57,25 @@ def test_default_threshold_is_four() -> None:
     assert DEFAULT_NO_WRITE_STREAK_THRESHOLD == 4
 
 
-def test_detector_fires_only_at_threshold() -> None:
-    """First three non-writes return False; the FOURTH (threshold)
-    returns True. One-shot per turn — subsequent non-writes return
-    False even though the streak keeps growing."""
-    detector = NoWriteStreakDetector()  # default threshold=4
-    call, result = _read()
+def test_detector_fires_at_threshold_then_refires_on_cadence() -> None:
+    """First three non-writes return False; the FOURTH (threshold) fires.
+    Then it re-fires every `refire_every` (2) further non-writes —
+    streak 6, 8, … — instead of latching silent (loop_run=135f0d99: the
+    model ignored the single one-shot nudge)."""
+    detector = NoWriteStreakDetector()  # threshold=4, refire_every=2
 
-    assert detector.observe(call, result) is False  # streak=1
-    assert detector.observe(call, result) is False  # streak=2
-    assert detector.observe(call, result) is False  # streak=3
-    assert detector.observe(call, result) is True  # streak=4, first cross
-    assert detector.observe(call, result) is False  # streak=5, already fired
+    def obs() -> bool:
+        return detector.observe(*_read())
+
+    assert obs() is False  # streak=1
+    assert obs() is False  # streak=2
+    assert obs() is False  # streak=3
+    assert obs() is True  # streak=4, first cross (tier 1)
+    assert obs() is False  # streak=5
+    assert obs() is True  # streak=6, re-fire (tier 2)
+    assert obs() is False  # streak=7
+    assert obs() is True  # streak=8, re-fire (tier 3)
+    assert detector.fires == 3
 
 
 def test_streak_property_tracks_count() -> None:
@@ -100,27 +109,31 @@ def test_successful_write_resets_streak() -> None:
     assert detector.streak == 0
 
 
-def test_successful_write_resets_but_one_shot_holds() -> None:
-    """Once fired this turn, a later write resets the streak but the
-    detector still won't fire again. One-shot is per-turn, not per-
-    streak-segment — fresh detector instance per turn means the
-    'next turn' case is covered by the driver instantiating new state."""
+def test_successful_write_resets_streak_and_escalation_tier() -> None:
+    """A successful write breaks the spiral: it zeros the streak AND the
+    escalation tier. A later relapse fires again from tier 1 — real
+    progress earns the model a fresh threshold-worth of investigation
+    before the (soft) nudge returns."""
     detector = NoWriteStreakDetector()
     read_call, read_result = _read()
     write_call, write_result = _write()
 
-    # Cross threshold once.
+    # Cross threshold once (tier 1).
     for _ in range(4):
         detector.observe(read_call, read_result)
+    assert detector.fires == 1
 
     # Reset via successful write.
     detector.observe(write_call, write_result)
     assert detector.streak == 0
+    assert detector.fires == 0
 
-    # Run another full streak — must NOT fire again this turn.
-    for _ in range(5):
-        result = detector.observe(read_call, read_result)
-        assert result is False
+    # A fresh full streak fires again — and from tier 1, not a carried tier.
+    assert detector.observe(read_call, read_result) is False  # 1
+    assert detector.observe(read_call, read_result) is False  # 2
+    assert detector.observe(read_call, read_result) is False  # 3
+    assert detector.observe(read_call, read_result) is True  # 4 → fire
+    assert detector.fires == 1
 
 
 def test_failed_write_does_not_reset_streak() -> None:
@@ -202,6 +215,83 @@ def test_nudge_text_includes_count() -> None:
     assert "(c)" in text
     assert "edit_file" in text
     assert "submit_implementation_complete" in text
+
+
+def test_first_fire_renders_soft_menu() -> None:
+    """fires=1 (default) is the soft tier — no ESCALATING framing yet."""
+    text = build_nudge_text(4, fires=1)
+    assert "ESCALATING" not in text
+    assert "NO-WRITE STREAK" in text
+
+
+def test_escalated_nudge_is_mandatory_and_counts_the_warning() -> None:
+    """fires>=2 drops the optional menu framing for a mandatory directive
+    that names which warning this is (loop_run=135f0d99: the soft nudge was
+    ignored, so the re-fire must read as a wall, not a suggestion)."""
+    text = build_nudge_text(6, fires=2)
+    assert "ESCALATING" in text
+    assert "2nd time" in text
+    assert "STOP READING" in text
+    # Still routes to the same three legal moves.
+    assert "edit_file" in text
+    assert "submit_implementation_complete" in text
+    assert "flag_blocked" in text
+
+
+def test_detector_nudge_escalates_with_fires() -> None:
+    """The detector's own nudge() rises in tier as it re-fires."""
+    detector = NoWriteStreakDetector()
+    fired_texts = [detector.nudge() for _ in range(8) if detector.observe(*_read())]
+    assert len(fired_texts) == 3  # streak 4, 6, 8
+    assert "ESCALATING" not in fired_texts[0]
+    assert "2nd time" in fired_texts[1]
+    assert "3rd time" in fired_texts[2]
+
+
+# --- ReadReservation (IMPLEMENT hard backstop, loop_run=135f0d99) -----
+
+
+def test_read_reserve_default_is_two() -> None:
+    assert DEFAULT_READ_RESERVE == 2
+    assert ReadReservation().reserve == 2
+
+
+def test_reservation_blocks_read_only_in_reserve_window() -> None:
+    """With rounds_left at or below the reserve, read-only exploration is
+    blocked so the remaining budget goes to a write or a decision."""
+    res = ReadReservation()  # reserve=2
+    read_call, _ = _read("game.js")
+
+    assert res.should_block(read_call, rounds_left=3) is False  # outside window
+    assert res.should_block(read_call, rounds_left=2) is True  # at the wall
+    assert res.should_block(read_call, rounds_left=1) is True
+    assert res.should_block(read_call, rounds_left=0) is True
+
+
+def test_reservation_never_blocks_writes_or_decisions() -> None:
+    """The wall forces a move — it must leave the write tools and the
+    phase-exit decisions reachable even at zero rounds left."""
+    res = ReadReservation()
+    write_call, _ = _write("game.js")
+    submit_call = ToolCall(name="submit_implementation_complete", arguments={"summary": "x"})
+    flag_call = ToolCall(name="flag_blocked", arguments={"missing": "x", "reason": "y"})
+
+    for call in (write_call, submit_call, flag_call):
+        assert res.should_block(call, rounds_left=0) is False
+
+
+def test_reservation_block_result_is_a_forcing_failure() -> None:
+    """The substituted result fails the call and names the legal next moves
+    so the model reads it as a redirect, not an opaque error."""
+    res = ReadReservation()
+    read_call, _ = _read("game.js")
+
+    result = res.block_result(read_call, rounds_left=1)
+    assert result.success is False
+    assert result.error == "read_budget_reserved"
+    assert "read-only tools are now locked" in result.output
+    assert "read_file" in result.output  # names the refused tool
+    assert "submit_implementation_complete" in result.output
 
 
 # --- NoSubmitStreakDetector (ASSESS twin, loop_run=ad30d9ad) ----------
