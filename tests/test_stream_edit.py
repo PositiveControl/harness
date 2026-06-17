@@ -172,10 +172,26 @@ def test_jsonish_coercion_preserves_int_to_str() -> None:
 
 def test_plain_string_args_still_rejected_by_schema() -> None:
     """A non-JSON joined string is NOT a stringified list — it must still
-    fail validation so the corrective message fires. Only the genuine
-    serialized-list shape (`[...]`) is unwrapped."""
-    with pytest.raises(ValidationError):
+    fail validation. Only the genuine serialized-list shape (`[...]`) is
+    unwrapped. The rejection carries corrective steering (the argv-list
+    shape) rather than the bare 'Input should be a valid list'."""
+    with pytest.raises(ValidationError, match=r"one element per argv slot"):
         StreamEditArgs.model_validate({"tool": "sed", "args": "s/old/new/g"})
+
+
+def test_bracketed_sed_program_string_rejected_with_steer() -> None:
+    """loop_run=fec79051: the model emitted a sed line range wrapped in
+    brackets as one string — `[`/`]`-delimited but neither valid JSON nor
+    valid sed. It must reject with the argv-shape steer, not coerce."""
+    with pytest.raises(ValidationError, match=r"no surrounding brackets"):
+        StreamEditArgs.model_validate({"tool": "sed", "args": "[/^start/,/^}/]s/old/new/"})
+
+
+def test_plain_string_paths_rejected_with_path_steer() -> None:
+    """A bare path string fails too, but with a path-flavored hint that
+    names `paths=[...]` — not the args/argv message."""
+    with pytest.raises(ValidationError, match=r"paths=\["):
+        StreamEditArgs.model_validate({"tool": "sed", "args": ["s/a/b/"], "paths": "game.js"})
 
 
 def test_oversized_arg_rejected(tool: StreamEditTool, workspace: Path) -> None:

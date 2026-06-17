@@ -54,7 +54,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from harness.tools.base import ToolSpec, tool_schema_from_model
 
@@ -96,23 +96,41 @@ class StreamEditArgs(BaseModel):
 
     @field_validator("args", "paths", mode="before")
     @classmethod
-    def _coerce_jsonish_list(cls, v: object) -> object:
+    def _coerce_jsonish_list(cls, v: object, info: ValidationInfo) -> object:
         """Recover a JSON-stringified list (loop_run=ed1e2582 / 135f0d99):
         small models repeatedly emit ``args='["-E", "s/a/b/"]'`` — the list
         serialized as a single string — instead of a real list, and the
         bare Pydantic error ("Input should be a valid list") burns a round.
-        If the value is a string that parses to a JSON list, unwrap it;
-        otherwise pass it through unchanged so the normal type error still
-        fires for genuinely malformed input."""
+        If the value is a string that parses to a JSON list, unwrap it.
+
+        A bare non-JSON string is the OTHER recurring shape: the whole argv
+        collapsed into one string — ``args="s/old/new/"``, or a sed line
+        range the model wrapped in brackets, ``args="[/a/,/b/]s/x/y/"``
+        (loop_run=fec79051: not parseable JSON, not valid sed). We can't
+        guess the argv split, so we still reject — but with corrective
+        steering instead of the bare "Input should be a valid list", which
+        tells the model nothing about the fix and burns another round."""
         if isinstance(v, str):
             s = v.strip()
             if s.startswith("[") and s.endswith("]"):
                 try:
                     parsed = json.loads(s)
                 except (ValueError, TypeError):
-                    return v
+                    parsed = None
                 if isinstance(parsed, list):
                     return parsed
+            if info.field_name == "args":
+                raise ValueError(
+                    f"args must be a list of argv strings, got a single string "
+                    f"{v!r}. Pass one element per argv slot — a sed substitution "
+                    f'is args=["-E", "s/old/new/g"], NOT a joined string. sed line '
+                    f"ranges are /start/,/end/ with no surrounding brackets, and "
+                    f"the file path goes in `paths`, not `args`."
+                )
+            raise ValueError(
+                f"paths must be a list of workspace-relative path strings, got a "
+                f'single string {v!r} — pass it as a list, e.g. paths=["game.js"].'
+            )
         return v
 
 
