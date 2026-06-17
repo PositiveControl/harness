@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from harness.tools.base import ToolSpec, tool_schema_from_model
 from harness.tools.parse_check import parse_check
@@ -137,6 +137,27 @@ class EditFileArgs(BaseModel):
     args_model produces the structured field-by-field error instead."""
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_batch_edit_shape(cls, data: object) -> object:
+        """Corrective error for the invented multi-edit shape (loop_run=
+        467233ea): models sometimes call edit_file with
+        ``edits=[{"action": "replace", "content": "..."}]`` — a batch API
+        this tool does not have. That shape omits the required old_string /
+        new_string, so it lands in the generic field-error path whose
+        message never names the real contract. Detect the `edits` key and
+        spell it out. Raised before extra-forbid/missing checks so this
+        clearer message wins."""
+        if isinstance(data, dict) and "edits" in data:
+            raise ValueError(
+                "edit_file does not take an `edits` array — it edits ONE "
+                "location per call. Use old_string (the exact text to find, "
+                "including whitespace) and new_string (the replacement); "
+                "leave old_string empty to APPEND new_string to the file. "
+                "To make several edits, call edit_file several times."
+            )
+        return data
 
     path: str = Field(description="Path relative to the workspace root")
     old_string: str = Field(

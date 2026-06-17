@@ -4,8 +4,9 @@ import shutil
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from harness.tools.edit_file import EditFileTool
+from harness.tools.edit_file import EditFileArgs, EditFileTool
 
 _requires_node = pytest.mark.skipif(
     shutil.which("node") is None,
@@ -91,6 +92,27 @@ def test_noop_rejected(tmp_path: Path) -> None:
     target.write_text("hello\n")
     with pytest.raises(ValueError, match="no-op"):
         _tool(tmp_path).call(path="doc.md", old_string="hello", new_string="hello")
+
+
+def test_batch_edits_shape_rejected_with_corrective_message() -> None:
+    """loop_run=467233ea: models invent a batch API,
+    edits=[{"action": "replace", "content": "..."}], which omits the
+    required old_string/new_string and otherwise lands in the generic
+    field-error path. The before-validator must reject it with a message
+    that names the real one-location-per-call contract."""
+    with pytest.raises(ValidationError, match="does not take an `edits` array") as exc:
+        EditFileArgs.model_validate(
+            {"path": "game.js", "edits": '[{"action": "replace", "content": "x"}]'}
+        )
+    msg = str(exc.value)
+    assert "old_string" in msg
+    assert "new_string" in msg
+
+
+def test_normal_args_still_validate() -> None:
+    """The batch-shape guard must not disturb a well-formed call."""
+    args = EditFileArgs.model_validate({"path": "game.js", "old_string": "a", "new_string": "b"})
+    assert (args.old_string, args.new_string, args.replace_all) == ("a", "b", False)
 
 
 def test_missing_file(tmp_path: Path) -> None:
