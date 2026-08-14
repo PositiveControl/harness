@@ -97,3 +97,8 @@ battista_comparison.md
 
 # local agent sandbox scratch (snake-game eval workspace)
 snake/
+
+# coverage artifacts (pytest --cov)
+.coverage
+.coverage.*
+htmlcov/

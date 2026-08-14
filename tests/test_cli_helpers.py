@@ -12,6 +12,7 @@ from harness.cli import (
     _render_tool_event,
     _RetrievalState,
     _retrieve_turn_context,
+    _stream_or_complete,
     _StreamRenderer,
     _ThinkingSpinner,
     _topic_boundary_suffix,
@@ -614,3 +615,322 @@ def test_write_file_redirect_hook_no_op_on_unrelated_tool(tmp_path: object) -> N
     call = ToolCall(name="read_file", arguments={"path": "anything"})
     outcome = hook.check(PreToolContext(call=call, seen_calls={}))
     assert isinstance(outcome, Continue)
+
+
+# ---------- _ThinkingSpinner ----------
+#
+# harness-z4k1.1 step 2: the spinner was 36% covered — start(), stop(),
+# the ticker thread and the context manager were all unexercised. The
+# chat loop leans on both calls being idempotent (the loop kicks it on
+# at Enter, the tool-loop observer bounces it per model call, and every
+# console.input() stops it), so that property is the contract worth
+# pinning before the class moves file.
+
+
+def _silent_console() -> Console:
+    return Console(record=True, force_terminal=False, color_system=None, width=200)
+
+
+def test_spinner_start_is_idempotent() -> None:
+    spinner = _ThinkingSpinner(_silent_console())
+    try:
+        spinner.start()
+        status_after_first = spinner._status
+        thread_after_first = spinner._thread
+
+        spinner.start()
+
+        assert spinner._status is status_after_first
+        assert spinner._thread is thread_after_first
+    finally:
+        spinner.stop()
+
+
+def test_spinner_stop_is_idempotent_and_releases_the_thread() -> None:
+    spinner = _ThinkingSpinner(_silent_console())
+    spinner.start()
+    thread = spinner._thread
+    assert thread is not None
+
+    spinner.stop()
+    spinner.stop()  # second stop must be a no-op, not an error
+
+    assert spinner._status is None
+    assert spinner._thread is None
+    assert not thread.is_alive()
+
+
+def test_spinner_stop_without_start_is_a_no_op() -> None:
+    """The chat loop stops the spinner before every console.input(),
+    including paths where it was never started."""
+    _ThinkingSpinner(_silent_console()).stop()
+
+
+def test_spinner_context_manager_starts_and_stops() -> None:
+    spinner = _ThinkingSpinner(_silent_console())
+
+    # Read through locals: asserting on `spinner._running` directly
+    # narrows the attribute for the rest of the function, and mypy has
+    # no way to know __exit__ flipped it back.
+    with spinner as entered:
+        running_inside = spinner._running
+        thread_inside = spinner._thread
+
+    assert entered is spinner
+    assert running_inside is True
+    assert thread_inside is not None
+    assert spinner._running is False
+    assert spinner._thread is None
+
+
+def test_spinner_tick_updates_the_elapsed_suffix() -> None:
+    """The ticker rewrites the label with whole elapsed seconds. Driven
+    through a stub event (one wait() returns False, then True) so the
+    assertion doesn't depend on wall-clock timing."""
+
+    class _OneShotEvent:
+        def __init__(self) -> None:
+            self.waits = 0
+
+        def wait(self, timeout: float) -> bool:
+            self.waits += 1
+            return self.waits > 1
+
+    class _RecordingStatus:
+        def __init__(self) -> None:
+            self.labels: list[str] = []
+
+        def update(self, label: str) -> None:
+            self.labels.append(label)
+
+    spinner = _ThinkingSpinner(_silent_console(), label="working")
+    status = _RecordingStatus()
+    spinner._status = status  # type: ignore[assignment]
+    spinner._stop_event = _OneShotEvent()  # type: ignore[assignment]
+    spinner._started_at = 0.0
+
+    spinner._tick()
+
+    assert len(status.labels) == 1
+    assert "working…" in status.labels[0]
+    assert status.labels[0].endswith("s[/dim]")
+
+
+def test_spinner_tick_returns_when_the_status_is_torn_down() -> None:
+    """stop() clears _status; a ticker mid-wait must notice and exit
+    rather than update a dead Status."""
+
+    class _AlwaysGoEvent:
+        def wait(self, timeout: float) -> bool:
+            return False
+
+    spinner = _ThinkingSpinner(_silent_console())
+    spinner._stop_event = _AlwaysGoEvent()  # type: ignore[assignment]
+    spinner._status = None
+
+    spinner._tick()  # returns instead of looping forever
+
+
+# ---------- _render_tool_event: the model-call + retry branches ----------
+
+
+def test_render_tool_event_model_call_start_raises_the_spinner() -> None:
+    console, thinking, renderer = _build_render_deps()
+    try:
+        _render_tool_event(
+            ToolLoopEvent(kind="model_call_start", round_index=0),
+            console=console,
+            thinking=thinking,
+            stream_renderer=renderer,
+            tool_label=lambda name: name,
+        )
+
+        assert thinking._running
+    finally:
+        thinking.stop()
+
+
+def test_render_tool_event_first_token_drops_the_spinner_and_streams() -> None:
+    """The spinner must die on the FIRST token, not at model_call_end —
+    otherwise it animates on top of the streaming reply."""
+    console, thinking, renderer = _build_render_deps()
+    thinking.start()
+
+    _render_tool_event(
+        ToolLoopEvent(kind="token_delta", delta="hello ", round_index=0),
+        console=console,
+        thinking=thinking,
+        stream_renderer=renderer,
+        tool_label=lambda name: name,
+    )
+
+    assert not thinking._running
+    assert renderer.active
+    assert "hello" in renderer.stop()
+
+
+def test_render_tool_event_empty_token_delta_still_stops_the_spinner() -> None:
+    console, thinking, renderer = _build_render_deps()
+    thinking.start()
+
+    _render_tool_event(
+        ToolLoopEvent(kind="token_delta", delta="", round_index=0),
+        console=console,
+        thinking=thinking,
+        stream_renderer=renderer,
+        tool_label=lambda name: name,
+    )
+
+    assert not thinking._running
+    assert not renderer.active
+
+
+def test_render_tool_event_model_call_end_closes_spinner_and_stream() -> None:
+    console, thinking, renderer = _build_render_deps()
+    thinking.start()
+    renderer.start()
+    renderer.append("partial")
+
+    _render_tool_event(
+        ToolLoopEvent(kind="model_call_end", round_index=0),
+        console=console,
+        thinking=thinking,
+        stream_renderer=renderer,
+        tool_label=lambda name: name,
+    )
+
+    assert not thinking._running
+    assert not renderer.active
+
+
+def test_render_tool_event_truncated_retry_reports_the_budget_change() -> None:
+    """harness-738f: the user needs to see the partial was discarded AND
+    what the budget went from/to, to tell runaway preamble from a
+    healthy tail clip."""
+    console, thinking, renderer = _build_render_deps()
+    renderer.start()
+    renderer.append("half a rep")
+
+    _render_tool_event(
+        ToolLoopEvent(kind="truncated_retry", budget_before=512, budget_after=1024, round_index=0),
+        console=console,
+        thinking=thinking,
+        stream_renderer=renderer,
+        tool_label=lambda name: name,
+    )
+
+    output = console.export_text()
+    assert "truncated, retrying with wider budget" in output
+    assert "512" in output
+    assert "1024" in output
+    assert not renderer.active
+
+
+def test_render_tool_event_bail_retry_names_the_catcher_and_drops_the_draft() -> None:
+    """harness-24xj: the fabricated draft must not stay stacked above
+    the retry."""
+    console, thinking, renderer = _build_render_deps()
+    renderer.start()
+    renderer.append("fabricated draft")
+
+    _render_tool_event(
+        ToolLoopEvent(kind="bail_retry", catcher="FabricatedSearch", round_index=0),
+        console=console,
+        thinking=thinking,
+        stream_renderer=renderer,
+        tool_label=lambda name: name,
+    )
+
+    output = console.export_text()
+    assert "discarding draft, retrying" in output
+    assert "FabricatedSearch" in output
+    assert not renderer.active
+
+
+def test_render_tool_event_bail_retry_without_a_catcher_omits_the_suffix() -> None:
+    console, thinking, renderer = _build_render_deps()
+
+    _render_tool_event(
+        ToolLoopEvent(kind="bail_retry", round_index=0),
+        console=console,
+        thinking=thinking,
+        stream_renderer=renderer,
+        tool_label=lambda name: name,
+    )
+
+    assert "discarding draft, retrying…" in console.export_text()
+
+
+# ---------- _stream_or_complete ----------
+
+
+def test_stream_or_complete_streams_when_the_adapter_can() -> None:
+    """Returns streamed=True so the caller skips the duplicate final
+    Markdown print — Live already put the text on screen."""
+
+    class _StreamingAdapter:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, object] = {}
+
+        def stream(self, messages: list[ChatMessage], **kwargs: object) -> list[str]:
+            self.kwargs = kwargs
+            return ["one ", "two ", "three."]
+
+        def complete(self, messages: list[ChatMessage], **kwargs: object) -> str:
+            raise AssertionError("complete() must not be called when stream() exists")
+
+    console = _silent_console()
+    renderer = _StreamRenderer(console)
+    adapter = _StreamingAdapter()
+
+    text, streamed = _stream_or_complete(
+        adapter,
+        [ChatMessage(role="user", content="hi")],
+        stream_renderer=renderer,
+        max_tokens=64,
+        temperature=0.1,
+    )
+
+    assert streamed
+    assert "three." in text
+    assert adapter.kwargs == {"max_tokens": 64, "temperature": 0.1}
+
+
+def test_stream_or_complete_falls_back_to_complete() -> None:
+    """No stream() on the adapter — return the blocking reply and
+    streamed=False so the caller prints it itself."""
+
+    class _BlockingAdapter:
+        def complete(self, messages: list[ChatMessage], **kwargs: object) -> str:
+            return "blocking reply"
+
+    renderer = _StreamRenderer(_silent_console())
+
+    text, streamed = _stream_or_complete(
+        _BlockingAdapter(),
+        [ChatMessage(role="user", content="hi")],
+        stream_renderer=renderer,
+    )
+
+    assert text == "blocking reply"
+    assert not streamed
+    assert not renderer.active
+
+
+def test_stream_or_complete_ignores_a_non_callable_stream_attribute() -> None:
+    """`stream` present but not callable (a config flag, a stub) must
+    not be mistaken for the streaming path."""
+
+    class _OddAdapter:
+        stream = "not callable"
+
+        def complete(self, messages: list[ChatMessage], **kwargs: object) -> str:
+            return "fallback"
+
+    text, streamed = _stream_or_complete(
+        _OddAdapter(),
+        [ChatMessage(role="user", content="hi")],
+        stream_renderer=_StreamRenderer(_silent_console()),
+    )
+
+    assert (text, streamed) == ("fallback", False)

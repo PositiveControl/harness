@@ -307,3 +307,103 @@ def test_renderer_handles_token_level_fragmentation() -> None:
     visible, captured = _render(deltas)
     assert "Would you like" not in captured
     assert "Ready" in visible
+
+
+# ---------- _pre_validate_write_call: the refuse-to-refuse paths ----------
+#
+# harness-z4k1.1 step 2: these branches all return None — "not my
+# problem, let the tool surface it" — and none of them had a test
+# before the extraction. A guard that silently starts refusing (or
+# stops refusing) on these inputs would change what the user gets
+# asked to approve.
+
+
+def test_pre_validate_ignores_overwrite_without_a_path() -> None:
+    call = ToolCall(name="write_file", arguments={"overwrite": True, "content": "x"})
+    assert _pre_validate_write_call(call, Path("/nonexistent")) is None
+
+
+def test_pre_validate_ignores_path_escaping_the_workspace(tmp_path: Path) -> None:
+    """Sandbox escape is the tool's error to raise, not the prompt's."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x" * 5000)
+
+    call = ToolCall(
+        name="write_file",
+        arguments={"path": "../outside.txt", "content": "tiny", "overwrite": True},
+    )
+
+    assert _pre_validate_write_call(call, workspace) is None
+
+
+def test_pre_validate_ignores_overwrite_of_missing_file(tmp_path: Path) -> None:
+    call = ToolCall(
+        name="write_file",
+        arguments={"path": "not_here.txt", "content": "tiny", "overwrite": True},
+    )
+    assert _pre_validate_write_call(call, tmp_path) is None
+
+
+def test_pre_validate_ignores_overwrite_of_a_directory(tmp_path: Path) -> None:
+    (tmp_path / "adir").mkdir()
+    call = ToolCall(
+        name="write_file",
+        arguments={"path": "adir", "content": "tiny", "overwrite": True},
+    )
+    assert _pre_validate_write_call(call, tmp_path) is None
+
+
+# ---------- _describe_call: the branches nothing reached ----------
+
+
+def test_describe_flags_blocked_write_over_existing_file(tmp_path: Path) -> None:
+    """No overwrite flag on an existing path — the tool will refuse, and
+    the prompt says so instead of promising a write."""
+    (tmp_path / "there.txt").write_text("already here")
+    call = ToolCall(name="write_file", arguments={"path": "there.txt", "content": "new"})
+
+    assert _describe_call(call, tmp_path) == "write there.txt (3B) — BLOCKED: already exists"
+
+
+def test_describe_remember_event_quotes_a_clipped_title(tmp_path: Path) -> None:
+    call = ToolCall(name="remember_event", arguments={"title": "T" * 80})
+
+    described = _describe_call(call, tmp_path)
+
+    assert described == f'record event: "{"T" * 60}"'
+
+
+def test_describe_transcript_ingest_counts_turns(tmp_path: Path) -> None:
+    call = ToolCall(
+        name="transcript_ingest",
+        arguments={"session_id": "alpha", "turns": [{"role": "user"}, {"role": "assistant"}]},
+    )
+
+    assert _describe_call(call, tmp_path) == "ingest 2 turn(s) into session 'alpha'"
+
+
+def test_describe_transcript_ingest_tolerates_a_non_list_turns_value(tmp_path: Path) -> None:
+    """The model does emit a bare string here; the prompt must not raise."""
+    call = ToolCall(name="transcript_ingest", arguments={"turns": "oops"})
+
+    assert _describe_call(call, tmp_path) == "ingest 0 turn(s) into session '?'"
+
+
+def test_describe_scribe_session_lists_args(tmp_path: Path) -> None:
+    call = ToolCall(name="scribe_session", arguments={"session_id": "alpha", "user": "mark"})
+
+    assert _describe_call(call, tmp_path) == "session_id=alpha user=mark"
+
+
+def test_describe_consolidate_with_no_args_says_so(tmp_path: Path) -> None:
+    call = ToolCall(name="consolidate_memory", arguments={})
+
+    assert _describe_call(call, tmp_path) == "(no args)"
+
+
+def test_describe_unknown_tool_falls_back_to_raw_args(tmp_path: Path) -> None:
+    call = ToolCall(name="some_new_tool", arguments={"a": 1})
+
+    assert _describe_call(call, tmp_path) == "{'a': 1}"
