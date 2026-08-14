@@ -164,7 +164,7 @@ def test_resolve_adapter_wraps_airton_b_with_caveman_rewriter(
     base = MagicMock()
     base.id = "echo"
     base.context_window = 8192
-    with patch("harness.cli.make_adapter", return_value=base):
+    with patch("harness.cli_adapter.make_adapter", return_value=base):
         ab = load_character(AIRTON_B)
         adapter = _resolve_adapter("echo", persona=True, character=ab)
 
@@ -180,7 +180,7 @@ def test_resolve_adapter_keeps_persona_adapter_for_airton(
     base = MagicMock()
     base.id = "echo"
     base.context_window = 8192
-    with patch("harness.cli.make_adapter", return_value=base):
+    with patch("harness.cli_adapter.make_adapter", return_value=base):
         airton = load_character(AIRTON)
         adapter = _resolve_adapter("echo", persona=True, character=airton)
 
@@ -198,7 +198,7 @@ def test_resolve_adapter_threads_chain_rewrites_into_persona_adapter() -> None:
     base = MagicMock()
     base.id = "echo"
     base.context_window = 8192
-    with patch("harness.cli.make_adapter", return_value=base):
+    with patch("harness.cli_adapter.make_adapter", return_value=base):
         airton = load_character(AIRTON)
 
         default_adapter = _resolve_adapter("echo", persona=True, character=airton)
@@ -220,7 +220,7 @@ def test_resolve_adapter_no_persona_bypasses_rewriter(
     base.context_window = 8192
     # No eager .load method — getattr fallback path exercised.
     base.load = None
-    with patch("harness.cli.make_adapter", return_value=base):
+    with patch("harness.cli_adapter.make_adapter", return_value=base):
         ab = load_character(AIRTON_B)
         adapter = _resolve_adapter("echo", persona=False, character=ab)
 

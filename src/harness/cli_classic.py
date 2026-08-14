@@ -800,11 +800,11 @@ def run_classic_chat(
     from harness.cli import (
         _open_audit_store,
         _render_chat_header,
-        _resolve_adapter,
         _RetrievalState,
         _StreamRenderer,
         _ThinkingSpinner,
     )
+    from harness.cli_adapter import _resolve_adapter
     from harness.cli_bd import _maybe_bd_adapter, _print_session_end_retro
     from harness.cli_store import (
         _maybe_retriever,

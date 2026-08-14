@@ -62,11 +62,11 @@ def run_tui(
 ) -> None:
     from harness.cli import (
         _build_tool_registry_for_tui,
-        _resolve_adapter,
         _RetrievalState,
         _router_id_label,
         console,
     )
+    from harness.cli_adapter import _resolve_adapter
     from harness.cli_bd import _maybe_bd_adapter
     from harness.cli_store import (
         _maybe_retriever,
