@@ -1,8 +1,23 @@
 [project]
 name = "harness"
 version = "0.0.1"
-description = "Persistent-character model-agent harness"
+description = "Local-first model-agent harness for persistent characters: MLX/Ollama behind one adapter, attributed memory, a sandboxed tool loop, and character-as-configuration."
+readme = "README.md"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Mark Evans" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+urls = { Homepage = "https://github.com/PositiveControl/harness", Repository = "https://github.com/PositiveControl/harness" }
 dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.5",

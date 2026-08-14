@@ -1,5 +1,10 @@
 # harness
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+
+Run a persistent AI character on your own hardware. Local models (MLX or Ollama) behind one adapter, attributed memory that survives restarts, a sandboxed tool loop, and the character itself defined as configuration rather than code.
+
 A local-first model-agent harness for a persistent character ("Airton"), built to be always-reachable by a small trusted circle over Tailscale.
 
 Starts as a single-user CLI co-worker; grows into a multi-gateway (web / Slack / Matrix), multi-agent, concurrent, self-maintaining system with memory, tools, and eventually initiative.
@@ -326,3 +331,11 @@ Tool-loop internals: **[`docs/tool_loop_flow.md`](docs/tool_loop_flow.md)**.
 - `data/` — SQLite store (gitignored).
 - `docs/` — usage, roadmap, and design notes.
 - `CLAUDE.md` / `AGENTS.md` — authoritative architecture + conventions reference.
+
+---
+
+## License
+
+[MIT](LICENSE) © Mark Evans.
+
+Model weights, character corpora, and third-party dependencies carry their own licenses — this covers the harness code only.
