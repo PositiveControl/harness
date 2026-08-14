@@ -63,13 +63,15 @@ def run_tui(
     from harness.cli import (
         _build_tool_registry_for_tui,
         _maybe_bd_adapter,
-        _maybe_retriever,
-        _open_episodic_store,
-        _open_semantic_store,
         _resolve_adapter,
         _RetrievalState,
         _router_id_label,
         console,
+    )
+    from harness.cli_store import (
+        _maybe_retriever,
+        _open_episodic_store,
+        _open_semantic_store,
     )
 
     try:

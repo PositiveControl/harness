@@ -799,16 +799,18 @@ def run_classic_chat(
 
     from harness.cli import (
         _maybe_bd_adapter,
-        _maybe_retriever,
         _open_audit_store,
-        _open_episodic_store,
-        _open_semantic_store,
         _print_session_end_retro,
         _render_chat_header,
         _resolve_adapter,
         _RetrievalState,
         _StreamRenderer,
         _ThinkingSpinner,
+    )
+    from harness.cli_store import (
+        _maybe_retriever,
+        _open_episodic_store,
+        _open_semantic_store,
     )
 
     character = load_character(settings.character_path)

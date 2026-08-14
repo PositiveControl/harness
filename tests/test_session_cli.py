@@ -245,7 +245,7 @@ def test_session_reset_full_clean(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     # The CLI builds an embedder via _load_embedder() which would
     # try to download bge-small. Patch that off so the test stays
     # offline; the delete path doesn't need vectors.
-    monkeypatch.setattr("harness.cli._load_embedder", lambda: None)
+    monkeypatch.setattr("harness.cli_store._load_embedder", lambda: None)
 
     # Seed memory + summary state for session "alpha".
     compaction = CompactionStore(db)
