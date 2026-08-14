@@ -62,12 +62,12 @@ def run_tui(
 ) -> None:
     from harness.cli import (
         _build_tool_registry_for_tui,
-        _maybe_bd_adapter,
         _resolve_adapter,
         _RetrievalState,
         _router_id_label,
         console,
     )
+    from harness.cli_bd import _maybe_bd_adapter
     from harness.cli_store import (
         _maybe_retriever,
         _open_episodic_store,
@@ -129,7 +129,7 @@ def run_tui(
 
     # Harvest newly-closed thought:* beads before the TUI opens. See
     # cli_classic for the same pattern + rationale.
-    from harness.cli import _maybe_harvest_bd_memories, _maybe_harvest_skills
+    from harness.cli_bd import _maybe_harvest_bd_memories, _maybe_harvest_skills
 
     _maybe_harvest_skills(ab_adapter, memory_store, enabled=harvest_skills)
     # Mirror bd memories onto the same episodic substrate (harness-9yd).

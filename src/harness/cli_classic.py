@@ -798,15 +798,14 @@ def run_classic_chat(
     import typer
 
     from harness.cli import (
-        _maybe_bd_adapter,
         _open_audit_store,
-        _print_session_end_retro,
         _render_chat_header,
         _resolve_adapter,
         _RetrievalState,
         _StreamRenderer,
         _ThinkingSpinner,
     )
+    from harness.cli_bd import _maybe_bd_adapter, _print_session_end_retro
     from harness.cli_store import (
         _maybe_retriever,
         _open_episodic_store,
@@ -859,7 +858,7 @@ def run_classic_chat(
     # decisions/observations made since last session are searchable
     # this session. Idempotent; no-op when either substrate is
     # missing. See harness-j5b (sota punch #7 follow-up).
-    from harness.cli import _maybe_harvest_bd_memories, _maybe_harvest_skills
+    from harness.cli_bd import _maybe_harvest_bd_memories, _maybe_harvest_skills
 
     _maybe_harvest_skills(ab_adapter, memory_store, enabled=harvest_skills)
     # Mirror bd memories onto the same episodic substrate so identity
