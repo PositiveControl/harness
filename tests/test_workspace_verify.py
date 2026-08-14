@@ -9,7 +9,6 @@ flag real syntax errors)."""
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import patch
@@ -25,20 +24,16 @@ from harness.driver.workspace_verify import (
     extract_smoke_symptom,
     missing_entry_html_reason,
 )
+from tests.browser_probe import requires_playwright as _requires_playwright
 
 _HAS_NODE = shutil.which("node") is not None
 _HAS_PYTHON = shutil.which("python") is not None
-_HAS_PLAYWRIGHT = importlib.util.find_spec("playwright") is not None
 
 _requires_node = pytest.mark.skipif(
     not _HAS_NODE, reason="workspace JS verify step requires `node` on PATH"
 )
 _requires_python = pytest.mark.skipif(
     not _HAS_PYTHON, reason="workspace Python verify step requires `python` on PATH"
-)
-_requires_playwright = pytest.mark.skipif(
-    not _HAS_PLAYWRIGHT,
-    reason="smoke-execute step requires `playwright` + chromium installed",
 )
 
 

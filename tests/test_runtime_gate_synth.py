@@ -3,19 +3,13 @@ fsm-side red-now adoption predicate."""
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
 
 from harness.driver.fsm_turn import _adopt_synthesized_runtime_gate, _runtime_gate_red_now
 from harness.driver.runtime_gate_synth import build_runtime_gates
-
-_HAS_PLAYWRIGHT = importlib.util.find_spec("playwright") is not None
-_requires_playwright = pytest.mark.skipif(
-    not _HAS_PLAYWRIGHT,
-    reason="runtime-gate adoption requires `playwright` + chromium installed",
-)
+from tests.browser_probe import requires_playwright as _requires_playwright
 
 
 def test_declines_when_not_browser_js() -> None:
