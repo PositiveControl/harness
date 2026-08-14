@@ -2,7 +2,7 @@
 
 Caught by Mark's transcript on --tool-set core_minimal: tool_search
 was wired in both builder dicts, but load_tool only landed in the TUI
-builder (cli.py). The classic-REPL path (cli_classic.py) silently
+builder (then cli.py, now cli_tools.py). The classic-REPL path (cli_classic.py) silently
 emitted 'tool load_tool not yet implemented — skipping' at session
 start, breaking the discovery loop for the most-used chat path.
 
@@ -16,7 +16,11 @@ from __future__ import annotations
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CLI_TUI = REPO_ROOT / "src" / "harness" / "cli.py"
+# The TUI-side builder map moved out of cli.py in step 4 of
+# docs/cli-extraction-plan.md (harness-z4k1.1). This pin broke loudly on
+# the move, exactly as its docstring predicted; the target is the map's
+# new home, not the old file.
+CLI_TUI = REPO_ROOT / "src" / "harness" / "cli_tools.py"
 CLI_CLASSIC = REPO_ROOT / "src" / "harness" / "cli_classic.py"
 
 # Meta-tools the agent reaches for regardless of chat front-end:
@@ -77,5 +81,6 @@ def test_builder_meta_tool_surface_matches_between_files() -> None:
         in_tui = name in tui_keys
         in_classic = name in classic_keys
         assert in_tui == in_classic, (
-            f"meta-tool {name!r} surface diverged: cli.py={in_tui}, cli_classic.py={in_classic}"
+            f"meta-tool {name!r} surface diverged: "
+            f"cli_tools.py={in_tui}, cli_classic.py={in_classic}"
         )
