@@ -21,6 +21,7 @@ import typer
 from rich.console import Console
 
 from harness.character import Character
+from harness.cli_apps import app
 from harness.cli_bd import _maybe_bd_adapter
 from harness.cli_introspect import list_cli_commands
 from harness.config import settings
@@ -99,19 +100,6 @@ from harness.tools.ab_ops import (
 from harness.tools.phraseology_lint import PhraseologyLintTool
 
 console = Console()
-
-
-def _root_typer_app() -> typer.Typer:
-    """The root Typer app, imported late.
-
-    `cli.py` imports this module, so a module-level `from harness.cli
-    import app` would be a cycle. Step 5 of the extraction plan moves
-    the Typer objects into `cli_apps.py`, at which point this becomes a
-    normal top-level import.
-    """
-    from harness.cli import app
-
-    return app
 
 
 # Source identifier the phraseology lint pipeline filters its
@@ -697,7 +685,7 @@ def _make_introspect_tool(
         semantic=semantic,
         workspace=workspace_path,
         user_id=user_id,
-        commands=tuple(list_cli_commands(_root_typer_app())),
+        commands=tuple(list_cli_commands(app)),
         retrieval_health=retrieval_health,
         persona_active=persona_active,
         router_id=router_id,

@@ -128,49 +128,45 @@ def _coin_session_id(*, now: datetime | None = None) -> str:
     return f"cli-{stamp}"
 
 
-app = typer.Typer(add_completion=False, no_args_is_help=True)
-eval_app = typer.Typer(help="Evaluations against the current character.", no_args_is_help=True)
-app.add_typer(eval_app, name="eval")
-memory_app = typer.Typer(help="Inspect and manage episodic memory.", no_args_is_help=True)
-app.add_typer(memory_app, name="memory")
-voice_app = typer.Typer(help="Voice suite — capture and manage samples.", no_args_is_help=True)
-app.add_typer(voice_app, name="voice")
-session_app = typer.Typer(
-    help="Browse and stream Airton's recorded chat sessions.",
-    no_args_is_help=True,
+# The Typer app objects live in `cli_apps.py` (step 5a of
+# docs/cli-extraction-plan.md) so handler modules can register against
+# them without importing this module. Re-exported here: the
+# `harness.cli:app` entry point and every existing
+# `from harness.cli import app` call site keep working.
+from harness.cli_apps import (  # noqa: E402
+    app as app,
 )
-app.add_typer(session_app, name="session")
-phraseology_app = typer.Typer(
-    help="Cite-grounded ATC transmission verifier (airton_c1, JO 7110.65).",
-    no_args_is_help=True,
+from harness.cli_apps import (  # noqa: E402
+    denylist_app as denylist_app,
 )
-app.add_typer(phraseology_app, name="phraseology")
-web_app = typer.Typer(
-    help="Serve the current character over HTTP (harness.web factory).",
-    no_args_is_help=True,
+from harness.cli_apps import (  # noqa: E402
+    drive_app as drive_app,
 )
-app.add_typer(web_app, name="web")
-plan_app = typer.Typer(
-    help="Inspect, bootstrap, and manage runtime-typed plans (harness-ptdw).",
-    no_args_is_help=True,
+from harness.cli_apps import (  # noqa: E402
+    eval_app as eval_app,
 )
-app.add_typer(plan_app, name="plan")
-tool_app = typer.Typer(
-    help="Inspect + manage the tool catalog (harness-rqg0).",
-    no_args_is_help=True,
+from harness.cli_apps import (  # noqa: E402
+    memory_app as memory_app,
 )
-app.add_typer(tool_app, name="tool")
-denylist_app = typer.Typer(
-    help="Inspect + manage the fetch_url denylist (harness-4dgm).",
-    no_args_is_help=True,
+from harness.cli_apps import (  # noqa: E402
+    phraseology_app as phraseology_app,
 )
-app.add_typer(denylist_app, name="denylist")
-# Multi-turn driver subcommands (harness-e9oq). `harness drive plan`
-# and `harness drive loop` — namespaced under `drive` so they don't
-# collide with the existing `harness plan` runtime-typed-plan tools.
-from harness.driver.cli import drive_app  # noqa: E402 — registers below
+from harness.cli_apps import (  # noqa: E402
+    plan_app as plan_app,
+)
+from harness.cli_apps import (  # noqa: E402
+    session_app as session_app,
+)
+from harness.cli_apps import (  # noqa: E402
+    tool_app as tool_app,
+)
+from harness.cli_apps import (  # noqa: E402
+    voice_app as voice_app,
+)
+from harness.cli_apps import (  # noqa: E402
+    web_app as web_app,
+)
 
-app.add_typer(drive_app, name="drive")
 console = Console()
 
 
