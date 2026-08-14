@@ -21,7 +21,7 @@ Environment setup (one time):
 Daily chat (see `docs/usage.md` for the intended workflow):
 
 - `uv run harness chat --model mlx --persona --memories 3 --facts 5` — MLX + persona + 3 episodic + 5 semantic facts + retrieval-picked voice few-shot.
-- `uv run harness chat --model mlx --persona --tools` — adds tool-use orchestrator (default `core` tool-set; `--tool-set {minimal,core,coding,memory,diagnostic,research,ops,full}`; escape hatches `--tools-add`, `--tools-drop`; `--workspace DIR` to sandbox elsewhere).
+- `uv run harness chat --model mlx --persona --tools` — adds tool-use orchestrator (default `core` tool-set; `--tool-set {minimal,core_minimal,core,coding,memory,diagnostic,research,ops,reckon,full,atc,phraseology,notes,scholar,contract}`; escape hatches `--tools-add`, `--tools-drop`; `--workspace DIR` to sandbox elsewhere).
 - `uv run harness chat --model mlx --persona --tools --router` — small-model intent router fronts tool loop. `--router-mode grammar` for schema-constrained decoding via `outlines`; `--router-repo` to override.
 - `uv run harness chat --model mlx --persona --tui` — Textual chat app instead of REPL (requires `--extra tui`).
 - `uv run harness chat --model ollama --model-repo qwen2.5-coder:32b-instruct --persona` — Ollama backend.
@@ -57,13 +57,23 @@ Evals (append `--json` for machine-readable output):
 - `uv run harness eval voice --model mlx --top-k 6 --persona` — current best config. Flags: `--chain-rewrites` (2nd concrete-sub pass), `--judge` (LLM-judge), `--no-leave-one-out` (ceiling), `--top-k 0` (no retrieval), `--sample SAMPLE_ID`.
 - `uv run harness eval router` — replay `character/<name>/router_eval.yaml`, score tool-selection accuracy. `--router-mode grammar --tool-set coding` for the constrained variant.
 - `uv run harness eval session-resume` — replay `session_resume_eval.yaml`, pin the `build_resume_summary` contract (focus / in-progress / memories / drift).
+- `uv run harness eval tool-loop` — replay `tool_loop_eval.yaml` against scripted adapters; includes fabrication-catcher attribution.
+
+Other subcommand groups (`uv run harness <group> --help` for each):
+
+- `drive` — multi-turn autonomous driver: `plan`, `lint-epic`, `loop`, `auto-iterate`, `logs`.
+- `plan` — inspect / bootstrap / manage runtime-typed plans.
+- `daemon`, `daemon-status` — heartbeat loop for scheduled maintenance, plus its state sidecar.
+- `web` — serve the current character over HTTP.
+- `tool` — inspect + manage the tool catalog. `denylist` — manage the `fetch_url` denylist.
+- `phraseology` — cite-grounded ATC transmission verifier (airton_c1, JO 7110.65).
 
 Quality gates (all must stay green; pre-commit runs them on every commit):
 
 - `uv run ruff check .` — lint.
 - `uv run ruff format .` — format in place.
 - `uv run mypy src tests` — strict type-check (src + tests).
-- `uv run pytest` — full test suite (currently ~1,000 tests across 62 files).
+- `uv run pytest` — full test suite (currently ~4,290 tests across 197 files, ~100s).
 - `uv run pytest tests/test_character.py::test_load_airton_shape` — single test.
 - `uv run pre-commit run --all-files` — run all hooks against the working tree.
 
@@ -89,13 +99,20 @@ Load-bearing invariants — they shape almost every decision:
   - `consolidate/consolidator.py` — partition by `user_id`, single-link episodic cluster at cosine ≥ 0.80, merge facts by `(subject, predicate)`. Shared (`user_id IS NULL`) is its own partition.
   - `skills/` — idempotent bd harvesters into episodic tier=`procedural`. `harvester.py` ingests closed `thought:decision` / `thought:observation` beads (`external_id=bead_id`); `memory_harvester.py` mirrors `bd remember` / `retro record` (`external_id=bd-mem:<key>`).
   - `compaction/` — folds older turns at `compact_at × window`. Auto-scribes unprocessed turns *before* folding so `search_memory` survives compression.
-  - `tools/` — 20 built-in tools. `profiles.py` defines sets (`minimal`/`core`/`coding`/`memory`/`diagnostic`/`research`/`ops`/`full`) targeting ≤~1.5k tokens of schema overhead. Write-tier marked + requires per-session confirmation. Filesystem + git + shell tools sandboxed to `--workspace`. Includes `introspect` (scope enum: tools/model/memory/character/commands/session/all), `spawn_subagent` (read-only, depth-1, shared hooks), `fetch_url` (HTTPS-only, 2MB cap, research/coding only), `search_web`, `remember_{fact,event}`, `scribe_session`, `consolidate_memory`.
+  - `tools/` — 60 built-in tools in `catalog.py`'s `BUILTIN_TOOL_METADATA` (ops 21, filesystem 10, memory 8, reckon 7, research 6, meta 4, git 3, atc 1); 58 of them are reachable from a profile, the other two (`citation_lookup`, `query_table`) only via `--tools-add` / `load_tool`. `profiles.py` defines 15 named profiles — general-purpose (`minimal`, `core_minimal`, `core`, `coding`, `memory`, `diagnostic`, `research`, `ops`, `reckon`, `full`) plus character-scoped (`atc`, `phraseology`, `notes`, `scholar`, `contract`) — each with its own schema budget (see the module docstring; `minimal`/`diagnostic`/`phraseology` ≤1k tokens, `core` ≤2k, `coding`/`atc`/`scholar`/`ops` ≤3.5k, `full` unbounded). Write-tier marked + requires per-session confirmation. Filesystem + git + shell tools sandboxed to `--workspace`. Includes `introspect` (scope enum: tools/model/memory/character/commands/session/all), `spawn_subagent` (read-only, depth-1, shared hooks), `fetch_url` (HTTPS-only, 2MB cap, research/coding only), `search_web`, `remember_{fact,event}`, `scribe_session`, `consolidate_memory`.
   - `router/` — small-model intent router. `Router` protocol + `RouterResult`; `ModelRouter` (tolerant-JSON); `GrammarRouter` (`outlines` schema-constrained). Advisory: null / write-tier / unparseable falls through.
   - `orchestrator/` — `tool_loop.py` runs model↔tool cycle. `hooks.py` typed four-phase pipeline: `post_model` / `bail` (first-match: Truncated, Unparseable, Teaser, FalseSuccess, MetaConfirm, FabricatedSearch, FabricatedItemization, AbFabrication, ToolIntent) / `pre_tool` (DuplicateCall, ArgumentGrounding) / `post_tool` (opt-in ToolResultSummarizer) / `finalize` (FabricationFallback). Per-hook toggles via `disabled: frozenset[str]` for attribution evals.
   - `tui/` — Textual chat app (optional, `--tui`).
-  - `evals/` — voice / router / session-resume.
+  - `turn/service.py` — one grounded chat turn (retrieval → prompt assembly → history → tool loop → rewrite → persistence → audit), lifted out of CLI-only assembly so CLI, TUI, web, and daemon callers all run the same path.
+  - `driver/` — multi-turn autonomous driver behind `harness drive` (`plan` / `lint-epic` / `loop` / `auto-iterate` / `logs`). 23 modules, the largest subsystem here: phase FSM (`turn_fsm.py`, `fsm_turn.py`, `state.py`), gate-blindness rejection (`gate_blind.py`), gate synthesis (`gate_synth.py`, `runtime_gate_synth.py`), park/revive guards (`premise_guard.py`, `workspace_guard.py`), critic convergence (`auto_iterate.py`, `critic.py`), browser smoke (`smoke_runner.py`, needs chromium). Reference doc pending — see `harness-mgmz`.
+  - `plan/` — runtime-typed plan structure (`Plan` values the orchestrator reasons over directly, no subprocess hop per turn). bd is one backend among N: `bd_source.py`, `writeback.py`, `store.py`. CLI surface: `harness plan`.
+  - `runtime/` — clock-driven heartbeat loop separate from chat turns; runs maintenance tasks (compaction, consolidation, scheduled tool calls) at configured intervals. CLI surface: `harness daemon` / `harness daemon-status`.
+  - `web/` — FastAPI factory that serves any character over HTTP (`harness web`); per-character extensions under `web/characters/`.
+  - `notam/parser.py` — standalone NOTAM/TFR parser for `airton_c_tfr`. Import-clean (stdlib + optional `pyproj`, lazily imported), no `harness.*` imports, so it can be vendored or split out.
+  - `character_templates/` — archetype skeletons (currently `atc/`) that `scripts/character_from_template.py` copies into `character/<new_name>/`, substituting `{{CHARACTER_NAME}}`.
+  - `evals/` — voice / router / session-resume / tool-loop.
   - `cli.py` — Typer app. See Commands above.
-- `tests/` — pytest, hits real SQLite in `tmp_path`. ~1,000 tests.
+- `tests/` — pytest, hits real SQLite in `tmp_path`. ~4,290 tests. Browser-backed tests gate on `tests/browser_probe.py` (needs `uv run playwright install chromium`, else they skip).
 - `scripts/` — benchmarks (model-speed, tool-use with `--measure-tokens`, router-on-vs-off with RAM tracking).
 
 ### Voice stack

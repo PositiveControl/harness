@@ -30,8 +30,9 @@ Primary runtime is **MLX on Apple Silicon** (tested on M4 Pro 48 GB). A local **
 - Semantic triples (`subject`, `predicate`, `object`) with confidence, provenance, and supersession.
 
 **Agent loop**
-- Tool-use orchestrator with 17 built-in tools across filesystem (`read_file`, `list_dir`, `grep`, `glob`, `edit_file`, `write_file`, `shell`), git (`git_status`, `git_diff`, `git_log`), memory (`search_memory`, `search_facts`, `remember_fact`, `remember_event`, `scribe_session`, `consolidate_memory`), and web (`search_web`).
-- Named tool-set profiles (`minimal`, `core`, `coding`, `memory`, `diagnostic`, `research`) — each ≤ ~1,500 tokens of schema overhead.
+- Tool-use orchestrator with 60 built-in tools: filesystem (`read_file`, `list_dir`, `grep`, `glob`, `outline`, `edit_file`, `stream_edit`, `write_file`, `shell`), git (`git_status`, `git_diff`, `git_log`), memory (`search_memory`, `search_facts`, `remember_fact`, `remember_event`, `scribe_session`, `consolidate_memory`), bd ops (`plan`, `drift`, `close`, `defer`, `dep`, `retro`, …), reckon (`now`, `date_math`, `calc`, `tz_convert`, `sun`, `python_eval`, `stats`), research (`search_web`, `fetch_url`, `search_scholar`), and meta (`introspect`, `spawn_subagent`, `tool_search`, `load_tool`).
+- 15 named tool-set profiles — general-purpose (`minimal`, `core_minimal`, `core`, `coding`, `memory`, `diagnostic`, `research`, `ops`, `reckon`, `full`) plus character-scoped (`atc`, `phraseology`, `notes`, `scholar`, `contract`) — each held to a schema-overhead budget (≤1k tokens for the lean sets, ≤3.5k for the heavy ones).
+- Lazy tool acquisition: boot on `core_minimal` (~550 tokens of schema) and let the agent `tool_search` → `load_tool` its own way into the tools it needs.
 - Optional small-model intent router (`--router`) that fronts the tool loop: confident read-tier classifications skip the fabricate-and-nudge rounds. Free-form JSON or JSON-schema-constrained decoding via `outlines`.
 - Streaming token output, spinner, context-window meter, automatic compaction, duplicate-call short-circuit, fabricate-and-nudge catchers.
 - Optional Textual TUI (`--tui`) — persistent input, scrolling RichLog, live metrics footer, write-tier confirmation modal, history replay.
@@ -40,7 +41,7 @@ Primary runtime is **MLX on Apple Silicon** (tested on M4 Pro 48 GB). A local **
 **Evals + quality**
 - Voice eval suite: leave-one-out retrieval scoring + heuristic scorer + LLM-as-judge.
 - Router eval: fixture-based tool-selection accuracy check (`harness eval router`).
-- ~470 tests against real SQLite stores — no mocks.
+- ~4,290 tests across 197 files against real SQLite stores — no mocks.
 - `ruff` + `mypy --strict` + `pytest` wired into pre-commit and pre-push hooks.
 
 **Character as configuration**
@@ -63,6 +64,7 @@ The harness ships with several characters, each shaped by a different tool surfa
 | **airton_d** | notes curator — capture / query / triage over `character/airton_d/workspace/` | `notes` | `scripts/chat_d.sh` |
 | **airton_e** | RESERVED — placeholder slot for a future character (see `character/airton_e/RESERVED.md`) | — | — |
 | **airton_f** | scholar — generic markdown doc-tree reader on the contract primitive; bounded external lookup via Google Scholar / arXiv / DOI | `scholar` | `scripts/chat_f.sh` |
+| **airton_g** | reckoner — time / date / arithmetic / unit conversion / small Python only; every answer comes from a tool call | `reckon` | `HARNESS_CHARACTER_NAME=airton_g uv run harness chat …` |
 | **returns_handler** | tabular-decision demo — refund decisions over policy seeds + order rows | `contract` | `HARNESS_CHARACTER_NAME=returns_handler uv run harness chat …` |
 
 Each character's data lives under `character/<name>/` — `core.yaml`, `constitution.md`, `voice/`, `seed_memories/`, plus optional `contracts/`, `seed_documents/`, `data/`, and `workspace/` subdirs depending on archetype. Character data is configuration, not code: nothing in `src/` hardcodes a character's rules.
@@ -300,11 +302,18 @@ src/harness/
   scribe/                batch extract transcript → memory candidates
   consolidate/           cluster + merge near-duplicates; promote tier
   compaction/            context-window management
-  tools/                 17 built-in tools for the agent loop (fs/git/memory/web) + profiles
-  orchestrator/          tool-use loop
+  tools/                 60 built-in tools (fs/git/memory/ops/reckon/research) + 15 profiles
+  orchestrator/          tool-use loop + typed hook pipeline
   router/                small-model intent router (free-form + grammar)
+  turn/                  one grounded chat turn, shared by CLI/TUI/web/daemon
+  driver/                multi-turn autonomous driver behind `harness drive`
+  plan/                  runtime-typed plans; bd is one backend among N
+  runtime/               heartbeat daemon for scheduled maintenance
+  web/                   FastAPI factory serving a character over HTTP
+  notam/                 standalone NOTAM/TFR parser (airton_c_tfr)
+  character_templates/   archetype skeletons for new characters
   tui/                   Textual chat app (optional, behind `--extra tui`)
-  evals/                 voice + router evals, scorer + judge
+  evals/                 voice + router + session-resume + tool-loop evals
   cli.py                 Typer entrypoint
 ```
 
