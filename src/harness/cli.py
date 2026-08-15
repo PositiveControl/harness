@@ -4141,7 +4141,6 @@ def memory_harvest_bd_memories(
         store.close()
 
 
-@voice_app.command("capture")
 def _write_voice_capture(
     *,
     prompt: str,
@@ -4182,6 +4181,7 @@ def _write_voice_capture(
     return captured_path, sample_id, len(doc["samples"])
 
 
+@voice_app.command("capture")
 def voice_capture(
     session: str = typer.Option("local", help="Session id to pull the exchange from."),
     gold: str = typer.Option(
