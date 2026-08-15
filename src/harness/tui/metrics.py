@@ -16,6 +16,7 @@ import time
 from typing import TYPE_CHECKING
 
 from rich.text import Text
+from textual.css.query import NoMatches
 from textual.widgets import Static
 
 from harness.cli import _format_ctx_meter
@@ -33,7 +34,17 @@ class MetricsView:
         self._adapter = adapter
 
     def refresh(self) -> None:
-        metrics = self._app.query_one("#metrics", Static)
+        # harness-k1kx: the 250ms tick outlives the widget tree. On
+        # shutdown Textual prunes the DOM while timers are still
+        # scheduled, so a tick can land after `#metrics` is gone —
+        # query_one then raises NoMatches, which Textual stores as the
+        # app's exception and re-raises on exit (a traceback on quit
+        # for a real user; a load-sensitive flake in the test suite).
+        # No strip to draw on is a no-op, not an error.
+        try:
+            metrics = self._app.query_one("#metrics", Static)
+        except NoMatches:
+            return
         meter = _format_ctx_meter(self._state.ctx_used, self._adapter.context_window) or "ctx —"
         parts = [meter]
         if self._state.turn_started_at is not None:

@@ -15,7 +15,10 @@ from pathlib import Path
 import pytest
 
 from harness.driver.smoke_runner import (
+    _ASSERT_POLL_MS,
+    _DEFAULT_ASSERT_RETRY_MS,
     _DEFAULT_SETTLE_MS,
+    _assert_retry_ms,
     _blank_canvas_check_enabled,
     _capture_screenshot,
     _is_undefined_ref_error,
@@ -23,6 +26,7 @@ from harness.driver.smoke_runner import (
     _read_assert,
     _read_path_arg,
     _read_setup,
+    _run_behavioral_assert,
     _settle_ms,
 )
 
@@ -64,6 +68,115 @@ def test_settle_ms_clamps_high(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_settle_ms_falls_back_on_garbage(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HARNESS_SMOKE_SETTLE_MS", "soon")
     assert _settle_ms() == _DEFAULT_SETTLE_MS
+
+
+# --- harness-k1kx: behavioral-assert retry --------------------------
+
+
+class _AssertPage:
+    """Stub playwright Page for the assert path: `evaluate` replays a
+    scripted list of verdicts (a verdict that is an Exception is
+    raised), and `wait_for_timeout` just records the sleep the runner
+    asked for instead of taking it."""
+
+    def __init__(self, verdicts: list[object]) -> None:
+        self._verdicts = list(verdicts)
+        self.reads = 0
+        self.waits: list[int] = []
+
+    def evaluate(self, _source: str) -> object:
+        self.reads += 1
+        verdict = self._verdicts[min(self.reads - 1, len(self._verdicts) - 1)]
+        if isinstance(verdict, Exception):
+            raise verdict
+        return verdict
+
+    def wait_for_timeout(self, ms: int) -> None:
+        self.waits.append(ms)
+
+
+def test_assert_retry_ms_default_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HARNESS_SMOKE_ASSERT_RETRY_MS", raising=False)
+    assert _assert_retry_ms() == _DEFAULT_ASSERT_RETRY_MS
+
+
+def test_assert_retry_ms_honors_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HARNESS_SMOKE_ASSERT_RETRY_MS", "500")
+    assert _assert_retry_ms() == 500
+
+
+def test_assert_retry_ms_allows_zero_as_off_switch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """0 is a legal value (read once) — unlike the settle window, which
+    floors at 100ms. A negative clamps up to 0, not to a floor."""
+    monkeypatch.setenv("HARNESS_SMOKE_ASSERT_RETRY_MS", "0")
+    assert _assert_retry_ms() == 0
+    monkeypatch.setenv("HARNESS_SMOKE_ASSERT_RETRY_MS", "-5")
+    assert _assert_retry_ms() == 0
+
+
+def test_assert_retry_ms_clamps_high_and_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HARNESS_SMOKE_ASSERT_RETRY_MS", "999999")
+    assert _assert_retry_ms() == 30000
+    monkeypatch.setenv("HARNESS_SMOKE_ASSERT_RETRY_MS", "later")
+    assert _assert_retry_ms() == _DEFAULT_ASSERT_RETRY_MS
+
+
+def test_behavioral_assert_passes_on_first_read_without_waiting() -> None:
+    """A probe that passes immediately costs nothing — the retry budget
+    is only spent by runs that were failing."""
+    page = _AssertPage([[]])
+    assert _run_behavioral_assert(page, "return [];", budget_ms=3000) == []
+    assert page.reads == 1
+    assert page.waits == []
+
+
+def test_behavioral_assert_retries_until_state_catches_up() -> None:
+    """The load-under-pressure case (harness-k1kx): the game loop hadn't
+    ticked yet on the first two reads, so the assert must re-check
+    rather than report a failure that is merely early."""
+    page = _AssertPage([["fire did not set window.fired"], ["fire did not set window.fired"], []])
+    assert _run_behavioral_assert(page, "return [];", budget_ms=3000) == []
+    assert page.reads == 3
+    assert page.waits == [_ASSERT_POLL_MS, _ASSERT_POLL_MS]
+
+
+def test_behavioral_assert_reports_failures_when_budget_runs_out() -> None:
+    """A genuinely broken app still fails — the retry only moves WHEN
+    it fails, never WHETHER."""
+    page = _AssertPage([["fire did not set window.fired"]])
+    failures = _run_behavioral_assert(page, "return [...];", budget_ms=2 * _ASSERT_POLL_MS)
+    assert failures == ["assert failure: fire did not set window.fired"]
+    assert page.reads == 3  # reads at 0ms, 100ms, 200ms — then the budget is spent
+
+
+def test_behavioral_assert_zero_budget_reads_once() -> None:
+    page = _AssertPage([["still broken"]])
+    assert _run_behavioral_assert(page, "return [...];", budget_ms=0) == [
+        "assert failure: still broken"
+    ]
+    assert page.reads == 1
+    assert page.waits == []
+
+
+def test_behavioral_assert_throw_is_a_failure_and_is_retried() -> None:
+    """A throwing probe is a failure, not a skip — and a throw can also
+    be an early read ("X is not defined" before init finished), so it
+    rides the same retry."""
+    page = _AssertPage([RuntimeError("nonexistentGlobal is not defined")])
+    failures = _run_behavioral_assert(page, "return nope.value;", budget_ms=_ASSERT_POLL_MS)
+    assert len(failures) == 1
+    assert "assert-scenario error" in failures[0]
+    assert "not defined" in failures[0]
+    assert page.reads == 2
+
+
+def test_behavioral_assert_truthy_non_list_is_a_failure() -> None:
+    """A probe that returns something other than an array of failure
+    strings is misconfigured — fail loud rather than coerce."""
+    page = _AssertPage(["oops"])
+    failures = _run_behavioral_assert(page, "return 'oops';", budget_ms=0)
+    assert len(failures) == 1
+    assert "non-list truthy value" in failures[0]
 
 
 def test_blank_canvas_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:

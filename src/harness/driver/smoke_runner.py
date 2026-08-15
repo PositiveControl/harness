@@ -42,6 +42,21 @@ from typing import Any
 # sequences; longer windows trade verify cost for coverage.
 _DEFAULT_SETTLE_MS = 1500
 
+# harness-k1kx: how long the behavioral assert keeps re-checking after
+# the settle window before it gives up and reports the failures. The
+# settle window is a wall-clock wait, so on a loaded machine (full test
+# suite, parallel drive turns) the page gets far fewer animation frames
+# per millisecond than it does idle, and an assert that depends on the
+# game loop having ticked can read state that is merely late rather
+# than wrong. Re-checking until the condition holds keeps the gate
+# honest — a genuinely broken app still fails, it just fails at the end
+# of the retry budget instead of on the first read. Override via
+# HARNESS_SMOKE_ASSERT_RETRY_MS; 0 disables retries (single read).
+_DEFAULT_ASSERT_RETRY_MS = 3000
+
+# Interval between assert re-reads while inside the retry budget.
+_ASSERT_POLL_MS = 100
+
 
 def _blank_canvas_check_enabled(*, cli_disabled: bool = False) -> bool:
     """Whether to fail the smoke step when a canvas renders entirely
@@ -63,23 +78,38 @@ def _blank_canvas_check_enabled(*, cli_disabled: bool = False) -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+def _env_ms(name: str, default: int, *, low: int, high: int) -> int:
+    """Read a millisecond duration from env ``name``, clamped to
+    [``low``, ``high``]. A malformed value falls back to ``default``
+    rather than failing the verify on a misconfigured env."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if value < low:
+        return low
+    if value > high:
+        return high
+    return value
+
+
 def _settle_ms() -> int:
     """Resolve the post-load settle window from
     ``HARNESS_SMOKE_SETTLE_MS`` (clamped to [100, 30000]) or the
     default. A malformed / non-positive value falls back to the
     default rather than failing the verify on a misconfigured env."""
-    raw = os.environ.get("HARNESS_SMOKE_SETTLE_MS", "").strip()
-    if not raw:
-        return _DEFAULT_SETTLE_MS
-    try:
-        value = int(raw)
-    except ValueError:
-        return _DEFAULT_SETTLE_MS
-    if value < 100:
-        return 100
-    if value > 30000:
-        return 30000
-    return value
+    return _env_ms("HARNESS_SMOKE_SETTLE_MS", _DEFAULT_SETTLE_MS, low=100, high=30000)
+
+
+def _assert_retry_ms() -> int:
+    """Resolve the behavioral-assert retry budget from
+    ``HARNESS_SMOKE_ASSERT_RETRY_MS`` (clamped to [0, 30000]) or the
+    default. 0 means "read once" — the pre-harness-k1kx behavior, kept
+    as an escape hatch for a probe that is expected to fail fast."""
+    return _env_ms("HARNESS_SMOKE_ASSERT_RETRY_MS", _DEFAULT_ASSERT_RETRY_MS, low=0, high=30000)
 
 
 # JS evaluated in the page after the settle window to detect a canvas
@@ -249,6 +279,44 @@ def _read_assert(argv: list[str]) -> tuple[str | None, str | None]:
     return _read_file_arg(argv, "assert", "assert")
 
 
+def _read_assert_once(page: Any, assert_source: str) -> list[str]:
+    """Evaluate the assert probe once and normalize its verdict into a
+    list of failure strings (empty = pass). A throw and a truthy
+    non-list return are both failures — a broken probe must not
+    green-light a close."""
+    try:
+        verdict = page.evaluate(f"() => {{ {assert_source} }}")
+    except Exception as exc:  # surface any assert throw as a failure
+        return [f"assert-scenario error: {exc}"]
+    if isinstance(verdict, list):
+        return [f"assert failure: {item}" for item in verdict]
+    if verdict:
+        return [
+            f"assert script returned a non-list truthy value "
+            f"({verdict!r}); expected an array of failure strings"
+        ]
+    return []
+
+
+def _run_behavioral_assert(page: Any, assert_source: str, *, budget_ms: int) -> list[str]:
+    """Re-read the assert probe until it passes or ``budget_ms`` is
+    spent, and return the LAST verdict (harness-k1kx).
+
+    The settle window before this is a fixed sleep, which under load
+    buys far fewer animation frames than it does on an idle machine —
+    so a first read can catch state that is late rather than wrong.
+    Waiting on the condition instead of the clock keeps a slow app
+    green and a broken one red; the only cost of the retry is paid by
+    runs that were going to fail anyway."""
+    waited = 0
+    while True:
+        failures = _read_assert_once(page, assert_source)
+        if not failures or waited >= budget_ms:
+            return failures
+        page.wait_for_timeout(_ASSERT_POLL_MS)
+        waited += _ASSERT_POLL_MS
+
+
 def main(argv: list[str]) -> int:
     flags = {a for a in argv[1:] if a.startswith("--") and "=" not in a}
     positionals = [a for a in argv[1:] if not a.startswith("--")]
@@ -358,18 +426,13 @@ def main(argv: list[str]) -> int:
                 # has a more actionable error than a cascaded assert miss)
                 # and BEFORE the blank-canvas check so a behavioral failure
                 # outranks the coarser "canvas is one color" signal.
+                # A failing read is re-checked for up to the retry budget
+                # (harness-k1kx) so a starved event loop reads as slow,
+                # not broken.
                 if assert_source is not None and not errors:
-                    try:
-                        verdict = page.evaluate(f"() => {{ {assert_source} }}")
-                        if isinstance(verdict, list):
-                            errors.extend(f"assert failure: {item}" for item in verdict)
-                        elif verdict:
-                            errors.append(
-                                f"assert script returned a non-list truthy value "
-                                f"({verdict!r}); expected an array of failure strings"
-                            )
-                    except Exception as exc:  # surface any assert throw as a failure
-                        errors.append(f"assert-scenario error: {exc}")
+                    errors.extend(
+                        _run_behavioral_assert(page, assert_source, budget_ms=_assert_retry_ms())
+                    )
                 # Blank-canvas check runs only if the load was otherwise
                 # clean — a page that already threw has a more actionable
                 # error to report than "your canvas is one color."

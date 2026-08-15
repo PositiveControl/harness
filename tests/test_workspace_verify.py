@@ -595,12 +595,17 @@ _ASSERT_FIRE_WORKED = "return window.fired ? [] : ['fire (KeyJ) did not set wind
 
 
 @_requires_playwright
-def test_smoke_step_fails_when_behavioral_assert_fails(tmp_path: Path) -> None:
+def test_smoke_step_fails_when_behavioral_assert_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """harness-u1il5 core: a game that loads clean and renders (passes
     the render + blank-canvas gates) but whose fire handler is missing
     must FAIL the smoke once a behavioral probe drives KeyJ and asserts
     the effect. This is the input-handler-closes-blind class the
     render-only gate let through."""
+    # This assert can never come true, so the retry budget would only
+    # add dead wall-clock to the suite — read once (harness-k1kx).
+    monkeypatch.setenv("HARNESS_SMOKE_ASSERT_RETRY_MS", "0")
     (tmp_path / "index.html").write_text(_BEHAVIORAL_INDEX)
     (tmp_path / "game.js").write_text(_GAME_WITHOUT_FIRE)
     harness_dir = tmp_path / ".harness"
@@ -633,10 +638,14 @@ def test_smoke_step_passes_when_behavioral_assert_passes(tmp_path: Path) -> None
 
 
 @_requires_playwright
-def test_smoke_step_fails_when_assert_throws(tmp_path: Path) -> None:
+def test_smoke_step_fails_when_assert_throws(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A probe that throws (references an undefined global, bad assertion
     code) fails loud rather than silently passing — a broken probe must
     not green-light a close."""
+    # A throwing probe stays broken; skip the retry budget (harness-k1kx).
+    monkeypatch.setenv("HARNESS_SMOKE_ASSERT_RETRY_MS", "0")
     (tmp_path / "index.html").write_text(_BEHAVIORAL_INDEX)
     (tmp_path / "game.js").write_text(_GAME_WITH_FIRE)
     harness_dir = tmp_path / ".harness"

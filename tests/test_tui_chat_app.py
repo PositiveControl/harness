@@ -817,6 +817,20 @@ async def test_chat_app_skips_preload_for_adapters_without_load(tmp_path) -> Non
         assert prompt.has_focus
 
 
+@pytest.mark.asyncio
+async def test_metrics_tick_survives_missing_strip(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """harness-k1kx: the 250ms metrics timer keeps ticking while Textual
+    prunes the DOM on shutdown, so a tick can land after `#metrics` is
+    gone. That must be a no-op — an exception here is stored on the app
+    and re-raised at exit (traceback on quit for a user; a load-
+    sensitive flake for whichever test happened to be running)."""
+    app = _build_app(tmp_path)
+    async with app.run_test() as pilot:
+        assert pilot.app is app
+        await app.query_one("#metrics", Static).remove()
+        app._refresh_metrics()  # must not raise
+
+
 # ---------- slash palette (harness-kg9) ----------
 
 
@@ -840,26 +854,35 @@ async def test_slash_palette_opens_on_slash_and_filters(tmp_path) -> None:  # ty
         palette = pilot.app.query_one("#slash_palette", SlashPalette)
 
         prompt.value = "/"
-        await pilot.pause()
-        assert palette.is_open
         # Default highlight is the alpha-first entry.
-        assert palette.selected_name() == "/clear"
+        await _wait_until(
+            pilot,
+            lambda: palette.is_open and palette.selected_name() == "/clear",
+            what="palette did not open on / with /clear highlighted",
+        )
 
         prompt.value = "/q"
-        await pilot.pause()
-        assert palette.is_open
-        assert palette.selected_name() == "/quit"
+        await _wait_until(
+            pilot,
+            lambda: palette.is_open and palette.selected_name() == "/quit",
+            what="palette did not filter to /quit",
+        )
 
         prompt.value = "/e"
-        await pilot.pause()
-        assert palette.is_open
         # /edit + /exit both match /e; /edit sorts first.
-        assert palette.selected_name() == "/edit"
+        await _wait_until(
+            pilot,
+            lambda: palette.is_open and palette.selected_name() == "/edit",
+            what="palette did not filter to /edit",
+        )
 
         # Typing a non-slash char closes the palette.
         prompt.value = "hello"
-        await pilot.pause()
-        assert not palette.is_open
+        await _wait_until(
+            pilot,
+            lambda: not palette.is_open,
+            what="palette did not close on a non-slash value",
+        )
 
 
 @pytest.mark.asyncio
@@ -872,8 +895,11 @@ async def test_slash_palette_arrow_and_enter_select(tmp_path) -> None:  # type: 
         palette = pilot.app.query_one("#slash_palette", SlashPalette)
 
         prompt.value = "/ex"
-        await pilot.pause()
-        assert palette.selected_name() == "/exit"
+        await _wait_until(
+            pilot,
+            lambda: palette.selected_name() == "/exit",
+            what="palette did not filter to /exit",
+        )
 
         # Enter selects the highlighted command and fires Submitted,
         # which exits the app.
@@ -908,10 +934,11 @@ async def test_slash_palette_escape_closes(tmp_path) -> None:  # type: ignore[no
         prompt = pilot.app.query_one("#prompt", Input)
         palette = pilot.app.query_one("#slash_palette", SlashPalette)
         prompt.value = "/"
-        await pilot.pause()
-        assert palette.is_open
+        await _wait_until(pilot, lambda: palette.is_open, what="palette did not open on /")
         await pilot.press("escape")
-        assert not palette.is_open
+        await _wait_until(
+            pilot, lambda: not palette.is_open, what="escape did not close the palette"
+        )
 
 
 @pytest.mark.asyncio
@@ -1624,6 +1651,30 @@ async def _wait_for_workers(pilot) -> None:  # type: ignore[no-untyped-def]
     await pilot.app.workers.wait_for_complete()
     # Let the call_from_thread callbacks run on the event loop.
     await pilot.pause()
+
+
+async def _wait_until(pilot, predicate, *, what: str, timeout: float = 2.0) -> None:  # type: ignore[no-untyped-def]
+    """Pump the Textual message queue until `predicate()` holds, or fail
+    with `what` after `timeout` (harness-k1kx).
+
+    A bare `await pilot.pause()` flushes whatever is queued at that
+    instant, which is a clock-shaped wait wearing a sync point's
+    clothes: under full-suite load the value → Input.Changed → handler
+    → palette-refresh chain can still be in flight when the pause
+    returns, and the next assert reads stale state. Waiting on the
+    condition keeps the assertion honest — a palette that never updates
+    still fails, it just fails at the deadline."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        await pilot.pause()
+        if predicate():
+            return
+        if loop.time() >= deadline:
+            raise AssertionError(f"{what} within {timeout}s")
+        await asyncio.sleep(0.01)
 
 
 async def _wait_for_confirm(pilot, *, timeout: float = 2.0) -> None:  # type: ignore[no-untyped-def]
