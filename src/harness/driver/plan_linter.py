@@ -364,6 +364,28 @@ def is_structural_bead(title: str, description: str, acceptance: str = "") -> bo
     return _STRUCTURAL_MARKER_RE.search(f"{title}\n{description}\n{acceptance}") is not None
 
 
+def is_behavioral_bead(title: str, description: str, acceptance: str = "") -> bool:
+    """True when the bead's deliverable is RUNTIME BEHAVIOR — motion,
+    timing, per-frame state, animation — rather than the presence of a code
+    shape (harness-52ilv).
+
+    Same `_BEHAVIORAL_ACCEPTANCE_RE` signal `score_bead` uses to flag an
+    un-assertable acceptance, promoted to a public predicate. There it is
+    ADVISORY (it tells the operator to split the bead); here it GATES —
+    `_resolve_verify_outcome` refuses to pass such a bead on a VERIFY that
+    holds no behavior-observing gate, because the load-only defaults
+    (`node --check`, the smoke loader) cannot see the thing the bead
+    promises. loop_run=72b0cde2 closed five render-incompleteness beads
+    green this way; a manual playtest then found all five broken.
+
+    Structural wins on a tie: a scaffold whose acceptance happens to say
+    "fires every frame" is still a scaffold (see `is_structural_bead`), so
+    callers check `is_behavioral_bead(...) and not is_structural_bead(...)`.
+    Deliberately reads the same joined text as `is_structural_bead` — the
+    behavioral tell often sits in the description, not the acceptance."""
+    return _BEHAVIORAL_ACCEPTANCE_RE.search(f"{title}\n{description}\n{acceptance}") is not None
+
+
 __all__ = [
     "ACCEPTANCE_CLAUSE_THRESHOLD",
     "BULLET_THRESHOLD",
@@ -371,6 +393,7 @@ __all__ = [
     "LONG_FUNCTION_THRESHOLD",
     "SUBSECTION_THRESHOLD",
     "BeadComplexity",
+    "is_behavioral_bead",
     "is_structural_bead",
     "score_bead",
 ]

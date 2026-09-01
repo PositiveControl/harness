@@ -73,6 +73,7 @@ from harness.driver.turn_fsm import (
     premise_unmet,
     verify_failed,
     verify_passed,
+    verify_ungated,
 )
 from harness.driver.workspace_verify import _browser_app_index, workspace_has_browser_js
 from harness.model.adapter import ChatMessage, ModelAdapter
@@ -1616,15 +1617,66 @@ def _resolve_implement_outcome(
     )
 
 
+def _has_behavioral_gate(
+    *,
+    test_cmd: str | None,
+    workspace: Path,
+    operator_gate: bool,
+) -> bool:
+    """True when VERIFY holds at least one gate that can observe runtime
+    behavior (harness-52ilv).
+
+    Three qualify, any one is enough:
+
+    - a RUNNABLE test_cmd — present, non-degenerate, and its script exists
+      (the same triple the ASSESS already-satisfied route trusts);
+    - `<workspace>/.harness/smoke_assert.js` — the behavioral probe the
+      smoke runner picks up via `--assert=` (harness-u1il5);
+    - `operator_gate` — a per-item verify step the operator authored in a
+      `--plan-draft`, which the driver never second-guesses.
+
+    The workspace-typed DEFAULTS are deliberately absent from that list.
+    `node --check` parses and the smoke-execute step only loads the page;
+    neither observes behavior, and passing them is how loop_run=72b0cde2
+    closed five render-incompleteness beads green."""
+    if operator_gate:
+        return True
+    if (
+        test_cmd
+        and not _is_degenerate_test_cmd(test_cmd)
+        and not _test_cmd_file_missing(test_cmd, workspace)
+    ):
+        return True
+    return (workspace / ".harness" / "smoke_assert.js").is_file()
+
+
 def _resolve_verify_outcome(
     *,
     verify_steps: Sequence[VerifyStep],
     test_cmd: str | None,
     workspace: Path,
+    behavioral_bead: bool = False,
+    operator_gate: bool = False,
 ) -> PhaseOutcome:
     """Run registered verify steps + (when set) the test command from
     WRITE_TEST. First non-zero exit short-circuits to verify_failed
-    with the captured tail. All-pass returns verify_passed."""
+    with the captured tail. All-pass returns verify_passed.
+
+    harness-52ilv: when `behavioral_bead` is set and no gate can observe
+    the behavior, the phase halts ungated instead of running the blind
+    defaults to a trivial green. Checked BEFORE any step runs — the
+    defaults passing is the false signal, so there is nothing to learn
+    from executing them."""
+    if behavioral_bead and not _has_behavioral_gate(
+        test_cmd=test_cmd, workspace=workspace, operator_gate=operator_gate
+    ):
+        return verify_ungated(
+            reason=(
+                "behavioral bead, no gate that can observe the behavior — no "
+                "runnable test_cmd, no .harness/smoke_assert.js probe, no "
+                "operator verify step. Author one, then re-drive"
+            )
+        )
     # Run the captured failing test first — it's the most specific
     # signal for the TDD path.
     if test_cmd:
@@ -1768,6 +1820,8 @@ def run_fsm_turn(
     tdd_required: bool = True,
     tdd_skip_reason: str | None = None,
     structural_bead: bool = False,
+    behavioral_bead: bool = False,
+    operator_gate: bool = False,
     deliverable_text: str = "",
     observe: ExecutorObserver | None = None,
     executor_temperature: float = 0.5,
@@ -1793,6 +1847,11 @@ def run_fsm_turn(
     (gated by pre_close_verify) instead of being forced through IMPLEMENT,
     where the model rewrites the populated file and trips the regression
     guard. The underlying transition table is unchanged.
+
+    `behavioral_bead=True` (harness-52ilv) marks the bead's deliverable as
+    runtime behavior, which makes VERIFY refuse to pass on a gate that
+    cannot observe it. `operator_gate=True` says a per-item verify step
+    from a `--plan-draft` is registered, which counts as such a gate.
 
     Returns FsmTurnResult with the terminal phase + success boolean +
     threaded assessment/test_cmd payload for resume.
@@ -1875,10 +1934,11 @@ def run_fsm_turn(
     captured_assessment: dict[str, Any] | None = prior_assessment
     captured_test_cmd: str | None = prior_test_cmd
     # When ASSESS emits premise_unmet, stash its marked detail so the
-    # HALTED reason carries the PREMISE_UNMET_REASON_PREFIX (the trace-
-    # derived reason would only carry the transition name). The loop
-    # keys off that prefix to park-and-flag instead of retrying.
-    premise_unmet_reason: str | None = None
+    # HALTED reason carries PREMISE_UNMET_REASON_PREFIX or (harness-52ilv)
+    # UNGATED_VERIFY_REASON_PREFIX — the trace-derived reason would only
+    # carry the transition name. The loop keys off either prefix to
+    # park-and-flag instead of retrying.
+    forced_park_reason: str | None = None
     # harness-hs50i counters — see _MAX_VERIFY_RETRIES /
     # _MAX_PHASE_EXECUTIONS above.
     verify_retries = 0
@@ -1996,6 +2056,8 @@ def run_fsm_turn(
             test_cmd=captured_test_cmd,
             workspace=workspace,
             structural_bead=structural_bead,
+            behavioral_bead=behavioral_bead,
+            operator_gate=operator_gate,
             assessment=captured_assessment,
             is_browser_js=browser_workspace,
         )
@@ -2025,8 +2087,11 @@ def run_fsm_turn(
             captured_assessment = dict(outcome.payload)
         if outcome.kind == "failing_test_submitted":
             captured_test_cmd = str(outcome.payload.get("test_cmd", ""))
-        if outcome.kind == "premise_unmet":
-            premise_unmet_reason = outcome.detail
+        # harness-52ilv: both kinds mark a halt the loop must PARK rather
+        # than retry — an absent premise (ASSESS) and an unobservable
+        # behavioral bead (VERIFY). Their detail carries the routing prefix.
+        if outcome.kind in {"premise_unmet", "verify_ungated"}:
+            forced_park_reason = outcome.detail
 
         # harness-smplj: did the IMPLEMENT pass declare the work complete
         # with NO source edits? Keyed on the resolved outcome (implement_complete
@@ -2145,10 +2210,11 @@ def run_fsm_turn(
     # outcome kind. The trace always has at least one entry once we've
     # entered the loop; force() also writes to it.
     reason = _halt_reason_from_trace(fsm.trace) or "halted (no transitions taken)"
-    if premise_unmet_reason is not None:
-        # Premise-unmet halt: carry the marked reason verbatim so the loop
-        # parks-and-flags rather than retrying (PREMISE_UNMET_REASON_PREFIX).
-        reason = premise_unmet_reason
+    if forced_park_reason is not None:
+        # Forced-park halt: carry the marked reason verbatim so the loop
+        # parks-and-flags rather than retrying (PREMISE_UNMET_REASON_PREFIX /
+        # UNGATED_VERIFY_REASON_PREFIX).
+        reason = forced_park_reason
     elif last_reply.strip() == EXHAUSTED_FABRICATION_FALLBACK.strip():
         # Annotate, don't overwrite (loop_run=3a0f6368): the fallback
         # firing is a symptom of the phase stalling out, and replacing
@@ -2189,6 +2255,8 @@ def _resolve_phase_outcome(
     test_cmd: str | None,
     workspace: Path,
     structural_bead: bool = False,
+    behavioral_bead: bool = False,
+    operator_gate: bool = False,
     assessment: dict[str, Any] | None = None,
     is_browser_js: bool = False,
 ) -> PhaseOutcome:
@@ -2234,7 +2302,11 @@ def _resolve_phase_outcome(
         )
     if phase == TurnPhase.VERIFY:
         return _resolve_verify_outcome(
-            verify_steps=verify_steps, test_cmd=test_cmd, workspace=workspace
+            verify_steps=verify_steps,
+            test_cmd=test_cmd,
+            workspace=workspace,
+            behavioral_bead=behavioral_bead,
+            operator_gate=operator_gate,
         )
     if phase == TurnPhase.CLOSE:
         return _resolve_close_outcome(bd, issue_id)
