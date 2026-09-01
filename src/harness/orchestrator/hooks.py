@@ -829,6 +829,34 @@ def _longest_common_prefix_len(a: str, b: str) -> int:
     return i
 
 
+def _truncated_defers_to_budget_path(ctx: BailContext) -> bool:
+    """True when an opener-loop catcher should stand down because the
+    reply was cut by the token cap (harness-4s6fv).
+
+    The opener-loop catchers (preamble_loop, intent_restatement_loop)
+    compare against `discarded_openings`. A truncated reply pollutes
+    that surface: the model re-rolls from the same opening sentence
+    because it never finished the first attempt, not because it is
+    stuck restating intent. Mark's 2026-09-01 funky_chicken session
+    (Qwen3-Coder-30B on vLLM) is the clean repro — the model emitted a
+    real `write_file` call whose `content` parameter ran past the
+    2048-token round cap, so the closing tags never arrived, the call
+    parsed as prose, and preamble_loop then spent all three bail
+    retries nudging 'stop restating your plan' at a model that was
+    trying to write a file.
+
+    Deferring hands the round to TruncatedHook, which widens the
+    budget up to `_TRUNCATED_RETRIES_PER_TURN` times and then converts
+    to `_TRUNCATED_RETRY_CAP_NUDGE` — text that already subsumes the
+    anti-preamble instruction ('do not restate the plan, do not
+    narrate intent') AND names the real pathology ('STOP writing code
+    or specs inline as text… emit a tool call'). The runaway ladder
+    that motivated preamble_loop (harness-jwp3) is bounded by that cap
+    now, so nothing regresses; the loop catchers keep their full
+    surface on untruncated replies."""
+    return ctx.reply.was_truncated
+
+
 _PREAMBLE_LOOP_NUDGE = (
     "[PREAMBLE LOOP — your last reply began with the same opening "
     "sentence as the previous discarded draft. The wider token "
@@ -862,10 +890,16 @@ class PreambleLoopHook:
 
     Placement: FIRST in the bail list. The shared-opening signal
     cross-cuts every other catcher's surface — a reply could be
-    truncated AND looping, or fabricated AND looping. First-match
-    semantics mean the loop nudge wins over the more specific
-    catchers; rapid escape from the loop is more valuable than a
-    catcher-specific nudge that the model would also ignore.
+    fabricated AND looping. First-match semantics mean the loop nudge
+    wins over the more specific catchers; rapid escape from the loop
+    is more valuable than a catcher-specific nudge that the model
+    would also ignore.
+
+    The one exception is truncation (harness-4s6fv): a cut-off reply
+    stands down to TruncatedHook. The ladder this catcher was built to
+    stop is bounded by `_TRUNCATED_RETRIES_PER_TURN` now, and the cap
+    nudge that fires at the end of it already carries the anti-preamble
+    instruction. See `_truncated_defers_to_budget_path`.
 
     On match, Nudge with text that names the pathology and
     demands the next reply skip preamble entirely. Repeated
@@ -875,6 +909,8 @@ class PreambleLoopHook:
     name: str = "preamble_loop"
 
     def check(self, ctx: BailContext) -> BailOutcome:
+        if _truncated_defers_to_budget_path(ctx):
+            return Continue()
         if not ctx.discarded_openings:
             return Continue()
         if not ctx.reply.content:
@@ -974,6 +1010,8 @@ class IntentRestatementLoopHook:
     name: str = "intent_restatement_loop"
 
     def check(self, ctx: BailContext) -> BailOutcome:
+        if _truncated_defers_to_budget_path(ctx):
+            return Continue()
         if not ctx.discarded_openings:
             return Continue()
         if not ctx.reply.content:
@@ -5881,7 +5919,8 @@ HOOK_SHAPES: dict[str, str] = {
         "Current reply and most recent discarded both open with an "
         "intent-phrase ('I'll <verb>', 'Let me <verb>', 'Now I'll "
         "<verb>') and share ≥30 chars of that statement. Catches the "
-        "structural loop shape PreambleLoopHook's 100-char floor misses."
+        "structural loop shape PreambleLoopHook's 100-char floor misses. "
+        "Stands down on truncated replies (harness-4s6fv)."
     ),
     "teaser_loop": (
         "Model has repeated teaser shapes ('Let me check…', 'Let's "
@@ -5893,7 +5932,8 @@ HOOK_SHAPES: dict[str, str] = {
         "Current reply shares a long opening prefix with the last "
         "discarded draft this turn; widening the token budget would "
         "buy longer preamble, not progress. Nudges the model to skip "
-        "intent restatement and produce concrete output."
+        "intent restatement and produce concrete output. Stands down "
+        "on truncated replies so the budget path runs (harness-4s6fv)."
     ),
     "post_dup_completion_claim": (
         "Last tool result was a duplicate_call dedup AND the reply "
@@ -6100,12 +6140,16 @@ def default_hook_pipeline(
     catchers_set = frozenset(catchers)
 
     bail: list[BailHook] = [
-        # preamble_loop (harness-jwp3): runs FIRST so a reply that's
-        # both truncated AND looping gets the loop-break nudge instead
-        # of the wider-budget retry that wouldn't help. First-match
-        # semantics: once the loop signal fires, the catcher-specific
-        # nudges that would also have matched (truncated, teaser, etc.)
-        # are bypassed for this round.
+        # preamble_loop (harness-jwp3): runs FIRST so the loop signal
+        # wins over the catcher-specific nudges that would also have
+        # matched (teaser, unparseable, etc.) under first-match
+        # semantics.
+        #
+        # Exception (harness-4s6fv): both opener-loop catchers stand
+        # down when the reply was TRUNCATED, handing the round to
+        # TruncatedHook below. A cut-off reply re-rolls from the same
+        # opening for budget reasons, not because the model is stuck
+        # restating intent — see _truncated_defers_to_budget_path.
         PreambleLoopHook(),
         # intent_restatement_loop (harness-a4q4): the structural
         # complement to preamble_loop. PreambleLoop wants ≥100-char

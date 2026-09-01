@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from harness.character import load_character
 from harness.orchestrator.hooks import (
     TABLE_FABRICATION_FALLBACK,
@@ -6617,10 +6619,10 @@ def test_preamble_loop_passes_when_reply_empty() -> None:
 
 
 def test_preamble_loop_fires_before_truncated_in_pipeline_order() -> None:
-    """Placement pin (harness-jwp3): the loop signal cross-cuts every
-    other catcher. A truncated reply that ALSO loops should get the
-    loop nudge, not another budget-doubling retry. First-match
-    semantics enforce this."""
+    """Placement pin (harness-jwp3): the loop signal cross-cuts the
+    other catchers, so preamble_loop runs first under first-match
+    semantics. Truncation is the one case it defers on — see
+    test_preamble_loop_defers_to_truncated_path."""
     names = default_hook_pipeline().names()
     assert names[0] == "preamble_loop"
     assert names.index("preamble_loop") < names.index("truncated")
@@ -6628,18 +6630,42 @@ def test_preamble_loop_fires_before_truncated_in_pipeline_order() -> None:
     assert names.index("preamble_loop") < names.index("false_success")
 
 
-def test_preamble_loop_fires_on_truncated_reply_with_loop_signal() -> None:
-    """A reply that's BOTH truncated AND loops must fire the loop
-    catcher (not Truncated) because the loop catcher runs first.
-    Confirms the placement gives the right behavior end-to-end
-    without needing to disable truncated."""
-    pipe = default_hook_pipeline()
+@pytest.mark.parametrize("hook", [PreambleLoopHook(), IntentRestatementLoopHook()])
+def test_opener_loop_catchers_defer_to_truncated_path(
+    hook: PreambleLoopHook | IntentRestatementLoopHook,
+) -> None:
+    """harness-4s6fv: a reply that's BOTH truncated AND shares the prior
+    opening must route to Truncated, not to the loop nudge.
+
+    Mark's 2026-09-01 funky_chicken session: Qwen3-Coder-30B emitted a
+    real `write_file` call whose `content` outran the 2048-token round
+    cap, so the closing tag never arrived and the call parsed as prose.
+    The model then re-rolled the same opening sentence — because it had
+    never finished, not because it was stuck restating intent — and
+    preamble_loop spent all three bail retries nudging the wrong
+    pathology. Deferring lets the budget double and, at the cap, hands
+    over `_TRUNCATED_RETRY_CAP_NUDGE`, which names the real problem."""
     ctx = BailContext(
         reply=ModelReply(content=_GTA2_PREAMBLE_B, tool_calls=(), was_truncated=True),
         tools_ran_this_turn=False,
         discarded_openings=(_GTA2_PREAMBLE_A,),
     )
-    outcome = pipe.run_bail(ctx, disabled=frozenset())
+    assert isinstance(hook.check(ctx), Continue)
+
+    outcome = default_hook_pipeline().run_bail(ctx, disabled=frozenset())
+    assert isinstance(outcome, Truncated)
+
+
+def test_preamble_loop_still_fires_on_untruncated_loop() -> None:
+    """The deferral is scoped to truncation (harness-4s6fv). An
+    untruncated reply that loops keeps the original nudge, so
+    harness-jwp3's surface is intact."""
+    ctx = BailContext(
+        reply=ModelReply(content=_GTA2_PREAMBLE_B, tool_calls=(), was_truncated=False),
+        tools_ran_this_turn=False,
+        discarded_openings=(_GTA2_PREAMBLE_A,),
+    )
+    outcome = default_hook_pipeline().run_bail(ctx, disabled=frozenset())
     assert isinstance(outcome, Nudge)
     assert "PREAMBLE LOOP" in outcome.text
 
