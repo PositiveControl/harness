@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.driver.fsm_turn import _resolve_assess_outcome
+from harness.driver.fsm_executor import _resolve_assess_outcome
 from harness.driver.planner import VerifyStep
 from harness.driver.turn_fsm import PREMISE_UNMET_REASON_PREFIX
 from harness.tools.turn_phase_meta import (

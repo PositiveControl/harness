@@ -157,7 +157,7 @@ def test_failed_write_does_not_reset_streak() -> None:
 def test_write_file_also_counts_as_write() -> None:
     """`write_file` is the other write tool — successful write_file
     must reset the streak just like edit_file. Mirrors the set checked
-    by `fsm_turn._resolve_implement_outcome`."""
+    by `fsm_executor._resolve_implement_outcome`."""
     detector = NoWriteStreakDetector()
     read_call, read_result = _read()
     write_call = ToolCall(name="write_file", arguments={"path": "x.txt", "content": "hi"})
@@ -176,7 +176,7 @@ def test_stream_edit_counts_as_a_write() -> None:
     (awk/sed/cut/tr). A productive stream_edit is real progress and must
     reset the streak — otherwise the model gets falsely nudged for doing
     the right thing. Mirrors WRITE_TOOL_NAMES shared with
-    fsm_turn._resolve_implement_outcome."""
+    fsm_executor._resolve_implement_outcome."""
     detector = NoWriteStreakDetector()
     read_call, read_result = _read()
     stream_call = ToolCall(name="stream_edit", arguments={"tool": "sed", "args": ["s/a/b/"]})

@@ -29,7 +29,7 @@ no-worse-than-halt:
 
 This module is PURE: it resolves the source, extracts tokens, reads the source
 to drop already-present shapes, and renders the gate file's text. Writing,
-running, linting, and adopting belong to the caller (fsm_turn), mirroring the
+running, linting, and adopting belong to the caller (fsm_executor), mirroring the
 gate_blind analysis/orchestration split.
 """
 

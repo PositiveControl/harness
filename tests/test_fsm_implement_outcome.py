@@ -11,7 +11,7 @@ must route to VERIFY (let it arbitrate the artifact), NOT halt
 
 from __future__ import annotations
 
-from harness.driver.fsm_turn import _resolve_implement_outcome
+from harness.driver.fsm_executor import _resolve_implement_outcome
 from harness.tools.turn_phase_meta import SubmitImplementationCompleteTool
 
 

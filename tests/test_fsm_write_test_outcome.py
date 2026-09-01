@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from harness.driver.fsm_turn import (
+from harness.driver.fsm_executor import (
     _adopt_existing_red_gate,
     _is_degenerate_test_cmd,
     _is_unrunnable_test_output,
@@ -517,7 +517,7 @@ def test_run_fsm_turn_rejects_always_green_submission(
             events=[],
         )
 
-    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr("harness.driver.fsm_executor.run_tool_loop", fake_run_tool_loop)
 
     result = run_fsm_turn(
         adapter=None,  # type: ignore[arg-type]  # never reached; run_tool_loop is stubbed

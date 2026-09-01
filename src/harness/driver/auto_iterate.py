@@ -45,7 +45,7 @@ from harness.driver.critic import (
     critic_char_budget,
     run_critic,
 )
-from harness.driver.fsm_turn import _test_cmd_script
+from harness.driver.fsm_executor import _test_cmd_script
 from harness.driver.loop import LoopConfig, LoopResult, ambient_vllm_trace, run_loop
 from harness.model.adapter import ModelAdapter
 

@@ -3344,7 +3344,7 @@ def test_run_loop_fsm_happy_path_drives_issue_through_all_phases(
                 bd.flip_closed("harness-a")
         return ToolLoopResult(content="phase reply", messages=[], rounds=1, events=[])
 
-    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr("harness.driver.fsm_executor.run_tool_loop", fake_run_tool_loop)
     # Test sanity check inside WRITE_TEST returns failure (so the FSM
     # proceeds to IMPLEMENT); subsequent calls (VERIFY) return success.
     exec_calls = {"count": 0}
@@ -3354,7 +3354,7 @@ def test_run_loop_fsm_happy_path_drives_issue_through_all_phases(
         red = exec_calls["count"] == 1
         return (1, "AssertionError: red", "AssertionError: red") if red else (0, "", "")
 
-    monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd_capture", fake_exec)
+    monkeypatch.setattr("harness.driver.fsm_executor._exec_test_cmd_capture", fake_exec)
 
     cfg = _config(tmp_path, use_fsm=True, max_turns=3)
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
@@ -3410,10 +3410,10 @@ def test_run_loop_fsm_no_tdd_skips_write_test(
                 bd.flip_closed("harness-a")
         return ToolLoopResult(content="ok", messages=[], rounds=1, events=[])
 
-    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr("harness.driver.fsm_executor.run_tool_loop", fake_run_tool_loop)
     # All test invocations pass — no WRITE_TEST sanity check on this path.
     monkeypatch.setattr(
-        "harness.driver.fsm_turn._exec_test_cmd_capture", lambda *_a, **_k: (0, "", "")
+        "harness.driver.fsm_executor._exec_test_cmd_capture", lambda *_a, **_k: (0, "", "")
     )
 
     cfg = _config(tmp_path, use_fsm=True, tdd_required=False, max_turns=3)
@@ -3444,9 +3444,9 @@ def test_run_loop_fsm_halts_when_assess_produces_no_assessment(
     ) -> ToolLoopResult:
         return ToolLoopResult(content="idle", messages=[], rounds=1, events=[])
 
-    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr("harness.driver.fsm_executor.run_tool_loop", fake_run_tool_loop)
     monkeypatch.setattr(
-        "harness.driver.fsm_turn._exec_test_cmd_capture", lambda *_a, **_k: (0, "", "")
+        "harness.driver.fsm_executor._exec_test_cmd_capture", lambda *_a, **_k: (0, "", "")
     )
 
     cfg = _config(
@@ -3519,9 +3519,9 @@ def test_run_loop_fsm_always_green_submission_rejected_never_closes(
                 bd.flip_closed("harness-a")
         return ToolLoopResult(content="ok", messages=[], rounds=1, events=[])
 
-    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr("harness.driver.fsm_executor.run_tool_loop", fake_run_tool_loop)
     monkeypatch.setattr(
-        "harness.driver.fsm_turn._exec_test_cmd_capture", lambda *_a, **_k: (0, "", "")
+        "harness.driver.fsm_executor._exec_test_cmd_capture", lambda *_a, **_k: (0, "", "")
     )
 
     cfg = _config(tmp_path, use_fsm=True, max_turns=3)
@@ -3585,7 +3585,7 @@ def test_run_loop_fsm_persists_phase_and_assessment_to_state(
             bd.flip_closed("harness-a")
         return ToolLoopResult(content="ok", messages=[], rounds=1, events=[])
 
-    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr("harness.driver.fsm_executor.run_tool_loop", fake_run_tool_loop)
     # Same red-then-green pattern as the happy path: first exec_test_cmd
     # call is the WRITE_TEST sanity check (must fail), subsequent calls
     # are VERIFY (must pass).
@@ -3595,7 +3595,7 @@ def test_run_loop_fsm_persists_phase_and_assessment_to_state(
         exec_calls["count"] += 1
         return (1, "red", "red") if exec_calls["count"] == 1 else (0, "", "")
 
-    monkeypatch.setattr("harness.driver.fsm_turn._exec_test_cmd_capture", fake_exec)
+    monkeypatch.setattr("harness.driver.fsm_executor._exec_test_cmd_capture", fake_exec)
 
     cfg = _config(tmp_path, use_fsm=True, max_turns=3)
     result = run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
@@ -3626,7 +3626,7 @@ def test_run_loop_fsm_threads_executor_temperature_to_tool_loop(
         # We only need run_tool_loop to have been called with the temperature.
         return ToolLoopResult(content="", messages=[], rounds=1, events=[])
 
-    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr("harness.driver.fsm_executor.run_tool_loop", fake_run_tool_loop)
 
     cfg = _config(tmp_path, use_fsm=True, max_turns=2, executor_temperature=0.07)
     run_loop(_FakeAdapter(), bd, cfg)  # type: ignore[arg-type]
@@ -4173,12 +4173,12 @@ def test_run_loop_fsm_gate_suspect_drops_carried_test_cmd(
             registry.call("submit_implementation_complete", {"summary": "x" * 30})
         return ToolLoopResult(content="ok", messages=[], rounds=1, events=[])
 
-    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr("harness.driver.fsm_executor.run_tool_loop", fake_run_tool_loop)
     # Every execution is red with the SAME tail: the submit-time red_check
     # accepts it (non-zero), then VERIFY fails identically across
     # IMPLEMENT passes -> gate suspect.
     monkeypatch.setattr(
-        "harness.driver.fsm_turn._exec_test_cmd_capture",
+        "harness.driver.fsm_executor._exec_test_cmd_capture",
         lambda *_a, **_k: (1, "gap: drawTile missing", "gap: drawTile missing"),
     )
 

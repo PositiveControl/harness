@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from harness.driver.fsm_turn import _exec_test_cmd_capture, run_fsm_turn
+from harness.driver.fsm_executor import _exec_test_cmd_capture, run_fsm_turn
 from harness.driver.handoff import Handoff
 from harness.driver.planner import VerifyStep
 from harness.driver.turn_fsm import TurnPhase
@@ -189,7 +189,7 @@ def test_identical_test_failures_across_edits_mark_gate_suspect(
     the carried test_cmd, and does NOT burn the full verify ceiling."""
     phases_seen: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _scripted_tool_loop(phases_seen, {}),
     )
 
@@ -220,7 +220,7 @@ def test_varying_test_failures_are_not_suspect(
     carried test preserved, not be dropped as suspect."""
     phases_seen: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _scripted_tool_loop(phases_seen, {}),
     )
 
@@ -249,7 +249,7 @@ def test_behavioral_satisfied_green_gate_closes(
     WRITE_TEST, no manufactured always-red test."""
     phases_seen: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _scripted_tool_loop(phases_seen, {}, assessment_kwargs={"already_satisfied": True}),
     )
     green = tmp_path / "pass_now.py"
@@ -283,7 +283,7 @@ def test_behavioral_satisfied_red_gate_routes_to_implement(
     IMPLEMENT — the claim is arbitrated, never trusted."""
     phases_seen: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _scripted_tool_loop(phases_seen, {}, assessment_kwargs={"already_satisfied": True}),
     )
 
@@ -312,7 +312,7 @@ def test_write_test_prompt_carries_browser_hint(
     phases_seen: list[str] = []
     prompts: dict[str, str] = {}
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _scripted_tool_loop(phases_seen, prompts, write_test_action="skip"),
     )
 
@@ -342,7 +342,7 @@ def test_write_test_prompt_clean_without_browser_js(
     phases_seen: list[str] = []
     prompts: dict[str, str] = {}
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _scripted_tool_loop(phases_seen, prompts, write_test_action="skip"),
     )
 
@@ -371,7 +371,7 @@ def test_complete_without_edit_identical_tail_is_suspect(
     verify fail must now arm gate-suspect."""
     phases_seen: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _scripted_tool_loop(phases_seen, {}, implement_edits=False),
     )
 
@@ -403,7 +403,7 @@ def test_cross_turn_identical_tail_trips_on_first_verify(
     detected)."""
     phases_seen: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _scripted_tool_loop(phases_seen, {}),
     )
     cmd = _const_red_script(tmp_path)
@@ -435,7 +435,7 @@ def test_ceiling_halt_persists_fail_tail_for_next_attempt(
     (the gate is being dropped)."""
     phases_seen: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _scripted_tool_loop(phases_seen, {}),
     )
     result = run_fsm_turn(

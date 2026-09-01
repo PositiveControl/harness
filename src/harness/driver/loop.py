@@ -1278,7 +1278,7 @@ def _run_fsm_turn_via_driver(
         prior attempt halted there with an assessment).
       - Persists `state.last_assessment[issue_id]` + `state.last_test_cmd[issue_id]`
         for the same reason."""
-    from harness.driver.fsm_turn import (
+    from harness.driver.fsm_executor import (
         FsmTurnResult,
         phase_instructions,
         run_fsm_turn,
@@ -2725,7 +2725,7 @@ def _inter_attempt_restore(
     # reusing a phantom.
     carried = state.last_test_cmd.get(issue_id)
     if carried is not None:
-        from harness.driver.fsm_turn import _test_cmd_file_missing
+        from harness.driver.fsm_executor import _test_cmd_file_missing
 
         if _test_cmd_file_missing(carried, config.workspace):
             state.last_test_cmd.pop(issue_id, None)

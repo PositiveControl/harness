@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.driver.fsm_turn import _lint_submitted_gate, run_fsm_turn
+from harness.driver.fsm_executor import _lint_submitted_gate, run_fsm_turn
 from harness.driver.gate_blind import (
     eval_blind_reference,
     eval_blind_typeof_guard,
@@ -493,7 +493,7 @@ def test_gate_blind_halts_on_first_verify_failure(
     (tmp_path / "game.js").write_text("let traffic = [];\nfunction update(dt) {}\n")
     phases_seen: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _scripted_tool_loop(phases_seen, {}),
     )
 
@@ -525,7 +525,7 @@ def test_genuine_gap_reference_error_does_not_trip_gate_blind(
     (tmp_path / "game.js").write_text("let pedestrians = [];\n")
     phases_seen: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _scripted_tool_loop(phases_seen, {}),
     )
 
@@ -562,7 +562,7 @@ def test_suspect_gate_halt_names_pitfall_on_browser_workspace(
     )
     phases_seen: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _scripted_tool_loop(phases_seen, {}),
     )
 
@@ -591,7 +591,7 @@ def test_write_test_hint_names_scoping_pitfall(
     phases_seen: list[str] = []
     prompts: dict[str, str] = {}
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _scripted_tool_loop(phases_seen, prompts, write_test_action="skip"),
     )
 
@@ -673,7 +673,7 @@ def test_carried_phantom_member_gate_halts_on_first_verify_failure(
     )
     phases_seen: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _scripted_tool_loop(phases_seen, {}),
     )
 

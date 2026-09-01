@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.driver.fsm_turn import _adopt_synthesized_gate
+from harness.driver.fsm_executor import _adopt_synthesized_gate
 from harness.driver.gate_synth import build_source_text_gate
 
 _L3TGQ_ASSESSMENT = {
@@ -129,7 +129,7 @@ def test_adopts_red_runnable_synthesized_gate(
         "const canvas = document.body;\nfunction update(dt) { car.angle += 1; }\n"
     )
     monkeypatch.setattr(
-        "harness.driver.fsm_turn._exec_test_cmd",
+        "harness.driver.fsm_executor._exec_test_cmd",
         lambda cmd, ws: (1, "FAIL: source missing required shapes: /car\\.x/, /car\\.y/"),
     )
 
@@ -150,7 +150,7 @@ def test_discards_synthesized_gate_that_runs_green(
         "const canvas = document.body;\nfunction update(dt) { car.angle += 1; }\n"
     )
     monkeypatch.setattr(
-        "harness.driver.fsm_turn._exec_test_cmd",
+        "harness.driver.fsm_executor._exec_test_cmd",
         lambda cmd, ws: (0, "OK: all required shapes present"),
     )
 
