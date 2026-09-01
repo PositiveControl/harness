@@ -8,8 +8,8 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from harness.model.adapter import ChatMessage, ModelAdapter
-from harness.model.vllm import VllmAdapter
+from harness.model.adapter import ChatMessage, ModelAdapter, PromptBudgetError
+from harness.model.vllm import DEFAULT_CONTEXT_WINDOW, VllmAdapter
 from harness.tools.base import (
     ModelReply,
     StreamComplete,
@@ -17,6 +17,14 @@ from harness.tools.base import (
     ToolCall,
     ToolSpec,
 )
+
+# Tests that exercise payload shape, streaming, or tool parsing pin the
+# window explicitly. Since harness-chzp2 an unpinned adapter discovers its
+# window from GET /v1/models on first use, and these tests' handlers only
+# answer the POST — pinning keeps them on exactly the behavior they had
+# when the window was a hardcoded 32768. Discovery has its own tests below.
+_TEST_WINDOW = 32_768
+
 
 # ---------- mock plumbing -------------------------------------------------
 
@@ -138,7 +146,7 @@ def test_vllm_complete_posts_expected_payload() -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         reply = adapter.complete(
             [ChatMessage(role="user", content="hi")],
@@ -173,7 +181,7 @@ def test_vllm_complete_raises_on_http_error_with_detail() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"error": "OOM"})
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with (
         patch("httpx.Client", _make_factory(handler)),
         pytest.raises(RuntimeError, match="HTTP 500"),
@@ -227,7 +235,7 @@ def test_vllm_complete_with_tools_round_trip() -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         reply = adapter.complete_with_tools(
             [ChatMessage(role="user", content="weather in SF?")],
@@ -257,7 +265,7 @@ def test_vllm_complete_with_tools_marks_truncation_on_length() -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         reply = adapter.complete_with_tools([ChatMessage(role="user", content="hi")])
 
@@ -300,7 +308,7 @@ def test_vllm_renders_assistant_tool_calls_and_tool_role_pairing() -> None:
             tool_call_id="call_0_weather",
         ),
     ]
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         adapter.complete_with_tools(history)
 
@@ -333,7 +341,7 @@ def test_vllm_stream_yields_content_deltas() -> None:
             ]
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         text = "".join(adapter.stream([ChatMessage(role="user", content="say hi")]))
     assert text == "Hello!"
@@ -363,7 +371,7 @@ def test_vllm_stream_surfaces_http_error_body_not_response_not_read() -> None:
             headers={"content-type": "application/json"},
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with (
         patch("httpx.Client", _make_factory(handler)),
         pytest.raises(RuntimeError) as excinfo,
@@ -422,7 +430,7 @@ def test_vllm_stream_with_tools_accumulates_tool_call_deltas() -> None:
             ]
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         chunks = list(
             adapter.stream_with_tools(
@@ -484,7 +492,7 @@ def test_vllm_stream_with_tools_treats_truncated_args_as_truncation() -> None:
             ]
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         chunks = list(
             adapter.stream_with_tools(
@@ -513,7 +521,7 @@ def test_vllm_stream_with_tools_yields_text_for_normal_reply() -> None:
             ]
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         chunks = list(
             adapter.stream_with_tools(
@@ -551,7 +559,7 @@ def test_vllm_trace_no_env_no_writes(tmp_path: Any) -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)), patch.dict("os.environ", {}, clear=False):
         # Ensure the env var really is unset for this branch.
         import os
@@ -593,7 +601,7 @@ def test_vllm_trace_complete_with_tools_writes_jsonl(tmp_path: Any) -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with (
         patch("httpx.Client", _make_factory(handler)),
         patch.dict("os.environ", {"HARNESS_VLLM_TRACE": str(trace_target)}),
@@ -637,7 +645,7 @@ def test_vllm_trace_complete_writes_jsonl(tmp_path: Any) -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with (
         patch("httpx.Client", _make_factory(handler)),
         patch.dict("os.environ", {"HARNESS_VLLM_TRACE": str(trace_target)}),
@@ -670,7 +678,7 @@ def test_vllm_trace_stream_writes_jsonl(tmp_path: Any) -> None:
             ]
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with (
         patch("httpx.Client", _make_factory(handler)),
         patch.dict("os.environ", {"HARNESS_VLLM_TRACE": str(trace_target)}),
@@ -730,7 +738,7 @@ def test_vllm_trace_stream_with_tools_writes_jsonl(tmp_path: Any) -> None:
             ]
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with (
         patch("httpx.Client", _make_factory(handler)),
         patch.dict("os.environ", {"HARNESS_VLLM_TRACE": str(trace_target)}),
@@ -775,7 +783,7 @@ def test_vllm_trace_bad_path_does_not_crash(tmp_path: Any) -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with (
         patch("httpx.Client", _make_factory(handler)),
         patch.dict("os.environ", {"HARNESS_VLLM_TRACE": str(bad_path)}),
@@ -821,7 +829,7 @@ def test_vllm_resolver_routes_model_repo_to_base_url() -> None:
 
 
 def test_vllm_count_tokens_uses_char_heuristic() -> None:
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     n = adapter.count_tokens([ChatMessage(role="user", content="hello world")])
     # Heuristic: len(content)//4 + 4 per message → 11//4 + 4 == 6.
     assert n == 6
@@ -874,7 +882,7 @@ def test_vllm_falls_back_to_qwen_tools_tag_when_tool_calls_empty() -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         reply = adapter.complete_with_tools(
             [ChatMessage(role="user", content="ls")],
@@ -910,7 +918,7 @@ def test_vllm_falls_back_to_qwen_tool_call_tag_when_tool_calls_empty() -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         reply = adapter.complete_with_tools(
             [ChatMessage(role="user", content="weather?")],
@@ -951,7 +959,7 @@ def test_vllm_does_not_double_parse_when_tool_calls_populated() -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         reply = adapter.complete_with_tools(
             [ChatMessage(role="user", content="weather in SF?")],
@@ -991,7 +999,7 @@ def test_vllm_stream_with_tools_masks_tools_tag_and_recovers_call() -> None:
             ]
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         chunks = list(
             adapter.stream_with_tools(
@@ -1038,7 +1046,7 @@ def test_vllm_falls_back_to_bare_json_when_no_wrapper_and_no_tool_calls() -> Non
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         reply = adapter.complete_with_tools(
             [ChatMessage(role="user", content="ls")],
@@ -1073,7 +1081,7 @@ def test_vllm_bare_json_fallback_does_not_fire_without_tools_in_request() -> Non
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         # tools=None → fallback must not fire.
         reply = adapter.complete_with_tools(
@@ -1106,7 +1114,7 @@ def test_vllm_bare_json_fallback_rejects_prose_with_json_inside() -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         reply = adapter.complete_with_tools(
             [ChatMessage(role="user", content="what's the result?")],
@@ -1138,7 +1146,7 @@ def test_vllm_bare_json_fallback_rejects_json_without_name_field() -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         reply = adapter.complete_with_tools(
             [ChatMessage(role="user", content="say something")],
@@ -1176,7 +1184,7 @@ def test_vllm_extracts_bare_json_with_prose_preamble() -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         reply = adapter.complete_with_tools(
             [ChatMessage(role="user", content="ls")],
@@ -1218,7 +1226,7 @@ def test_vllm_extracts_bare_json_with_trailing_special_token_leak() -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         reply = adapter.complete_with_tools(
             [ChatMessage(role="user", content="ls scratch")],
@@ -1273,7 +1281,7 @@ def test_vllm_bare_json_lenient_recovers_unclosed_envelope() -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         reply = adapter.complete_with_tools(
             [ChatMessage(role="user", content="fix the conflict")],
@@ -1319,7 +1327,7 @@ def test_vllm_bare_json_lenient_skips_when_real_json_error() -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         reply = adapter.complete_with_tools(
             [ChatMessage(role="user", content="x")],
@@ -1353,7 +1361,7 @@ def test_vllm_stream_suppresses_bare_json_after_prose_preamble() -> None:
             ]
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         chunks = list(
             adapter.stream_with_tools(
@@ -1388,7 +1396,7 @@ def test_vllm_stream_with_tools_recovers_bare_json_call() -> None:
             ]
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         chunks = list(
             adapter.stream_with_tools(
@@ -1424,7 +1432,7 @@ def test_vllm_includes_stop_tokens_in_payload_by_default() -> None:
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         adapter.complete([ChatMessage(role="user", content="hi")])
 
@@ -1443,7 +1451,7 @@ def test_vllm_stop_tokens_overridable() -> None:
             {"choices": [{"index": 0, "message": {"content": "ok"}, "finish_reason": "stop"}]}
         )
 
-    adapter = VllmAdapter(model="m", stop=("[END]",))
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW, stop=("[END]",))
     with patch("httpx.Client", _make_factory(handler)):
         adapter.complete([ChatMessage(role="user", content="hi")])
 
@@ -1461,7 +1469,7 @@ def test_vllm_stop_empty_tuple_omits_field() -> None:
             {"choices": [{"index": 0, "message": {"content": "ok"}, "finish_reason": "stop"}]}
         )
 
-    adapter = VllmAdapter(model="m", stop=())
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW, stop=())
     with patch("httpx.Client", _make_factory(handler)):
         adapter.complete([ChatMessage(role="user", content="hi")])
 
@@ -1490,7 +1498,7 @@ def test_vllm_stream_with_tools_suppresses_bare_json_visible_output() -> None:
             ]
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         chunks = list(
             adapter.stream_with_tools(
@@ -1531,7 +1539,7 @@ def test_vllm_stream_with_tools_releases_buffer_when_not_a_tool_call() -> None:
             ]
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         chunks = list(
             adapter.stream_with_tools(
@@ -1567,7 +1575,7 @@ def test_vllm_stream_with_tools_streams_normally_when_content_starts_with_prose(
             ]
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         chunks = list(
             adapter.stream_with_tools(
@@ -1636,7 +1644,7 @@ def test_vllm_logs_tool_bail_when_prose_only_reply_with_tools_requested(
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         reply = adapter.complete_with_tools(
             [ChatMessage(role="user", content="grep keydown")],
@@ -1679,7 +1687,7 @@ def test_vllm_does_not_log_tool_bail_when_no_tools_in_request(
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         adapter.complete_with_tools(
             [ChatMessage(role="user", content="hi")],
@@ -1717,7 +1725,7 @@ def test_vllm_does_not_log_tool_bail_when_call_was_parsed(
             }
         )
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         reply = adapter.complete_with_tools(
             [ChatMessage(role="user", content="ls")],
@@ -1764,7 +1772,7 @@ def test_vllm_stream_logs_tool_bail_when_prose_only_reply(
     def handler(_request: httpx.Request) -> httpx.Response:
         return _sse_response(frames)
 
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _make_factory(handler)):
         chunks = list(
             adapter.stream_with_tools(
@@ -1907,7 +1915,7 @@ def test_vllm_reuses_single_client_across_calls() -> None:
         )
 
     built: list[int] = [0]
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _counting_factory(handler, built)):
         list(adapter.stream_with_tools([ChatMessage(role="user", content="a")]))
         list(adapter.stream_with_tools([ChatMessage(role="user", content="b")]))
@@ -1922,7 +1930,7 @@ def test_vllm_close_releases_client_and_allows_rebuild() -> None:
         )
 
     built: list[int] = [0]
-    adapter = VllmAdapter(model="m")
+    adapter = VllmAdapter(model="m", context_window=_TEST_WINDOW)
     with patch("httpx.Client", _counting_factory(handler, built)):
         adapter.complete([ChatMessage(role="user", content="a")])
         adapter.close()  # drops the pooled client
@@ -1939,7 +1947,7 @@ def test_vllm_context_manager_closes_client() -> None:
 
     built: list[int] = [0]
     with patch("httpx.Client", _counting_factory(handler, built)):
-        with VllmAdapter(model="m") as adapter:
+        with VllmAdapter(model="m", context_window=_TEST_WINDOW) as adapter:
             adapter.complete([ChatMessage(role="user", content="a")])
             assert adapter._client is not None
         # __exit__ closed and dropped the pooled client.
@@ -1965,3 +1973,252 @@ def test_vllm_adapter_does_not_import_vllm_sdk() -> None:
 # `Iterator` is imported above only to make the SSE response builder's
 # return type readable in test setup; pytest doesn't actually need it.
 _ = Iterator
+
+
+# ---------- context window: discovered, pinned, fallback (harness-chzp2) --
+
+
+def _models_handler(
+    served: str = "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8",
+    window: int | None = 65_536,
+) -> Callable[[httpx.Request], httpx.Response]:
+    entry: dict[str, Any] = {"id": served, "object": "model"}
+    if window is not None:
+        entry["max_model_len"] = window
+    return lambda _request: _json_response({"object": "list", "data": [entry]})
+
+
+def test_context_window_comes_from_the_served_max_model_len() -> None:
+    """gx10 serves a 65536-token window while the adapter's fallback is
+    32768; budgeting against the fallback gives away half the machine."""
+    adapter = VllmAdapter()
+    with patch("httpx.Client", _make_factory(_models_handler())):
+        assert adapter.context_window == 65_536
+
+
+def test_context_window_discovery_costs_no_extra_round_trip() -> None:
+    """The window rides on the same /v1/models payload as the model id,
+    so resolving both is one GET, and the second read is cached."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return _models_handler()(request)
+
+    adapter = VllmAdapter()
+    with patch("httpx.Client", _make_factory(handler)):
+        assert adapter.model == "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8"
+        assert adapter.context_window == 65_536
+        assert adapter.context_window == 65_536
+    assert len(calls) == 1
+
+
+def test_explicit_context_window_wins_over_discovery() -> None:
+    """`--context-window` on the driver and the vision adapter's 16384
+    pin are assertions by the caller; discovery must not override them,
+    and must not fire at all."""
+    called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return _models_handler()(request)
+
+    adapter = VllmAdapter(context_window=16_384)
+    with patch("httpx.Client", _make_factory(handler)):
+        assert adapter.context_window == 16_384
+    assert not called
+
+
+def test_context_window_falls_back_when_the_server_is_unreachable() -> None:
+    """Read on every turn by should_compact and by the TUI/REPL context
+    meter. A meter must not take the session down because the server
+    blinked — fall back, don't raise."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    adapter = VllmAdapter()
+    with patch("httpx.Client", _make_factory(handler)):
+        assert adapter.context_window == DEFAULT_CONTEXT_WINDOW
+
+
+def test_context_window_falls_back_when_payload_omits_max_model_len() -> None:
+    """Older vLLM builds don't publish the field."""
+    adapter = VllmAdapter()
+    with patch("httpx.Client", _make_factory(_models_handler(window=None))):
+        assert adapter.context_window == DEFAULT_CONTEXT_WINDOW
+
+
+def test_overflow_rejection_forgets_the_discovered_window() -> None:
+    """The adapter supports a cluster swapping the served model behind a
+    fixed URL. A cached 65536 against a re-launched 8k model would 400
+    every request forever; re-discover after the server says no."""
+    windows = iter([65_536, 8_192])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return _models_handler(window=next(windows))(request)
+        return _json_response(
+            {"error": {"message": "This model's maximum context length is 8192 tokens."}},
+            status=400,
+        )
+
+    adapter = VllmAdapter()
+    with patch("httpx.Client", _make_factory(handler)):
+        assert adapter.context_window == 65_536
+        with pytest.raises(PromptBudgetError):
+            adapter.complete([ChatMessage(role="user", content="hi")], max_tokens=16)
+        assert adapter.context_window == 8_192
+
+
+def test_overflow_rejection_leaves_a_pinned_window_alone() -> None:
+    """A pin is the caller's assertion; an overflow doesn't revoke it."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            {"error": {"message": "This model's maximum context length is 8192 tokens."}},
+            status=400,
+        )
+
+    adapter = VllmAdapter(model="pinned", context_window=16_384)
+    with patch("httpx.Client", _make_factory(handler)):
+        with pytest.raises(PromptBudgetError):
+            adapter.complete([ChatMessage(role="user", content="hi")], max_tokens=16)
+        assert adapter.context_window == 16_384
+
+
+# ---------- tool schemas count against the prompt (harness-ccksu) ---------
+
+
+def test_tool_schemas_are_counted_in_the_output_budget() -> None:
+    """The server renders tool schemas into the prompt and counts them as
+    input. Measured against gx10's tokenizer, one write_file spec is 471
+    tokens next to a 51-token message list — a messages-only count is
+    short by the whole schema, always in the unsafe direction."""
+    spec = ToolSpec(
+        name="write_file",
+        description="Write a file to disk." * 20,
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"],
+        },
+        tier="write",
+    )
+    msgs = [ChatMessage(role="user", content="hi")]
+    adapter = VllmAdapter(model="m", context_window=4096)
+
+    without = adapter._budgeted_max_tokens(msgs, 4096)
+    with_tools = adapter._budgeted_max_tokens(msgs, 4096, [spec])
+
+    assert with_tools < without
+    # The gap is the schema's own token cost, not a rounding difference.
+    assert without - with_tools >= 100
+
+
+def test_tool_schema_cost_reaches_the_wire_budget() -> None:
+    """Pinned end-to-end: the max_tokens actually sent shrinks by the
+    schema cost, so prompt + max_tokens stays inside the window."""
+    captured: dict[str, Any] = {}
+    spec = ToolSpec(
+        name="write_file",
+        description="Write a file to disk." * 20,
+        parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+        tier="write",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return _json_response(
+            {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+
+    adapter = VllmAdapter(model="m", context_window=2048)
+    with patch("httpx.Client", _make_factory(handler)):
+        adapter.complete_with_tools(
+            [ChatMessage(role="user", content="hi")], tools=[spec], max_tokens=2048
+        )
+
+    sent = captured["payload"]["max_tokens"]
+    schema_chars = len(json.dumps(captured["payload"]["tools"]))
+    assert sent + schema_chars / 4 < 2048
+
+
+# ---------- exact prompt count near the window edge (harness-ccksu) ------
+
+
+def _tokenize_handler(
+    exact: int, completion: dict[str, Any] | None = None
+) -> tuple[Callable[[httpx.Request], httpx.Response], list[str]]:
+    """Answer /tokenize with `exact`, /v1/models with a 65536 window, and
+    any completion with `completion`. Returns the handler plus the list
+    of paths it saw, so a test can assert a round trip did or didn't
+    happen."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path.endswith("/tokenize"):
+            return _json_response({"count": exact, "max_model_len": 65_536})
+        if request.url.path.endswith("/models"):
+            return _models_handler()(request)
+        return _json_response(
+            completion or {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+
+    return handler, seen
+
+
+def test_near_the_window_edge_the_exact_count_wins() -> None:
+    """At the edge the request asks for whatever is left, so any
+    undercount overflows. Two live gx10 failures landed at exactly
+    total = window + 1, the second 10.1% past a 10% margin. Estimating
+    can't win that; ask the server."""
+    handler, seen = _tokenize_handler(exact=1211)
+    adapter = VllmAdapter(model="m", context_window=65_536)
+    with patch("httpx.Client", _make_factory(handler)):
+        budget = adapter._budgeted_max_tokens([ChatMessage(role="user", content="x" * 400)], 65_536)
+    assert any(p.endswith("/tokenize") for p in seen)
+    # The invariant the server checks: prompt + max_tokens <= window.
+    assert 1211 + budget <= 65_536
+
+
+def test_an_ordinary_turn_pays_no_tokenize_round_trip() -> None:
+    """A 2048-token budget against a 64k window is nowhere near the
+    edge; the heuristic's error can't reach it, so precision is free to
+    skip. This is every normal chat turn."""
+    handler, seen = _tokenize_handler(exact=1211)
+    adapter = VllmAdapter(model="m", context_window=65_536)
+    with patch("httpx.Client", _make_factory(handler)):
+        budget = adapter._budgeted_max_tokens([ChatMessage(role="user", content="x" * 400)], 2048)
+    assert budget == 2048
+    assert not any(p.endswith("/tokenize") for p in seen)
+
+
+def test_falls_back_to_the_heuristic_when_tokenize_is_unavailable() -> None:
+    """Older vLLM builds, or a proxy that doesn't expose the endpoint.
+    Degrade to the estimate rather than failing the turn."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/tokenize"):
+            return _json_response({"detail": "Not Found"}, status=404)
+        return _json_response(
+            {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+
+    adapter = VllmAdapter(model="m", context_window=1000)
+    with patch("httpx.Client", _make_factory(handler)):
+        budget = adapter._budgeted_max_tokens([ChatMessage(role="user", content="x" * 400)], 1000)
+    assert budget > 0
+    assert budget < 1000
+
+
+def test_tokenize_is_asked_at_the_server_root_not_under_v1() -> None:
+    """vLLM serves /tokenize at the root; /v1/tokenize is a 404."""
+    handler, seen = _tokenize_handler(exact=900)
+    adapter = VllmAdapter(model="m", base_url="http://host:8000/v1", context_window=1000)
+    with patch("httpx.Client", _make_factory(handler)):
+        adapter._budgeted_max_tokens([ChatMessage(role="user", content="x" * 400)], 1000)
+    assert "/tokenize" in seen
+    assert "/v1/tokenize" not in seen

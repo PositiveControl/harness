@@ -310,7 +310,15 @@ class PersonaAdapter:
         self.rewriter_max_tokens = rewriter_max_tokens
         self.chain_rewrites = chain_rewrites
         self.id = f"persona[{base.id}]"
-        self.context_window = base.context_window
+
+    @property
+    def context_window(self) -> int:
+        """Forward, don't snapshot (harness-chzp2). The wrapped adapter
+        may resolve its window lazily — VllmAdapter reads the served
+        model's max_model_len on first use — so copying the value at
+        construction would freeze every persona-wrapped session on the
+        pre-discovery default."""
+        return self.base.context_window
 
     def load(self) -> None:
         loader = getattr(self.base, "load", None)

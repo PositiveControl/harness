@@ -131,6 +131,10 @@ def test_render_content_multiple_images() -> None:
 
 
 def test_complete_sends_multimodal_content_for_image_message() -> None:
+    # context_window pinned to the VLM's real max_model_len: these handlers
+    # only answer the POST, and an unpinned adapter discovers its window via
+    # GET /v1/models on first use (harness-chzp2). make_vision_adapter pins
+    # the same 16384, so this matches production.
     captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -139,7 +143,7 @@ def test_complete_sends_multimodal_content_for_image_message() -> None:
             {"choices": [{"message": {"content": "a cat"}, "finish_reason": "stop"}]}
         )
 
-    adapter = VllmAdapter(model="some-vlm", base_url="http://gx10:8001/v1")
+    adapter = VllmAdapter(model="some-vlm", base_url="http://gx10:8001/v1", context_window=16_384)
     message = ChatMessage(
         role="user",
         content="what is this?",
@@ -168,7 +172,7 @@ def test_complete_text_only_message_still_sends_plain_string() -> None:
             {"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]}
         )
 
-    adapter = VllmAdapter(model="some-model", base_url="http://gx10:8001/v1")
+    adapter = VllmAdapter(model="some-model", base_url="http://gx10:8001/v1", context_window=16_384)
     with patch("httpx.Client", _make_factory(handler)):
         adapter.complete([ChatMessage(role="user", content="hello")])
 

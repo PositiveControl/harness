@@ -223,3 +223,31 @@ def test_round_budget_reaches_the_tool_loop(tmp_path: Path) -> None:
 
     # Round 0 (tool call) and the post-tool wrap-up round both honor it.
     assert adapter.seen_max_tokens == [8192, 8192]
+
+
+def test_persona_wrapper_forwards_a_lazily_resolved_window() -> None:
+    """harness-chzp2: the persona wrappers used to copy base.context_window
+    at construction. VllmAdapter resolves its window on first use, so a
+    snapshot would freeze every persona-wrapped session on the
+    pre-discovery default."""
+    from harness.character import load_character
+    from harness.persona import PersonaAdapter
+
+    class _LateWindow:
+        id = "late"
+        _resolved = False
+
+        @property
+        def context_window(self) -> int:
+            return 65_536 if self._resolved else 32_768
+
+        def complete(self, messages: Any, **kw: Any) -> str:
+            return ""
+
+    base = _LateWindow()
+    # No type: ignore needed — ModelAdapter.context_window is a read-only
+    # protocol member now, so a property satisfies it (harness-chzp2).
+    wrapped = PersonaAdapter(base, load_character(settings.character_path))
+    assert wrapped.context_window == 32_768
+    base._resolved = True
+    assert wrapped.context_window == 65_536

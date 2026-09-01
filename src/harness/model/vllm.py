@@ -18,6 +18,7 @@ cluster swaps the model behind a fixed URL."""
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from collections.abc import Iterable, Iterator
@@ -73,6 +74,37 @@ def _vllm_trace(record: dict[str, Any]) -> None:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:  # noqa: S110 — diagnostic only; must not break a turn
         pass
+
+
+# Chars-per-token for a rendered tool schema (harness-ccksu). JSON
+# schemas tokenize far denser than prose — measured against gx10's
+# tokenizer, one write_file spec is 1065 JSON chars / 471 tokens (2.26)
+# and two are 2470 / 859 (2.88). The prose heuristic's 4.0 would
+# undercount by ~40%, and for a budget clamp an undercount is the unsafe
+# direction, so we use the denser end of the measured range.
+# Fallback window when the served model's own `max_model_len` can't be
+# read (server unreachable, or a payload without the field). Matches the
+# value this adapter shipped as a hardcoded default before discovery
+# landed, so an offline adapter behaves exactly as it used to.
+DEFAULT_CONTEXT_WINDOW = 32_768
+
+# How close to the window edge the heuristic has to put us before we
+# spend a /tokenize round trip on an exact count (harness-ccksu). Sized
+# to cover the heuristic's observed error (up to ~10% of prompt) plus
+# headroom, on prompts big enough to matter. An ordinary turn — a 2k
+# budget against a 64k window — never comes near it and never pays.
+_EXACT_COUNT_TRIGGER_MARGIN = 2048
+
+_TOOL_SCHEMA_CHARS_PER_TOKEN = 2.25
+
+
+def _tool_schema_tokens(tools: list[ToolSpec] | None) -> int:
+    """Approximate the prompt cost of the tool schemas the server will
+    render. Zero when the request carries no tools."""
+    if not tools:
+        return 0
+    rendered = json.dumps([_tool_spec_for_openai(t) for t in tools])
+    return math.ceil(len(rendered) / _TOOL_SCHEMA_CHARS_PER_TOKEN)
 
 
 def _is_context_overflow(status_code: int, detail: str) -> bool:
@@ -404,14 +436,24 @@ class VllmAdapter:
         model: str | None = None,
         *,
         base_url: str = "http://localhost:8000/v1",
-        context_window: int = 32_768,
+        context_window: int | None = None,
         timeout: float = 300.0,
         api_key: str | None = None,
         stop: tuple[str, ...] | None = None,
     ) -> None:
         self._model: str | None = model
         self.base_url = base_url.rstrip("/")
-        self.context_window = context_window
+        # Explicit pin wins forever (driver --context-window, the vision
+        # adapter's 16384). None means "ask the server" — see the
+        # context_window property.
+        self._pinned_window = context_window
+        self._discovered_window: int | None = None
+        # True once a discovery attempt has been made, successful or
+        # not. Without it, a server whose /v1/models payload omits
+        # max_model_len would re-fetch on every context_window read —
+        # and that property is read per turn by should_compact and per
+        # repaint by the context meter.
+        self._window_looked_up = False
         self.timeout = timeout
         self._api_key = api_key
         self.stop: tuple[str, ...] = self._DEFAULT_STOP if stop is None else stop
@@ -445,9 +487,53 @@ class VllmAdapter:
         self.close()
 
     @property
+    def context_window(self) -> int:
+        """The served model's real window (harness-chzp2).
+
+        Resolution order: an explicit constructor pin, then whatever
+        `/v1/models` reported, then a discovery attempt, then
+        DEFAULT_CONTEXT_WINDOW. Discovery failures fall back rather than
+        raise — this is read by the TUI/REPL context meter and by
+        `should_compact` on every turn, and a meter must not take the
+        session down because the server blinked.
+
+        Lazy on purpose: the adapter's no-network-on-construction
+        contract is load-bearing (a `chat --model vllm` against a
+        down server must still reach a usable error, not fail at
+        import-time wiring)."""
+        if self._pinned_window is not None:
+            return self._pinned_window
+        if not self._window_looked_up:
+            self._window_looked_up = True
+            try:
+                # Refreshes the id too — when this fires a second time
+                # it's because the server rejected us, and a swapped
+                # model means both values are stale.
+                self._model = self._discover_model()
+                self.id = f"vllm:{self._model}"
+            except RuntimeError:
+                return DEFAULT_CONTEXT_WINDOW
+        return self._discovered_window or DEFAULT_CONTEXT_WINDOW
+
+    def _forget_discovered_window(self) -> None:
+        """Drop the cached window so the next read re-discovers.
+
+        Called when the server rejects a request as over-budget. Either
+        our estimate drifted (the margin's job, harness-ccksu) or the
+        model behind this URL was swapped for one with a smaller window
+        — the adapter explicitly supports a daisy-chained cluster doing
+        that. Re-reading is cheap and self-healing; keeping a stale
+        larger window means every subsequent request 400s the same way.
+        A pinned window is the caller's assertion and is left alone."""
+        if self._pinned_window is None:
+            self._discovered_window = None
+            self._window_looked_up = False
+
+    @property
     def model(self) -> str:
         if self._model is None:
             self._model = self._discover_model()
+            self._window_looked_up = True  # same payload carried the window
             self.id = f"vllm:{self._model}"
         return self._model
 
@@ -459,7 +545,11 @@ class VllmAdapter:
 
     def _discover_model(self) -> str:
         """GET /v1/models — pick the first served id. vLLM hosts exactly
-        one model per process, so this is unambiguous."""
+        one model per process, so this is unambiguous.
+
+        Also stashes that entry's `max_model_len` in `_discovered_window`
+        (harness-chzp2): the window is on the same payload, so tracking
+        the real served window costs no extra round trip."""
         try:
             r = self._http().get(f"{self.base_url}/models", headers=self._headers())
             r.raise_for_status()
@@ -475,6 +565,9 @@ class VllmAdapter:
         served_id = first.get("id") if isinstance(first, dict) else None
         if not isinstance(served_id, str):
             raise RuntimeError(f"Unexpected /v1/models payload from vLLM: {data!r}")
+        served_window = first.get("max_model_len")
+        if isinstance(served_window, int) and served_window > 0:
+            self._discovered_window = served_window
         return served_id
 
     def load(self) -> None:
@@ -488,20 +581,76 @@ class VllmAdapter:
         to the char heuristic — good enough for a UI gauge."""
         return approx_token_count(messages)
 
-    def _budgeted_max_tokens(self, messages: list[ChatMessage], requested_max: int) -> int:
+    def _budgeted_max_tokens(
+        self,
+        messages: list[ChatMessage],
+        requested_max: int,
+        tools: list[ToolSpec] | None = None,
+    ) -> int:
         """Clamp `requested_max` so `prompt + max_tokens` can't exceed
         the served window (harness-2epb). vLLM rejects an over-budget
-        request with HTTP 422 and kills the turn; clamping pre-empts
-        that. Uses the heuristic prompt count (count_tokens), which can
-        undercount — the safety margin in budget_max_tokens absorbs
-        small drift, and the _post 422 handler is the exact backstop if
-        a large drift slips through. Raises PromptBudgetError when the
-        prompt leaves no room for generation."""
+        request and kills the turn; clamping pre-empts that.
+
+        `tools` must be passed on the tool-calling paths. The server
+        renders the tool schemas into the prompt and counts them as
+        input, so a messages-only count is short by the entire schema
+        — measured against gx10's tokenizer, one `write_file` spec is
+        471 tokens and two are 859, next to a 51-token message list
+        (harness-ccksu). That gap is invisible while the window is
+        pinned at 32768 on a 65536-token server, and fatal the moment
+        the budget tracks the real window.
+
+        Both counts are heuristics: `count_tokens` for messages, and
+        `_tool_schema_tokens` for the schemas. The proportional margin
+        in `budget_max_tokens` absorbs their drift, and the _post
+        overflow handler is the exact backstop if something still slips
+        through. Raises PromptBudgetError when the prompt leaves no room
+        for generation."""
+        window = self.context_window
+        estimated = self.count_tokens(messages) + _tool_schema_tokens(tools)
+        if estimated + requested_max + _EXACT_COUNT_TRIGGER_MARGIN <= window:
+            # Comfortably inside the window — the estimate's error can't
+            # reach the boundary, so spend no round trip on precision.
+            # This is every ordinary turn.
+            return requested_max
+        exact = self._exact_prompt_tokens(messages, tools)
         return budget_max_tokens(
-            context_window=self.context_window,
-            prompt_tokens=self.count_tokens(messages),
+            context_window=window,
+            prompt_tokens=exact if exact is not None else estimated,
             requested_max=requested_max,
         )
+
+    def _exact_prompt_tokens(
+        self, messages: list[ChatMessage], tools: list[ToolSpec] | None
+    ) -> int | None:
+        """POST /tokenize for the server's own prompt-token count, or
+        None when the endpoint isn't available.
+
+        Called only when the heuristic says we're near the window edge
+        (harness-ccksu). At the edge, estimating is hopeless: the request
+        asks for whatever is left, so ANY undercount overflows. Two live
+        failures against gx10 landed at exactly total = window + 1, the
+        second one 10.1% past a 10% margin — chasing that with a bigger
+        fraction is a game you lose on the next content shape.
+
+        The endpoint takes the same `messages` + `tools` the completion
+        will, so it counts the schemas too. It lives at the server root,
+        not under /v1. count_tokens stays heuristic for the UI meter,
+        which reads it far too often to pay a round trip."""
+        root = self.base_url[: -len("/v1")] if self.base_url.endswith("/v1") else self.base_url
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": _messages_for_openai(messages),
+        }
+        if tools:
+            payload["tools"] = [_tool_spec_for_openai(t) for t in tools]
+        try:
+            r = self._http().post(f"{root}/tokenize", headers=self._headers(), json=payload)
+            r.raise_for_status()
+            count = r.json().get("count")
+        except (httpx.HTTPError, ValueError):
+            return None
+        return count if isinstance(count, int) and count > 0 else None
 
     def complete(
         self,
@@ -597,7 +746,7 @@ class VllmAdapter:
             "messages": _messages_for_openai(materialized),
             "stream": False,
             "temperature": temperature,
-            "max_tokens": self._budgeted_max_tokens(materialized, max_tokens),
+            "max_tokens": self._budgeted_max_tokens(materialized, max_tokens, tools),
         }
         if tools:
             payload["tools"] = [_tool_spec_for_openai(t) for t in tools]
@@ -672,7 +821,7 @@ class VllmAdapter:
             "messages": _messages_for_openai(materialized),
             "stream": True,
             "temperature": temperature,
-            "max_tokens": self._budgeted_max_tokens(materialized, max_tokens),
+            "max_tokens": self._budgeted_max_tokens(materialized, max_tokens, tools),
         }
         if tools:
             payload["tools"] = [_tool_spec_for_openai(t) for t in tools]
@@ -830,6 +979,7 @@ class VllmAdapter:
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text
             if _is_context_overflow(exc.response.status_code, detail):
+                self._forget_discovered_window()
                 # Exact backstop for harness-2epb: the proactive clamp in
                 # _budgeted_max_tokens uses a heuristic prompt count and
                 # can undercount; if a request still lands over-budget,
@@ -883,6 +1033,7 @@ class VllmAdapter:
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text
             if _is_context_overflow(exc.response.status_code, detail):
+                self._forget_discovered_window()
                 raise PromptBudgetError(
                     f"vLLM rejected an over-budget request for {self._model!r}: {detail}"
                 ) from exc
