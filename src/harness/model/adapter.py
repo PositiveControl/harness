@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import math
 import mimetypes
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -83,7 +84,13 @@ class ModelAdapter(Protocol):
     when the orchestrator becomes asyncio-native."""
 
     id: str
-    context_window: int
+
+    # Read-only on the protocol so an adapter may resolve its window
+    # lazily (harness-chzp2): VllmAdapter reads the served model's
+    # max_model_len on first use and the persona wrappers forward it.
+    # A plain `context_window: int` attribute still satisfies this.
+    @property
+    def context_window(self) -> int: ...
 
     def complete(
         self,
@@ -106,7 +113,13 @@ class GrammarCapableAdapter(Protocol):
     method structurally and falls through if it isn't present."""
 
     id: str
-    context_window: int
+
+    # Read-only on the protocol so an adapter may resolve its window
+    # lazily (harness-chzp2): VllmAdapter reads the served model's
+    # max_model_len on first use and the persona wrappers forward it.
+    # A plain `context_window: int` attribute still satisfies this.
+    @property
+    def context_window(self) -> int: ...
 
     def complete_grammar(
         self,
@@ -124,6 +137,18 @@ class GrammarCapableAdapter(Protocol):
 # reserve a small margin on top of the generation budget so heuristic
 # token-count drift can't push the real request one token over the edge.
 DEFAULT_OUTPUT_SAFETY_MARGIN = 32
+# Proportional component of that margin (harness-ccksu). A flat 32 tokens
+# cannot absorb the char heuristic's error, because that error scales with
+# the prompt: `approx_token_count` assumes ~4 chars/token, which is close
+# on prose (measured +2% on a 51-token prompt against gx10's tokenizer)
+# and much worse on the punctuation-dense content a tool loop accumulates
+# — the funky_chicken turn that exposed this drifted 6% once ASCII art was
+# in the message list, 33 tokens over a 32-token margin, and vLLM rejected
+# the whole request. 10% is ~2x the observed worst case.
+#
+# This only ever costs anything when the request is already at the window
+# boundary; a request that fits passes through untouched.
+DRIFT_MARGIN_FRACTION = 0.10
 # Floor below which a clamped generation budget is useless — better to
 # surface a clear error than emit a request that can only dribble out a
 # few tokens before truncating.
@@ -148,18 +173,35 @@ def budget_max_tokens(
     context_window - safety_margin`. Returns `requested_max` untouched
     when it already fits; otherwise the largest budget that fits.
 
-    Raises `PromptBudgetError` when the prompt leaves less than
-    `min_output` tokens of room — at that point compaction (or a shorter
-    prompt) is the only remedy, and a clear error beats a silent overflow
-    or a 1-token reply. `context_window <= 0` means the adapter doesn't
-    advertise a window (e.g. a test stub); the budget passes through
-    unclamped."""
+    `safety_margin` is a floor, not the whole reservation: the margin
+    preferred is `max(safety_margin, prompt_tokens *
+    DRIFT_MARGIN_FRACTION)`, because heuristic token-count error scales
+    with prompt size and a flat cushion stops covering it (harness-ccksu).
+
+    The proportional part is a cushion, not a reservation — when it
+    would leave less than `min_output` of room, it shrinks back to
+    `safety_margin` rather than refusing the turn. Otherwise a big
+    prompt near the window would start raising where it used to
+    generate, turning a working (if tight) turn into a hard error.
+    Take the cushion when it's affordable; never let it starve the
+    budget on its own.
+
+    Raises `PromptBudgetError` only when the prompt leaves less than
+    `min_output` tokens of room even at the floor margin — at that point
+    compaction (or a shorter prompt) is the only remedy, and a clear
+    error beats a silent overflow or a 1-token reply. `context_window <=
+    0` means the adapter doesn't advertise a window (e.g. a test stub);
+    the budget passes through unclamped."""
     if context_window <= 0:
         return requested_max
-    available = context_window - prompt_tokens - safety_margin
+    margin = max(safety_margin, math.ceil(prompt_tokens * DRIFT_MARGIN_FRACTION))
+    available = context_window - prompt_tokens - margin
+    if available < min_output:
+        margin = safety_margin
+        available = context_window - prompt_tokens - margin
     if available < min_output:
         raise PromptBudgetError(
-            f"prompt is {prompt_tokens} tokens; with a {safety_margin}-token "
+            f"prompt is {prompt_tokens} tokens; with a {margin}-token "
             f"safety margin only {max(available, 0)} of the {context_window}-token "
             f"window remain for generation (need >= {min_output}). Compact the "
             "history or shorten the prompt."
