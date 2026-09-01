@@ -4,8 +4,16 @@ subprocess.run is monkeypatched end-to-end so the suite doesn't need a
 real bd CLI or a running Dolt server. Tests pin the bd invocation shape
 (args, cwd), the parse paths (single dict vs list-of-one, empty stdout,
 missing created_at), and the driver-specific semantics (loop-run-<id>
-labels, immediate-close for thought-graph beads, ready ∩ direct
-dependencies for ready_under_epic).
+labels, immediate-close for thought-graph beads, ready ∩ children
+for ready_under_epic).
+
+`_issue_json` mirrors the REAL bd 1.0.5 `bd show --json` record and is
+pinned to it by `test_issue_json_fixture_matches_real_bd_show_keys`.
+That pin is the point: the earlier fake synthesized a `dependencies`
+array bd never emitted, so `ready_under_epic` and `lint-epic` read an
+always-empty key in production while the suite stayed green through a
+total driver outage (harness-mvejk). Children come from `bd dep list`
+and `bd list --parent`, never from the show payload.
 """
 
 from __future__ import annotations
@@ -80,8 +88,13 @@ def _issue_json(
     priority: int = 2,
     labels: tuple[str, ...] = (),
     created_at: str = "2026-05-20T00:00:00Z",
-    dependencies: list[dict[str, Any]] | None = None,
+    dependency_count: int = 0,
+    dependent_count: int = 0,
 ) -> dict[str, Any]:
+    """A `bd show --json` record with bd 1.0.5's real key set.
+
+    Note the absence of `dependencies` / `children` — bd emits neither,
+    only the two counts. See the module docstring."""
     return {
         "id": issue_id,
         "title": title,
@@ -90,8 +103,43 @@ def _issue_json(
         "issue_type": "task",
         "labels": list(labels),
         "created_at": created_at,
-        "dependencies": dependencies or [],
+        "dependency_count": dependency_count,
+        "dependent_count": dependent_count,
     }
+
+
+# Exact key set returned by `bd show <id> --json` on bd 1.0.5
+# (Homebrew), captured 2026-09-01. Any key the fake invents beyond this
+# is a lie the production code can come to depend on.
+_REAL_BD_SHOW_KEYS = frozenset(
+    {
+        "acceptance_criteria",
+        "comment_count",
+        "created_at",
+        "created_by",
+        "dependency_count",
+        "dependent_count",
+        "description",
+        "design",
+        "id",
+        "issue_type",
+        "labels",
+        "notes",
+        "owner",
+        "priority",
+        "status",
+        "title",
+        "updated_at",
+    }
+)
+
+
+def test_issue_json_fixture_matches_real_bd_show_keys() -> None:
+    """The fake may omit keys it doesn't need, but must never invent one.
+
+    `dependencies` was invented, and every children lookup read it
+    (harness-mvejk)."""
+    assert set(_issue_json("harness-x")) <= _REAL_BD_SHOW_KEYS
 
 
 # --- _extract_created_id ---------------------------------------------
@@ -167,18 +215,136 @@ def test_ready_empty_stdout(monkeypatch: pytest.MonkeyPatch, bd: DriverBd) -> No
     assert bd.ready() == []
 
 
-def test_ready_under_epic_intersects_with_direct_dependencies(
+# --- children --------------------------------------------------------
+
+# bd exposes an epic's children through two relations and each answers
+# a different query (harness-mvejk):
+#   * `blocks` deps, what driver/planner.py wires    -> bd dep list <epic>
+#   * `parent-child`, what `bd create --parent` wires -> bd list --parent <epic>
+# Both payloads are flat arrays of full issue records.
+_DEP_LIST_ARGS = ("dep", "list", "harness-epic", "--json")
+_PARENT_LIST_ARGS = ("list", "--parent", "harness-epic", "--all", "--json")
+
+
+def test_children_reads_blocks_wired_epic(monkeypatch: pytest.MonkeyPatch, bd: DriverBd) -> None:
+    """Planner-created epics wire children as `blocks` deps."""
+    spy = _RunSpy(
+        [
+            _FakeProc(stdout=json.dumps([_issue_json("harness-a"), _issue_json("harness-b")])),
+            _FakeProc(stdout="[]"),
+        ]
+    )
+    _install_run(monkeypatch, spy)
+    assert [i.id for i in bd.children("harness-epic")] == ["harness-a", "harness-b"]
+    assert spy.calls[0][0] == _DEP_LIST_ARGS
+    assert spy.calls[1][0] == _PARENT_LIST_ARGS
+
+
+def test_children_reads_parent_child_wired_epic(
     monkeypatch: pytest.MonkeyPatch, bd: DriverBd
 ) -> None:
-    # Epic has 3 direct dependencies. Globally ready: 4 issues, two of
-    # which are children of the epic, plus one that lives elsewhere.
-    epic = _issue_json(
-        "harness-epic",
-        dependencies=[
-            {"id": "harness-a", "dependency_type": "blocks"},
-            {"id": "harness-b", "dependency_type": "blocks"},
-            {"id": "harness-c", "dependency_type": "blocks"},
-        ],
+    """`bd create --parent` children are invisible to `bd dep list` in
+    the down direction — they only come back from `bd list --parent`."""
+    spy = _RunSpy(
+        [
+            _FakeProc(stdout="[]"),
+            _FakeProc(stdout=json.dumps([_issue_json("harness-a"), _issue_json("harness-b")])),
+        ]
+    )
+    _install_run(monkeypatch, spy)
+    assert [i.id for i in bd.children("harness-epic")] == ["harness-a", "harness-b"]
+
+
+def test_children_unions_both_wirings_and_dedupes(
+    monkeypatch: pytest.MonkeyPatch, bd: DriverBd
+) -> None:
+    """An epic can carry both relations, and a child can carry both at
+    once — union, first-seen order, no duplicates."""
+    spy = _RunSpy(
+        [
+            _FakeProc(stdout=json.dumps([_issue_json("harness-a"), _issue_json("harness-b")])),
+            _FakeProc(stdout=json.dumps([_issue_json("harness-b"), _issue_json("harness-c")])),
+        ]
+    )
+    _install_run(monkeypatch, spy)
+    assert [i.id for i in bd.children("harness-epic")] == [
+        "harness-a",
+        "harness-b",
+        "harness-c",
+    ]
+
+
+def test_children_excludes_the_epic_itself(monkeypatch: pytest.MonkeyPatch, bd: DriverBd) -> None:
+    spy = _RunSpy(
+        [
+            _FakeProc(stdout=json.dumps([_issue_json("harness-epic"), _issue_json("harness-a")])),
+            _FakeProc(stdout="[]"),
+        ]
+    )
+    _install_run(monkeypatch, spy)
+    assert [i.id for i in bd.children("harness-epic")] == ["harness-a"]
+
+
+def test_children_include_closed_toggles_closed_children(
+    monkeypatch: pytest.MonkeyPatch, bd: DriverBd
+) -> None:
+    """Both queries are asked for everything (`bd list` needs `--all`;
+    `bd dep list` returns closed already) and the filter happens here,
+    so there is one code path rather than two query shapes."""
+    payload = json.dumps(
+        [_issue_json("harness-open"), _issue_json("harness-done", status="closed")]
+    )
+    responses: list[_Response] = [_FakeProc(stdout=payload), _FakeProc(stdout="[]")]
+    spy = _RunSpy(responses)
+    _install_run(monkeypatch, spy)
+    assert [i.id for i in bd.children("harness-epic")] == ["harness-open", "harness-done"]
+
+    spy = _RunSpy([_FakeProc(stdout=payload), _FakeProc(stdout="[]")])
+    _install_run(monkeypatch, spy)
+    assert [i.id for i in bd.children("harness-epic", include_closed=False)] == ["harness-open"]
+
+
+def test_children_empty_for_a_leaf_bead(monkeypatch: pytest.MonkeyPatch, bd: DriverBd) -> None:
+    """No children and no relations reported — a genuine leaf, not drift."""
+    spy = _RunSpy(
+        [
+            _FakeProc(stdout="[]"),
+            _FakeProc(stdout="[]"),
+            _FakeProc(stdout=json.dumps(_issue_json("harness-epic"))),
+        ]
+    )
+    _install_run(monkeypatch, spy)
+    assert bd.children("harness-epic") == []
+
+
+def test_children_raises_when_relations_exist_but_no_child_resolves(
+    monkeypatch: pytest.MonkeyPatch, bd: DriverBd
+) -> None:
+    """The harness-mvejk signature: the epic reports relations, both
+    queries come back empty. Returning [] here is what let a broken
+    lookup report success having driven nothing."""
+    spy = _RunSpy(
+        [
+            _FakeProc(stdout="[]"),
+            _FakeProc(stdout="[]"),
+            _FakeProc(stdout=json.dumps(_issue_json("harness-epic", dependent_count=9))),
+        ]
+    )
+    _install_run(monkeypatch, spy)
+    with pytest.raises(DriverBdError, match="schema drift"):
+        bd.children("harness-epic")
+
+
+# --- ready_under_epic ------------------------------------------------
+
+
+def test_ready_under_epic_intersects_with_children(
+    monkeypatch: pytest.MonkeyPatch, bd: DriverBd
+) -> None:
+    # Epic has 3 children. Globally ready: 4 issues, three of which are
+    # children of the epic, plus one that lives elsewhere.
+    children = json.dumps(
+        [_issue_json("harness-a"), _issue_json("harness-b"), _issue_json("harness-c")]
     )
     ready_global = json.dumps(
         [
@@ -188,21 +354,33 @@ def test_ready_under_epic_intersects_with_direct_dependencies(
             _issue_json("harness-b"),
         ]
     )
-    spy = _RunSpy([_FakeProc(stdout=json.dumps(epic)), _FakeProc(stdout=ready_global)])
+    spy = _RunSpy(
+        [
+            _FakeProc(stdout=children),
+            _FakeProc(stdout="[]"),
+            _FakeProc(stdout=ready_global),
+        ]
+    )
     _install_run(monkeypatch, spy)
     ready = bd.ready_under_epic("harness-epic")
     # Preserves bd ready order.
     assert [i.id for i in ready] == ["harness-a", "harness-c", "harness-b"]
 
 
-def test_ready_under_epic_empty_when_epic_has_no_dependencies(
+def test_ready_under_epic_empty_when_epic_has_no_children(
     monkeypatch: pytest.MonkeyPatch, bd: DriverBd
 ) -> None:
-    spy = _RunSpy([_FakeProc(stdout=json.dumps(_issue_json("harness-epic")))])
+    spy = _RunSpy(
+        [
+            _FakeProc(stdout="[]"),
+            _FakeProc(stdout="[]"),
+            _FakeProc(stdout=json.dumps(_issue_json("harness-epic"))),
+        ]
+    )
     _install_run(monkeypatch, spy)
     assert bd.ready_under_epic("harness-epic") == []
     # ready() should NOT be called when there are no children to intersect with.
-    assert len(spy.calls) == 1
+    assert [c[0][0] for c in spy.calls] == ["dep", "list", "show"]
 
 
 # --- thoughts_in_loop_run --------------------------------------------

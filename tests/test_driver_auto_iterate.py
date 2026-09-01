@@ -32,8 +32,9 @@ def _issue(
     title: str,
     status: str = "open",
     labels: Sequence[str] = (),
-    deps: Sequence[str] = (),
 ) -> BeadsIssue:
+    # No `dependencies` key — bd doesn't emit one, and faking it is what
+    # hid harness-mvejk. Children come from _FakeBd.children().
     return BeadsIssue(
         id=id_,
         title=title,
@@ -42,12 +43,7 @@ def _issue(
         issue_type="task",
         assignee=None,
         labels=tuple(labels),
-        raw={
-            "id": id_,
-            "title": title,
-            "status": status,
-            "dependencies": [{"id": d} for d in deps],
-        },
+        raw={"id": id_, "title": title, "status": status},
     )
 
 
@@ -69,6 +65,8 @@ class _FakeBd:
     creates: list[dict[str, Any]] = field(default_factory=list)
     dep_adds: list[tuple[str, str]] = field(default_factory=list)
     show_failures: set[str] = field(default_factory=set)
+    # epic id -> child ids, as DriverBd.children() would resolve them.
+    child_ids: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # harness-64jge: what ready_under_epic returns. Empty by default so
     # the all-ready-carried-skipped short-circuit never fires unless a
     # test opts in.
@@ -84,6 +82,14 @@ class _FakeBd:
 
     def ready_under_epic(self, epic_id: str) -> list[BeadsIssue]:
         return list(self.ready)
+
+    def children(self, epic_id: str, *, include_closed: bool = True) -> list[BeadsIssue]:
+        if epic_id in self.show_failures:
+            raise DriverBdError(f"children fail {epic_id}")
+        found = [self.issues[cid] for cid in self.child_ids.get(epic_id, ())]
+        if include_closed:
+            return found
+        return [i for i in found if i.status != "closed"]
 
     def create_with_labels(
         self,
@@ -338,16 +344,19 @@ def test_dedup_titles_returns_open_and_closed_children(tmp_path: Path) -> None:
     critic refiles a bug that was already filed/fixed on a prior pass."""
     bd = _FakeBd(
         issues={
-            "harness-epic": _issue("harness-epic", title="GTAII", deps=("harness-a", "harness-b")),
+            "harness-epic": _issue("harness-epic", title="GTAII"),
             "harness-a": _issue("harness-a", title="A", status="open"),
             "harness-b": _issue("harness-b", title="B", status="closed"),
-        }
+        },
+        child_ids={"harness-epic": ("harness-a", "harness-b")},
     )
     titles = _dedup_titles_under_epic(bd, "harness-epic")  # type: ignore[arg-type]
     assert titles == ("A", "B")
 
 
-def test_dedup_titles_returns_empty_on_show_failure(tmp_path: Path) -> None:
+def test_dedup_titles_returns_empty_on_bd_failure(tmp_path: Path) -> None:
+    """Soft on bd errors — a stale title list only risks a dupe the
+    fuzz-match still catches; failing the whole run would be worse."""
     bd = _FakeBd(show_failures={"harness-epic"})
     assert _dedup_titles_under_epic(bd, "harness-epic") == ()  # type: ignore[arg-type]
 

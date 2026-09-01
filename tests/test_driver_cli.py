@@ -813,20 +813,16 @@ def test_logs_list_handles_empty_dir(tmp_path: Path) -> None:
 
 class _LintBd:
     """Minimal bd fake for lint-epic: an epic with two children — one
-    over-scoped (many §refs + long), one right-sized."""
+    over-scoped (many §refs + long), one right-sized.
+
+    Children are served from `children()`, not from a `dependencies` key
+    on the epic's show payload — bd emits no such key (harness-mvejk)."""
 
     def __init__(self, bd_dir: Any) -> None:
         from harness.store._bd_types import _issue_from_json
 
+        self._child_ids = ["harness-big", "harness-small"]
         self._issues = {
-            "harness-epic": _issue_from_json(
-                {
-                    "id": "harness-epic",
-                    "title": "epic",
-                    "status": "open",
-                    "dependencies": [{"id": "harness-big"}, {"id": "harness-small"}],
-                }
-            ),
             "harness-big": _issue_from_json(
                 {
                     "id": "harness-big",
@@ -848,8 +844,11 @@ class _LintBd:
             ),
         }
 
-    def show(self, issue_id: str) -> Any:
-        return self._issues[issue_id]
+    def children(self, epic_id: str, *, include_closed: bool = True) -> list[Any]:
+        children = [self._issues[cid] for cid in self._child_ids]
+        if include_closed:
+            return children
+        return [c for c in children if c.status != "closed"]
 
 
 def test_lint_epic_flags_overscoped_and_exits_1(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -866,12 +865,38 @@ def test_lint_epic_clean_epic_exits_0(monkeypatch: pytest.MonkeyPatch) -> None:
         def __init__(self, bd_dir: Any) -> None:
             super().__init__(bd_dir)
             # Drop the over-scoped child; only the right-sized one remains.
-            self._issues["harness-epic"].raw["dependencies"] = [{"id": "harness-small"}]
+            self._child_ids = ["harness-small"]
 
     monkeypatch.setattr("harness.driver.cli.DriverBd", _CleanBd)
     result = runner.invoke(drive_app, ["lint-epic", "--epic", "harness-epic"])
     assert result.exit_code == 0, result.output
     assert "0 flagged" in result.stdout
+
+
+def test_lint_epic_include_closed_reaches_the_children_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flag has to reach bd — closed children are filtered at the
+    query, not after scoring."""
+
+    from harness.store._bd_types import _issue_from_json
+
+    class _ClosedChildBd(_LintBd):
+        def __init__(self, bd_dir: Any) -> None:
+            super().__init__(bd_dir)
+            big = self._issues["harness-big"].raw
+            self._issues["harness-big"] = _issue_from_json({**big, "status": "closed"})
+
+    monkeypatch.setattr("harness.driver.cli.DriverBd", _ClosedChildBd)
+    # Default: closed child excluded → nothing flagged → exit 0.
+    result = runner.invoke(drive_app, ["lint-epic", "--epic", "harness-epic"])
+    assert result.exit_code == 0, result.output
+    assert "harness-big" not in result.stdout
+
+    # --include-closed: the over-scoped closed child is scored and flagged.
+    result = runner.invoke(drive_app, ["lint-epic", "--epic", "harness-epic", "--include-closed"])
+    assert result.exit_code == 1
+    assert "harness-big" in result.stdout
 
 
 # --- harness-9ugc: missing-smoke refuse -----------------------------

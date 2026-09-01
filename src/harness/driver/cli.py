@@ -209,31 +209,23 @@ def lint_epic_command(
         raise typer.BadParameter("--epic is required")
     bd = DriverBd(bd_dir=workspace)
     try:
-        epic_issue = bd.show(epic)
+        children = bd.children(epic, include_closed=include_closed)
     except DriverBdError as exc:
         typer.echo(f"lint-epic: cannot load epic {epic}: {exc}", err=True)
         raise typer.Exit(code=2) from exc
 
-    child_ids = [
-        str(d.get("id")) for d in (epic_issue.raw.get("dependencies") or []) if d.get("id")
-    ]
-    scored = []
-    for cid in child_ids:
-        try:
-            child = bd.show(cid)
-        except DriverBdError:
-            continue
-        if child.status == "closed" and not include_closed:
-            continue
-        scored.append(
-            score_bead(
-                cid,
-                child.title,
-                str(child.raw.get("description", "")),
-                str(child.raw.get("acceptance_criteria", "") or ""),
-                workspace=workspace,
-            )
+    # The child records already carry title / description / acceptance —
+    # no per-child `bd show` round trip needed.
+    scored = [
+        score_bead(
+            child.id,
+            child.title,
+            str(child.raw.get("description", "")),
+            str(child.raw.get("acceptance_criteria", "") or ""),
+            workspace=workspace,
         )
+        for child in children
+    ]
 
     if not scored:
         typer.echo(f"lint-epic: no open children under {epic} to score.")

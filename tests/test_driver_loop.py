@@ -48,7 +48,6 @@ def _issue(
     status: str = "open",
     priority: int = 2,
     labels: tuple[str, ...] = (),
-    dependencies: list[dict[str, Any]] | None = None,
     notes: str = "",
 ) -> BeadsIssue:
     raw: dict[str, Any] = {
@@ -58,7 +57,6 @@ def _issue(
         "priority": priority,
         "issue_type": "task",
         "labels": list(labels),
-        "dependencies": dependencies or [],
         "notes": notes,
         "created_at": "2026-05-20T00:00:00Z",
     }
