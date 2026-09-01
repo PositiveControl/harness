@@ -16,8 +16,9 @@ from typing import Any
 
 import pytest
 
-from harness.driver.fsm_turn import (
+from harness.driver.fsm_executor import (
     _adopt_existing_red_gate,
+    _has_behavioral_gate,
     _is_degenerate_test_cmd,
     _is_unrunnable_test_output,
     _lint_submitted_gate,
@@ -30,7 +31,8 @@ from harness.driver.fsm_turn import (
     run_fsm_turn,
 )
 from harness.driver.handoff import Handoff
-from harness.driver.turn_fsm import TurnPhase
+from harness.driver.planner import VerifyStep
+from harness.driver.turn_fsm import UNGATED_VERIFY_REASON_PREFIX, TurnPhase
 from harness.model.adapter import ChatMessage
 from harness.orchestrator import ToolLoopResult
 from harness.tools.turn_phase_meta import SkipTestPhaseTool, SubmitFailingTestTool
@@ -517,7 +519,7 @@ def test_run_fsm_turn_rejects_always_green_submission(
             events=[],
         )
 
-    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr("harness.driver.fsm_executor.run_tool_loop", fake_run_tool_loop)
 
     result = run_fsm_turn(
         adapter=None,  # type: ignore[arg-type]  # never reached; run_tool_loop is stubbed
@@ -734,3 +736,121 @@ def test_lint_submitted_gate_rejects_scaffold_crash(tmp_path: Path) -> None:
     )
     assert msg is not None
     assert "scaffolding" in msg
+
+
+# --- harness-52ilv: ungated behavioral VERIFY parks --------------------
+#
+# loop_run=72b0cde2 closed five render-incompleteness beads green because
+# VERIFY ran only the workspace-typed defaults (node --check + a load-only
+# smoke step), which are blind to behavior. A behavioral bead now halts
+# ungated unless something can actually observe the behavior.
+
+
+def _passing_step() -> VerifyStep:
+    """Stands in for a workspace-typed default: it passes, and it says
+    nothing about behavior."""
+    return VerifyStep(cmd="node --check game.js")
+
+
+def test_behavioral_bead_with_no_gate_halts_ungated(tmp_path: Path) -> None:
+    (tmp_path / "game.js").write_text("function update() {}\n")
+    outcome = _resolve_verify_outcome(
+        verify_steps=[_passing_step()],
+        test_cmd=None,
+        workspace=tmp_path,
+        behavioral_bead=True,
+    )
+    assert outcome.kind == "verify_ungated"
+    assert outcome.detail.startswith(UNGATED_VERIFY_REASON_PREFIX)
+    assert "smoke_assert.js" in outcome.payload["reason"]
+
+
+def test_smoke_assert_probe_is_a_behavioral_gate(tmp_path: Path) -> None:
+    """harness-u1il5's probe is what makes the smoke step behavioral."""
+    (tmp_path / "game.js").write_text("function update() {}\n")
+    (tmp_path / ".harness").mkdir()
+    (tmp_path / ".harness" / "smoke_assert.js").write_text("return [];\n")
+    outcome = _resolve_verify_outcome(
+        verify_steps=[_passing_step()],
+        test_cmd=None,
+        workspace=tmp_path,
+        behavioral_bead=True,
+    )
+    assert outcome.kind == "verify_passed"
+
+
+def test_runnable_test_cmd_is_a_behavioral_gate(tmp_path: Path) -> None:
+    (tmp_path / "game.js").write_text("function update() {}\n")
+    (tmp_path / "test_update.js").write_text("process.exit(0);\n")
+    outcome = _resolve_verify_outcome(
+        verify_steps=[],
+        test_cmd=f"cd {tmp_path} && node test_update.js",
+        workspace=tmp_path,
+        behavioral_bead=True,
+    )
+    assert outcome.kind == "verify_passed"
+
+
+def test_degenerate_test_cmd_is_not_a_behavioral_gate(tmp_path: Path) -> None:
+    """An echo-only gate proves nothing — it must not buy a green close."""
+    (tmp_path / "game.js").write_text("function update() {}\n")
+    assert (
+        _has_behavioral_gate(
+            test_cmd="echo ok",
+            workspace=tmp_path,
+            operator_gate=False,
+        )
+        is False
+    )
+
+
+def test_missing_test_script_is_not_a_behavioral_gate(tmp_path: Path) -> None:
+    """A carried test_cmd whose script was quarantined between attempts."""
+    assert (
+        _has_behavioral_gate(
+            test_cmd="node test_gone.js",
+            workspace=tmp_path,
+            operator_gate=False,
+        )
+        is False
+    )
+
+
+def test_operator_verify_step_is_a_behavioral_gate(tmp_path: Path) -> None:
+    """A --plan-draft per-item step is operator-authored; trust it."""
+    (tmp_path / "game.js").write_text("function update() {}\n")
+    outcome = _resolve_verify_outcome(
+        verify_steps=[_passing_step()],
+        test_cmd=None,
+        workspace=tmp_path,
+        behavioral_bead=True,
+        operator_gate=True,
+    )
+    assert outcome.kind == "verify_passed"
+
+
+def test_non_behavioral_bead_keeps_the_trivial_pass(tmp_path: Path) -> None:
+    """Docs / config / scaffold beads are unchanged — their acceptance IS
+    code presence, which the existing gates can see."""
+    (tmp_path / "game.js").write_text("function update() {}\n")
+    outcome = _resolve_verify_outcome(
+        verify_steps=[_passing_step()],
+        test_cmd=None,
+        workspace=tmp_path,
+        behavioral_bead=False,
+    )
+    assert outcome.kind == "verify_passed"
+
+
+def test_ungated_check_precedes_the_blind_steps(tmp_path: Path) -> None:
+    """The halt fires even when a registered step would FAIL — the gate
+    question is answered before anything runs, so the outcome can't be
+    confused with a real red."""
+    (tmp_path / "game.js").write_text("function update() {}\n")
+    outcome = _resolve_verify_outcome(
+        verify_steps=[VerifyStep(cmd="exit 1")],
+        test_cmd=None,
+        workspace=tmp_path,
+        behavioral_bead=True,
+    )
+    assert outcome.kind == "verify_ungated"

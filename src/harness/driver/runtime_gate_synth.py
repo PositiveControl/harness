@@ -29,7 +29,7 @@ Two recognized invariant patterns, both red-now-or-decline:
 
 This module is PURE: it extracts tokens and renders JS strings. Writing the
 probe files, running ``smoke_runner``, and the red-now / runnable / no-probe-
-error adoption gauntlet belong to the caller (``fsm_turn``), mirroring the
+error adoption gauntlet belong to the caller (``fsm_executor``), mirroring the
 source-text split. The caller adopts ONLY a candidate whose smoke run is red on
 the gap (``RGFAIL:`` in the tail) and free of probe errors (a mis-extracted
 collection / state symbol throws a ReferenceError that surfaces as a

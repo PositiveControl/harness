@@ -14,7 +14,7 @@ The canonical failure this catches::
 ``node --check`` says the file is fine. Only running the artifact
 catches it. See harness-3jo1 / harness-4b8v for the original incident.
 
-Usage (matches the contract of ``_exec_test_cmd`` in fsm_turn.py)::
+Usage (matches the contract of ``_exec_test_cmd`` in fsm_executor.py)::
 
     python -m harness.driver.smoke_runner <index.html>
 

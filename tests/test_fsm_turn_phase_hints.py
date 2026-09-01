@@ -29,7 +29,7 @@ from typing import Any
 
 import pytest
 
-from harness.driver.fsm_turn import (
+from harness.driver.fsm_executor import (
     _build_phase_registry,
     _phase_unavailable_hints,
     run_fsm_turn,
@@ -230,7 +230,7 @@ def test_fsm_turn_arms_test_submit_detector_in_write_test(
             events=[],
         )
 
-    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr("harness.driver.fsm_executor.run_tool_loop", fake_run_tool_loop)
 
     result = run_fsm_turn(
         adapter=None,  # type: ignore[arg-type]  # never reached; run_tool_loop is stubbed
@@ -276,7 +276,7 @@ def test_fsm_turn_arms_write_detector_in_implement(
             events=[],
         )
 
-    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr("harness.driver.fsm_executor.run_tool_loop", fake_run_tool_loop)
 
     result = run_fsm_turn(
         adapter=None,  # type: ignore[arg-type]
@@ -323,7 +323,7 @@ def test_fsm_turn_passes_phase_exit_tools_to_wrap_up(
             events=[],
         )
 
-    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr("harness.driver.fsm_executor.run_tool_loop", fake_run_tool_loop)
 
     result = run_fsm_turn(
         adapter=None,  # type: ignore[arg-type]  # never reached; run_tool_loop is stubbed
@@ -358,7 +358,7 @@ def test_halt_reason_keeps_fsm_cause_when_fallback_fired(
             events=[],
         )
 
-    monkeypatch.setattr("harness.driver.fsm_turn.run_tool_loop", fake_run_tool_loop)
+    monkeypatch.setattr("harness.driver.fsm_executor.run_tool_loop", fake_run_tool_loop)
 
     result = run_fsm_turn(
         adapter=None,  # type: ignore[arg-type]

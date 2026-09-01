@@ -256,6 +256,12 @@ def phase_no_progress(phase: TurnPhase, *, reason: str) -> PhaseOutcome:
 # every time (loop_run=498a4d79: §15a-iii gating parked after 3 attempts
 # trying to gate fire/walk/weapon inputs that §9b-i/§10 closed blind).
 PREMISE_UNMET_REASON_PREFIX = "premise unmet:"
+# harness-52ilv: marks a halt the loop must PARK rather than retry, same
+# contract as PREMISE_UNMET_REASON_PREFIX above but a different cause — the
+# bead promises runtime behavior and VERIFY holds nothing that can observe
+# it. Distinct prefix so the park reason in the log and in
+# `state.last_failure` names what actually happened.
+UNGATED_VERIFY_REASON_PREFIX = "ungated verify:"
 
 # harness-8k6lp: the inverse — the bead's asserted-missing code is already
 # present in the workspace source, so there is no gap to drive. Distinct prefix
@@ -276,6 +282,26 @@ def premise_unmet(*, missing: str, reason: str) -> PhaseOutcome:
         kind="premise_unmet",
         detail=f"{PREMISE_UNMET_REASON_PREFIX} {missing} — {reason[:140]}",
         payload={"missing": missing, "reason": reason},
+    )
+
+
+def verify_ungated(*, reason: str) -> PhaseOutcome:
+    """VERIFY reached on a behavioral bead with no gate that can observe the
+    behavior — no runnable test_cmd, no `.harness/smoke_assert.js` probe, no
+    operator-authored verify step (harness-52ilv).
+
+    No transition is registered for this kind, so the FSM halts. The marked
+    detail carries `UNGATED_VERIFY_REASON_PREFIX`, which routes the loop to
+    park-without-retry: the WRITE_TEST synths already had their chance to
+    author a gate, so another attempt faces the identical workspace.
+
+    The workspace-typed defaults (`node --check`, the load-only smoke step)
+    do NOT count as a gate here — passing them is exactly how five broken
+    beads closed green in loop_run=72b0cde2."""
+    return PhaseOutcome(
+        kind="verify_ungated",
+        detail=f"{UNGATED_VERIFY_REASON_PREFIX} {reason[:200]}",
+        payload={"reason": reason},
     )
 
 
@@ -492,6 +518,7 @@ __all__ = [
     "DEFAULT_PHASE_BUDGETS",
     "PREMISE_MET_REASON_PREFIX",
     "PREMISE_UNMET_REASON_PREFIX",
+    "UNGATED_VERIFY_REASON_PREFIX",
     "_TERMINAL_PHASES",
     "PhaseOutcome",
     "TurnPhase",
@@ -509,4 +536,5 @@ __all__ = [
     "premise_unmet",
     "verify_failed",
     "verify_passed",
+    "verify_ungated",
 ]

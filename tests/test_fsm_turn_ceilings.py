@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from harness.driver.fsm_turn import (
+from harness.driver.fsm_executor import (
     _MAX_PHASE_EXECUTIONS,
     _MAX_VERIFY_RETRIES,
     run_fsm_turn,
@@ -117,7 +117,7 @@ def test_verify_retry_ceiling_halts_the_cycle(
     _MAX_VERIFY_RETRIES failed verifies instead of looping forever."""
     phases_seen: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop", _verify_cycle_tool_loop(phases_seen)
+        "harness.driver.fsm_executor.run_tool_loop", _verify_cycle_tool_loop(phases_seen)
     )
 
     result = run_fsm_turn(
@@ -144,7 +144,7 @@ def test_verify_retry_ceiling_does_not_fire_on_eventual_green(
     proceed to CLOSE — the cap only catches non-convergence."""
     phases_seen: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop", _verify_cycle_tool_loop(phases_seen)
+        "harness.driver.fsm_executor.run_tool_loop", _verify_cycle_tool_loop(phases_seen)
     )
     # Fails on the first run (marker file absent), passes on the second.
     marker = tmp_path / "green.marker"
@@ -180,9 +180,9 @@ def test_phase_execution_ceiling_bounds_any_cycle(
     any future transition-table cycle."""
     phases_seen: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop", _verify_cycle_tool_loop(phases_seen)
+        "harness.driver.fsm_executor.run_tool_loop", _verify_cycle_tool_loop(phases_seen)
     )
-    monkeypatch.setattr("harness.driver.fsm_turn._MAX_VERIFY_RETRIES", 999)
+    monkeypatch.setattr("harness.driver.fsm_executor._MAX_VERIFY_RETRIES", 999)
 
     result = run_fsm_turn(
         adapter=None,  # type: ignore[arg-type]

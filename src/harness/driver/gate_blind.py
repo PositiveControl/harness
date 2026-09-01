@@ -55,7 +55,7 @@ _TYPEOF_RE = re.compile(r"\btypeof\s+([A-Za-z_$][\w$]*)\b")
 # through fs.readFileSync('<source>').
 _READ_SOURCE_RE = re.compile(r"""readFileSync\(\s*['"]([^'"]+\.[cm]?js)['"]""")
 
-# Bound reads; mirrors fsm_turn's _GATE_LINT_READ_CAP rationale.
+# Bound reads; mirrors fsm_executor's _GATE_LINT_READ_CAP rationale.
 _READ_CAP = 262_144
 
 # Shared remediation text — the WRITE_TEST hint, the submit-time lint,
@@ -336,8 +336,8 @@ def first_blind_tell(output: str, test_path: str | None, workspace: Path) -> str
     clean).
 
     Single source of truth for the roster so the submit-time lint
-    (`fsm_turn._lint_submitted_gate`) and the carried-gate VERIFY check
-    (`fsm_turn._resolve_verify_outcome`) stay in lock-step. They drifted
+    (`fsm_executor._lint_submitted_gate`) and the carried-gate VERIFY check
+    (`fsm_executor._resolve_verify_outcome`) stay in lock-step. They drifted
     once (loop_run=135f0d99): the VERIFY site ran only the first three
     traps, so a phantom-member gate CARRIED from a prior attempt — which
     never re-submits, so it never sees the submit-time lint — got no

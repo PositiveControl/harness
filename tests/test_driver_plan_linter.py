@@ -8,6 +8,7 @@ from pathlib import Path
 from harness.driver.plan_linter import (
     SUBSECTION_THRESHOLD,
     BeadComplexity,
+    is_behavioral_bead,
     is_structural_bead,
     score_bead,
 )
@@ -128,6 +129,53 @@ def test_plain_feature_bead_is_not_structural() -> None:
     assert is_structural_bead("Add score tracking and on-screen score display", "") is False
     # "default" without a declaration verb nearby must not trip the marker.
     assert is_structural_bead("Use the default road tile when none specified", "") is False
+
+
+# --- is_behavioral_bead (harness-52ilv: VERIFY gate-required signal) ----
+
+
+def test_per_frame_tracking_bead_is_behavioral() -> None:
+    # The §7a-iii/nwf shape — the same bead the structural test rejects.
+    # Continuous tracking + a spawn deadline: nothing a load-only smoke
+    # gate can observe.
+    title = "§7a-iii Police — count tracks wanted (0..6, spawn within ~5s of increase)"
+    desc = "Each frame in update(), spawn police so police.length climbs toward wanted."
+    accept = "update() spawns police while police.length < wanted (capped 6)."
+    assert is_behavioral_bead(title, desc, accept) is True
+
+
+def test_temporal_and_motion_wording_is_behavioral() -> None:
+    assert is_behavioral_bead("Camera follows the player", "") is True
+    assert is_behavioral_bead("Pickup respawns after 30 seconds", "") is True
+    assert is_behavioral_bead("Wanted level decays over time", "") is True
+    assert is_behavioral_bead("Weapon fire honours a cooldown", "") is True
+    assert is_behavioral_bead("Smoothly interpolate the splat alpha", "") is True
+
+
+def test_behavioral_tell_in_description_counts() -> None:
+    # The tell often sits in the body, not the acceptance line — the
+    # predicate reads the joined text for that reason.
+    assert (
+        is_behavioral_bead(
+            "§10.7 On-foot proximity damage",
+            "While on foot, a cop within 12px drains health every frame.",
+            "health decreases when a cop is near",
+        )
+        is True
+    )
+
+
+def test_code_presence_bead_is_not_behavioral() -> None:
+    # Acceptance is a code shape — VERIFY's existing gates can see it.
+    title = "§12b Score — cop/civ destruction events"
+    desc = "Add a scoreFor(kind) helper and call it from the destruction branch."
+    accept = "scoreFor is defined and called with 'cop' and 'civ'."
+    assert is_behavioral_bead(title, desc, accept) is False
+
+
+def test_plain_structural_wording_is_not_behavioral() -> None:
+    assert is_behavioral_bead("§1 Project shape — index.html + game.js skeleton", "") is False
+    assert is_behavioral_bead("Boilerplate config loader", "") is False
 
 
 # ---- harness-pnkvp: behavioral-acceptance (assertability) signal -------

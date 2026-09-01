@@ -215,7 +215,7 @@ def flag_blocked_names_own_deliverable(missing: str, deliverable_text: str) -> b
 
 # harness-vsv: a third false-premise shape. ASSESS withholds the write-tier
 # editor tools by design — they're handed to IMPLEMENT (see
-# fsm_turn._build_phase_registry). A model that flag_blocks citing
+# fsm_executor._build_phase_registry). A model that flag_blocks citing
 # "edit_file tool not available" (loop_run=065ff3c1, harness-vsv: parked
 # PREMISE_UNMET on attempt 1, no retry, no gate → no s0el9/6zjjm revival →
 # stranded forever) has mistaken a phase boundary for an unmet premise. The

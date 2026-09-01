@@ -42,7 +42,7 @@ DEFAULT_NO_WRITE_STREAK_THRESHOLD: int = 4
 DEFAULT_NO_WRITE_REFIRE_EVERY: int = 2
 
 # Tools that count as a write. Succeeding on any of these resets the
-# streak. `fsm_turn._resolve_implement_outcome` imports this same set so
+# streak. `fsm_executor._resolve_implement_outcome` imports this same set so
 # what the detector counts and what the phase outcome checks stay in
 # lock-step. stream_edit is here because the driver's IMPLEMENT roster
 # offers it as an in-place edit path (awk/sed/cut/tr) — a productive

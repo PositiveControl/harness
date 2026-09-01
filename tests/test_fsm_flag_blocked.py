@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 
-from harness.driver.fsm_turn import run_fsm_turn
+from harness.driver.fsm_executor import run_fsm_turn
 from harness.driver.handoff import Handoff
 from harness.driver.turn_fsm import TurnPhase
 from harness.model.adapter import ChatMessage
@@ -143,7 +143,7 @@ def test_flag_naming_own_deliverable_is_rejected_and_turn_continues(
     submit_assessment and the turn drives to DONE instead of parking."""
     events: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _flag_then_recover_tool_loop(_FLAG_MISSING_DELIVERABLE, events),
     )
 
@@ -173,7 +173,7 @@ def test_flag_naming_genuine_upstream_still_parks(
     loop parks-and-flags for operator review."""
     events: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _flag_then_recover_tool_loop(_FLAG_MISSING_UPSTREAM, events),
     )
 
@@ -205,7 +205,7 @@ def test_flag_naming_withheld_editor_is_rejected_and_turn_continues(
     since the phase tool roster doesn't depend on bead text."""
     events: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _flag_then_recover_tool_loop(_FLAG_MISSING_WITHHELD_TOOL, events),
     )
 
@@ -233,7 +233,7 @@ def test_no_deliverable_text_disables_the_gate(
     callers that don't supply bead text."""
     events: list[str] = []
     monkeypatch.setattr(
-        "harness.driver.fsm_turn.run_tool_loop",
+        "harness.driver.fsm_executor.run_tool_loop",
         _flag_then_recover_tool_loop(_FLAG_MISSING_DELIVERABLE, events),
     )
 

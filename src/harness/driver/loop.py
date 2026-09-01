@@ -83,6 +83,7 @@ from harness.driver.state import LoopRunState
 from harness.driver.turn_fsm import (
     PREMISE_MET_REASON_PREFIX,
     PREMISE_UNMET_REASON_PREFIX,
+    UNGATED_VERIFY_REASON_PREFIX,
 )
 from harness.driver.vision_qa import build_rubric, run_advisory_qa
 from harness.driver.workspace_guard import (
@@ -154,6 +155,15 @@ EXECUTOR_USER_MESSAGE = (
     "pull a whole function or class. Reach for `read_file` offset/limit line "
     "ranges only for non-code files or when you already know the exact lines — "
     "blind line ranges tend to return half a function."
+)
+
+# harness-52ilv: halt reasons that must PARK immediately instead of burning
+# the retry budget. Both name a condition the next attempt would face
+# unchanged — an absent premise, or a behavioral bead with nothing that can
+# observe it. `str.startswith` takes the tuple directly.
+_PARK_WITHOUT_RETRY_PREFIXES = (
+    PREMISE_UNMET_REASON_PREFIX,
+    UNGATED_VERIFY_REASON_PREFIX,
 )
 
 
@@ -1078,9 +1088,14 @@ def run_loop(adapter: ModelAdapter, bd: DriverBd, config: LoopConfig) -> LoopRes
             # Park-and-flag immediately instead of burning the retry budget
             # (loop_run=498a4d79: §15a-iii gating parked after 3 futile
             # attempts trying to gate inputs that §9b-i/§10 closed blind).
-            if reason.startswith(PREMISE_UNMET_REASON_PREFIX):
+            if reason.startswith(_PARK_WITHOUT_RETRY_PREFIXES):
+                label = (
+                    "PREMISE_UNMET"
+                    if reason.startswith(PREMISE_UNMET_REASON_PREFIX)
+                    else "UNGATED_VERIFY"
+                )
                 log(
-                    f"turn {state.turns_used}: {current.id} PREMISE_UNMET — "
+                    f"turn {state.turns_used}: {current.id} {label} — "
                     f"parking without retry ({reason})"
                 )
                 if config.skip_on_max_attempts:
@@ -1278,13 +1293,13 @@ def _run_fsm_turn_via_driver(
         prior attempt halted there with an assessment).
       - Persists `state.last_assessment[issue_id]` + `state.last_test_cmd[issue_id]`
         for the same reason."""
-    from harness.driver.fsm_turn import (
+    from harness.driver.fsm_executor import (
         FsmTurnResult,
         phase_instructions,
         run_fsm_turn,
     )
     from harness.driver.handoff import build_handoff
-    from harness.driver.plan_linter import is_structural_bead
+    from harness.driver.plan_linter import is_behavioral_bead, is_structural_bead
     from harness.driver.turn_fsm import TurnPhase
 
     issue_id = current_issue.id
@@ -1352,6 +1367,18 @@ def _run_fsm_turn_via_driver(
     )
     bead_tdd_required = config.tdd_required and not structural
 
+    # harness-52ilv: a bead whose deliverable is runtime behavior can't be
+    # closed on the workspace-typed defaults alone — `node --check` and the
+    # load-only smoke step are blind to behavior, and loop_run=72b0cde2 rode
+    # exactly that blindness to five green closes of broken code. Structural
+    # wins the tie (a scaffold stays a scaffold even when its acceptance says
+    # "every frame"), matching the ASSESS-route precedence in fsm_executor.
+    behavioral = not structural and is_behavioral_bead(
+        current_issue.title,
+        str(raw.get("description") or ""),
+        str(raw.get("acceptance_criteria") or ""),
+    )
+
     # harness-0t2f9: the bead's own deliverable text (title + description +
     # acceptance) gates mid-turn flag_blocked — a `missing` that restates
     # the deliverable is rejected so the turn drives instead of parking.
@@ -1386,6 +1413,10 @@ def _run_fsm_turn_via_driver(
                 else None
             ),
             structural_bead=structural,
+            behavioral_bead=behavioral,
+            # An operator-authored per-item verify step is a gate the driver
+            # never second-guesses; the workspace-typed defaults are not.
+            operator_gate=bool(per_item_verify),
             deliverable_text=deliverable_text,
             observe=observe,
             executor_temperature=config.executor_temperature,
@@ -2725,7 +2756,7 @@ def _inter_attempt_restore(
     # reusing a phantom.
     carried = state.last_test_cmd.get(issue_id)
     if carried is not None:
-        from harness.driver.fsm_turn import _test_cmd_file_missing
+        from harness.driver.fsm_executor import _test_cmd_file_missing
 
         if _test_cmd_file_missing(carried, config.workspace):
             state.last_test_cmd.pop(issue_id, None)

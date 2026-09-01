@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from harness.driver.fsm_turn import _exec_test_cmd
+from harness.driver.fsm_executor import _exec_test_cmd
 from harness.driver.workspace_verify import (
     _browser_app_index,
     _workspace_has_file,

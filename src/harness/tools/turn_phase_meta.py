@@ -400,7 +400,7 @@ class SubmitFailingTestTool:
     ``(test_path, test_cmd, exit_code, output_tail)`` and returns a
     rejection message (the submission raises; the model fixes the test
     in-phase) or None to accept. The driver wires the workspace-aware
-    lint from ``fsm_turn``; None preserves trust-the-red behavior.
+    lint from ``fsm_executor``; None preserves trust-the-red behavior.
     """
 
     captured: list[dict[str, str]] = field(default_factory=list)

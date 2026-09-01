@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.driver.fsm_turn import _adopt_synthesized_runtime_gate, _runtime_gate_red_now
+from harness.driver.fsm_executor import _adopt_synthesized_runtime_gate, _runtime_gate_red_now
 from harness.driver.runtime_gate_synth import build_runtime_gates
 from tests.browser_probe import requires_playwright as _requires_playwright
 
