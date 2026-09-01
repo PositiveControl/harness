@@ -9,7 +9,6 @@ bd ready              # Find available work
 bd show <id>          # View issue details
 bd update <id> --claim  # Claim work atomically
 bd close <id>         # Complete work
-bd dolt push          # Push beads data to remote
 ```
 
 ## Non-Interactive Shell Commands
@@ -106,8 +105,11 @@ bd close bd-42 --reason "Completed" --json
 bd automatically syncs via Dolt:
 
 - Each write auto-commits to Dolt history
-- Use `bd dolt push`/`bd dolt pull` for remote sync
 - No manual export/import needed!
+- **No Dolt remote is configured for this repo.** `bd dolt push` fails with
+  `exit status 1` after a long upload retry — that is the absent remote, not a
+  broken database. Bead state lives in the local Dolt history and in the
+  `beads-*.jsonl` snapshots tracked by git; nothing else to sync.
 
 ### Important Rules
 
@@ -133,10 +135,10 @@ For more details, see README.md and docs/QUICKSTART.md.
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd dolt push
    git push
    git status  # MUST show "up to date with origin"
    ```
+   (No `bd dolt push` — this repo has no Dolt remote. See Auto-Sync above.)
 5. **Clean up** - Clear stashes, prune remote branches
 6. **Verify** - All changes committed AND pushed
 7. **Hand off** - Provide context for next session

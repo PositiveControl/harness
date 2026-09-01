@@ -44,7 +44,7 @@ flowchart TB
   subgraph R3 [" "]
     direction LR
     CL["bd close — reason recorded"]
-    LP["land the plane — git pull --rebase · bd dolt push · git push"]
+    LP["land the plane — git pull --rebase · git push"]
     CL --> LP
   end
   SG1["/segue thread (planning valve)"]

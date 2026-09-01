@@ -133,10 +133,13 @@ Session's end, per `AGENTS.md` — work isn't complete until the push succeeds:
 
 ```bash
 git pull --rebase
-bd dolt push
 git push
 git status   # must read "up to date with origin"
 ```
+
+No `bd dolt push` — this repo has no Dolt remote configured. It fails with
+`exit status 1` after a couple of minutes of upload retries; that is the missing
+remote, not a broken bead database.
 
 ### Step 8: Report
 
