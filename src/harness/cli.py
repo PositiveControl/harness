@@ -14,6 +14,7 @@ import harness._quiet
 from harness.character import load_character
 from harness.config import settings
 from harness.model import AdapterName, make_adapter
+from harness.orchestrator import DEFAULT_ROUND_MAX_TOKENS
 from harness.store.audit import AuditStore
 from harness.store.bd_adapter import BeadsAdapter, BeadsAdapterError
 from harness.store.transcript import Transcript, TranscriptMessage
@@ -584,6 +585,19 @@ def chat(
         "(requires the `grammar` extra, adds ~1GB RAM for outlines' FSM "
         "machinery).",
     ),
+    max_tokens: int = typer.Option(
+        DEFAULT_ROUND_MAX_TOKENS,
+        "--max-tokens",
+        min=256,
+        max=32768,
+        help="Per-round generation budget for the tool loop (default "
+        f"{DEFAULT_ROUND_MAX_TOKENS}). Raise it when the model is a remote "
+        "server rather than local MLX: a write_file whose content runs past "
+        "the cap is cut mid-argument, stops parsing as a tool call, and the "
+        "turn burns its retries on a file that never lands (harness-4s6fv). "
+        "4096-8192 suits a 30B on vLLM; the local-MLX default is unchanged "
+        "because each doubling costs real wall-clock there.",
+    ),
     tui: bool = typer.Option(
         False,
         "--tui/--no-tui",
@@ -655,6 +669,7 @@ def chat(
             router_mode=router_mode,
             include_internal=include_internal,
             dev=dev,
+            round_max_tokens=max_tokens,
             allowed_sessions=allowed_sessions,
             recency_ranks=recency_ranks,
             recency_weight=recency_weight,
@@ -696,6 +711,7 @@ def chat(
         router_enabled=router_enabled,
         router_repo=router_repo,
         router_mode=router_mode,
+        round_max_tokens=max_tokens,
         allowed_sessions=allowed_sessions,
         recency_ranks=recency_ranks,
         recency_weight=recency_weight,

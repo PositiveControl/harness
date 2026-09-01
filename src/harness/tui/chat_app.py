@@ -45,6 +45,7 @@ from harness.cli import (
 from harness.cli import _RetrievalState as _RetrievalHealth
 from harness.model.adapter import ChatMessage
 from harness.orchestrator import (
+    DEFAULT_ROUND_MAX_TOKENS,
     ToolLoopEvent,
     format_truncated_retry_suffix,
     run_tool_loop,
@@ -524,6 +525,7 @@ class ChatApp(App[None]):
         allowed_sessions: tuple[str, ...] | None = None,
         recency_ranks: dict[str, int] | None = None,
         recency_weight: float = 0.0,
+        round_max_tokens: int = DEFAULT_ROUND_MAX_TOKENS,
     ) -> None:
         super().__init__()
         self._character = character
@@ -589,6 +591,10 @@ class ChatApp(App[None]):
         # gate is fully off and the store skips the third ranking.
         self._recency_ranks = recency_ranks
         self._recency_weight = recency_weight
+        # Per-round generation budget for the tool loop (harness-gebo5),
+        # from `--max-tokens`. Same default + rationale as the classic
+        # REPL — see DEFAULT_ROUND_MAX_TOKENS.
+        self._round_max_tokens = round_max_tokens
         # Accept an external retrieval_health reference so the
         # IntrospectTool (harness-8is) can see live voice/episodic/
         # semantic health without a callback plumbing. When None the
@@ -1311,6 +1317,8 @@ class ChatApp(App[None]):
                     scope_redirect_template=self._character.scope_redirect_template,
                     scope_lexicon=self._character.scope_lexicon,
                     inbox=self._drain_injections,
+                    max_tokens=self._round_max_tokens,
+                    wrap_up_max_tokens=self._round_max_tokens,
                 )
                 if self._state.turn_seq != seq:
                     return  # interrupted; drop partial reply + skip persistence

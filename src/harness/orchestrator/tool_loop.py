@@ -156,6 +156,24 @@ if TYPE_CHECKING:
 # model-splitting); this ceiling is just an anti-runaway guard, not a design
 # target.
 _MAX_TOKENS_CEILING = 32768
+
+# Per-round generation budget for the tool loop. Bumped 1024 → 2048
+# (harness-gt0m): tool-use turns routinely emit a tool call AND a
+# paragraph of reasoning, and 1024 was clipping legitimate work and
+# tripping truncated_retry on routine rounds. 2048 costs ~13s extra
+# wall-clock at 150 tok/s on M4 Pro (still interactive) and stays well
+# under the 4-6K coherence ceiling for Qwen 2.5 7B / Qwen3-Coder-30B.
+#
+# It is still the wrong operating point for a big remote model asked to
+# write a file: a `write_file` call whose `content` runs past the cap is
+# cut mid-argument, arrives with no closing tag, and stops parsing as a
+# tool call at all (harness-4s6fv). Callers raise it via
+# `harness chat --max-tokens` (harness-gebo5). Kept as the default so
+# local-MLX latency is unchanged.
+#
+# _MAX_TOKENS_CEILING (32768) and the bail-retry budget are the safety
+# rail, not the operating point; neither moves with this.
+DEFAULT_ROUND_MAX_TOKENS = 2048
 # Bumped from 2 → 3 after airton_f smoke 2026-05-15: the model
 # tripped two distinct catchers in sequence (opinion_no_trigger,
 # then list_count_mismatch) on a single search-grounding failure,
@@ -1160,17 +1178,11 @@ def run_tool_loop(
     max_rounds: int = 8,
     confirm: ConfirmFn | None = None,
     observe: ObserverFn | None = None,
-    # Defaults bumped 1024 → 2048 (harness-gt0m). Tool-use turns
-    # routinely emit a tool call AND a paragraph of reasoning;
-    # 1024 was clipping legitimate work and tripping
-    # truncated_retry on routine rounds. 2048 costs ~13s extra
-    # wall-clock at 150 tok/s on M4 Pro (still interactive) and
-    # stays well under the 4-6K coherence ceiling for Qwen 2.5
-    # 7B / Qwen3-Coder-30B. Ceiling at _MAX_TOKENS_CEILING
-    # (32768) and the bail-retry budget are unchanged — those
-    # are the safety rail, not the operating point.
-    max_tokens: int = 2048,
-    wrap_up_max_tokens: int = 2048,
+    # Defaults are DEFAULT_ROUND_MAX_TOKENS; callers that know their
+    # model is cheap per round (a remote vLLM server rather than local
+    # MLX) raise them — `harness chat --max-tokens` (harness-gebo5).
+    max_tokens: int = DEFAULT_ROUND_MAX_TOKENS,
+    wrap_up_max_tokens: int = DEFAULT_ROUND_MAX_TOKENS,
     temperature: float = 0.5,
     router: Router | None = None,
     hooks: HookPipeline | None = None,

@@ -22,7 +22,7 @@ from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from harness.model.adapter import ChatMessage
-from harness.orchestrator import run_tool_loop
+from harness.orchestrator import DEFAULT_ROUND_MAX_TOKENS, run_tool_loop
 from harness.persona import build_rewriter_messages
 from harness.store.audit import record_turn_audit
 
@@ -104,6 +104,11 @@ class TurnContext:
     recency_weight: float = 0.0
     # tools / orchestration
     registry: Any | None = None  # ToolRegistry
+    # Per-round generation budget for the tool loop (harness-gebo5).
+    # Raised from the CLI when the model is a remote server rather than
+    # local MLX; a file write that outruns the budget stops parsing as a
+    # tool call (harness-4s6fv).
+    round_max_tokens: int = DEFAULT_ROUND_MAX_TOKENS
     router: Router | None = None
     hooks: HookPipeline | None = None
     ab_adapter: Any | None = None  # BeadsAdapter
@@ -257,6 +262,8 @@ class TurnService:
                 banter_tracker=ctx.banter_tracker,
                 scope_redirect_template=ctx.character.scope_redirect_template,
                 scope_lexicon=ctx.character.scope_lexicon,
+                max_tokens=ctx.round_max_tokens,
+                wrap_up_max_tokens=ctx.round_max_tokens,
             )
             streamed = io.stream_renderer is not None
             _persist_tool_exchange(

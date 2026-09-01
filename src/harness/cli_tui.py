@@ -16,6 +16,7 @@ import typer
 from harness.character import load_character
 from harness.compaction import CompactionStore
 from harness.config import settings
+from harness.orchestrator import DEFAULT_ROUND_MAX_TOKENS
 from harness.router import GrammarRouter, ModelRouter
 from harness.store.transcript import Transcript
 
@@ -56,6 +57,7 @@ def run_tui(
     router_mode: str,
     include_internal: bool,
     dev: bool,
+    round_max_tokens: int = DEFAULT_ROUND_MAX_TOKENS,
     allowed_sessions: tuple[str, ...] | None = None,
     recency_ranks: dict[str, int] | None = None,
     recency_weight: float = 0.0,
@@ -202,6 +204,7 @@ def run_tui(
         allowed_sessions=allowed_sessions,
         recency_ranks=recency_ranks,
         recency_weight=recency_weight,
+        round_max_tokens=round_max_tokens,
     ).run()
     if compaction_store is not None:
         compaction_store.close()

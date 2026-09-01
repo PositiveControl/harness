@@ -32,7 +32,7 @@ from harness.cli_repl import (
 from harness.compaction import CompactionStore
 from harness.config import settings
 from harness.model.adapter import ModelAdapter
-from harness.orchestrator import ToolLoopEvent
+from harness.orchestrator import DEFAULT_ROUND_MAX_TOKENS, ToolLoopEvent
 from harness.persona.banter import BanterStreakTracker, load_default_tracker
 from harness.retrieval import VoiceRetriever
 from harness.retrieval.contract import StoreBundle
@@ -636,6 +636,10 @@ class ClassicChatSession:
     # state so smartass / empty-signal prompts deflect with a joke
     # instead of fabricating a rule chunk from thin retrieval.
     banter_tracker: BanterStreakTracker | None = None
+    # Per-round generation budget for the tool loop (harness-gebo5).
+    # `--max-tokens`; see DEFAULT_ROUND_MAX_TOKENS for why the default
+    # is too small for a remote model writing a file.
+    round_max_tokens: int = DEFAULT_ROUND_MAX_TOKENS
     # Lazily-built shared turn service (harness-fl313). Holds references
     # to the live session objects above, so per-turn mutations
     # (retrieval_state.muted, approved_tools) stay visible.
@@ -734,6 +738,7 @@ class ClassicChatSession:
                     persona=self.persona,
                     rewrite_on_tools=self.rewrite_on_tools,
                     chain_rewrites=self.chain_rewrites,
+                    round_max_tokens=self.round_max_tokens,
                     audit_store=self.audit_store,
                 )
             )
@@ -789,6 +794,7 @@ def run_classic_chat(
     router_enabled: bool,
     router_repo: str,
     router_mode: str,
+    round_max_tokens: int = DEFAULT_ROUND_MAX_TOKENS,
     allowed_sessions: tuple[str, ...] | None = None,
     recency_ranks: dict[str, int] | None = None,
     recency_weight: float = 0.0,
@@ -981,6 +987,7 @@ def run_classic_chat(
         recency_ranks=recency_ranks,
         recency_weight=recency_weight,
         banter_tracker=banter_tracker,
+        round_max_tokens=round_max_tokens,
     )
 
     if ab_adapter is not None:

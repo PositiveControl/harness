@@ -20,6 +20,7 @@ from harness.character import load_character
 from harness.cli import _RetrievalState
 from harness.config import settings
 from harness.model.adapter import ChatMessage
+from harness.orchestrator import DEFAULT_ROUND_MAX_TOKENS
 from harness.store.episodic import EpisodicStore
 from harness.store.semantic import SemanticStore
 from harness.store.transcript import Transcript
@@ -51,6 +52,7 @@ class _CapturingAdapter:
     context_window: int = 8192
     reply: str = "FINAL REPLY"
     seen_system: list[str] = field(default_factory=list)
+    seen_max_tokens: list[int] = field(default_factory=list)
     tool_replies: list[ModelReply] = field(default_factory=list)
 
     def _record(self, messages: Iterable[ChatMessage]) -> None:
@@ -73,6 +75,7 @@ class _CapturingAdapter:
         temperature: float = 0.5,
     ) -> ModelReply:
         self._record(messages)
+        self.seen_max_tokens.append(max_tokens)
         return self.tool_replies.pop(0) if self.tool_replies else ModelReply(content=self.reply)
 
 
@@ -178,3 +181,45 @@ def test_tool_backed_turn_runs_loop_and_persists_exchange(tmp_path: Path) -> Non
     assert "file contents here" in blob
     # Tool grounding block was injected because a registry was present.
     assert "TOOL-USE RULES" in adapter.seen_system[-1]
+
+
+def test_round_budget_defaults_to_the_orchestrator_default(tmp_path: Path) -> None:
+    """harness-gebo5: an unset `round_max_tokens` keeps the tuned local-MLX
+    operating point, so nothing about the default chat path moves."""
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+    adapter = _CapturingAdapter(reply="done")
+    ctx, _ = _ctx(tmp_path, adapter, registry=registry, workspace_path=tmp_path)
+    TurnService(ctx).run_turn("hi")
+
+    assert adapter.seen_max_tokens == [DEFAULT_ROUND_MAX_TOKENS]
+
+
+def test_round_budget_reaches_the_tool_loop(tmp_path: Path) -> None:
+    """harness-gebo5: `--max-tokens` has to land on the adapter call, not
+    just on the dataclass. The wrap-up rounds get the same budget — the
+    round that writes a file is often the wrap-up one, and a wrap-up cap
+    below the file body reproduces harness-4s6fv."""
+    (tmp_path / "f.txt").write_text("file contents here")
+    registry = ToolRegistry()
+    registry.register(ReadFileTool(root=tmp_path))
+    adapter = _CapturingAdapter(
+        tool_replies=[
+            ModelReply(
+                content="",
+                tool_calls=(ToolCall(name="read_file", arguments={"path": "f.txt"}),),
+            ),
+            ModelReply(content="the file says: file contents here"),
+        ]
+    )
+    ctx, _ = _ctx(
+        tmp_path,
+        adapter,
+        registry=registry,
+        workspace_path=tmp_path,
+        round_max_tokens=8192,
+    )
+    TurnService(ctx).run_turn("read f.txt")
+
+    # Round 0 (tool call) and the post-tool wrap-up round both honor it.
+    assert adapter.seen_max_tokens == [8192, 8192]

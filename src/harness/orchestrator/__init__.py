@@ -7,6 +7,7 @@ from harness.orchestrator.tool_loop import (
     _FALSE_SUCCESS_RE,
     _META_CONFIRM_RE,
     _TOOL_INTENT_RE,
+    DEFAULT_ROUND_MAX_TOKENS,
     ConfirmFn,
     ObserverFn,
     ToolLoopEvent,
@@ -16,6 +17,7 @@ from harness.orchestrator.tool_loop import (
 )
 
 __all__ = [
+    "DEFAULT_ROUND_MAX_TOKENS",
     # Private regexes exposed for the CLI stream renderer so it can
     # suppress meta-confirm / false-success / fabricated-output / bare-
     # intent text before it lands on the user's terminal. Used by
