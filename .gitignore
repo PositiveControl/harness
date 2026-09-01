@@ -74,6 +74,7 @@ logs/
 # Local Claude Code per-clone settings and interaction state
 .claude/*
 !.claude/agents/
+!.claude/commands/
 scratch/**/*
 
 # Benchmark artifacts — regenerable via scripts/bench_*.py and `harness eval *`
@@ -102,3 +103,10 @@ snake/
 .coverage
 .coverage.*
 htmlcov/
+
+# Dev-workflow scratch (/task_plan task files, /segue threads) — local, not
+# source. The task template and the threads dir itself stay tracked.
+.llm/tasks/*
+!.llm/tasks/task_template.md
+.llm/threads/*
+!.llm/threads/.gitkeep
