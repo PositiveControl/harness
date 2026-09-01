@@ -13,7 +13,8 @@ loop driver needs:
 
   * `show(issue_id)`              read one issue
   * `ready()`                     list bd ready --json
-  * `ready_under_epic(epic_id)`   ready ∩ descendants(epic) — v0 = direct children only
+  * `children(epic_id)`           direct children (blocks deps + parent-child)
+  * `ready_under_epic(epic_id)`   ready ∩ children(epic) — v0 = direct children only
   * `create_with_labels(...)`     bd create + --label flags
   * `close(issue_id, reason=...)` bd close
   * `dep_add(blocker, blocked)`   bd dep add
@@ -149,22 +150,82 @@ class DriverBd:
         result = self._run(["ready", "-n", "9999", "--json"])
         return _parse_issue_list(result.stdout)
 
+    def children(self, epic_id: str, *, include_closed: bool = True) -> list[BeadsIssue]:
+        """Direct children of `epic_id`, one level deep.
+
+        Two child wirings exist in this repo and both are legitimate, so
+        this is a union of two bd queries rather than one lookup
+        (harness-mvejk):
+
+        * `blocks` deps — what `driver/planner.py` creates via
+          `dep_add(blocked=epic_id, blocker=child_id)`. The epic depends
+          on each child, so they come back from `bd dep list <epic>`
+          (direction down, the default).
+        * `parent-child` — what `bd create --parent <epic>` creates.
+          Invisible to `bd dep list` in the down direction; returned by
+          `bd list --parent <epic>`.
+
+        Neither is visible on `bd show <epic> --json`, which is what this
+        used to read. bd 1.0.5 emits no `dependencies` key at all, so the
+        old lookup returned empty for every epic and both `drive loop`
+        and `drive lint-epic` became silent no-ops.
+
+        `bd dep list` includes closed children already; `bd list` hides
+        them unless `--all` is passed, so both queries are asked for
+        everything and `include_closed=False` filters afterwards — one
+        code path, not two query shapes.
+
+        Direction-up on `bd dep list` would also surface parent-child
+        children, but `--json` drops the relation type, so an epic that
+        anything else depends on would pick up non-children. `bd list
+        --parent` has no such ambiguity.
+
+        Raises `DriverBdError` when both queries come back empty while
+        the epic itself reports relations — that combination is the
+        signature of exactly the schema drift this method exists to
+        survive, and returning `[]` there is what made the original
+        breakage silent.
+        """
+        seen: dict[str, BeadsIssue] = {}
+        for args in (
+            ["dep", "list", epic_id, "--json"],
+            ["list", "--parent", epic_id, "--all", "--json"],
+        ):
+            for issue in _parse_issue_list(self._run(args).stdout):
+                if issue.id != epic_id:
+                    seen.setdefault(issue.id, issue)
+
+        if not seen:
+            epic = self.show(epic_id)
+            relations = int(epic.raw.get("dependency_count") or 0) + int(
+                epic.raw.get("dependent_count") or 0
+            )
+            if relations:
+                raise DriverBdError(
+                    f"{epic_id} reports {relations} relation(s) but neither "
+                    f"`bd dep list` nor `bd list --parent` returned any child. "
+                    f"This is bd schema drift — the driver cannot enumerate the "
+                    f"epic's children and would otherwise report success having "
+                    f"done nothing. Check `bd --version` against "
+                    f"DriverBd.children()."
+                )
+            return []
+
+        found = list(seen.values())
+        if include_closed:
+            return found
+        return [issue for issue in found if issue.status != "closed"]
+
     def ready_under_epic(self, epic_id: str) -> list[BeadsIssue]:
-        """Ready issues that are direct dependencies of `epic_id` (v0 —
+        """Ready issues among the direct children of `epic_id` (v0 —
         one-level-deep grouping). Returns the intersection in `bd ready`
         priority order so the executor consumes the queue in the same
         order an operator sees with `bd ready`.
 
-        v0 limitation: walks only the direct `dependencies` array on
-        `bd show <epic>`. Grandchildren (deps of deps) are not included.
+        v0 limitation: one level only. Grandchildren are not included.
         Future revisions can recurse if multi-level epics become a
-        pattern — for now keeps the query simple and the dep traversal
-        bounded."""
-        epic = self.show(epic_id)
-        # bd show emits the children inline under `dependencies` —
-        # each entry has its own id and dependency_type. Pull those ids.
-        raw_deps = epic.raw.get("dependencies") or []
-        child_ids = {str(d.get("id")) for d in raw_deps if d.get("id")}
+        pattern — for now keeps the query bounded."""
+        child_ids = {issue.id for issue in self.children(epic_id)}
         if not child_ids:
             return []
         return [issue for issue in self.ready() if issue.id in child_ids]
