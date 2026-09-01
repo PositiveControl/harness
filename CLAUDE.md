@@ -73,7 +73,7 @@ Quality gates (all must stay green; pre-commit runs them on every commit):
 - `uv run ruff check .` — lint.
 - `uv run ruff format .` — format in place.
 - `uv run mypy src tests` — strict type-check (src + tests).
-- `uv run pytest` — full test suite (currently ~4,290 tests across 197 files, ~100s).
+- `uv run pytest` — full test suite (currently ~4,500 tests across 202 files, ~90s).
 - `uv run pytest tests/test_character.py::test_load_airton_shape` — single test.
 - `uv run pre-commit run --all-files` — run all hooks against the working tree.
 
@@ -105,6 +105,12 @@ Load-bearing invariants — they shape almost every decision:
   - `tui/` — Textual chat app (optional, `--tui`).
   - `turn/service.py` — one grounded chat turn (retrieval → prompt assembly → history → tool loop → rewrite → persistence → audit), lifted out of CLI-only assembly so CLI, TUI, web, and daemon callers all run the same path.
   - `driver/` — multi-turn autonomous driver behind `harness drive` (`plan` / `lint-epic` / `loop` / `auto-iterate` / `logs`). 23 modules, the largest subsystem here: phase FSM (`turn_fsm.py`, `fsm_executor.py`, `state.py`), gate-blindness rejection (`gate_blind.py`), gate synthesis (`gate_synth.py`, `runtime_gate_synth.py`), park/revive guards (`premise_guard.py`, `workspace_guard.py`), critic convergence (`auto_iterate.py`, `critic.py`), browser smoke (`smoke_runner.py`, needs chromium). Reference doc pending — see `harness-mgmz`.
+    An epic's children come from `DriverBd.children()`, which unions `bd dep list <epic>`
+    (the `blocks` wiring `driver/planner.py` creates) with `bd list --parent <epic>` (the
+    `parent-child` wiring `bd create --parent` creates) — both are in use here, and
+    `bd show --json` exposes neither. It raises when an epic reports relations but no
+    child resolves, because a silent empty children list is a drive that reports success
+    having done nothing (harness-mvejk).
   - `plan/` — runtime-typed plan structure (`Plan` values the orchestrator reasons over directly, no subprocess hop per turn). bd is one backend among N: `bd_source.py`, `writeback.py`, `store.py`. CLI surface: `harness plan`.
   - `runtime/` — clock-driven heartbeat loop separate from chat turns; runs maintenance tasks (compaction, consolidation, scheduled tool calls) at configured intervals. CLI surface: `harness daemon` / `harness daemon-status`.
   - `web/` — FastAPI factory that serves any character over HTTP (`harness web`); per-character extensions under `web/characters/`.
@@ -112,7 +118,7 @@ Load-bearing invariants — they shape almost every decision:
   - `character_templates/` — archetype skeletons (currently `atc/`) that `scripts/character_from_template.py` copies into `character/<new_name>/`, substituting `{{CHARACTER_NAME}}`.
   - `evals/` — voice / router / session-resume / tool-loop.
   - `cli.py` — Typer app. See Commands above.
-- `tests/` — pytest, hits real SQLite in `tmp_path`. ~4,290 tests. Browser-backed tests gate on `tests/browser_probe.py` (needs `uv run playwright install chromium`, else they skip).
+- `tests/` — pytest, hits real SQLite in `tmp_path`. ~4,500 tests. Browser-backed tests gate on `tests/browser_probe.py` (needs `uv run playwright install chromium`, else they skip).
 - `scripts/` — benchmarks (model-speed, tool-use with `--measure-tokens`, router-on-vs-off with RAM tracking).
 
 ### Voice stack
