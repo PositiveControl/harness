@@ -676,22 +676,17 @@ def _dedup_titles_under_epic(bd: DriverBd, epic_id: str) -> tuple[str, ...]:
     Soft on bd errors — a stale title list just means the critic might
     propose a dupe; the fuzz-match still catches strong overlaps and the
     grounding-verify gate catches fabricated ones. Better than failing
-    the whole auto-iterate run on a transient bd hiccup."""
+    the whole auto-iterate run on a transient bd hiccup.
+
+    `include_closed=True` is passed explicitly rather than left to
+    `children()`'s default — the closed half of this list is the whole
+    point of harness-hdwp, so it should not silently follow a default
+    someone could flip."""
     try:
-        epic = bd.show(epic_id)
+        children = bd.children(epic_id, include_closed=True)
     except DriverBdError:
         return ()
-    titles: list[str] = []
-    for dep in epic.raw.get("dependencies") or []:
-        dep_id = dep.get("id")
-        if not isinstance(dep_id, str):
-            continue
-        try:
-            child = bd.show(dep_id)
-        except DriverBdError:
-            continue
-        titles.append(child.title)
-    return tuple(titles)
+    return tuple(child.title for child in children)
 
 
 __all__ = [
